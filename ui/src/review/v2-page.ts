@@ -8,6 +8,9 @@ import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
+// D081-P3c BEGIN
+import { computeClassicLayout } from './classic-layout-worker.ts';
+// D081-P3c END
 import type { LayoutInput, LayoutResult } from './layout-v2.ts';
 import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
 import { typedNodeViewport } from './typed-node-viewport.ts';
@@ -2677,7 +2680,9 @@ export class V2Page {
             const projectionBegan = performance.now();
             const reused = this.pageResults.get(layoutKey) as LayoutResult | undefined;
             this.projectionCacheOutcome = reused ? 'hit' : 'miss';
-            const result = reused ?? computeLayout(layoutInput);
+            // D081-P3c BEGIN: large classic layouts run in the embedded worker.
+            const result = reused ?? await computeClassicLayout(layoutInput);
+            // D081-P3c END
             this.recordProjectionPhase('projectionCompute', reused ? 0 : performance.now() - projectionBegan);
             if (!reused) this.pageResults.set(layoutKey, result);
             // End D-080 A5b projection/result-adaptation region.
@@ -2904,6 +2909,11 @@ export class V2Page {
             nextHost.className = 'view-host';
             Object.assign(nextHost.style, { position: 'absolute', inset: '0' });
             element('render-root').append(nextHost);
+            // D081-P3c BEGIN: routing/adaptation and renderer construction are
+            // separate main-thread tasks; the resident view stays on screen.
+            if (this.density === 'complete' && disclosed.nodes.length > 1200)
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+            // D081-P3c END
             let mounted: ProductView;
             try {
                 mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(shown.map(edge => edge.id)), axes: { ...this.axes, organization }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
@@ -3237,13 +3247,20 @@ export class V2Page {
         this.density = next;
         // D081-P3b BEGIN: the resident lower-density view remains visible while
         // the worker prepares the full Indra domain; disclose that recovery state.
-        if (next === 'complete' && this.indraPearlsView()) {
+        if (next === 'complete') {
             this.d081Quality = 'recupero';
             this.d081Metrics.nodes.eligible = this.index.nodes.length;
             this.d081Metrics.edges.eligible = completeRelations(this.index, this.axes.reading).total;
             this.d081Metrics.limit = null;
             this.d081Metrics.hint = 'La scena completa si sta preparando; attendi il raffinamento.';
             this.d081Emit();
+            // D081-P3c BEGIN: commit the recovery text before starting a large refresh.
+            await new Promise<void>(resolve => {
+                if (typeof requestAnimationFrame === 'function')
+                    requestAnimationFrame(() => setTimeout(resolve, 0));
+                else setTimeout(resolve, 0);
+            });
+            // D081-P3c END
         }
         // D081-P3b END
         await this.refresh();

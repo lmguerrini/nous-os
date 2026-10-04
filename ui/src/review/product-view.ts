@@ -16,6 +16,9 @@ import { framingShellRingPoints } from "./framing-shell.ts";
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
 import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
+// D081-P3c BEGIN
+import { computeClassicGeometry } from "./classic-layout-worker.ts";
+// D081-P3c END
 import { LABEL_BUDGET, disambiguateLabels, footprintDisc, labelCandidateKind, occludedAnchors, placeLabels, shortLabelWithEllipsis } from "./labels.ts";
 import type { DepthSample, LabelRim, PlacedLabel } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
@@ -528,11 +531,16 @@ export const createProductView: CreateProductView = async (input) => {
   // D-073 C6: the arrangement axis is Natural-only at every entry point, creation included.
   assertNaturalArrangementAxis(input.axes);
   const prepared = input.v2Prepared ?? adaptReviewExport(input.data);
-  const base = (input.v2Prepared ? undefined : anchorBaseline.get(input.data.export_digest)) ?? {
+  // D081-P3c BEGIN: V2 layouts already supply their final 2D/3D anchors. The old
+  // fallback computed and discarded 120 depth iterations on every V2 remount.
+  const base = input.v2Prepared ? {
+    flat: prepared.flatAnchors, indra: prepared.indraAnchors, depth: prepared.flatAnchors,
+  } : anchorBaseline.get(input.data.export_digest) ?? {
     flat: prepared.flatAnchors, indra: prepared.indraAnchors,
     depth: relaxDepth(prepared.flatGraph, prepared.flatAnchors),
   };
-  anchorBaseline.set(input.data.export_digest, base);
+  if (!input.v2Prepared) anchorBaseline.set(input.data.export_digest, base);
+  // D081-P3c END
   const flatAnchors = input.v2Prepared ? base.flat : placeDynamic(base.flat, input.data);
   const indraAnchors = input.v2Prepared ? base.indra : placeDynamic(base.indra, input.data);
   const fullDepth = input.v2Prepared ? base.flat : placeDynamic(base.depth, input.data);
@@ -586,7 +594,9 @@ export const createProductView: CreateProductView = async (input) => {
   // by mount() and updateVisibleSubset().
   let drawnGeometry: import("../engine/morphology-geometry.ts").MorphologyGeometry | null = null;
   let screenPickIndex: ScreenPickIndex | null = null;
-  let committedScene: ReturnType<typeof buildDrawnScene> | null = null;
+  type FullScene = ReturnType<typeof buildDrawnScene> & { geometry: NonNullable<ReturnType<typeof buildDrawnScene>["geometry"]> };
+  let committedScene: FullScene | null = null;
+  let initialScene: FullScene | null = null;
   // D-072 R2: the marker bits (glyph, radiusPx) the renderers' style maps last saw, so an
   // in-place subset change can ship only the entries that actually flipped.
   let lastNodeMarks = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined; radiusPx: number | undefined }>();
@@ -1324,7 +1334,7 @@ export const createProductView: CreateProductView = async (input) => {
    * identical pixels. `anchors` is the mounted anchor map; only drawn ids are ever read. */
   function buildDrawnScene(anchors: ReadonlyMap<string, Coordinates>, state: {
     visible: ReadonlySet<string>; containers: typeof layoutContainers; edges: readonly ReviewEdge[];
-  } = { visible, containers: layoutContainers, edges: drawnEdges }) {
+  } = { visible, containers: layoutContainers, edges: drawnEdges }, deferGeometry = false) {
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     const openContainers = new Set(input.v2Prepared && axes.organization === "indra"
       ? (state.containers ?? []).filter((container) => container.open !== false).map((container) => container.id) : []);
@@ -1394,10 +1404,14 @@ export const createProductView: CreateProductView = async (input) => {
       }),
       containers: containers ?? [],
     };
-    const geometry = buildMorphologyGeometry(axes.morphology, morphologyInput.nodes, morphologyInput.edges,
+    const geometry = deferGeometry ? null : buildMorphologyGeometry(axes.morphology, morphologyInput.nodes, morphologyInput.edges,
       morphologyInput.colonies, appearance.curvature, morphologyInput.containers);
     return { palette, presentation, morphologyInput, geometry };
   }
+  const requireGeometry = (scene: ReturnType<typeof buildDrawnScene>): FullScene => {
+    if (!scene.geometry) throw new Error('Missing morphology geometry');
+    return scene as FullScene;
+  };
   function mount() {
     const began = performance.now();
     sigma?.destroy();
@@ -1421,7 +1435,8 @@ export const createProductView: CreateProductView = async (input) => {
     const anchors = restrictAnchors(fullAnchor(axes), lodMode ? mountedIds : visible);
     const layoutAt = performance.now();
     perfRecord.phase("layout", layoutAt - routedAt);
-    const { palette, presentation, morphologyInput, geometry } = buildDrawnScene(anchors);
+    const { palette, presentation, morphologyInput, geometry } = initialScene ?? requireGeometry(buildDrawnScene(anchors));
+    initialScene = null;
     perfRecord.phase("scene", performance.now() - layoutAt);
     container.style.backgroundColor = palette.background;
     morphologyInteraction.containerColor = palette.container;
@@ -1566,7 +1581,7 @@ export const createProductView: CreateProductView = async (input) => {
     const nextEdgeIds = new Set(nextEdges.map((edge) => edge.id));
     const nextSelection = selected && (nextVisible.has(selected) || nextEdgeIds.has(selected)) ? selected : null;
     const anchors = restrictAnchors(fullAnchor(axes), mountedIds);
-    const nextScene = buildDrawnScene(anchors, { visible: nextVisible, containers: nextContainers, edges: nextEdges });
+    const nextScene = requireGeometry(buildDrawnScene(anchors, { visible: nextVisible, containers: nextContainers, edges: nextEdges }));
     const { presentation, morphologyInput, geometry } = nextScene;
     const nextNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined, radiusPx: value.radiusPx }] as const));
@@ -1831,7 +1846,22 @@ export const createProductView: CreateProductView = async (input) => {
     requestAnimationFrame(() => { if (!destroyed) { sizeFlowCanvas(); rebuildScreenPickIndex(); labelPass(); } });
   });
   resizeLabelObserver.observe(container);
-  try { mount(); }
+  try {
+    // D081-P3c BEGIN: build the first large morphology scene off the main thread.
+    // Later in-place LOD updates retain their existing synchronous derivation.
+    if (input.v2Prepared && visible.size > 1200) {
+      drawnEdges = resolveDrawnEdges(input.data.edges, visible);
+      const anchors = restrictAnchors(fullAnchor(axes), mountedIds);
+      const draft = buildDrawnScene(anchors, undefined, true);
+      const geometry = await computeClassicGeometry([
+        axes.morphology, draft.morphologyInput.nodes, draft.morphologyInput.edges,
+        draft.morphologyInput.colonies, appearance.curvature, draft.morphologyInput.containers,
+      ]);
+      initialScene = { ...draft, geometry };
+    }
+    // D081-P3c END
+    mount();
+  }
   catch (error) {
     destroyed = true;
     qualityController.destroy();

@@ -7,6 +7,7 @@ const DEPTH_SOFT_BOUND = 2.5;
 export function relaxDepth(
   graph: Pick<VisualGraph, "nodes" | "edges">,
   planar: ReadonlyMap<string, Coordinates>,
+  diagnostics?: { candidatePairs: number },
 ): ReadonlyMap<string, Coordinates> {
   const ids = graph.nodes.map((node) => node.id).sort();
   if (!ids.length) return new Map();
@@ -30,6 +31,30 @@ export function relaxDepth(
   // Linked nodes may sit close together; only unrelated neighbours in the plane are pushed apart in
   // depth, otherwise a hub surrounded by its own members is driven to the depth bound.
   const linked = new Set(links.map(([a, b]) => a * ids.length + b));
+  // D081-P3c BEGIN: planar anchors never change during relaxation. Index the large
+  // graph once, retaining ascending pair order so force accumulation stays stable.
+  const neighbours: number[][] | null = ids.length > 1200 ? (() => {
+    const cells = new Map<string, number[]>();
+    const cellX = points.map(p => Math.floor(p.x / r0));
+    const cellY = points.map(p => Math.floor(p.y / r0));
+    for (let i = 0; i < ids.length; i++) {
+      const key = `${cellX[i]},${cellY[i]}`;
+      const bucket = cells.get(key);
+      if (bucket) bucket.push(i);
+      else cells.set(key, [i]);
+    }
+    return ids.map((_, a) => {
+      const candidates: number[] = [];
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        const bucket = cells.get(`${cellX[a]! + dx},${cellY[a]! + dy}`);
+        if (bucket) for (const b of bucket) if (b > a) candidates.push(b);
+      }
+      candidates.sort((a, b) => a - b);
+      return candidates;
+    });
+  })() : null;
+  // D081-P3c END
+  if (diagnostics) diagnostics.candidatePairs = 0;
   let z = ids.map((id, i) => ((hash(id) % 2001) / 1000 - 1) * limit * 0.32 + (i % 2 ? 0.001 : -0.001));
   for (let iteration = 0; iteration < 120; iteration++) {
     const force = z.map((value) => -value * 0.014);
@@ -38,8 +63,24 @@ export function relaxDepth(
       force[a]! += delta;
       force[b]! -= delta;
     }
-    for (let a = 0; a < ids.length; a++)
+    if (neighbours) for (let a = 0; a < ids.length; a++)
+      for (const b of neighbours[a]!) {
+        if (diagnostics) diagnostics.candidatePairs++;
+        const dx = points[a]!.x - points[b]!.x;
+        const dy = points[a]!.y - points[b]!.y;
+        const xy = Math.hypot(dx, dy);
+        if (xy >= r0 || linked.has(a * ids.length + b) || linked.has(b * ids.length + a)) continue;
+        const dz = z[a]! - z[b]!;
+        const distance = Math.hypot(xy, dz);
+        if (distance >= r0) continue;
+        const sign = dz === 0 ? (hash(ids[a]! + ids[b]!) % 2 ? 1 : -1) : Math.sign(dz);
+        const push = ((r0 - distance) / r0) * limit * 0.032 * sign;
+        force[a]! += push;
+        force[b]! -= push;
+      }
+    else for (let a = 0; a < ids.length; a++)
       for (let b = a + 1; b < ids.length; b++) {
+        if (diagnostics) diagnostics.candidatePairs++;
         const dx = points[a]!.x - points[b]!.x;
         const dy = points[a]!.y - points[b]!.y;
         const xy = Math.hypot(dx, dy);

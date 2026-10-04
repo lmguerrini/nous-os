@@ -9,6 +9,11 @@ import { holographicProjection } from "./holographic.ts";
 import { indrasPearlsProjection } from "./indra.ts";
 import { naturalProjection } from "./natural-bridge.ts";
 import { ProjectionWorkerHost } from "./worker-host.ts";
+// D081-P3c BEGIN: the classic Completa layout shares the embedded worker bundle.
+import { computeLayout } from "../review/layout-v2.ts";
+import type { LayoutInput } from "../review/layout-v2.ts";
+import { buildMorphologyGeometry } from "../engine/morphology-geometry.ts";
+// D081-P3c END
 
 export interface ProjectionWorkerEntryScope {
   postMessage(message: unknown): void;
@@ -24,7 +29,27 @@ export function installProjectionWorkerEntry(
   projections: readonly MathematicalProjection<any>[] = PROJECTION_WORKER_ENTRY_PROJECTIONS,
 ): ProjectionWorkerHost {
   const host = new ProjectionWorkerHost({ postEvent: event => scope.postMessage(event), projections });
-  scope.onmessage = (event: Readonly<{ data: unknown }>) => { host.handleCommand(event.data); };
+  scope.onmessage = (event: Readonly<{ data: unknown }>) => {
+    // D081-P3c BEGIN
+    const message = event.data as { kind?: string; requestId?: number; input?: LayoutInput;
+      geometryArgs?: Parameters<typeof buildMorphologyGeometry> } | null;
+    if (message?.kind === "classic-layout" && typeof message.requestId === "number" && message.input) {
+      try { scope.postMessage({ kind: "classic-layout-result", requestId: message.requestId,
+        result: computeLayout(message.input) }); }
+      catch (error) { scope.postMessage({ kind: "classic-layout-error", requestId: message.requestId,
+        message: String(error) }); }
+      return;
+    }
+    if (message?.kind === "classic-geometry" && typeof message.requestId === "number" && message.geometryArgs) {
+      try { scope.postMessage({ kind: "classic-geometry-result", requestId: message.requestId,
+        result: buildMorphologyGeometry(...message.geometryArgs) }); }
+      catch (error) { scope.postMessage({ kind: "classic-geometry-error", requestId: message.requestId,
+        message: String(error) }); }
+      return;
+    }
+    // D081-P3c END
+    host.handleCommand(event.data);
+  };
   return host;
 }
 
