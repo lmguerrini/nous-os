@@ -820,11 +820,11 @@ function toggleFocus(): Promise<void> { if(v2){focusMode=!focusMode;return v2.se
   }
   updateButtons();
 }); }
-function viewPreset(name: ViewPreset | "reset"): Promise<void> { requestGizmoUpdate(); if (v2) { if (name === "reset") return v2.reset(); v2.viewPreset(name); return Promise.resolve(); } return enqueue(async () => {
+function viewPreset(name: ViewPreset | "reset"): Promise<void> { requestGizmoUpdate(); if (v2) { if (name === "reset") return v2.reset(); v2.viewPreset(name); announce(name === "iso" ? "Vista isometrica" : `Vista ${name}`); return Promise.resolve(); } return enqueue(async () => {
   if (axes.projection !== "3d") return;
   if (name === "reset") await view?.resetCamera();
   else view?.viewPreset(name);
-  announce(name === "reset" ? "Vista reimpostata" : `Vista ${name}`);
+  announce(name === "reset" ? "Vista reimpostata" : name === "iso" ? "Vista isometrica" : `Vista ${name}`);
 }); }
 function setDebug(on: boolean): Promise<void> {
   return enqueue(async () => {

@@ -36,7 +36,7 @@ import type { Render3fFramingBox } from "#render3f/camera.tsx";
 import { sceneCameraFramingSubjects } from "#render3f/camera-framing.ts";
 import type { ProjectedCameraFramingSubject } from "#render3f/camera-framing.ts";
 import { tokenToSrgb } from "#render3f/buffers.ts";
-import { brainViewCameraState, createBrainEnvelope } from "#render3f/brain-envelope.ts";
+import { brainViewCameraState, brainViewFramingState, createBrainEnvelope } from "#render3f/brain-envelope.ts";
 import type { BrainWitness } from "#render3f/brain-envelope.ts";
 import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
@@ -124,7 +124,7 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   readReviewCameraPose(): { position: number[]; target: number[]; up: number[]; fov: number };
   /** IDs placed by the most recent typed label pass; reading them schedules no render. */
   readPlacedLabelIds(): readonly string[];
-  setReviewViewPreset(name: "fronte" | "retro" | "sinistra" | "destra" | "alto" | "basso"): void;
+  setReviewViewPreset(name: "fronte" | "retro" | "sinistra" | "destra" | "alto" | "basso" | "iso"): void;
   /** This copies the picker-held resolved relation geometry and does not rebuild scene geometry. */
   readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
@@ -568,11 +568,12 @@ export function mount(
 
   const brainProof = {
     brain: (): BrainWitness | null => brainEnvelope?.witness() ?? null,
-    brainView: (name: "front" | "side" | "top" | "iso"): VisualStateCamera | null => {
+    brainView: (name: "front" | "back" | "side" | "right" | "top" | "bottom" | "iso"): VisualStateCamera | null => {
       if (!brainEnvelope) return null;
       // The page applies this state through ProductView.restoreCamera. That path also runs the
       // HTML label pass and camera watcher; changing the rig here leaves both at the old pose.
-      return brainViewCameraState(name, brainEnvelope.axes(), brainEnvelope.center(), rig.readCameraState());
+      const pose = brainViewCameraState(name, brainEnvelope.axes(), brainEnvelope.center(), rig.readCameraState());
+      return brainViewFramingState(pose, brainEnvelope.framingSphere()?.radius ?? 0);
     },
   };
   const proofWindow = window as typeof window & { __d080Renderer?: typeof brainProof };
@@ -659,7 +660,16 @@ export function mount(
       return rig.readCameraState();
     },
     readReviewCameraPose() { return rig.readPose(); },
-    setReviewViewPreset(name) { detachInteractions.resetWheelAnchor(); rig.viewPreset(name); syncCameraState(); },
+    setReviewViewPreset(name) {
+      detachInteractions.resetWheelAnchor();
+      const brainName = ({ fronte: "front", retro: "back", sinistra: "side", destra: "right",
+        alto: "top", basso: "bottom", iso: "iso" } as const)[name];
+      if (brainEnvelope?.group.visible) {
+        const pose = brainViewCameraState(brainName, brainEnvelope.axes(), brainEnvelope.center(), rig.readCameraState());
+        rig.restoreCameraState(brainViewFramingState(pose, brainEnvelope.framingSphere()?.radius ?? 0));
+      } else rig.viewPreset(name);
+      syncCameraState();
+    },
     restoreCameraState(state: VisualStateCamera): void {
       detachInteractions.resetWheelAnchor();
       currentState = createVisualState(visualGraph, { ...currentState, camera: engineCamera(state) });

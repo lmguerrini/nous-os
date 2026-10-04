@@ -34,7 +34,7 @@ export const BRAIN_GLASS_RIM_ALPHA = 0.12;
 export const BRAIN_TRIANGLE_BUDGET = 20_000;
 export const BRAIN_LINE_SEGMENT_BUDGET = 8_000;
 export const BRAIN_PREFERENCES_KEY = "d080.brain-by-mode";
-export type BrainViewName = "front" | "side" | "top" | "iso";
+export type BrainViewName = "front" | "back" | "side" | "right" | "top" | "bottom" | "iso";
 /** Local anatomy: +Z anterior/frontal, +Y superior, +X anatomical left.
  * The fitted basis maps these three directions to world space. A camera pose must
  * align both its sightline and its up vector: a sightline alone leaves arbitrary roll.
@@ -45,15 +45,21 @@ export function brainAnatomicalFrame(axes: readonly THREE.Vector3[]) {
 
 /** Compute a proof pose without mutating the renderer; the product camera path applies it. */
 export function brainViewCameraState<T extends { readonly angle: number; readonly bounds: {
-  readonly x: readonly [number, number]; readonly y: readonly [number, number] } }>(
+  readonly x: readonly [number, number]; readonly y: readonly [number, number] };
+  readonly ratio: number }>(
   name: BrainViewName, axes: readonly THREE.Vector3[], center: THREE.Vector3, state: T,
 ) {
   const frame = brainAnatomicalFrame(axes);
   const direction = name === "front" ? frame.anterior
+    : name === "back" ? frame.anterior.clone().negate()
     : name === "side" ? frame.left
+    : name === "right" ? frame.left.clone().negate()
     : name === "top" ? frame.superior
+    : name === "bottom" ? frame.superior.clone().negate()
     : frame.left.clone().add(frame.superior).add(frame.anterior).normalize();
-  const up = name === "top" ? frame.anterior : frame.superior;
+  // Looking along either pole of the superior axis makes that axis parallel to
+  // the sightline, so anterior supplies the stable roll reference at both poles.
+  const up = name === "top" || name === "bottom" ? frame.anterior : frame.superior;
   const base = new THREE.Vector3(Math.cos(state.angle), Math.sin(state.angle), 1).normalize();
   const initial = new THREE.Quaternion().setFromRotationMatrix(
     new THREE.Matrix4().lookAt(base,new THREE.Vector3(),new THREE.Vector3(0,0,1)));
@@ -64,6 +70,20 @@ export function brainViewCameraState<T extends { readonly angle: number; readonl
   return { ...state, orbit: [orbit.x, orbit.y, orbit.z, orbit.w] as [number, number, number, number],
     x: (center.x - bounds.x[0]) / (bounds.x[1] - bounds.x[0]),
     y: (center.y - bounds.y[0]) / (bounds.y[1] - bounds.y[0]), targetZ: center.z };
+}
+
+/** Widen an anatomical pose only when needed to keep the entire envelope sphere visible. */
+export function brainViewFramingState<T extends { readonly ratio: number; readonly bounds: {
+  readonly x: readonly [number, number]; readonly y: readonly [number, number] };
+  readonly framingTangent?: number }>(state: T, framingRadius: number) {
+  if (!(framingRadius > 0)) return state;
+  const bounds = state.bounds;
+  const span = Math.max(bounds.x[1] - bounds.x[0], bounds.y[1] - bounds.y[0]);
+  // The camera's ratio is a dolly in units of the graph span. Keep the complete
+  // brain framing sphere inside the view, including at the narrower vertical FOV.
+  const halfFovSine = Math.sin(Math.atan(state.framingTangent ?? 1));
+  const ratio = Math.max(state.ratio, (framingRadius * 1.12) / (span * halfFovSine));
+  return { ...state, ratio };
 }
 export type BrainMode = { readonly organization: string; readonly morphology: string; readonly projection: string };
 export function brainModeKey(axes: BrainMode): string {

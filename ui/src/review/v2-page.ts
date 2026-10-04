@@ -763,8 +763,8 @@ export class V2Page {
                 } };
         if (typeof window === 'object' && window !== null) {
             const proofWindow = window as typeof window & {
-                __d080Renderer?: { brain: () => unknown; brainView: (name: 'front' | 'side' | 'top' | 'iso') => ReturnType<Render3fRendererHandle['readCameraState']> | null };
-                __d080?: { brain: () => unknown; brainView: (name: 'front' | 'side' | 'top' | 'iso') => void };
+                __d080Renderer?: { brain: () => unknown; brainView: (name: 'front' | 'back' | 'side' | 'right' | 'top' | 'bottom' | 'iso') => ReturnType<Render3fRendererHandle['readCameraState']> | null };
+                __d080?: { brain: () => unknown; brainView: (name: 'front' | 'back' | 'side' | 'right' | 'top' | 'bottom' | 'iso') => void };
             };
             proofWindow.__d080 = {
                 brain: () => this.axes.brain === true && brainForMode(this.axes, this.brainChoices)
@@ -3107,9 +3107,6 @@ export class V2Page {
         }
         const brain = brainForMode(merged, this.brainChoices);
         const next: PageAxes = { ...merged, brain };
-        // D-078 W6: toggling the glass on changes fit bounds even when graph bounds are identical.
-        const brainTurnedOn = this.axes.brain !== true && next.brain === true
-            && merged.organization === 'natural' && merged.morphology === 'neural' && merged.projection === '3d';
         if (merged.organization !== this.axes.organization && !this.supportsOrganization(merged.organization))
             throw new Error(`View is not registered: ${merged.organization}`);
         if (this.axes.organization === 'indra' && merged.organization !== 'indra')
@@ -3127,7 +3124,6 @@ export class V2Page {
         // Removing only the decorative mesh must leave its graph comparison at the exact pose.
         if (cameraBeforeBrainOff && this.view && next.brain === false)
             this.view.restoreCamera(cameraBeforeBrainOff);
-        if (brainTurnedOn) await this.fit();
         (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
     }

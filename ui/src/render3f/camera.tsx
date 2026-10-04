@@ -78,14 +78,15 @@ export function arcballDrag(orientation: THREE.Quaternion, deltaX: number, delta
   return pitch.multiply(yaw).multiply(orientation).normalize();
 }
 
-export type ViewPreset = "fronte" | "retro" | "sinistra" | "destra" | "alto" | "basso";
+export type ViewPreset = "fronte" | "retro" | "sinistra" | "destra" | "alto" | "basso" | "iso";
 export const VIEW_DIRECTIONS: Readonly<Record<ViewPreset, readonly [number, number, number]>> = {
   fronte: [0, 0, 1], retro: [0, 0, -1], sinistra: [-1, 0, 0],
-  destra: [1, 0, 0], alto: [0, 1, 0], basso: [0, -1, 0],
+  destra: [1, 0, 0], alto: [0, 1, 0], basso: [0, -1, 0], iso: [1, 1, 1],
 };
 export const VIEW_UP: Readonly<Record<ViewPreset, readonly [number, number, number]>> = {
   fronte: [0, 1, 0], retro: [0, 1, 0], sinistra: [0, 1, 0],
   destra: [0, 1, 0], alto: [0, 0, -1], basso: [0, 0, 1],
+  iso: [0, Math.SQRT1_2, -Math.SQRT1_2],
 };
 
 export function presetOrientation(name: ViewPreset): THREE.Quaternion {
