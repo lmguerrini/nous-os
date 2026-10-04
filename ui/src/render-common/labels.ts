@@ -335,6 +335,7 @@ export function discRectOverlapArea(rect: ViewportRect, cx: number, cy: number, 
 export type LabelPlacementOperations = {
   rim: number; rimQueries: number;
   discBlock: number; discLeader: number; discArea: number; discAreaQueries: number;
+  nearbyVisits?: number; admissibleCalls?: number;
 };
 
 /** Broad-phase only: all final predicates still use their original coordinates and order. */
@@ -349,7 +350,8 @@ class LabelGeometryGrid {
   // D081-P3g END
   private inserts = 0;
   private readonly size: number;
-  constructor(size = 64) { this.size = size; }
+  private readonly operations: LabelPlacementOperations | undefined;
+  constructor(size = 64, operations?: LabelPlacementOperations) { this.size = size; this.operations = operations; }
 
   add(index: number, left: number, top: number, right: number, bottom: number): void {
     // D081-P3g: avoid a four-item allocation for every one of 11,199 discs.
@@ -376,6 +378,36 @@ class LabelGeometryGrid {
     }
   }
 
+  /** Index only cells touched by a rim band, not the empty interior of its bounding box. */
+  addRim(index: number, x: number, y: number, radius: number, viewport: ViewportRect): void {
+    const outer = radius + 3;
+    const inner = Math.max(0, radius - 3);
+    const left = x - outer, top = y - outer, right = x + outer, bottom = y + outer;
+    if (![left, top, right, bottom].every(Number.isFinite)) {
+      this.global.push(index);
+      return;
+    }
+    this.boxes.set(index, [left, top, right, bottom]);
+    const x0 = Math.max(Math.floor(left / this.size), Math.floor(viewport.left / this.size));
+    const x1 = Math.min(Math.floor(right / this.size), Math.floor((viewport.left + viewport.width) / this.size));
+    const y0 = Math.max(Math.floor(top / this.size), Math.floor(viewport.top / this.size));
+    const y1 = Math.min(Math.floor(bottom / this.size), Math.floor((viewport.top + viewport.height) / this.size));
+    for (let cellX = x0; cellX <= x1; cellX++) for (let cellY = y0; cellY <= y1; cellY++) {
+      const cellLeft = cellX * this.size, cellRight = cellLeft + this.size;
+      const cellTop = cellY * this.size, cellBottom = cellTop + this.size;
+      const nearX = Math.min(Math.max(x, cellLeft), cellRight) - x;
+      const nearY = Math.min(Math.max(y, cellTop), cellBottom) - y;
+      if (nearX * nearX + nearY * nearY > outer * outer * (1 + 1e-12)) continue;
+      const farX = Math.max(Math.abs(cellLeft - x), Math.abs(cellRight - x));
+      const farY = Math.max(Math.abs(cellTop - y), Math.abs(cellBottom - y));
+      if (farX * farX + farY * farY < inner * inner * (1 - 1e-12)) continue;
+      const key = `${cellX}:${cellY}`;
+      let bucket = this.cells.get(key);
+      if (!bucket) { bucket = []; this.cells.set(key, bucket); }
+      bucket.push(index);
+    }
+  }
+
   nearby(left: number, top: number, right: number, bottom: number): number[] {
     const serial = ++this.querySerial;
     const found: number[] = [];
@@ -386,11 +418,14 @@ class LabelGeometryGrid {
       if (!box || (box[0] <= right && box[2] >= left && box[1] <= bottom && box[3] >= top))
         found.push(index);
     };
-    for (const index of this.global) add(index);
+    for (const index of this.global) { if (this.operations) this.operations.nearbyVisits = (this.operations.nearbyVisits ?? 0) + 1; add(index); }
     const x0 = Math.floor(left / this.size), x1 = Math.floor(right / this.size);
     const y0 = Math.floor(top / this.size), y1 = Math.floor(bottom / this.size);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++)
-      for (const index of this.cells.get(`${x}:${y}`) ?? []) add(index);
+      for (const index of this.cells.get(`${x}:${y}`) ?? []) {
+        if (this.operations) this.operations.nearbyVisits = (this.operations.nearbyVisits ?? 0) + 1;
+        add(index);
+      }
     return found.sort((a, b) => a - b);
   }
 
@@ -405,11 +440,17 @@ class LabelGeometryGrid {
       return (!box || (box[0] <= right && box[2] >= left && box[1] <= bottom && box[3] >= top))
         && predicate(index);
     };
-    for (const index of this.global) if (check(index)) return true;
+    for (const index of this.global) {
+      if (this.operations) this.operations.nearbyVisits = (this.operations.nearbyVisits ?? 0) + 1;
+      if (check(index)) return true;
+    }
     const x0 = Math.floor(left / this.size), x1 = Math.floor(right / this.size);
     const y0 = Math.floor(top / this.size), y1 = Math.floor(bottom / this.size);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++)
-      for (const index of this.cells.get(`${x}:${y}`) ?? []) if (check(index)) return true;
+      for (const index of this.cells.get(`${x}:${y}`) ?? []) {
+        if (this.operations) this.operations.nearbyVisits = (this.operations.nearbyVisits ?? 0) + 1;
+        if (check(index)) return true;
+      }
     return false;
   }
 }
@@ -435,30 +476,21 @@ export function placeLabels(
   operations?: LabelPlacementOperations,
 ): PlacedLabel[] {
   const placed: PlacedLabel[] = [];
-  const cellSize = 64;
-  const cells = new Map<string, PlacedLabel[]>();
-  const reservedGrid = new LabelGeometryGrid();
-  const placedRectGrid = new LabelGeometryGrid();
-  const placedLeaderGrid = new LabelGeometryGrid();
+  const reservedGrid = new LabelGeometryGrid(64, operations);
+  const placedRectGrid = new LabelGeometryGrid(64, operations);
+  const placedLeaderGrid = new LabelGeometryGrid(64, operations);
   for (let index = 0; index < reserved.length; index++) {
     const rect = reserved[index]!;
     reservedGrid.add(index, rect.left - 3, rect.top - 3,
       rect.left + rect.width + 3, rect.top + rect.height + 3);
   }
-  const keys = (left: number, top: number, right: number, bottom: number) => {
-    const result: string[] = [];
-    for (let x = Math.floor(left / cellSize); x <= Math.floor(right / cellSize); x++)
-      for (let y = Math.floor(top / cellSize); y <= Math.floor(bottom / cellSize); y++)
-        result.push(`${x}:${y}`);
-    return result;
-  };
   // Pearl and soma discs and container rims share bounded screen-space grids. Large projected
   // shapes use the always-checked list, so no radius can create unbounded bucket work.
   const span = Math.max(bounds.width, bounds.height);
   // D081-P3g: the dense pearl field benefits from smaller cells; each label
   // query sees fewer unrelated discs while final predicate order stays sorted.
-  const discGrid = new LabelGeometryGrid(discs.length > 1_200 ? 32 : 64);
-  const rimGrid = new LabelGeometryGrid();
+  const discGrid = new LabelGeometryGrid(discs.length > 1_200 ? 32 : 64, operations);
+  const rimGrid = new LabelGeometryGrid(64, operations);
   const ownDiscRadii = new Map<string, number>();
   for (let index = 0; index < discs.length; index++) {
     const disc = discs[index]!;
@@ -485,7 +517,7 @@ export function placeLabels(
     if (rim.x + reach < bounds.left || rim.x - reach > bounds.left + bounds.width
       || rim.y + reach < bounds.top || rim.y - reach > bounds.top + bounds.height) continue;
     // D081-P3g END
-    rimGrid.add(index, rim.x - reach, rim.y - reach, rim.x + reach, rim.y + reach);
+    rimGrid.addRim(index, rim.x, rim.y, rim.radius, bounds);
   }
   const nearbyDiscs = (rect: ViewportRect): number[] => discGrid.nearby(
     rect.left, rect.top, rect.left + rect.width, rect.top + rect.height);
@@ -516,10 +548,7 @@ export function placeLabels(
   };
   // Radial width of rim bands touched by this rectangle. Zero means wholly inside or outside
   // every rim; a crossed rim disqualifies the slot.
-  const rimOverlap = (rect: ViewportRect): number => {
-    if (operations) operations.rimQueries++;
-    if (!rims.length) return 0;
-    return rimGrid.nearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height).reduce((overlap, index) => {
+  const rimBandWidth = (rect: ViewportRect, index: number): number => {
     const rim = rims[index]!;
     if (operations) operations.rim++;
     const nearestX = Math.min(Math.max(rim.x, rect.left), rect.left + rect.width);
@@ -529,15 +558,27 @@ export function placeLabels(
     // Conservative squared-distance rejection avoids five hypot calls for rings whose bounding
     // boxes touch the slot but whose actual band cannot. The slack leaves boundary arithmetic to
     // the original predicate below, preserving exact scores and tie-breaks.
-    if (nearDx * nearDx + nearDy * nearDy > outer * outer * (1 + 1e-12)) return overlap;
+    if (nearDx * nearDx + nearDy * nearDy > outer * outer * (1 + 1e-12)) return 0;
     const farDx = Math.max(Math.abs(rect.left - rim.x), Math.abs(rect.left + rect.width - rim.x));
     const farDy = Math.max(Math.abs(rect.top - rim.y), Math.abs(rect.top + rect.height - rim.y));
     const inner = rim.radius - 3;
-    if (inner > 0 && farDx * farDx + farDy * farDy < inner * inner * (1 - 1e-12)) return overlap;
+    if (inner > 0 && farDx * farDx + farDy * farDy < inner * inner * (1 - 1e-12)) return 0;
     const minimum = Math.hypot(nearestX - rim.x, nearestY - rim.y);
     const farthest = Math.hypot(farDx, farDy);
-    return overlap + Math.max(0, Math.min(farthest, rim.radius + 3) - Math.max(minimum, rim.radius - 3));
-    }, 0);
+    return Math.max(0, Math.min(farthest, rim.radius + 3) - Math.max(minimum, rim.radius - 3));
+  };
+  const rimOverlap = (rect: ViewportRect): number => {
+    if (operations) operations.rimQueries++;
+    if (!rims.length) return 0;
+    let overlap = 0;
+    for (const index of rimGrid.nearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height))
+      overlap += rimBandWidth(rect, index);
+    return overlap;
+  };
+  const rimCrosses = (rect: ViewportRect): boolean => {
+    if (operations) operations.rimQueries++;
+    return rimGrid.someNearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height,
+      index => rimBandWidth(rect, index) > 0);
   };
   const priority = { hover: 6, selected: 5, neighbour: 4, domain: 3, main: 2, zoom: 1 };
   // D081-P3g BEGIN: a dense pass should sort only anchors that can reach the viewport.
@@ -584,6 +625,7 @@ export function placeLabels(
     // The viewport, own disc, labels, panel and earlier leaders are hard constraints. Foreign
     // pearls and container rims are preferred clear; tier 1 may cross them as a last resort.
     const admissible = (rect: ViewportRect, allowForeignGeometry: boolean): boolean => {
+      if (operations) operations.admissibleCalls = (operations.admissibleCalls ?? 0) + 1;
       if (
         rect.left < bounds.left ||
         rect.top < bounds.top ||
@@ -592,25 +634,24 @@ export function placeLabels(
       )
         return false;
       if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) return false;
-      if (!allowForeignGeometry && (rimOverlap(rect) > 0 || discBlocked(rect, c.tier1 ? c.id : undefined))) return false;
-      const nearby = new Set(keys(rect.left - 3, rect.top - 3, rect.left + size.width + 3, rect.top + size.height + 3)
-        .flatMap(key => cells.get(key) ?? []));
+      if (!allowForeignGeometry && (rimCrosses(rect) || discBlocked(rect, c.tier1 ? c.id : undefined))) return false;
       if (
-        [...nearby].some(
-          (other) =>
-            rect.left < other.rect.left + other.rect.width + 3 &&
+        placedRectGrid.someNearby(rect.left - 3, rect.top - 3, rect.left + size.width + 3,
+          rect.top + size.height + 3, index => {
+            const other = placed[index]!;
+            return rect.left < other.rect.left + other.rect.width + 3 &&
             rect.left + rect.width + 3 > other.rect.left &&
             rect.top < other.rect.top + other.rect.height + 3 &&
-            rect.top + rect.height + 3 > other.rect.top,
-        )
-        || reservedGrid.nearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)
-          .some(index => { const other = reserved[index]!; return rect.left < other.left + other.width + 3 && rect.left + rect.width + 3 > other.left
+            rect.top + rect.height + 3 > other.rect.top;
+          })
+        || reservedGrid.someNearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height,
+          index => { const other = reserved[index]!; return rect.left < other.left + other.width + 3 && rect.left + rect.width + 3 > other.left
             && rect.top < other.top + other.height + 3 && rect.top + rect.height + 3 > other.top; })
       )
         return false;
-      for (const index of placedLeaderGrid.nearby(rect.left - 2, rect.top - 2,
-        rect.left + rect.width + 2, rect.top + rect.height + 2))
-        if (lineTouchesRect(placed[index]!.leader!, rect)) return false;
+      if (placedLeaderGrid.someNearby(rect.left - 2, rect.top - 2,
+        rect.left + rect.width + 2, rect.top + rect.height + 2,
+        index => lineTouchesRect(placed[index]!.leader!, rect))) return false;
       return true;
     };
     const choice: { best: { rect: ViewportRect; leader?: LabelLeader; rim: number; covered: number } | null } = { best: null };
@@ -705,11 +746,6 @@ export function placeLabels(
       if (leader) placedLeaderGrid.add(placed.length - 1,
         Math.min(leader.from.x, leader.to.x), Math.min(leader.from.y, leader.to.y),
         Math.max(leader.from.x, leader.to.x), Math.max(leader.from.y, leader.to.y));
-      for (const key of keys(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)) {
-        const bucket = cells.get(key) ?? [];
-        bucket.push(label);
-        cells.set(key, bucket);
-      }
     }
   }
   return placed;
