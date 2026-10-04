@@ -47,6 +47,8 @@ import { structuralVisualPresentation } from '../engine/presentation-options.ts'
 import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, recentDisclosedPage, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
+import { anyPointOutsideInsets, initialViewInsets } from './insets.ts';
+import type { Insets } from './view-contract.ts';
 import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
@@ -364,6 +366,8 @@ export type V2PageDeps = {
      * (a worker when the review bundle embeds one, the main thread otherwise), unless it was given
      * a registry, which then computes them directly. */
     readonly projectionWorker?: ProjectionWorkerClient;
+    /** Measured by the review shell before the first view is mounted. */
+    readonly insets?: Insets;
 };
 export interface ProjectionPageRenderer extends ProjectionRenderer {
     onPick(handler: (pick: PickResult | null, shiftKey: boolean) => void): void;
@@ -543,6 +547,7 @@ export class V2Page {
     private readonly createView: CreateProductView;
     private readonly selectLod: typeof safeSelectNodes;
     private readonly onNodePicked: ((id: string) => void) | undefined;
+    private insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
     /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
     private userMovedSinceFit = false;
@@ -687,6 +692,7 @@ export class V2Page {
         this.createView = deps.createView ?? createProductView;
         this.selectLod = deps.safeSelect ?? safeSelectNodes;
         this.onNodePicked = deps.onNodePicked;
+        this.insets = initialViewInsets(deps.insets ?? this.insets);
         this.typedByDefault = deps.projectionPipeline !== undefined || defaultPipelineEnabled() || deps.useDefaultPipeline === true;
         this.projectionInput = deps.projectionPipeline ?? (this.typedByDefault ? this.buildDefaultPipeline() : undefined);
         this.fractalPipeline = deps.fractalPipeline;
@@ -2653,7 +2659,7 @@ export class V2Page {
             element('render-root').append(nextHost);
             let mounted: ProductView;
             try {
-                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(shown.map(edge => edge.id)), axes: { ...this.axes, organization }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(shown.map(edge => edge.id)), axes: { ...this.axes, organization }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -2755,7 +2761,12 @@ export class V2Page {
                     this.confirmFit(this.view, fitEpoch);
                 }
             }
-            if (!old) { this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false; }
+            if (!old) {
+                this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
+                if (cameraAction !== 'refit' && (this.insets.top > 0 || this.insets.right > 0
+                    || this.insets.bottom > 0 || this.insets.left > 0))
+                    this.confirmFit(this.view, this.cameraIntentEpoch);
+            }
             if (this.overviewRatio === null) {
                 const camera = this.view.readCamera() as {
                     ratio?: number;
@@ -3187,7 +3198,10 @@ export class V2Page {
     get brainEnabled(): boolean { return this.axes.brain === true; }
     cameraState() { return this.view?.readCamera() ?? this.projectionRenderer?.readCameraState?.() ?? null; }
     viewPreset(name: Parameters<ProductView['viewPreset']>[0]) { this.noteCameraIntent(); this.userMovedSinceFit = true; this.view?.viewPreset(name); }
-    setInsets(value: Parameters<ProductView['setInsets']>[0]) { this.view?.setInsets(value); }
+    setInsets(value: Parameters<ProductView['setInsets']>[0]) {
+        this.insets = initialViewInsets(value);
+        this.view?.setInsets(this.insets);
+    }
     setSemanticZoom(on: boolean) {
         this.zoomOn = on;
         if (!on) {
@@ -3210,12 +3224,11 @@ export class V2Page {
             if (view !== this.view || scheduledEpoch !== this.cameraIntentEpoch || this.userMovedSinceFit) return;
             const witness = view.witness();
             const rect = witness.visibleRect;
-            const outside = Object.values(witness.nodeViewport).some(point => !(point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1
-                && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1));
+            const outside = anyPointOutsideInsets(witness.nodeViewport, rect, this.insets);
             if (!confirmFitDue({ scheduledEpoch, currentEpoch: this.cameraIntentEpoch, userMoved: this.userMovedSinceFit, anyOutside: outside })) return;
             const refit = this.fit();
             const refitEpoch = this.cameraIntentEpoch;
-            void refit.then(() => { if (attempt < 2 && refitEpoch === this.cameraIntentEpoch) this.confirmFit(view, refitEpoch, attempt + 1); });
+            void refit.then(() => { if (attempt < 1 && refitEpoch === this.cameraIntentEpoch) this.confirmFit(view, refitEpoch, attempt + 1); });
         }, 700);
     }
     private noteCameraIntent(): void {

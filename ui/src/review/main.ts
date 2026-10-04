@@ -321,6 +321,7 @@ get<HTMLButtonElement>("toolbar-toggle").addEventListener("click", () => {
   const button = get<HTMLButtonElement>("toolbar-toggle");
   button.setAttribute("aria-expanded", String(!collapsed));
   button.textContent = collapsed ? "Apri barra" : "Chiudi barra";
+  updateInsets();
 });
 function syncBrainControls(): void {
   const available = axes.organization === "natural" && axes.morphology === "neural" && axes.projection === "3d";
@@ -834,9 +835,12 @@ function setDebug(on: boolean): Promise<void> {
     if (data) await mount();
   });
 }
-function updateInsets(): void {
+function reviewInsets(): { top: number; right: number; bottom: number; left: number } {
   const appearanceInset = get<HTMLElement>("appearance-panel").hidden ? 0 : Math.min(280, viewport.clientWidth / 3);
   const drawerInset = details.classList.contains("drawer") ? Math.min(360, viewport.clientWidth / 2) : 0;
+  const panelVisible = fullscreen() ? fullscreenDrawer : !panelCollapsed;
+  const panelInset = panelVisible && !details.hidden
+    ? Math.ceil(details.getBoundingClientRect().width + 16) : 0;
   const overlayInset = ["advanced-controls", "performance-overlay"].reduce((width, id) => {
     const surface = document.getElementById(id);
     return surface && !surface.hidden ? Math.max(width, Math.min(surface.getBoundingClientRect().width, viewport.clientWidth / 3)) : width;
@@ -844,8 +848,10 @@ function updateInsets(): void {
   const topInset = document.fullscreenElement ? get<HTMLElement>("fullscreen-bar").offsetHeight + 16
     : get<HTMLElement>("review-toolbar").offsetHeight + 10;
   document.documentElement.style.setProperty("--toolbar-height", `${topInset}px`);
-  (v2 ?? view)?.setInsets({ top: topInset,
-    right: Math.max(appearanceInset, drawerInset, overlayInset), bottom: 0, left: 0 });
+  return { top: topInset, right: Math.max(appearanceInset, panelInset, drawerInset, overlayInset), bottom: 0, left: 0 };
+}
+function updateInsets(): void {
+  (v2 ?? view)?.setInsets(reviewInsets());
 }
 new ResizeObserver(() => updateInsets()).observe(get<HTMLElement>("review-toolbar"));
 function syncPanel(): void {
@@ -1474,7 +1480,10 @@ async function load() {
   if (probe.ok) {
     const manifest = await probe.json() as GraphManifest;
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
-    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density, { onNodePicked: showNodeDrawer });
+    // V2Page.load(..., { onNodePicked: showNodeDrawer }) keeps the shell's pick callback contract;
+    // the same deps object now also carries the measured initial insets for its first fit.
+    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density,
+      { onNodePicked: showNodeDrawer, insets: reviewInsets() });
     // D080-A3 BEGIN: the page resolves the brain default and stored choice on first entry.
     axes = { ...axes, brain: v2.brainEnabled };
     syncBrainControls();
