@@ -37,6 +37,7 @@ import { sceneCameraFramingSubjects } from "#render3f/camera-framing.ts";
 import type { ProjectedCameraFramingSubject } from "#render3f/camera-framing.ts";
 import { tokenToSrgb } from "#render3f/buffers.ts";
 import { createBrainEnvelope } from "#render3f/brain-envelope.ts";
+import type { BrainWitness } from "#render3f/brain-envelope.ts";
 import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import { DENSE_SCENE_THRESHOLD } from "#render-common/morphology-canvas.ts";
@@ -249,7 +250,7 @@ export function mount(
   // D-078 W1-edges: the optional envelope exists only for Natural Neural 3D.
   const brainEnvelope = options.brain === true && options.organization === "natural"
     && options.morphology === "neural" && typedInput === undefined
-    ? createBrainEnvelope(live.scene.nodes) : null;
+    ? createBrainEnvelope(live.scene.nodes, live.scene.edges) : null;
   if (brainEnvelope) world.add(brainEnvelope.group);
   const threeScene = new THREE.Scene();
   const renderer = new THREE.WebGLRenderer({
@@ -438,13 +439,14 @@ export function mount(
     visuals?.draw();
   };
   const syncCameraState = (): void => {
-    if (visuals) {
-      visuals.setQuality("moving", false);
+    if (brainEnvelope) brainEnvelope.setLod("moving");
+    if (visuals) visuals.setQuality("moving", false);
+    if (visuals || brainEnvelope) {
       typedLayer.setQuality("moving");
       if (visualsStillTimer !== undefined) clearTimeout(visualsStillTimer);
       visualsStillTimer = setTimeout(() => {
         visualsStillTimer = undefined;
-        if (!destroyed) { visuals?.setQuality("full"); typedLayer.setQuality("full"); renderFrame(); }
+        if (!destroyed) { visuals?.setQuality("full"); typedLayer.setQuality("full"); brainEnvelope?.setLod("full"); renderFrame(); }
       }, DERIVED_STILL_MS);
     }
     currentState = createVisualState(visualGraph, {
@@ -533,7 +535,7 @@ export function mount(
       options.temporalInstant, suppliedAnchors, { ...options.presentation, emphasisIds },
     );
     live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
-    brainEnvelope?.update(live.scene.nodes);
+    brainEnvelope?.update(live.scene.nodes, live.scene.edges);
     const nextRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
     if (nextRenderDpr !== currentRenderDpr) {
       const nextDimensions = containerDimensions(container);
@@ -560,6 +562,29 @@ export function mount(
     renderFrame();
   };
 
+  const brainProof = {
+    brain: (): BrainWitness | null => brainEnvelope?.witness() ?? null,
+    brainView: (name: "front" | "side" | "top" | "iso"): void => {
+      if (!brainEnvelope) return;
+      const axes = brainEnvelope.axes();
+      const direction = name === "front" ? axes[2]!.clone()
+        : name === "side" ? axes[0]!.clone()
+        : name === "top" ? axes[1]!.clone()
+        : axes[0]!.clone().add(axes[1]!).add(axes[2]!).normalize();
+      const state = rig.readCameraState();
+      const base = new THREE.Vector3(Math.cos(state.angle), Math.sin(state.angle), 1).normalize();
+      const orbit = new THREE.Quaternion().setFromUnitVectors(base, direction);
+      const center = brainEnvelope.center();
+      const bounds = state.bounds;
+      const targetState = { ...state, orbit: [orbit.x, orbit.y, orbit.z, orbit.w],
+        x: (center.x - bounds.x[0]) / (bounds.x[1] - bounds.x[0]),
+        y: (center.y - bounds.y[0]) / (bounds.y[1] - bounds.y[0]), targetZ: center.z };
+      rig.restoreCameraState(targetState);
+      syncCameraState();
+    },
+  };
+  const proofWindow = window as typeof window & { __d080Renderer?: typeof brainProof };
+  proofWindow.__d080Renderer = brainProof;
   return {
     readPlacedLabelIds(): readonly string[] { return typedLabelOverlay?.readLabelIds() ?? []; },
     setAppearance(appearance: AppearanceOptions): void {
@@ -765,6 +790,7 @@ export function mount(
         return;
       }
       destroyed = true;
+      if (proofWindow.__d080Renderer === brainProof) delete proofWindow.__d080Renderer;
       typedLabelOverlay?.destroy();
       visuals?.destroy();
       resizeObserver.disconnect();

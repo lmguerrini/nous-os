@@ -139,7 +139,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
   ["brain-envelope.ts", new Map([
     ["three", new Set(["*"])],
     ["#engine/morphology-contract.ts", new Set(["NEURAL_BRAIN_ENVELOPE_OPACITY"])],
-    ["#scene/contract.ts", new Set(["SceneNode"])],
+    ["#scene/contract.ts", new Set(["SceneNode", "SceneEdge"])],
   ])],
   ["buffers.ts", new Map([
     ["#engine/contract.ts", new Set(["Coordinates"])],
@@ -260,7 +260,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ])],
     ["#render3f/camera-framing.ts", new Set(["ProjectedCameraFramingSubject", "sceneCameraFramingSubjects"])],
     ["#render3f/buffers.ts", new Set(["tokenToSrgb"])],
-    ["#render3f/brain-envelope.ts", new Set(["createBrainEnvelope"])],
+    ["#render3f/brain-envelope.ts", new Set(["createBrainEnvelope", "BrainWitness"])],
     ["#render3f/aggregate-material.ts", new Set([
       "createAggregateRenderResources",
       "updateAggregateProjectionUniforms",

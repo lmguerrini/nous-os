@@ -54,6 +54,7 @@ import type { V2Category } from './palette.ts';
 import { v2CategoryColour } from './palette.ts';
 import type { Axes, AxesInput, CreateProductView, ExperimentalOrganization, FullAxesInput, Organization, PageAxes, ProductView, ViewOrganization } from './view-contract.ts';
 import { LEGACY_INDRA_PROJECTION_ID, normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS, experimentalOrganizationsEnabled, requestedProjectionId } from './view-contract.ts';
+import { brainForMode, brainModeKey, emptyBrainWitness, readBrainChoices, saveBrainChoices } from '../render3f/brain-envelope.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
 import type { PaletteValues } from './palette.ts';
 const element = (id: string) => document.getElementById(id)!;
@@ -481,6 +482,7 @@ export class V2Page {
     private viewHost: HTMLElement | null = null;
     private v2Colours: Partial<Record<V2Category, string>>;
     private axes: PageAxes;
+    private readonly brainChoices = readBrainChoices();
     private appearance: AppearanceOptions;
     private palette: PaletteValues;
     private selected: string | null = null;
@@ -639,6 +641,11 @@ export class V2Page {
         this.manifest = manifest;
         this.index = index;
         this.axes = normalizeFullAxesInput(axes);
+        if (axes.brain !== undefined) {
+            this.brainChoices.set(brainModeKey(this.axes), axes.brain);
+            saveBrainChoices(this.brainChoices);
+        }
+        this.axes = { ...this.axes, brain: brainForMode(this.axes, this.brainChoices) };
         this.appearance = appearance;
         this.palette = palette;
         this.v2Colours = colours;
@@ -713,6 +720,18 @@ export class V2Page {
         if (typeof window === 'object' && window !== null)
             (window as typeof window & { __d074?: { revealWitness: () => unknown } }).__d074 =
                 { revealWitness: () => this.revealRecord };
+        if (typeof window === 'object' && window !== null) {
+            const proofWindow = window as typeof window & {
+                __d080Renderer?: { brain: () => unknown; brainView: (name: 'front' | 'side' | 'top' | 'iso') => void };
+                __d080?: { brain: () => unknown; brainView: (name: 'front' | 'side' | 'top' | 'iso') => void };
+            };
+            proofWindow.__d080 = {
+                brain: () => this.axes.brain === true && brainForMode(this.axes, this.brainChoices)
+                    ? proofWindow.__d080Renderer?.brain() ?? emptyBrainWitness()
+                    : emptyBrainWitness(),
+                brainView: name => { if (this.axes.brain === true) proofWindow.__d080Renderer?.brainView(name); },
+            };
+        }
     }
     static async load(manifest: GraphManifest, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}): Promise<V2Page> {
         element('status').textContent = 'Caricamento del grafo\u2026 indice';
@@ -2948,9 +2967,16 @@ export class V2Page {
         window.setTimeout(() => layer.remove(), 1000);
     }
     async setAxes(value: AxesInput) {
-        const merged: PageAxes = { ...this.axes, ...normalizeAxesInput(value) };
+        const changed = normalizeAxesInput(value);
+        const merged: PageAxes = { ...this.axes, ...changed };
+        if (changed.brain !== undefined) {
+            this.brainChoices.set(brainModeKey(merged), changed.brain);
+            saveBrainChoices(this.brainChoices);
+        }
+        const brain = brainForMode(merged, this.brainChoices);
+        const next: PageAxes = { ...merged, brain };
         // D-078 W6: toggling the glass on changes fit bounds even when graph bounds are identical.
-        const brainTurnedOn = this.axes.brain !== true && merged.brain === true
+        const brainTurnedOn = this.axes.brain !== true && next.brain === true
             && merged.organization === 'natural' && merged.morphology === 'neural' && merged.projection === '3d';
         if (merged.organization !== this.axes.organization && !this.supportsOrganization(merged.organization))
             throw new Error(`View is not registered: ${merged.organization}`);
@@ -2963,8 +2989,8 @@ export class V2Page {
         this.axes = merged.organization !== 'natural'
             ? { projection: merged.projection, morphology: merged.morphology, organization: merged.organization,
                 colour: merged.colour, labels: merged.labels, reading: merged.reading,
-                ...(merged.brain !== undefined ? { brain: merged.brain } : {}) }
-            : merged;
+                brain }
+            : next;
         await this.refresh();
         if (brainTurnedOn) await this.fit();
         (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
@@ -3027,6 +3053,7 @@ export class V2Page {
     camera() {
         return this.view?.camera() ?? this.projectionRenderer?.readCameraPose?.() ?? null;
     }
+    get brainEnabled(): boolean { return this.axes.brain === true; }
     cameraState() { return this.view?.readCamera() ?? this.projectionRenderer?.readCameraState?.() ?? null; }
     viewPreset(name: Parameters<ProductView['viewPreset']>[0]) { this.noteCameraIntent(); this.userMovedSinceFit = true; this.view?.viewPreset(name); }
     setInsets(value: Parameters<ProductView['setInsets']>[0]) { this.view?.setInsets(value); }

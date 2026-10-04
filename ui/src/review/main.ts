@@ -710,7 +710,13 @@ function setAxes(input: AxesInput): Promise<void> {
     get<HTMLElement>("view-presets").hidden=axes.projection!=="3d";
     get<HTMLSelectElement>("palette").value=axes.colour;
     if (partial.colour) writeLocal(storage, "d069.palette", partial.colour);
-    return v2.setAxes(partial).catch(error => { if (projectionRefusalOf(error) !== null) return; throw error; }); }
+    // D080-A3 BEGIN: keep the toolbar's axes mirror aligned with the page's per-mode brain choice.
+    return v2.setAxes(partial).then(() => {
+      axes = { ...axes, brain: v2!.brainEnabled };
+      syncBrainControls();
+      persistView();
+    }).catch(error => { if (projectionRefusalOf(error) !== null) return; throw error; }); }
+    // D080-A3 END
   return enqueue(async () => {
     if (partial.projection && partial.projection !== "3d") { focusMode = false; focusCamera = null; }
     if (partial.colour) writeLocal(storage, "d069.palette", partial.colour);
@@ -1392,6 +1398,11 @@ async function load() {
     const manifest = await probe.json() as GraphManifest;
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
     v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density);
+    // D080-A3 BEGIN: the page resolves the brain default and stored choice on first entry.
+    axes = { ...axes, brain: v2.brainEnabled };
+    syncBrainControls();
+    persistView();
+    // D080-A3 END
     v2.setFlowMotion(flowMotion);
     // A view button exists only when its projection is registered: no dead control.
     for (const organization of ["fractal", "holographic"] as const)
