@@ -47,6 +47,21 @@ export type ReviewCameraState = VisualStateCamera & {
   readonly framingTangent?: number;
 };
 
+type FramingBounds3d = Readonly<{
+  minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number;
+}>;
+
+function framingBounds3d(subjects: readonly CameraFramingSubject[]): FramingBounds3d | null {
+  if (subjects.length === 0) return null;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const { position } of subjects) {
+    minX = Math.min(minX, position.x); maxX = Math.max(maxX, position.x);
+    minY = Math.min(minY, position.y); maxY = Math.max(maxY, position.y);
+    minZ = Math.min(minZ, position.z); maxZ = Math.max(maxZ, position.z);
+  }
+  return { minX, maxX, minY, maxY, minZ, maxZ };
+}
+
 /** Compose screen-space trackball motion in world space, including travel over either pole. */
 export function arcballDrag(orientation: THREE.Quaternion, deltaX: number, deltaY: number, height: number): THREE.Quaternion {
   const right = new THREE.Vector3(0, 1, 0).applyQuaternion(orientation);
@@ -115,6 +130,7 @@ export class CameraRig {
   private devicePixelRatio: number;
   private worldCenterZ: number;
   private worldFramingSubjects: readonly CameraFramingSubject[];
+  private worldFramingBounds: FramingBounds3d | null;
   private framingTangentValue: number;
 
   /** This creates both projections over copied state and does not modify a world object. */
@@ -133,6 +149,7 @@ export class CameraRig {
     this.heightCssPx = requiredDimension(heightCssPx, "camera viewport height");
     this.devicePixelRatio = requiredDimension(devicePixelRatio, "camera device pixel ratio");
     this.worldFramingSubjects = canonicalCameraFramingSubjects(worldFramingSubjects);
+    this.worldFramingBounds = framingBounds3d(this.worldFramingSubjects);
     this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
       this.worldFramingSubjects.map((subject) => subject.position),
     ));
@@ -198,6 +215,7 @@ export class CameraRig {
   /** This updates resolved framing geometry and does not infer it from semantics. */
   setWorldFramingSubjects(subjects: readonly CameraFramingSubject[]): void {
     this.worldFramingSubjects = canonicalCameraFramingSubjects(subjects);
+    this.worldFramingBounds = framingBounds3d(this.worldFramingSubjects);
     this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
       this.worldFramingSubjects.map((subject) => subject.position),
     ));
@@ -419,11 +437,11 @@ export class CameraRig {
     updatePerspectiveCamera(
       this.perspective,
       this.stateValue,
-      this.requestValue,
       this.widthCssPx,
       this.heightCssPx,
       this.worldCenterZ,
       this.framingTangentValue,
+      this.worldFramingBounds,
     );
   }
 
@@ -633,11 +651,11 @@ function orthographicClipPoint(
 function updatePerspectiveCamera(
   camera: THREE.PerspectiveCamera,
   state: VisualStateCamera,
-  request: SceneCameraRequest,
   widthCssPx: number,
   heightCssPx: number,
   worldCenterZ: number,
   framingTangent: number,
+  framingBounds: FramingBounds3d | null,
 ): void {
   const target = perspectiveTarget(state, worldCenterZ);
   const span = Math.max(
@@ -646,9 +664,6 @@ function updatePerspectiveCamera(
   );
   const distance = span * state.ratio;
   const aspect = widthCssPx / heightCssPx;
-  const navigationRange = request.kind === "perspective"
-    ? request.navigation.maximumDollyPermille / request.navigation.minimumDollyPermille
-    : request.navigation.maximumZoomPermille / request.navigation.minimumZoomPermille;
   camera.aspect = aspect;
   // The perspective camera treats `ratio` as a pure dolly and the field of view as rig state:
   // `framingTangent` is the quantised half-angle tangent a deliberate framing moment computed
@@ -660,14 +675,31 @@ function updatePerspectiveCamera(
     * Math.atan(framingTangent)
     * halfTurnDegrees()
   ) / Math.PI;
-  camera.near = distance / navigationRange;
-  camera.far = distance * (navigationRange + scalarCount());
   const review = state as ReviewCameraState;
   const orbit = new THREE.Quaternion(...(review.orbit ?? [0, 0, 0, 1]));
   camera.up.set(0, 0, scalarCount()).applyQuaternion(orbit);
   camera.position.copy(target).add(new THREE.Vector3(
     Math.cos(state.angle) * distance, Math.sin(state.angle) * distance, distance,
   ).applyQuaternion(orbit));
+  // Fit the far plane to the actual scene volume, not to the dolly range. The subject bounds
+  // are cached when the scene changes, so a wheel step only does constant-time arithmetic.
+  const minX = Math.min(state.bounds.x[0], framingBounds?.minX ?? state.bounds.x[0]);
+  const maxX = Math.max(state.bounds.x[1], framingBounds?.maxX ?? state.bounds.x[1]);
+  const minY = Math.min(state.bounds.y[0], framingBounds?.minY ?? state.bounds.y[0]);
+  const maxY = Math.max(state.bounds.y[1], framingBounds?.maxY ?? state.bounds.y[1]);
+  const minZ = Math.min(worldCenterZ, framingBounds?.minZ ?? worldCenterZ);
+  const maxZ = Math.max(worldCenterZ, framingBounds?.maxZ ?? worldCenterZ);
+  const sceneCenterX = (minX + maxX) / 2;
+  const sceneCenterY = (minY + maxY) / 2;
+  const sceneCenterZ = (minZ + maxZ) / 2;
+  const sceneRadius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2;
+  const targetDistance = camera.position.distanceTo(target);
+  // A small near plane keeps the target, its screen-sized pearls and nearby shells in view.
+  // Scaling it with distance retains depth precision even at the unchanged far dolly limit.
+  camera.near = Math.max(span * 0.00001, targetDistance / 64);
+  camera.far = Math.max(camera.near * 2,
+    Math.hypot(camera.position.x - sceneCenterX, camera.position.y - sceneCenterY,
+      camera.position.z - sceneCenterZ) + sceneRadius * 1.5 + span * 0.05);
   camera.lookAt(target);
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld(true);

@@ -573,7 +573,7 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   },
   camera: {
     orthographic: { panSensitivityPermille: 1000, zoomSensitivityPermille: 1700, minimumZoomPermille: 250, maximumZoomPermille: 4000 },
-    perspective: { orbitSensitivityPermille: 1000, dollySensitivityPermille: 1000, panSensitivityPermille: 1000, minimumDollyPermille: 80, maximumDollyPermille: 10000 },
+    perspective: { orbitSensitivityPermille: 1000, dollySensitivityPermille: 1000, panSensitivityPermille: 1000, minimumDollyPermille: 5, maximumDollyPermille: 10000 },
   },
   motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 850, minimumReducedMotionPixelDeltaPermille: 1, reducedMotionSwitch: false },
   selection: { emphasisMultiplierPermille: 1450, focusDimFactorPermille: 320, minimumDifferingPixelCount: 16 },
