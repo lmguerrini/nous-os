@@ -1342,6 +1342,9 @@ function updateGizmo(): void {
     gizmoFrame = requestAnimationFrame(updateGizmo);
 }
 requestGizmoUpdate();
+// D080-A3b BEGIN: proof camera poses use the same gizmo refresh as an orbit gesture.
+viewport.addEventListener("d080-brain-camera-change", requestGizmoUpdate);
+// D080-A3b END
 for (const eventName of ["pointerdown", "pointermove", "pointerup", "pointercancel", "wheel", "keydown", "keyup"] as const)
   viewport.addEventListener(eventName, requestGizmoUpdate, { passive: eventName === "wheel" });
 const tickZoomCost = { calls: 0, totalMs: 0, maxMs: 0 };

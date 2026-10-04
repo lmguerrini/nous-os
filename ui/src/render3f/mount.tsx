@@ -36,7 +36,7 @@ import type { Render3fFramingBox } from "#render3f/camera.tsx";
 import { sceneCameraFramingSubjects } from "#render3f/camera-framing.ts";
 import type { ProjectedCameraFramingSubject } from "#render3f/camera-framing.ts";
 import { tokenToSrgb } from "#render3f/buffers.ts";
-import { createBrainEnvelope } from "#render3f/brain-envelope.ts";
+import { brainViewCameraState, createBrainEnvelope } from "#render3f/brain-envelope.ts";
 import type { BrainWitness } from "#render3f/brain-envelope.ts";
 import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
@@ -564,23 +564,11 @@ export function mount(
 
   const brainProof = {
     brain: (): BrainWitness | null => brainEnvelope?.witness() ?? null,
-    brainView: (name: "front" | "side" | "top" | "iso"): void => {
-      if (!brainEnvelope) return;
-      const axes = brainEnvelope.axes();
-      const direction = name === "front" ? axes[2]!.clone()
-        : name === "side" ? axes[0]!.clone()
-        : name === "top" ? axes[1]!.clone()
-        : axes[0]!.clone().add(axes[1]!).add(axes[2]!).normalize();
-      const state = rig.readCameraState();
-      const base = new THREE.Vector3(Math.cos(state.angle), Math.sin(state.angle), 1).normalize();
-      const orbit = new THREE.Quaternion().setFromUnitVectors(base, direction);
-      const center = brainEnvelope.center();
-      const bounds = state.bounds;
-      const targetState = { ...state, orbit: [orbit.x, orbit.y, orbit.z, orbit.w],
-        x: (center.x - bounds.x[0]) / (bounds.x[1] - bounds.x[0]),
-        y: (center.y - bounds.y[0]) / (bounds.y[1] - bounds.y[0]), targetZ: center.z };
-      rig.restoreCameraState(targetState);
-      syncCameraState();
+    brainView: (name: "front" | "side" | "top" | "iso"): VisualStateCamera | null => {
+      if (!brainEnvelope) return null;
+      // The page applies this state through ProductView.restoreCamera. That path also runs the
+      // HTML label pass and camera watcher; changing the rig here leaves both at the old pose.
+      return brainViewCameraState(name, brainEnvelope.axes(), brainEnvelope.center(), rig.readCameraState());
     },
   };
   const proofWindow = window as typeof window & { __d080Renderer?: typeof brainProof };

@@ -26,10 +26,27 @@ export type BrainEnvelope = {
   dispose(): void;
 };
 
-export const BRAIN_GLASS_INTERIOR_ALPHA = Math.min(NEURAL_BRAIN_ENVELOPE_OPACITY, 0.025);
-export const BRAIN_GLASS_RIM_ALPHA = 0.09;
+export const BRAIN_GLASS_INTERIOR_ALPHA = Math.min(NEURAL_BRAIN_ENVELOPE_OPACITY, 0.03);
+export const BRAIN_GLASS_RIM_ALPHA = 0.12;
 export const BRAIN_TRIANGLE_BUDGET = 20_000;
 export const BRAIN_PREFERENCES_KEY = "d080.brain-by-mode";
+export type BrainViewName = "front" | "side" | "top" | "iso";
+/** Compute a proof pose without mutating the renderer; the product camera path applies it. */
+export function brainViewCameraState<T extends { readonly angle: number; readonly bounds: {
+  readonly x: readonly [number, number]; readonly y: readonly [number, number] } }>(
+  name: BrainViewName, axes: readonly THREE.Vector3[], center: THREE.Vector3, state: T,
+) {
+  const direction = name === "front" ? axes[2]!.clone()
+    : name === "side" ? axes[0]!.clone()
+    : name === "top" ? axes[1]!.clone()
+    : axes[0]!.clone().add(axes[1]!).add(axes[2]!).normalize();
+  const base = new THREE.Vector3(Math.cos(state.angle), Math.sin(state.angle), 1).normalize();
+  const orbit = new THREE.Quaternion().setFromUnitVectors(base, direction);
+  const bounds = state.bounds;
+  return { ...state, orbit: [orbit.x, orbit.y, orbit.z, orbit.w] as [number, number, number, number],
+    x: (center.x - bounds.x[0]) / (bounds.x[1] - bounds.x[0]),
+    y: (center.y - bounds.y[0]) / (bounds.y[1] - bounds.y[0]), targetZ: center.z };
+}
 export type BrainMode = { readonly organization: string; readonly morphology: string; readonly projection: string };
 export function brainModeKey(axes: BrainMode): string {
   return `${axes.organization}|${axes.morphology}|${axes.projection}`;
@@ -163,18 +180,38 @@ function resources() {
       throw new Error("Brain triangle budget exceeded");
     const material = new THREE.ShaderMaterial({
       uniforms: { interiorAlpha: { value: BRAIN_GLASS_INTERIOR_ALPHA }, rimAlpha: { value: BRAIN_GLASS_RIM_ALPHA } },
-      vertexShader: `varying vec3 vNormal, vView;
+      vertexShader: `varying vec3 vNormal, vView, vLocal;
         void main() { vec4 p = modelViewMatrix * vec4(position, 1.0);
-          vNormal = normalize(normalMatrix * normal); vView = -p.xyz;
+          vNormal = normalize(normalMatrix * normal); vView = -p.xyz; vLocal = position;
           gl_Position = projectionMatrix * p; }`,
       fragmentShader: `uniform float interiorAlpha, rimAlpha;
-        varying vec3 vNormal, vView;
+        varying vec3 vNormal, vView, vLocal;
         void main() { float f = abs(dot(normalize(vNormal), normalize(vView)));
-          float rim = pow(1.0 - f, 2.6);
+          float rim = pow(1.0 - f, 1.9);
           float light = max(0.0, dot(normalize(vNormal), normalize(vec3(-0.4, 0.8, 0.45))));
-          float alpha = interiorAlpha * (0.45 + 0.55 * light) + rimAlpha * rim;
-          gl_FragColor = vec4(vec3(0.84, 0.87, 0.91), alpha); }`,
+          float lateral = smoothstep(0.48, 0.70, abs(vLocal.x));
+          float sylvianLine = vLocal.y + 0.27 + 0.12 * vLocal.z;
+          float sylvian = lateral * exp(-pow(sylvianLine / 0.065, 2.0))
+            * (1.0 - smoothstep(0.65, 1.05, abs(vLocal.z)));
+          float centralLine = vLocal.z - (0.07 + 0.18 * vLocal.y);
+          float central = lateral * smoothstep(-0.35, 0.05, vLocal.y)
+            * exp(-pow(centralLine / 0.055, 2.0));
+          float shoulders = lateral * (exp(-pow((abs(sylvianLine) - 0.11) / 0.075, 2.0))
+            + exp(-pow((abs(centralLine) - 0.10) / 0.075, 2.0)));
+          float folds = lateral * smoothstep(-0.1, 0.45, vLocal.y)
+            * pow(0.5 + 0.5 * sin(11.0 * vLocal.z + 7.0 * vLocal.y
+              + 1.2 * sin(4.0 * vLocal.z)), 6.0);
+          float anatomy = clamp(0.72 + 0.28 * light + 0.16 * shoulders
+            + 0.12 * folds - 0.58 * max(sylvian, central), 0.24, 1.0);
+          float alpha = min(0.15, interiorAlpha * anatomy + rimAlpha * rim);
+          // Premultiply for MAX blending: overlapping front faces keep their strongest glass
+          // sample instead of adding brightness across the fissure or cerebellum.
+          gl_FragColor = vec4(vec3(0.84, 0.87, 0.91) * alpha, alpha); }`,
       transparent: true, side: THREE.FrontSide, depthTest: false, depthWrite: false,
+      blending: THREE.CustomBlending, blendEquation: THREE.MaxEquation,
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      blendEquationAlpha: THREE.MaxEquation,
+      blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
     });
     shared = { full, moving, material, uses: 0 };
   }

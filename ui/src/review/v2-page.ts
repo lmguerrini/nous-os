@@ -722,14 +722,24 @@ export class V2Page {
                 { revealWitness: () => this.revealRecord };
         if (typeof window === 'object' && window !== null) {
             const proofWindow = window as typeof window & {
-                __d080Renderer?: { brain: () => unknown; brainView: (name: 'front' | 'side' | 'top' | 'iso') => void };
+                __d080Renderer?: { brain: () => unknown; brainView: (name: 'front' | 'side' | 'top' | 'iso') => ReturnType<Render3fRendererHandle['readCameraState']> | null };
                 __d080?: { brain: () => unknown; brainView: (name: 'front' | 'side' | 'top' | 'iso') => void };
             };
             proofWindow.__d080 = {
                 brain: () => this.axes.brain === true && brainForMode(this.axes, this.brainChoices)
                     ? proofWindow.__d080Renderer?.brain() ?? emptyBrainWitness()
                     : emptyBrainWitness(),
-                brainView: name => { if (this.axes.brain === true) proofWindow.__d080Renderer?.brainView(name); },
+                brainView: name => {
+                    if (this.axes.brain !== true || !this.view) return;
+                    const camera = proofWindow.__d080Renderer?.brainView(name);
+                    if (!camera) return;
+                    this.noteCameraIntent();
+                    this.userMovedSinceFit = true;
+                    this.view.restoreCamera(camera);
+                    this.cameraChangedAt = performance.now();
+                    this.lastRevealSampleKey = '';
+                    document.getElementById('render-root')?.dispatchEvent(new Event('d080-brain-camera-change', { bubbles: true }));
+                },
             };
         }
     }
@@ -2441,7 +2451,7 @@ export class V2Page {
             // whole disclosed set, the LOD selection, the arc selection), so the payload carries
             // the same data a mount would receive.
             const lodKey = [this.axes.organization, this.axes.projection, this.axes.morphology,
-                this.axes.reading, this.axes.colour, this.axes.labels, this.relationDetail,
+                this.axes.reading, this.axes.colour, this.axes.labels, this.axes.brain === true, this.relationDetail,
                 JSON.stringify(this.appearance), JSON.stringify(this.palette), JSON.stringify(this.v2Colours),
                 [...ids].sort().join('|')].join('\u00B7');
             if (this.view && this.view.updateVisibleSubset && lodKey === this.lastLodKey && !indraLayoutMoved) {
@@ -2969,6 +2979,8 @@ export class V2Page {
     async setAxes(value: AxesInput) {
         const changed = normalizeAxesInput(value);
         const merged: PageAxes = { ...this.axes, ...changed };
+        const cameraBeforeBrainOff = changed.brain === false && this.axes.brain === true
+            && brainModeKey(merged) === brainModeKey(this.axes) ? this.view?.readCamera() : null;
         if (changed.brain !== undefined) {
             this.brainChoices.set(brainModeKey(merged), changed.brain);
             saveBrainChoices(this.brainChoices);
@@ -2992,6 +3004,9 @@ export class V2Page {
                 brain }
             : next;
         await this.refresh();
+        // Removing only the decorative mesh must leave its graph comparison at the exact pose.
+        if (cameraBeforeBrainOff && this.view && next.brain === false)
+            this.view.restoreCamera(cameraBeforeBrainOff);
         if (brainTurnedOn) await this.fit();
         (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;

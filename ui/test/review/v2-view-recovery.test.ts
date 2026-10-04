@@ -215,21 +215,31 @@ function makePage(deps: V2PageDeps = {}, discloseConversations = false): V2Page 
   return page;
 }
 
-test("the V2 page sends brain to each product view mount and starts with it off", async () => {
+test("the V2 page defaults brain by mode, remembers each choice, and keeps the camera when turned off", async () => {
   failMounts = false;
   const received: boolean[] = [];
   const page = makePage({ createView: async input => {
     received.push(input.brain === true);
-    return fakeCreateView(input);
+    const created = await fakeCreateView(input);
+    created.updateVisibleSubset = () => true;
+    return created;
   } });
   await page.refresh();
   assert.equal(received.at(-1), false);
-  await page.setAxes({ projection: "3d", morphology: "neural", brain: true });
+  await page.setAxes({ projection: "3d", morphology: "neural" });
   assert.equal(received.at(-1), true);
   await page.setAxes({ organization: "indra" });
-  assert.equal(received.at(-1), true, "the view remembers the preference for a return to Natural");
+  assert.equal(received.at(-1), false, "Indra has its own off default");
+  await page.setAxes({ organization: "natural" });
+  assert.equal(received.at(-1), true, "Natural retains its own on default");
+  const beforeOff = view(page).readCamera();
   await page.setAxes({ brain: false });
   assert.equal(received.at(-1), false);
+  assert.deepEqual(view(page).restoredWith().at(-1), beforeOff, "off restores the comparison camera");
+  await page.setAxes({ organization: "indra", brain: true });
+  assert.equal(received.at(-1), true, "another mode may remember its own choice");
+  await page.setAxes({ organization: "natural" });
+  assert.equal(received.at(-1), false, "Natural remembers its explicit off choice");
 });
 
 function deferredFitView() {

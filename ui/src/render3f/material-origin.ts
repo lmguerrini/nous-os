@@ -260,7 +260,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ])],
     ["#render3f/camera-framing.ts", new Set(["ProjectedCameraFramingSubject", "sceneCameraFramingSubjects"])],
     ["#render3f/buffers.ts", new Set(["tokenToSrgb"])],
-    ["#render3f/brain-envelope.ts", new Set(["createBrainEnvelope", "BrainWitness"])],
+    // D080-A3b BEGIN: the proof pose helper is part of the verified brain renderer import.
+    ["#render3f/brain-envelope.ts", new Set(["brainViewCameraState", "createBrainEnvelope", "BrainWitness"])],
+    // D080-A3b END
     ["#render3f/aggregate-material.ts", new Set([
       "createAggregateRenderResources",
       "updateAggregateProjectionUniforms",
