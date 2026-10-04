@@ -1,7 +1,7 @@
 type JsonRecord = Record<string, unknown>;
 type Section = 'summary' | 'content' | 'provenance' | 'relations';
 type SectionState = 'idle' | 'loading' | 'ok' | 'empty' | 'partial' | 'error';
-type CachedSection = { state: SectionState; body: JsonRecord; message: string; error: string; offset: number; total: number; query: string };
+type CachedSection = { state: SectionState; body: JsonRecord; message: string; error: string; offset: number; total: number; query: string; slowLoading: boolean };
 type DrawerResponse = { id?: unknown; section?: unknown; state?: unknown; message?: unknown; error?: unknown; [key: string]: unknown };
 const record = (value: unknown): JsonRecord => value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -56,6 +56,49 @@ const italianDate = (raw: unknown): string => {
 const sectionName: Record<Section, string> = { summary: 'Sintesi', content: 'Contenuto', provenance: 'Provenienza', relations: 'Relazioni' };
 const tabs: Section[] = ['summary', 'content', 'provenance', 'relations'];
 
+type DrawerClock = Pick<typeof globalThis, 'setTimeout' | 'clearTimeout'>;
+class DrawerRequestError extends Error { readonly retryable: boolean; constructor(message: string, retryable: boolean) { super(message); this.retryable = retryable; } }
+const cancelled = (): Error => new DOMException('Richiesta annullata.', 'AbortError');
+
+/** A drawer attempt includes response parsing and has its own 20 s wall-clock limit. */
+export async function fetchDrawerWithRetry(fetcher: typeof fetch, url: string, signal?: AbortSignal, clock: DrawerClock = globalThis): Promise<DrawerResponse> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (signal?.aborted) throw cancelled();
+    const controller = new AbortController();
+    const relayAbort = (): void => controller.abort();
+    signal?.addEventListener('abort', relayAbort, { once: true });
+    let rejectOnAbort: (() => void) | undefined;
+    const abortPromise = signal ? new Promise<never>((_, reject) => { rejectOnAbort = () => reject(cancelled()); signal.addEventListener('abort', rejectOnAbort, { once: true }); }) : undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const response = await Promise.race([
+        Promise.resolve().then(() => fetcher(url, { signal: controller.signal })).then(async res => {
+          let body: DrawerResponse;
+          try { body = await res.json() as DrawerResponse; }
+          catch (error) { if (signal?.aborted) throw cancelled(); throw new DrawerRequestError(error instanceof Error ? error.message : 'Risposta non leggibile.', true); }
+          if (!res.ok || body.error) throw new DrawerRequestError(text(body.error) || `Errore del server (${res.status}).`, false);
+          return body;
+        }).catch(error => {
+          if (signal?.aborted) throw cancelled();
+          if (error instanceof DrawerRequestError) throw error;
+          throw new DrawerRequestError(error instanceof Error ? error.message : 'Errore di rete.', true);
+        }),
+        new Promise<never>((_, reject) => { timeout = clock.setTimeout(() => { controller.abort(); reject(new DrawerRequestError('La richiesta ha superato il tempo previsto.', true)); }, 20_000); }),
+        ...(abortPromise ? [abortPromise] : [])
+      ]);
+      return response;
+    } catch (error) {
+      if (signal?.aborted) throw cancelled();
+      if (!(error instanceof DrawerRequestError) || !error.retryable || attempt === 1) throw error;
+    } finally {
+      if (timeout !== undefined) clock.clearTimeout(timeout);
+      signal?.removeEventListener('abort', relayAbort);
+      if (rejectOnAbort) signal?.removeEventListener('abort', rejectOnAbort);
+    }
+  }
+  throw new DrawerRequestError('La richiesta non è terminata.', false);
+}
+
 /** A lazy, read-only detail surface backed only by the D-081 drawer contract. */
 export class NodeDrawer {
   private readonly host: HTMLElement;
@@ -69,6 +112,7 @@ export class NodeDrawer {
   private queryTimer: ReturnType<typeof setTimeout> | undefined;
   private cache = new Map<Section, CachedSection>();
   private relationCache = new Map<string, { items: JsonRecord[]; offset: number; total: number; loading: boolean; error: string }>();
+  private activeController: AbortController | undefined;
   private readonly nodeCaches = new Map<string, { sections: Map<Section, CachedSection>; relations: Map<string, { items: JsonRecord[]; offset: number; total: number; loading: boolean; error: string }> }>();
   constructor(host: HTMLElement, onSelect: (id: string) => void, fetcher: typeof fetch = (input, init) => window.fetch(input, init), onCenter: (id: string) => void = () => {}) {
     this.host = host; this.onSelect = onSelect; this.onCenter = onCenter; this.fetcher = fetcher;
@@ -79,6 +123,7 @@ export class NodeDrawer {
   setDisplayTitle(title: string): void { this.displayTitle = title; }
   async open(id: string): Promise<void> { return this.openWithTitle(id, this.displayTitle); }
   async openWithTitle(id: string, displayTitle: string): Promise<void> {
+    this.cancelActive();
     for (const section of this.cache.values()) if (section.state === 'loading') section.state = 'idle';
     for (const relation of this.relationCache.values()) relation.loading = false;
     this.id = id; this.displayTitle = displayTitle; this.token++;
@@ -88,10 +133,11 @@ export class NodeDrawer {
     if (this.entry('summary').state === 'idle' || this.entry('summary').state === 'error') await this.load('summary');
   }
   private node(): JsonRecord { return { title: this.entry('summary').body.title }; }
-  close(): void { this.token++; if (this.queryTimer) clearTimeout(this.queryTimer); this.host.hidden = true; this.host.ownerDocument.body.classList.remove('node-detail-open'); this.host.replaceChildren(); }
+  close(): void { this.cancelActive(); this.token++; if (this.queryTimer) clearTimeout(this.queryTimer); this.host.hidden = true; this.host.ownerDocument.body.classList.remove('node-detail-open'); this.host.replaceChildren(); }
+  private cancelActive(): void { this.activeController?.abort(); this.activeController = undefined; }
   private entry(section: Section): CachedSection {
     let cached = this.cache.get(section);
-    if (!cached) { cached = { state: 'idle', body: {}, message: '', error: '', offset: 0, total: 0, query: '' }; this.cache.set(section, cached); }
+    if (!cached) { cached = { state: 'idle', body: {}, message: '', error: '', offset: 0, total: 0, query: '', slowLoading: false }; this.cache.set(section, cached); }
     return cached;
   }
   private async load(section: Section, options: { offset?: number; query?: string; group?: string; relationPage?: boolean } = {}): Promise<void> {
@@ -99,22 +145,25 @@ export class NodeDrawer {
     if (options.relationPage) {
       const group = options.group ?? ''; const item = this.relationCache.get(group) ?? { items: [], offset: 0, total: 0, loading: false, error: '' };
       if (item.loading) return; item.loading = true; item.error = ''; this.relationCache.set(group, item); this.render();
+      this.cancelActive(); const controller = new AbortController(); this.activeController = controller;
       try {
-        const body = await this.request('relations', { offset: item.offset, limit: 50, group });
+        const body = await this.request('relations', { offset: item.offset, limit: 50, group }, controller.signal);
         if (token !== this.token) return;
         const groups = list(record(body).groups).map(record); const type = groups.flatMap(g => list(g.types).map(record)).find(t => value(t.key) === group);
         const received = list(type?.items).map(record); item.items.push(...received); item.offset += received.length; item.total = Number(type?.count ?? item.offset); item.error = '';
-      } catch (error) { if (token === this.token) item.error = this.errorText(error); }
-      finally { if (token === this.token) { item.loading = false; this.render(); } }
+      } catch (error) { if (token === this.token && (error as Error)?.name !== 'AbortError') item.error = this.errorText(error); }
+      finally { if (this.activeController === controller) this.activeController = undefined; if (token === this.token) { item.loading = false; this.render(); } }
       return;
     }
     const cached = this.entry(section); if (cached.state === 'loading') return;
+    this.cancelActive(); const controller = new AbortController(); this.activeController = controller;
     const paging = options.offset !== undefined;
     const requestedOffset = options.offset ?? (paging ? cached.offset : 0);
     const requestedQuery = options.query ?? cached.query;
-    cached.state = 'loading'; cached.error = ''; this.render();
+    cached.state = 'loading'; cached.error = ''; cached.slowLoading = false; this.render();
+    const slowTimer = setTimeout(() => { if (token === this.token && this.tab === section && cached.state === 'loading') { cached.slowLoading = true; this.render(); } }, 2000);
     try {
-      const body = await this.request(section, { offset: requestedOffset, limit: 50, ...(section === 'content' && requestedQuery ? { q: requestedQuery } : {}) });
+      const body = await this.request(section, { offset: requestedOffset, limit: 50, ...(section === 'content' && requestedQuery ? { q: requestedQuery } : {}) }, controller.signal);
       if (token !== this.token) return;
       const result = record(body); const serverState = text(result.state);
       if (!['ok', 'empty', 'partial'].includes(serverState)) throw new Error('La risposta del server non contiene uno stato valido.');
@@ -128,8 +177,8 @@ export class NodeDrawer {
         cached.total = Number(result.total ?? list(record(cached.body).items).length);
       }
       if (serverState !== 'ok' && !cached.message) cached.message = 'Questa sezione contiene informazioni parziali.';
-    } catch (error) { if (token === this.token) { cached.state = 'error'; cached.error = this.errorText(error); } }
-    finally { if (token === this.token) { if (cached.state === 'loading') { cached.state = 'error'; cached.error = 'La richiesta non è terminata.'; } this.render(); } }
+    } catch (error) { if (token === this.token) { if ((error as Error)?.name === 'AbortError') cached.state = 'idle'; else { cached.state = 'error'; cached.error = this.errorText(error); } } }
+    finally { clearTimeout(slowTimer); cached.slowLoading = false; if (this.activeController === controller) this.activeController = undefined; if (token === this.token) { if (cached.state === 'loading') { cached.state = 'error'; cached.error = 'La richiesta non è terminata.'; } this.render(); } }
   }
   private mergePage(section: Section, prior: JsonRecord, next: JsonRecord): JsonRecord {
     if (section === 'content') return { ...next, items: [...list(prior.items), ...list(next.items)] };
@@ -139,31 +188,20 @@ export class NodeDrawer {
     }
     return next;
   }
-  private async request(section: Section, params: { offset?: number; limit?: number; q?: string; group?: string }): Promise<DrawerResponse> {
+  private async request(section: Section, params: { offset?: number; limit?: number; q?: string; group?: string }, signal?: AbortSignal): Promise<DrawerResponse> {
     const query = new URLSearchParams({ id: this.id, section });
     if (params.offset !== undefined) query.set('offset', String(params.offset));
     if (params.limit !== undefined) query.set('limit', String(params.limit));
     if (params.q) query.set('q', params.q);
     if (params.group) query.set('group', params.group);
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const response = await Promise.race([
-        this.fetcher(`/api/graph/drawer?${query.toString()}`).then(async res => {
-          const body = await res.json() as DrawerResponse;
-          if (!res.ok || body.error) throw new Error(text(body.error) || `Errore del server (${res.status}).`);
-          return body;
-        }),
-        new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('La richiesta ha superato il tempo previsto.')), 5000); })
-      ]);
-      return response;
-    } finally { if (timeout) clearTimeout(timeout); }
+    return fetchDrawerWithRetry(this.fetcher, `/api/graph/drawer?${query.toString()}`, signal);
   }
   private errorText(error: unknown): string { return error instanceof Error ? error.message : 'Si è verificato un errore inatteso.'; }
   private handleClick(event: Event): void {
     const target = event.target as HTMLElement | null; const button = target?.closest<HTMLButtonElement>('button[data-action]'); if (!button) return;
     const action = button.dataset.action;
     if (action === 'close') this.close();
-    else if (action === 'tab') { const next = button.dataset.tab as Section; if (!tabs.includes(next)) return; this.tab = next; this.render(); if (this.entry(next).state === 'idle') void this.load(next); }
+    else if (action === 'tab') { const next = button.dataset.tab as Section; if (!tabs.includes(next)) return; this.cancelActive(); this.token++; for (const section of this.cache.values()) if (section.state === 'loading') section.state = 'idle'; for (const relation of this.relationCache.values()) relation.loading = false; this.tab = next; this.render(); if (this.entry(next).state === 'idle') void this.load(next); }
     else if (action === 'retry') void this.load(this.tab, button.dataset.group ? { group: button.dataset.group, relationPage: true } : {});
     else if (action === 'more') void this.load(this.tab, { offset: this.entry(this.tab).offset });
     else if (action === 'more-relations' && button.dataset.group) void this.load('relations', { group: button.dataset.group, relationPage: true });
@@ -187,7 +225,7 @@ export class NodeDrawer {
     for (const section of tabs) { const name = section; const button = this.button(sectionName[section], 'tab'); button.dataset.tab = section; button.id = `node-drawer-tab-${section}`; button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(this.tab === name)); button.setAttribute('aria-controls', 'node-drawer-panel'); button.tabIndex = this.tab === section ? 0 : -1; tabList.append(button); }
     root.append(tabList); const panel = doc.createElement('div'); panel.className = 'node-drawer-content'; panel.id = 'node-drawer-panel'; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `node-drawer-tab-${this.tab.toLocaleLowerCase()}`); panel.tabIndex = 0;
     const cached = this.entry(this.tab);
-    if (cached.state === 'loading') this.renderSkeleton(panel);
+    if (cached.state === 'loading') { this.renderSkeleton(panel); if (cached.slowLoading) this.note(panel, 'Caricamento…', 'drawer-loading'); }
     else if (cached.state === 'idle') this.note(panel, 'Questa sezione non è ancora stata caricata.');
     else if (cached.state === 'error') { this.note(panel, cached.error, 'drawer-error'); const retry = this.button('Riprova', 'retry'); retry.dataset.action = 'retry'; panel.append(retry); }
     else { if (cached.message) this.note(panel, cached.message, 'drawer-message'); if (this.tab === 'summary') this.renderSummary(panel, cached.body); if (this.tab === 'content') this.renderContent(panel, cached); if (this.tab === 'provenance') this.renderProvenance(panel, cached); if (this.tab === 'relations') this.renderRelations(panel, cached); }

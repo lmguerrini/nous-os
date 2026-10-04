@@ -56,7 +56,10 @@ test('D-081 drawer contract fixtures cover all five reference cases and every se
 test('drawer uses section endpoint lazily and has visible timeout, retry, query, and paging paths', () => {
   assert.match(source, /\/api\/graph\/drawer\?/);
   assert.doesNotMatch(source, /\/api\/graph\/(?:node|children)\?/);
-  assert.match(source, /setTimeout\(\(\) => reject\(new Error\('La richiesta ha superato il tempo previsto\.'\)\), 5000\)/);
+  assert.match(source, /setTimeout\(\(\) => \{ controller\.abort\(\); reject\(new DrawerRequestError\('La richiesta ha superato il tempo previsto\.', true\)\); \}, 20_000\)/);
+  assert.match(source, /attempt < 2/);
+  assert.match(source, /cached\.slowLoading = true/);
+  assert.match(source, /Caricamento…/);
   assert.match(source, /this\.entry\(next\)\.state === 'idle'/);
   assert.match(source, /dataset\.action = 'retry'/);
   assert.match(source, /query\.set\('q', params\.q\)/);
