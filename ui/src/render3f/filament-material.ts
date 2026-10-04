@@ -150,8 +150,14 @@ void main() {
     a_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     maximumBaseWidth * maximumWidthFactor * 0.5
   );
-  if (a_neuralProfile.w > 0.5) maximumBodyHalfWidth = max(maximumBodyHalfWidth,
-    max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio * max(a_neuralRootRatios.x, a_neuralRootRatios.y) * 0.5);
+  if (a_neuralProfile.w > 0.5) {
+    float ordinary = max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio;
+    float rootStart = max(ordinary * a_neuralRootRatios.x,
+      min(clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
+    float rootEnd = max(ordinary * a_neuralRootRatios.y,
+      min(clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
+    maximumBodyHalfWidth = max(maximumBodyHalfWidth, max(rootStart, rootEnd) * 0.5);
+  }
   float materialExtent = max(
     maximumBodyHalfWidth * a_sheathAndCorePermille.x / u_permilleScale,
     maximumBodyHalfWidth + (a_widthsAndPicking.w * u_devicePixelRatio)
@@ -291,8 +297,10 @@ void main() {
     float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = startRadius > 0.0 ? ordinary * v_neuralRootRatios.x : ordinary;
-    float endRoot = endRadius > 0.0 ? ordinary * v_neuralRootRatios.y : ordinary;
+    float startRoot = startRadius > 0.0 ? max(ordinary * v_neuralRootRatios.x,
+      min(startRadius * 1.1, ordinary * 6.0)) : ordinary;
+    float endRoot = endRadius > 0.0 ? max(ordinary * v_neuralRootRatios.y,
+      min(endRadius * 1.1, ordinary * 6.0)) : ordinary;
     float span = max(length(v_cpC - v_cpA), 1.0);
     float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
       max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);

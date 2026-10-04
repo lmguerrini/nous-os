@@ -85,6 +85,13 @@ export function neuralRootRatio(degree: number): number { return degree >= NEURA
 export function neuralRootWidthPx(ordinaryPx: number, somaRadiusPx: number, ratio: number): number {
   return somaRadiusPx > 0 ? Math.max(0, ordinaryPx) * ratio : Math.max(0, ordinaryPx);
 }
+/** Visible roots borrow width from the local soma, while the cap prevents crowded hubs merging. */
+export function neuralJoinedRootWidthPx(ordinaryPx: number, somaRadiusPx: number, ratio: number): number {
+  const ordinary = Math.max(0, ordinaryPx);
+  if (somaRadiusPx <= 0) return ordinary;
+  return Math.max(neuralRootWidthPx(ordinary, somaRadiusPx, ratio),
+    Math.min(somaRadiusPx * 1.1, ordinary * 6));
+}
 /** Cosmetic sprouts only resolve in a true close-up; they are never graph segments. */
 export function neuralDetailVisible(projectedScale: number, somaRadiusPx: number, spanPx: number): boolean {
   return projectedScale >= 1.75 && somaRadiusPx >= 5 && spanPx >= somaRadiusPx * 6;
@@ -95,10 +102,11 @@ export function neuralShoulderFraction(spanPx: number, somaRadiusPx: number, ord
 }
 export function neuralScreenWidthAt(t: number, ordinaryPx: number, startSomaRadiusPx: number,
   endSomaRadiusPx: number, taper: readonly [number, number] = [NEURAL_ROOT_RATIO, NEURAL_ROOT_RATIO],
-  spanPx = 100): number {
+  spanPx = 100, joinedRoots = false): number {
   const body = Math.max(0, ordinaryPx);
-  const start = neuralRootWidthPx(body, startSomaRadiusPx, taper[0]);
-  const end = neuralRootWidthPx(body, endSomaRadiusPx, taper[1]);
+  const rootWidth = joinedRoots ? neuralJoinedRootWidthPx : neuralRootWidthPx;
+  const start = rootWidth(body, startSomaRadiusPx, taper[0]);
+  const end = rootWidth(body, endSomaRadiusPx, taper[1]);
   const ease = (u: number) => { const x = Math.max(0, Math.min(1, u)); return x * x * (3 - 2 * x); };
   const position = Math.max(0, Math.min(1, t));
   const startShoulder = neuralShoulderFraction(spanPx, startSomaRadiusPx, body);
@@ -164,7 +172,9 @@ export function incidentSomaHarmonics(axis: Coordinates, incident: readonly { di
       x += weight * Math.cos(order * angle);
       y += weight * Math.sin(order * angle);
     }
-    const maximum = order === 1 ? 0.075 : order === 2 ? 0.028 : 0.017;
+    // The broad primary lobe gives a leaf its teardrop shoulder; the weaker terms describe
+    // secondary real bundles without making a dense hub spiky. Their total remains below 0.12.
+    const maximum = order === 1 ? 0.088 : order === 2 ? 0.021 : 0.010;
     return { order, amplitude: maximum * Math.hypot(x, y), phase: -Math.atan2(y, x) };
   });
 }

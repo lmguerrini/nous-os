@@ -237,17 +237,16 @@ export function somaElongationFactor(harmonics: readonly SomaOutlineHarmonic[]):
 }
 
 /** The drawn elongation of one soma: the connection-driven eccentricity with the deterministic
- * per-node jitter, kept inside the compact 1.04–1.32 eccentricity bounds. A round soma (no local
+ * per-node jitter, kept inside the compact 1.04–1.32 axis bounds. A round soma (no local
  * connections to orient it) is left exactly round. */
 export function somaDrawnElongation(eccentricity: number, harmonics: readonly SomaOutlineHarmonic[]): number {
   if (eccentricity <= 1) return eccentricity;
   return clamp(eccentricity * somaElongationFactor(harmonics), Math.min(1.04, eccentricity), 1.32);
 }
 
-/** Small somata keep a scaled-down but stronger irregularity than before (floor 0.55 instead of
- * 0.4) and the drawn radial deviation stays within the geometry's ±SOMA_OUTLINE_MAX_RADIAL bound. */
-export const SOMA_IRREGULARITY_BOOST = 1.3;
-export const SOMA_IRREGULARITY_MIN_SCALE = 0.55;
+/** The edge-driven lobes stay visible at fit; their total radial deviation remains capped. */
+export const SOMA_IRREGULARITY_BOOST = 1.6;
+export const SOMA_IRREGULARITY_MIN_SCALE = 1;
 export function somaIrregularityScale(radiusPx: number): number {
   return clamp(radiusPx / 11, SOMA_IRREGULARITY_MIN_SCALE, 1);
 }
@@ -995,7 +994,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         // centre-line only; it cannot turn the shaft into a zoom-scaled band.
         const body = Math.max(0.3, appearance.edgeWidth * widthFactor
           * (emphasis?.radiusMultiplier ?? 1));
-        return neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx);
+        return neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx, true);
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);

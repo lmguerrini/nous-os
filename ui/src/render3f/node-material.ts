@@ -52,10 +52,10 @@ void main() {
   float haloRadius = max(requestedHaloRadius, haloGapRadius);
   if (a_somaShape.x > 0.5) haloRadius = min(haloRadius, coreRadius * 1.1);
   vec2 corner = vec2((position.x * 2.0) - 1.0, position.y);
-  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.34 : 1.0) * 2.0 / u_resolutionDevicePx;
+  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.52 : 1.0) * 2.0 / u_resolutionDevicePx;
   gl_Position = clipCenter;
   gl_Position.xy += clipOffset * clipCenter.w;
-  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.34 : 1.0);
+  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.52 : 1.0);
   v_color = a_color;
   v_coreRadiusDevicePx = coreRadius;
   v_haloRadiusDevicePx = haloRadius;
@@ -113,8 +113,7 @@ void main() {
     float eccentricity = clamp(v_somaEccentricity * jitter, v_somaEccentricity, 1.32);
     float theta = atan(local.y, local.x / eccentricity);
     float irregularity = v_somaHarmonics12.x * cos(theta + v_somaHarmonics12.y) + v_somaHarmonics12.z * cos(2.0 * theta + v_somaHarmonics12.w) + v_somaHarmonic3.x * cos(3.0 * theta + v_somaHarmonic3.y);
-    float visibility = clamp(v_coreRadiusDevicePx / (11.0 * u_devicePixelRatio), 0.55, 1.0);
-    float bulge = 1.0 + clamp(irregularity * visibility * 1.3, -0.12, 0.12);
+    float bulge = 1.0 + clamp(irregularity * 1.6, -0.12, 0.12);
     somaDistance = length(vec2(local.x / eccentricity, local.y)) / bulge;
   }
   // Preserve the governed gradient core and its sharpness.
