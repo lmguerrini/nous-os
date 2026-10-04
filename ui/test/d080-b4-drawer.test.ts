@@ -8,37 +8,47 @@ const main = readFileSync(new URL('../src/review/main.ts', import.meta.url), 'ut
 const panelView = readFileSync(new URL('../src/review/panel-view.ts', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../review/index.html', import.meta.url), 'utf8');
 
-test('B4 loads details only after opening and pages passages only when Contenuto is selected', () => {
+test('D-081 loads the summary on open and fetches each drawer section lazily', () => {
   assert.match(drawer, /async open\(id: string\)/);
-  assert.match(drawer, /\/api\/graph\/node\?id=/);
-  assert.match(drawer, /this\.tab === 'Contenuto'[\s\S]*?this\.loadChildren\(\)/);
-  assert.match(drawer, /\/api\/graph\/children\?id=.*offset=.*limit=50/);
+  assert.match(drawer, /this\.load\('summary'\)/);
+  assert.match(drawer, /\/api\/graph\/drawer\?\$\{query\.toString\(\)\}/);
+  assert.match(drawer, /if \(this\.entry\(next\)\.state === 'idle'\) void this\.load\(next\)/);
+  assert.match(drawer, /section === 'content' && requestedQuery \? \{ q: requestedQuery \}/);
+  assert.match(drawer, /this\.load\(this\.tab, \{ offset: this\.entry\(this\.tab\)\.offset \}\)/);
   assert.match(main, /onPick: \(target\) =>[\s\S]*nodeDrawer\.open\(target\.id\)/);
   assert.match(panelView, /root\.dataset\.nodeId = technicalModel\.id/);
   assert.match(main, /drawerSelectionObserver\.observe\(details/);
   assert.doesNotMatch(main.slice(main.indexOf('onPick: (target) =>'), main.indexOf('onDoublePick:')), /fetch\(/);
+  assert.doesNotMatch(drawer, /\/api\/graph\/(?:node|children)\?/);
 });
 
-test('B4 drawer has four tabs, explicit close/Escape, error and deferred full-text states', () => {
+test('D-081 drawer has four tabs, explicit close/Escape, retry, timeout, and a readable no-full-text state', () => {
   for (const tab of ['Sintesi', 'Contenuto', 'Provenienza', 'Relazioni']) assert.ok(drawer.includes(`'${tab}'`));
   assert.match(drawer, /event\.key === 'Escape'.*this\.close\(\)/);
-  assert.match(drawer, /dataset\.action = 'close'/);
-  assert.match(drawer, /Impossibile caricare il nodo/);
-  assert.match(drawer, /Testo completo non disponibile in questa build/);
-  assert.match(drawer, /Apri il contesto originale nel grafo/);
+  assert.match(drawer, /this\.button\('×', 'close'\)/);
+  assert.match(drawer, /this\.note\(panel, cached\.error, 'drawer-error'\)/);
+  assert.match(drawer, /button\('Riprova', 'retry'\)/);
+  assert.match(drawer, /La richiesta ha superato il tempo previsto/);
+  assert.match(drawer, /if \(!items\.length && cached\.state !== 'loading'\) this\.note\(host, cached\.message \|\| 'Nessun contenuto corrisponde alla ricerca\.'/);
+  assert.match(drawer, /if \(cached\.message\) this\.note\(panel, cached\.message, 'drawer-message'\)/);
+  assert.match(drawer, /La provenienza non è disponibile per questo nodo/);
 });
 
-test('B4 classifies canonical, proposal, exploratory and structural detail states', () => {
-  for (const badge of ['Canonico', 'Proposta · non canonica', 'Esplorativo · non canonico', 'Strutturale · provenienza']) assert.ok(drawer.includes(badge));
+test('D-081 keeps attested, exploratory, and structural relations in distinct groups', () => {
+  for (const label of ['Attestate', 'Esplorative', 'Strutturali · provenienza']) assert.ok(drawer.includes(label));
+  assert.match(drawer, /type\.direction/);
+  assert.match(drawer, /type\.count/);
+  assert.match(drawer, /button\('Apri', 'select'\)/);
+  assert.match(drawer, /button\('Centra', 'center'\)/);
 });
 
-test('B4 relation selection is camera-independent and relation classes stay distinct', () => {
+test('D-081 relation selection is camera-independent and relation classes stay distinct', () => {
   assert.match(drawer, /this\.onSelect\(button\.dataset\.id\)/);
   assert.match(main, /view\?\.select\(id\)/);
   assert.doesNotMatch(main.slice(main.indexOf('const nodeDrawer'), main.indexOf('const drawerSelectionObserver')), /v2\.select\(/);
   assert.doesNotMatch(drawer, /\bcamera\b|\bframe\(|\bfit\(|\breset\(/i);
   assert.match(drawer, /Esplorative/);
-  assert.match(drawer, /Strutturali \/ provenienza/);
+  assert.match(drawer, /Strutturali · provenienza/);
   assert.match(drawer, /Attestate/);
 });
 

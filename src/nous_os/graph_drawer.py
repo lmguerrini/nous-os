@@ -247,8 +247,17 @@ class DrawerData:
             direct = sorted((self.nodes[x] for x in direct_ids),
                             key=lambda x: (-int((x.get('counts') or {}).get('children') or 0), x['id']))
             classified = len(self.members(identifier)) if kind == 'domain' else len(direct)
-            sentences.append(f"Questo {KIND.get(kind, 'elemento').lower()} ha {_count(len(direct), 'figlio diretto', 'figli diretti')} nella gerarchia e {_count(classified, 'elemento classificato', 'elementi classificati')} nel dominio." if kind == 'domain' else
-                             f"Questo {KIND.get(kind, 'elemento').lower()} comprende {_count(len(descendants), 'elemento', 'elementi')} nella sua gerarchia, tra cui {_count(by_kind['conversation'], 'conversazione', 'conversazioni')}, {_count(by_kind['proposal'], 'proposta', 'proposte')} e {_count(by_kind['attachment_source'] + by_kind['non_conversation_source'], 'fonte', 'fonti')}.")
+            if kind == 'domain':
+                relation_types = [t for g in self.relations(identifier, 0, 10, '')['groups'] for t in g['types']]
+                direct_classifications = next((t['count'] for t in relation_types
+                                               if t['key'] == 'classified_in:entrante'), 0)
+                sentences.append(
+                    f"Questo dominio ha {_count(len(direct), 'figlio diretto', 'figli diretti')} nella gerarchia; "
+                    f"{_count(classified, 'elemento', 'elementi')} indicano questo dominio fra i propri domini e "
+                    f"{_count(direct_classifications, 'è classificato direttamente qui', 'sono classificati direttamente qui')}."
+                )
+            else:
+                sentences.append(f"Questo {KIND.get(kind, 'elemento').lower()} comprende {_count(len(descendants), 'elemento', 'elementi')} nella sua gerarchia, tra cui {_count(by_kind['conversation'], 'conversazione', 'conversazioni')}, {_count(by_kind['proposal'], 'proposta', 'proposte')} e {_count(by_kind['attachment_source'] + by_kind['non_conversation_source'], 'fonte', 'fonti')}.")
             if direct:
                 projects = [self.nodes[x] for x in self.members(identifier)
                             if (self.nodes.get(x) or {}).get('kind') in {'project', 'system'}]
@@ -272,14 +281,16 @@ class DrawerData:
             span = next((e.get("span") for e in evidence if e.get("span")), None)
             if span:
                 sentences.append("Un passaggio attestato riporta: «" + _short(_readable(span), 180) + "».")
-            links = Counter((edge["type"], "uscente" if edge["source"] == identifier else "entrante") for edge in self.edges.get(identifier, []))
+            relation_types = [t for g in self.relations(identifier, 0, 10, '')['groups'] for t in g['types']]
+            links = Counter({(t['key'].rsplit(':', 1)[0], t['direction']): t['count'] for t in relation_types})
             if links:
                 (link_type, direction), count = links.most_common(1)[0]
-                label = self._relation_label(link_type, direction)
+                label = next((t['label'] for t in relation_types
+                              if t['key'] == f'{link_type}:{direction}'), self._relation_label(link_type, direction))
                 sentences.append(f"Il collegamento più frequente è «{label}», presente {'una volta' if count == 1 else str(count) + ' volte'}.")
             else:
                 sentences.append("Non risultano collegamenti registrati oltre alla gerarchia dei contenuti.")
-            facts = [{"label": "Elementi", "value": len(descendants)}, {"label": "Proposte attive", "value": counts.get("live_proposals", by_kind["proposal"])}]
+            facts = [{"label": "Elementi nella gerarchia", "value": len(descendants)}, {"label": "Proposte attive", "value": counts.get("live_proposals", by_kind["proposal"])}]
         elif kind == "proposal":
             statement = _short(_readable(detail.get("statement")), 230)
             spans = [c.get("span") for c in detail.get("citations", []) if c.get("span")]
