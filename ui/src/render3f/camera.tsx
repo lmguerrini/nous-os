@@ -555,6 +555,9 @@ export function attachCameraInteractions(
   rig: CameraRig,
   changed: () => void,
   resolveNodeAnchor?: (xCssPx: number, yCssPx: number) => Coordinates | undefined,
+  // D081-P6 BEGIN: product review may replace the pointed mark after disclosure.
+  resolveEachWheel = false,
+  // D081-P6 END.
 ): (() => void) & { resetWheelAnchor(): void } {
   let pointerId: number | null = null;
   let wheelAnchor: Coordinates | undefined;
@@ -606,9 +609,11 @@ export function attachCameraInteractions(
     const hovered = resolveNodeAnchor ? undefined
       : (canvas as HTMLCanvasElement & { __reviewHoveredNode?: Coordinates }).__reviewHoveredNode;
     const screen = hovered && rig.graphToViewport(hovered);
-    const anchor = wheelAnchor ?? (resolveNodeAnchor ? resolveNodeAnchor(x, y)
+    // D081-P6 BEGIN: the product's current mark supersedes the previous wheel world point.
+    const anchor = resolveEachWheel && resolveNodeAnchor ? resolveNodeAnchor(x, y) : wheelAnchor ?? (resolveNodeAnchor ? resolveNodeAnchor(x, y)
       : screen && Math.hypot(screen.x - x, screen.y - y) <= 32
         ? hovered : rig.nodeAnchorAtViewport(x, y));
+    // D081-P6 END.
     if (anchor !== undefined && wheelAnchor === undefined) {
       wheelAnchor = anchor;
       wheelX = x;

@@ -408,9 +408,11 @@ export function admissionAnchorAtPointer(
     points: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number }>>,
     levels: ReadonlyMap<string, number>, nextIds: ReadonlySet<string>,
     cursor: { readonly x: number; readonly y: number } | null,
+    eligible?: (id: string) => boolean,
 ): string | null {
     if (!cursor) return null;
     return Object.entries(points).filter(([id, point]) => nextIds.has(id) && levels.has(id) &&
+        (!eligible || eligible(id)) &&
         Math.hypot(point.x - cursor.x, point.y - cursor.y) <= Math.max(12, point.radius ?? 0))
         .sort(([a, pa], [b, pb]) => {
             const da = Math.hypot(pa.x - cursor.x, pa.y - cursor.y);
@@ -436,6 +438,16 @@ export function gestureAnchorAtPointer(
         .sort(([a, pa], [b, pb]) =>
             Math.hypot(pa.x - cursor.x, pa.y - cursor.y) - Math.hypot(pb.x - cursor.x, pb.y - cursor.y)
             || ((levels?.get(b) ?? 0) - (levels?.get(a) ?? 0)) || a.localeCompare(b))[0]?.[0] ?? null;
+}
+/** Reapply D-079's depth bucket after each wheel step, within the gesture's starting cluster. */
+export function clusterAdmissionAnchorAtPointer(
+    points: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number }>>,
+    levels: ReadonlyMap<string, number>, ids: ReadonlySet<string>,
+    cursor: { readonly x: number; readonly y: number },
+    clusterOf: (id: string) => string | null, clusterId: string,
+): string | null {
+    return admissionAnchorAtPointer(points, levels, ids, cursor,
+        id => clusterOf(id) === clusterId);
 }
 /** Preserve the live child when a disclosure replaces its layout; fall back to D-079 ordering. */
 export function gestureRemountAnchorId(gestureId: string | null,
@@ -702,10 +714,14 @@ export class V2Page {
     // D081-P6 BEGIN: one visible centre starts a stationary 3D wheel gesture.
     private wheelGesture: { id: string; clusterId: string; x: number; y: number;
         view: ProductView; point: Vec3 } | null = null;
+    private readonly wheelLevels: ReadonlyMap<string, number>;
     // D081-P6 END.
     constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
+        // D081-P6 BEGIN: depth lookup is reused by each 3D wheel sample.
+        this.wheelLevels = new Map(index.nodes.map(node => [node.id, node.level]));
+        // D081-P6 END.
         this.axes = normalizeFullAxesInput(axes);
         if (axes.brain !== undefined) {
             this.brainChoices.set(brainModeKey(this.axes), axes.brain);
@@ -778,8 +794,8 @@ export class V2Page {
             const rect = root.getBoundingClientRect();
             this.cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
             // D081-P6 BEGIN.
-            if (this.wheelGesture && Math.hypot(this.cursor.x - this.wheelGesture.x,
-                this.cursor.y - this.wheelGesture.y) > 3) this.wheelGesture = null;
+            if (this.wheelGesture && (this.cursor.x !== this.wheelGesture.x ||
+                this.cursor.y !== this.wheelGesture.y)) this.wheelGesture = null;
             // D081-P6 END.
             if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
             if (!this.pointerDown) this.pointerFocusTimer = window.setTimeout(() => {
@@ -936,7 +952,7 @@ export class V2Page {
             inclusions: [...rendered].sort(),
         };
     }
-    // D081-P6 BEGIN: carry the start centre through canvas remounts, using the live layout world point.
+    // D081-P6 BEGIN: hold the starting cluster while its deepest pointed mark may change.
     private setGestureWheelAnchor(event: WheelEvent): void {
         if (!this.view || this.axes.projection !== '3d' ||
             (this.axes.organization !== 'natural' && this.axes.organization !== 'indra')) return;
@@ -944,15 +960,16 @@ export class V2Page {
         if (!root) return;
         const rect = root.getBoundingClientRect();
         const x = event.clientX - rect.left, y = event.clientY - rect.top;
-        if (this.wheelGesture && Math.hypot(x - this.wheelGesture.x, y - this.wheelGesture.y) > 3)
+        if (this.wheelGesture && (x !== this.wheelGesture.x || y !== this.wheelGesture.y))
             this.wheelGesture = null;
         const clusterOf = (id: string) => revealClusterOf(this.index, id);
+        const witness = this.view.witness();
+        const cursor = { x: event.clientX, y: event.clientY };
         if (!this.wheelGesture) {
-            const witness = this.view.witness();
-            const levels = new Map(this.index.nodes.map(node => [node.id, node.level]));
-            const id = gestureAnchorAtPointer(witness.nodeViewport, this.rendered,
-                { x: event.clientX, y: event.clientY }, undefined, undefined, levels);
-            const clusterId = id && clusterOf(id);
+            const nearest = gestureAnchorAtPointer(witness.nodeViewport, this.rendered, cursor);
+            const clusterId = nearest && clusterOf(nearest);
+            const id = clusterId && clusterAdmissionAnchorAtPointer(witness.nodeViewport,
+                this.wheelLevels, this.rendered, cursor, clusterOf, clusterId) || nearest;
             const point = id && witness.positions[id];
             if (id && clusterId && point) this.wheelGesture = { id, clusterId, x, y,
                 view: this.view, point };
@@ -962,19 +979,11 @@ export class V2Page {
             (HTMLCanvasElement & { __reviewGestureWheelAnchor?: Vec3 }) | null;
         if (!canvas) return;
         if (!gesture) { delete canvas.__reviewGestureWheelAnchor; return; }
-        // A mounted canvas keeps one world point. A disclosure remount changes the layout,
-        // so read its new witness once before that canvas receives another wheel step.
-        if (gesture.view !== this.view || !this.rendered.has(gesture.id)) {
-            const witness = this.view.witness();
-            const levels = new Map(this.index.nodes.map(node => [node.id, node.level]));
-            if (!witness.positions[gesture.id] || !this.rendered.has(gesture.id)) {
-                const replacement = gestureAnchorAtPointer(witness.nodeViewport, this.rendered,
-                    { x: event.clientX, y: event.clientY }, clusterOf, gesture.clusterId, levels);
-                if (replacement) gesture.id = replacement;
-            }
-            const point = witness.positions[gesture.id];
-            if (point && this.rendered.has(gesture.id)) { gesture.point = point; gesture.view = this.view; }
-        }
+        const current = clusterAdmissionAnchorAtPointer(witness.nodeViewport, this.wheelLevels,
+            this.rendered, cursor, clusterOf, gesture.clusterId);
+        if (current) gesture.id = current;
+        const point = witness.positions[gesture.id];
+        if (point && this.rendered.has(gesture.id)) { gesture.point = point; gesture.view = this.view; }
         if (gesture.view === this.view && this.rendered.has(gesture.id))
             canvas.__reviewGestureWheelAnchor = gesture.point;
         else delete canvas.__reviewGestureWheelAnchor;
@@ -2728,14 +2737,19 @@ export class V2Page {
                 const witness = this.view.witness();
                 const rootRect = element('render-root').getBoundingClientRect();
                 const cursor = this.cursor && { x: this.cursor.x + rootRect.left, y: this.cursor.y + rootRect.top };
-                const underPointer = admissionAnchorAtPointer(witness.nodeViewport,
-                    new Map(this.index.nodes.map(node => [node.id, node.level])), renderedIds, cursor);
-                // D081-P6 BEGIN: the centred gesture child survives Indra's deepest re-pack.
-                const gestureId = this.axes.projection === '3d' && this.wheelGesture && this.cursor &&
+                // D081-P6 BEGIN: a stationary 3D gesture cannot fall back to another cluster.
+                const gesture = this.axes.projection === '3d' && this.wheelGesture && this.cursor &&
                     Math.hypot(this.cursor.x - this.wheelGesture.x, this.cursor.y - this.wheelGesture.y) <= 3
-                    ? this.wheelGesture.id : null;
-                const id = gestureRemountAnchorId(gestureId, witness.nodeViewport, new Set(next.keys()),
-                    [underPointer, this.revealState.focusClusterId, this.selected]);
+                    ? this.wheelGesture : null;
+                const clusterOf = (id: string) => revealClusterOf(this.index, id);
+                const underPointer = cursor && gesture
+                    ? clusterAdmissionAnchorAtPointer(witness.nodeViewport, this.wheelLevels,
+                        renderedIds, cursor, clusterOf, gesture.clusterId)
+                    : admissionAnchorAtPointer(witness.nodeViewport, this.wheelLevels, renderedIds, cursor);
+                const fallback = [underPointer, this.revealState.focusClusterId, this.selected]
+                    .filter(id => !gesture || id && clusterOf(id) === gesture.clusterId);
+                const id = gestureRemountAnchorId(gesture?.id ?? null, witness.nodeViewport,
+                    new Set(next.keys()), fallback);
                 // D081-P6 END.
                 if (id) anchor = { id, point: witness.nodeViewport[id]! };
             }
@@ -3222,8 +3236,7 @@ export class V2Page {
         if (merged.organization !== this.axes.organization && !this.supportsOrganization(merged.organization))
             throw new Error(`View is not registered: ${merged.organization}`);
         // D081-P6 BEGIN.
-        if (merged.organization !== this.axes.organization || merged.projection !== this.axes.projection)
-            this.wheelGesture = null;
+        this.wheelGesture = null;
         // D081-P6 END.
         if (this.axes.organization === 'indra' && merged.organization !== 'indra')
             this.indraRequestedLevelRefusals.clear();

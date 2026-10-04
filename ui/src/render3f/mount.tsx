@@ -484,7 +484,9 @@ export function mount(
         const size = currentStyled?.nodeStyle[id]?.size;
         return (typeof size === "number" ? size : 5) * rig.wheelNodeSizeScaleAt(position);
       });
-  });
+  // D081-P6 BEGIN: only the product page reselects a mark for each 3D wheel step.
+  }, !typedPicker);
+  // D081-P6 END.
   const renderWhileFiberConfigures = (): void => {
     if (destroyed || fiberStore !== undefined) {
       return;
