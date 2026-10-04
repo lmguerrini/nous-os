@@ -471,10 +471,17 @@ function principalAxes(points: readonly Point[]): THREE.Vector3[] {
 
 export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axes: THREE.Vector3[]; scale: number; margin: number } {
   const baseAxes = principalAxes(points);
-  // PCA has no sign. Choose the frontal direction that encloses the points most
-  // tightly; otherwise one arbitrary eigenvector sign can double the shell.
-  const axisChoices = [baseAxes,
-    [baseAxes[0]!.clone().negate(), baseAxes[1]!.clone(), baseAxes[2]!.clone().negate()]];
+  // PCA's longest direction should first follow the brain's anterior axis.
+  // Try every assignment because the asymmetric silhouette can favour another one.
+  const permutations = [[0,1,2],[1,0,2],[0,2,1],[2,0,1],[1,2,0],[2,1,0]];
+  const axisChoices: THREE.Vector3[][] = [];
+  for (const permutation of permutations) {
+    const axes = permutation.map(index => baseAxes[index]!.clone());
+    if (new THREE.Vector3().crossVectors(axes[0]!,axes[1]!).dot(axes[2]!) < 0) axes[0]!.negate();
+    if (axes[1]!.y < 0) { axes[0]!.negate(); axes[1]!.negate(); }
+    if (axes[2]!.x < 0) { axes[0]!.negate(); axes[2]!.negate(); }
+    axisChoices.push(axes, [axes[0]!.clone().negate(),axes[1]!.clone(),axes[2]!.clone().negate()]);
+  }
   const fitWithAxes = (axes: THREE.Vector3[]) => {
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     const local = points.map(p => axes.map(a => p.x*a.x + p.y*a.y + p.z*a.z));
@@ -482,36 +489,52 @@ export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axe
       min[i]=Math.min(min[i]!,q[i]!);max[i]=Math.max(max[i]!,q[i]!);
     }
     const middle = min.map((lo,i) => Number.isFinite(lo) ? (lo+max[i]!)/2 : 0);
-    const center = new THREE.Vector3();
-    for(let i=0;i<3;i++) center.addScaledVector(axes[i]!,middle[i]!);
     const relative = local.map(q => ({x:q[0]!-middle[0]!,y:q[1]!-middle[1]!,z:q[2]!-middle[2]!}));
-    const clears = (scale:number):boolean => {
-      for(const p of relative) if(brainContainmentField({x:p.x/scale,y:p.y/scale,z:p.z/scale})<0.055) return false;
+    const clears = (scale:number, shiftY:number, shiftZ:number):boolean => {
+      for(const p of relative) if(brainContainmentField({x:p.x/scale,y:p.y/scale-shiftY,z:p.z/scale-shiftZ})<0.055) return false;
       return true;
     };
-    let hi=1;
-    for(const p of relative) hi=Math.max(hi,Math.hypot(p.x,p.y,p.z));
-    while(!clears(hi))hi*=2;
-    // Lobes and stalk make the containment field non-convex. Find its first
-    // valid scale rather than assuming validity is monotone from zero to hi.
-    let lo=0, first=hi;
-    for(let i=1;i<=24;i++) {
-      const probe=hi*i/24;
-      if(clears(probe)) { first=probe; break; }
-      lo=probe;
+    const fitShift = (shiftY:number,shiftZ:number) => {
+      let hi=1;
+      for(const p of relative) hi=Math.max(hi,Math.hypot(p.x,p.y,p.z));
+      while(!clears(hi,shiftY,shiftZ))hi*=2;
+      // The field is non-convex: scan for the first valid interval before bisecting.
+      let lo=0, first=hi;
+      for(let i=1;i<=24;i++) {
+        const probe=hi*i/24;
+        if(clears(probe,shiftY,shiftZ)) { first=probe; break; }
+        lo=probe;
+      }
+      hi=first;
+      for(let i=0;i<25;i++) {
+        const mid=(lo+hi)/2;
+        if(clears(mid,shiftY,shiftZ))hi=mid;else lo=mid;
+      }
+      return hi;
+    };
+    // x is fixed by bilateral symmetry. A coarse local grid catches the vertical
+    // offset and the front/back asymmetry; two shrinking grids refine the result.
+    let best={scale:Infinity,shiftY:0,shiftZ:0};
+    let originY=0,originZ=0;
+    for(const step of [0.18,0.09,0.045]) {
+      for(const dy of [-1,0,1]) for(const dz of [-1,0,1]) {
+        const shiftY=originY+dy*step,shiftZ=originZ+dz*step;
+        const scale=fitShift(shiftY,shiftZ);
+        if(scale < best.scale-1e-9) best={scale,shiftY,shiftZ};
+      }
+      originY=best.shiftY;originZ=best.shiftZ;
     }
-    hi=first;
-    for(let i=0;i<25;i++) {
-      const mid=(lo+hi)/2;
-      if(clears(mid))hi=mid;else lo=mid;
-    }
+    const center = new THREE.Vector3();
+    for(let i=0;i<3;i++) center.addScaledVector(axes[i]!,middle[i]!);
+    center.addScaledVector(axes[1]!,best.shiftY*best.scale);
+    center.addScaledVector(axes[2]!,best.shiftZ*best.scale);
     let minField=Infinity;
     for(const p of relative) minField=Math.min(minField,
-      brainContainmentField({x:p.x/hi,y:p.y/hi,z:p.z/hi}));
-    return {center,axes,scale:hi,margin:Number.isFinite(minField)?minField*hi:0};
+      brainContainmentField({x:p.x/best.scale,y:p.y/best.scale-best.shiftY,z:p.z/best.scale-best.shiftZ}));
+    return {center,axes,scale:best.scale,margin:Number.isFinite(minField)?minField*best.scale:0};
   };
   const fits = axisChoices.map(fitWithAxes);
-  return fits[1]!.scale < fits[0]!.scale ? fits[1]! : fits[0]!;
+  return fits.reduce((best,fit)=>fit.scale<best.scale-1e-9?fit:best);
 }
 
 export function brainEdgeSamples(edges: readonly SceneEdge[]): { id: string; point: Point }[] {
@@ -534,6 +557,10 @@ export function brainEdgeSamples(edges: readonly SceneEdge[]): { id: string; poi
 
 export function createBrainEnvelope(nodes: readonly SceneNode[], edges: readonly SceneEdge[] = []): BrainEnvelope {
   const pool=resources(), group=new THREE.Group();
+  const vertices=pool.full.getAttribute("position");
+  let fullOriginRadius=0;
+  for(let i=0;i<vertices.count;i++) fullOriginRadius=Math.max(fullOriginRadius,
+    Math.hypot(vertices.getX(i),vertices.getY(i),vertices.getZ(i)));
   group.name="optional-brain-envelope";
   const mesh=new THREE.Mesh(pool.full,pool.material);
   mesh.name="single-pass-brain-glass";
@@ -595,7 +622,7 @@ export function createBrainEnvelope(nodes: readonly SceneNode[], edges: readonly
   };
   update(nodes,edges);
   return {group, update, axes:()=>fit.axes, center:()=>fit.center,
-    framingSphere:()=>group.visible ? new THREE.Sphere(fit.center.clone(),fit.scale*1.6) : null,
+    framingSphere:()=>group.visible ? new THREE.Sphere(fit.center.clone(),fullOriginRadius*fit.scale*1.05) : null,
     setLod(next){if(lod===next)return; lod=next;mesh.geometry=pool[next];depthShell.geometry=pool[next];
       lines.geometry=pool.lines[next];
       report.lod=lod;report.triangles=mesh.geometry.getAttribute("position").count/3;
