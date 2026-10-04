@@ -1810,6 +1810,16 @@ export class V2Page {
             if (result.determinism.algorithmId === 'indras-pearls') this.openIndraLevel();
         }
     }
+    /** A canvas pick changes selection and its panel only; it preserves the disclosure and camera. */
+    selectPicked(id: string): void {
+        if (!this.index.nodes.some(node => node.id === id)) return;
+        this.selected = id;
+        if (this.typedActive()) this.typedSelection = { kind: 'node', id };
+        this.view?.select(id);
+        this.updateEmphasis();
+        this.syncFocusControls();
+        this.renderPanel();
+    }
     /** A provenance link of an explanation card: its source record is selected on its own. A source the
      * result draws and the mask shows becomes the typed selection; any other is selected as a page node. */
     private openProvenanceSource(sourceId: string): void {
@@ -2539,7 +2549,7 @@ export class V2Page {
                                 this.why(this.selected, target.id);
                             }
                             else
-                                void this.select(target.id);
+                                this.selectPicked(target.id);
                         } else void this.exitFocus(); }, onDoublePick: target => { if (target)
                             void this.expand(target.id).then(() => this.select(target.id, false)); }, onHover: target => {
                             const node = target?.kind === 'node' ? target.id : null;

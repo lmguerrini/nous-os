@@ -28,6 +28,7 @@ import { V2Page, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts
 import { bindSurfaces } from "./popover.ts";
 import { mountPerformanceOverlay } from "./perf-overlay.ts";
 import type { PopoverStack, SurfaceBinding } from "./popover.ts";
+import { displayLabel } from "./graph-v2.ts";
 import type { GraphManifest } from "./graph-v2.ts";
 import { normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
@@ -59,14 +60,22 @@ const nodeDrawer = new NodeDrawer(nodeDrawerHost, (id) => {
     (v2 as unknown as { view?: { select(id: string): void } }).view?.select(id);
   } else void select(id);
   drawerSelectionId = id;
+  nodeDrawer.setDisplayTitle(drawerTitle(id));
   void nodeDrawer.open(id);
-});
+}, undefined, (id) => { if (v2) void v2.frame(id); else void view?.frame([id]); });
+function drawerTitle(id: string): string {
+  const indexed = v2?.index.nodes.find((node) => node.id === id);
+  if (indexed) return displayLabel(indexed);
+  const node = data?.nodes.find((item) => item.id === id);
+  return node ? humanLabel(node, data) : id;
+}
 const drawerSelectionObserver = new MutationObserver(() => {
   const selected = details.querySelector<HTMLElement>(".selection-card[data-node-id]")?.dataset.nodeId ?? null;
   if (!canvasPickPending) return;
   canvasPickPending = false;
   if (selected && (selected !== drawerSelectionId || nodeDrawerHost.hidden)) {
     drawerSelectionId = selected;
+    nodeDrawer.setDisplayTitle(drawerTitle(selected));
     void nodeDrawer.open(selected);
   } else if (!selected && drawerSelectionId) {
     drawerSelectionId = null;
@@ -619,7 +628,7 @@ async function mount() {
       },
       events: {
         onPick: (target) => {
-          if (target) { drawerSelectionId = target.id; void select(target.id); void nodeDrawer.open(target.id); }
+          if (target) { drawerSelectionId = target.id; if (v2) v2.selectPicked(target.id); else view?.select(target.id); nodeDrawer.setDisplayTitle(drawerTitle(target.id)); void nodeDrawer.open(target.id); }
           else { drawerSelectionId = null; nodeDrawer.close(); void reset(); }
         },
         onDoublePick: (target) => {

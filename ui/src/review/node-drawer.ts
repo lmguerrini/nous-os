@@ -5,7 +5,7 @@ const record = (value: unknown): JsonRecord => value && typeof value === 'object
 const text = (value: unknown): string => typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const value = (...items: unknown[]): string => items.map(text).find(item => item.trim()) ?? '';
-const label = (item: JsonRecord): string => value(item.title, item.label, item.name, item.statement, item.id);
+const label = (item: JsonRecord): string => value(item.title, item.label, item.name, item.statement);
 const KIND: Record<string, string> = { domain: 'Dominio', project: 'Progetto', work: 'Opera', conversation: 'Conversazione', proposal: 'Proposta', passage: 'Passaggio', canon: 'Canone', memory: 'Memoria', note: 'Nota' };
 const kindName = (node: JsonRecord): string => KIND[value(node.kind, node.type, node.level).toLowerCase()] ?? value(node.kind, node.type, node.level, 'Elemento');
 const badgeName = (detail: JsonRecord, node: JsonRecord): string => {
@@ -21,8 +21,10 @@ const badgeName = (detail: JsonRecord, node: JsonRecord): string => {
 export class NodeDrawer {
   private readonly host: HTMLElement;
   private readonly onSelect: (id: string) => void;
+  private readonly onCenter: (id: string) => void;
   private readonly fetcher: typeof fetch;
   private id = '';
+  private displayTitle = '';
   private payload: DrawerResponse | null = null;
   private pageItems: JsonRecord[] = [];
   private offset = 0;
@@ -32,14 +34,16 @@ export class NodeDrawer {
   private tab = 'Sintesi';
   private query = '';
   private openToken = 0;
-  constructor(host: HTMLElement, onSelect: (id: string) => void, fetcher: typeof fetch = fetch) {
-    this.host = host; this.onSelect = onSelect; this.fetcher = fetcher;
+  constructor(host: HTMLElement, onSelect: (id: string) => void, fetcher: typeof fetch = (input, init) => window.fetch(input, init), onCenter: (id: string) => void = () => {}) {
+    this.host = host; this.onSelect = onSelect; this.onCenter = onCenter; this.fetcher = fetcher;
     host.addEventListener('click', event => this.handleClick(event));
     host.addEventListener('input', event => this.handleInput(event));
     document.addEventListener('keydown', event => { if (event.key === 'Escape' && !host.hidden) this.close(); });
   }
-  async open(id: string): Promise<void> {
-    this.id = id; this.payload = null; this.pageItems = []; this.offset = 0; this.total = 0; this.loadingChildren = false;
+  setDisplayTitle(title: string): void { this.displayTitle = title; }
+  async open(id: string): Promise<void> { return this.openWithTitle(id, this.displayTitle); }
+  async openWithTitle(id: string, displayTitle: string): Promise<void> {
+    this.id = id; this.displayTitle = displayTitle; this.payload = null; this.pageItems = []; this.offset = 0; this.total = 0; this.loadingChildren = false;
     this.childrenError = ''; this.tab = 'Sintesi'; this.query = ''; this.host.hidden = false; document.body.classList.add('node-detail-open');
     const token = ++this.openToken;
     this.render('Caricamento…');
@@ -83,6 +87,7 @@ export class NodeDrawer {
       if (this.tab === 'Contenuto' && this.pageItems.length === 0 && !this.childrenError) void this.loadChildren();
     } else if (action === 'more') void this.loadChildren();
     else if (action === 'select' && button.dataset.id) this.onSelect(button.dataset.id);
+    else if (action === 'center' && this.id) this.onCenter(this.id);
   }
   private handleInput(event: Event): void {
     const target = event.target as HTMLInputElement | null;
@@ -94,7 +99,8 @@ export class NodeDrawer {
     const doc = this.host.ownerDocument;
     const root = doc.createElement('section'); root.className = 'node-drawer-card'; root.setAttribute('aria-label', 'Dettaglio del nodo');
     const close = doc.createElement('button'); close.className = 'surface-close'; close.type = 'button'; close.dataset.action = 'close'; close.setAttribute('aria-label', 'Chiudi dettaglio'); close.textContent = '×'; root.append(close);
-    const title = doc.createElement('h2'); title.textContent = label(this.node()) || this.id || 'Dettaglio'; root.append(title);
+    const title = doc.createElement('h2'); title.textContent = label(this.node()) || this.displayTitle || this.id || 'Dettaglio'; root.append(title);
+    const center = doc.createElement('button'); center.type = 'button'; center.dataset.action = 'center'; center.textContent = 'Centra nel grafo'; center.setAttribute('aria-label', 'Centra nel grafo'); root.append(center);
     if (message) { const status = doc.createElement('p'); status.className = isError ? 'drawer-error' : 'drawer-loading'; status.setAttribute('role', isError ? 'alert' : 'status'); status.textContent = message; root.append(status); }
     if (this.payload) {
       const node = this.node(), detail = this.detail();
