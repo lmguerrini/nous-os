@@ -54,6 +54,7 @@ import {
   MovingLabelPassSchedule,
   ScheduleMarks,
   cameraWatchShouldRun,
+  denseMovingLabelIds,
   movingLabelPassHasCandidates,
   occlusionSampleCap,
   capOcclusionSamples,
@@ -823,12 +824,14 @@ export const createProductView: CreateProductView = async (input) => {
   // conservative: labels on and a Flat organization with at least one visible domain means domain
   // names may place; hover and selection are read directly. A false "candidates" only costs one
   // reduced pass; a false "no candidates" is impossible — each tier-1 source is checked.
+  // D081-P3e BEGIN: motion may label only these stable tier-1 nodes plus selection and hover.
+  const domainIds = input.data.nodes.filter(node => node.type === "domain").map(node => node.id);
   const movingPassCandidates = (ids: ReadonlySet<string> = visible) => movingLabelPassHasCandidates({
     hoverId: hover?.kind === "node" ? hover.id : null,
     selectedId: selected,
-    flatDomains: axes.labels
-      && [...ids].some((id) => nodesById.get(id)?.type === "domain"),
+    flatDomains: axes.labels && domainIds.some(id => ids.has(id)),
   });
+  // D081-P3e END
   function project(point: Coordinates) {
     return handle!.graphToViewport(point);
   }
@@ -880,7 +883,12 @@ export const createProductView: CreateProductView = async (input) => {
     // frame already). The full pass returns on the frame after quality is restored.
     const moving = morphologyInteraction.quality === "moving";
     const movingIndra3d = moving && three !== null && axes.organization === "indra";
-    const movingIds = movingIndra3d ? new Set([selected, hover?.id].filter((id): id is string => id != null)) : undefined;
+    // D081-P3e BEGIN: dense Natural 3D projects only nodes that can actually earn a moving label.
+    const movingDense3d = moving && three !== null && visible.size >= 1200;
+    const movingIds = movingDense3d ? denseMovingLabelIds(domainIds, labelVisible, axes.organization,
+      axes.labels, selected, hover?.id ?? null) : movingIndra3d
+      ? new Set([selected, hover?.id].filter((id): id is string => id != null)) : undefined;
+    // D081-P3e END
     // D-072 R3 (X9): while moving with no tier-1 candidate the reduced pass has zero output, so
     // it is skipped entirely — no anchor projection, no footprint discs, no Indra container
     // title placement, no DOM rebuild. The rest labels were dropped at motion start; this keeps
@@ -1142,7 +1150,8 @@ export const createProductView: CreateProductView = async (input) => {
         return el;
       }),
     );
-    for (const { id, position } of movingIndra3d ? [] : handle.readWorldAnchorWitnesses()) {
+    // D081-P3e BEGIN: decorative dynamic rings return with the full pass after a dense drag.
+    for (const { id, position } of movingDense3d ? [] : handle.readWorldAnchorWitnesses()) {
       if (nodesById.get(id)?.origin !== "dynamic") continue;
       const point = project(position);
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
@@ -1153,7 +1162,8 @@ export const createProductView: CreateProductView = async (input) => {
       layer.append(ring);
     }
     if (axes.colour === "custom") {
-      const anchors = new Map(visibleWitnesses(handle.readWorldAnchorWitnesses()).map((item) => [item.id, item.position]));
+      const anchors = new Map(visibleWitnesses(movingIds ? three!.readWorldAnchorWitnesses(movingIds) : handle.readWorldAnchorWitnesses()).map((item) => [item.id, item.position]));
+    // D081-P3e END
       for (const [id, colour] of [[selected, palette.selection], [hover?.kind === "node" ? hover.id : null, palette.hover]] as const) {
         const position = id ? anchors.get(id) : null;
         if (!position) continue;

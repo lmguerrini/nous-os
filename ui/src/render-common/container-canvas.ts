@@ -568,13 +568,49 @@ function rectOverlapsDisc(
 }
 
 /** The first candidate rect that no pearl or soma disc covers, or null when every slot is taken. */
-function firstFreeRect(candidates: readonly { readonly left: number; readonly top: number; readonly width: number; readonly height: number }[], discs: readonly CanvasDisc[] | undefined): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
+// D081-P3e BEGIN: the full Indra title pass must not scan every pearl for every candidate.
+type TitleRect = { readonly left: number; readonly top: number; readonly width: number; readonly height: number };
+export function createDiscOverlapIndex(discs: readonly CanvasDisc[]) {
+  const cellSize = 64;
+  const cells = new Map<string, CanvasDisc[]>();
+  const wide: CanvasDisc[] = [];
+  for (const disc of discs) {
+    const radius = disc.radius + 2;
+    const left = Math.floor((disc.x - radius) / cellSize), right = Math.floor((disc.x + radius) / cellSize);
+    const top = Math.floor((disc.y - radius) / cellSize), bottom = Math.floor((disc.y + radius) / cellSize);
+    if ((right - left + 1) * (bottom - top + 1) > 64) { wide.push(disc); continue; }
+    for (let y = top; y <= bottom; y++) for (let x = left; x <= right; x++) {
+      const key = `${x}:${y}`;
+      const bucket = cells.get(key) ?? [];
+      bucket.push(disc);
+      cells.set(key, bucket);
+    }
+  }
+  return {
+    overlaps(rect: TitleRect, visited?: { count: number }): boolean {
+      const test = (disc: CanvasDisc) => {
+        if (visited) visited.count++;
+        return rectOverlapsDisc(rect, disc.x, disc.y, disc.radius);
+      };
+      for (const disc of wide) if (test(disc)) return true;
+      const left = Math.floor(rect.left / cellSize), right = Math.floor((rect.left + rect.width) / cellSize);
+      const top = Math.floor(rect.top / cellSize), bottom = Math.floor((rect.top + rect.height) / cellSize);
+      for (let y = top; y <= bottom; y++) for (let x = left; x <= right; x++)
+        for (const disc of cells.get(`${x}:${y}`) ?? []) if (test(disc)) return true;
+      return false;
+    },
+  };
+}
+
+function firstFreeRect(candidates: readonly TitleRect[], discs: readonly CanvasDisc[] | undefined,
+  discIndex?: ReturnType<typeof createDiscOverlapIndex>): TitleRect | null {
   for (const rect of candidates) {
-    if (discs?.some(disc => rectOverlapsDisc(rect, disc.x, disc.y, disc.radius))) continue;
+    if (discIndex ? discIndex.overlaps(rect) : discs?.some(disc => rectOverlapsDisc(rect, disc.x, disc.y, disc.radius))) continue;
     return rect;
   }
   return null;
 }
+// D081-P3e END
 
 /**
  * The single predicate that decides whether a container draws its own title on the canvas, and where.
@@ -595,6 +631,7 @@ export function containerTitleRect(
   discs?: readonly CanvasDisc[],
   measure: TitleMeasure = estimatedMeasure,
   cache?: ContainerFrameCache,
+  discIndex?: ReturnType<typeof createDiscOverlapIndex>,
 ): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
   if (!container.title) return null;
   if (!readableTruncatedText(containerTitleLayout(container.title, measure, container.level).text)) return null;
@@ -615,7 +652,7 @@ export function containerTitleRect(
         { left: center.x - gap - width, top: center.y - 9, width, height: 18 },
       ].filter(rect => rect.top >= 14 && rect.top < bounds.height - 20
         && rect.left >= 2 && rect.left + rect.width <= bounds.width - 2);
-      return firstFreeRect(candidates, discs);
+      return firstFreeRect(candidates, discs, discIndex);
     }
   }
   // Projected outline bounds: the flat ring in 2D, the sphere silhouette (all great circles) in 3D —
@@ -642,7 +679,7 @@ export function containerTitleRect(
   const preferred = centered(top - 19);
   if (preferred.top < 14 || preferred.top >= bounds.height - 20
     || preferred.left < 2 || preferred.left + preferred.width > bounds.width - 2) return null;
-  return firstFreeRect([preferred, centered(top - 39), centered(bottom + 3)], discs);
+  return firstFreeRect([preferred, centered(top - 39), centered(bottom + 3)], discs, discIndex);
 }
 
 /** Draws the Indra containers (nested circles in 2D, nested translucent spheres in 3D) beneath the
@@ -880,9 +917,12 @@ export function placeContainerTitles(
 ): ContainerTitlePlacement[] {
   const placements: ContainerTitlePlacement[] = [];
   const boxes: { left: number; right: number; top: number; bottom: number }[] = [];
+  // D081-P3e BEGIN: index only dense disc sets; the original small-scene path is untouched.
+  const discIndex = discs && discs.length >= 1200 ? createDiscOverlapIndex(discs) : undefined;
+  // D081-P3e END
   for (const container of containersInDrawOrder(containers).sorted) {
     if (interaction?.dimFocus && !interaction.dimFocus.members.has(container.id) && container.level > 1) continue;
-    const rect = containerTitleRect(container, project, bounds, projection, interaction, discs, measure, cache);
+    const rect = containerTitleRect(container, project, bounds, projection, interaction, discs, measure, cache, discIndex);
     if (!rect) continue;
     const box = { left: rect.left - 3, top: rect.top, right: rect.left + rect.width + 3, bottom: rect.top + rect.height };
     if (boxes.some(other => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom)) continue;

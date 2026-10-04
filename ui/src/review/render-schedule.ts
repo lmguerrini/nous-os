@@ -147,6 +147,18 @@ export function movingLabelPassHasCandidates(state: {
   return state.hoverId !== null || state.selectedId !== null || state.flatDomains;
 }
 
+// D081-P3e BEGIN: bound dense 3D moving-label projection to eligible tier-1 IDs.
+export function denseMovingLabelIds(domainIds: readonly string[], visible: ReadonlySet<string>,
+  organization: "natural" | "indra", labels: boolean, selected: string | null, hovered: string | null): Set<string> {
+  const ids = new Set<string>();
+  if (organization === "natural" && labels)
+    for (const id of domainIds) if (visible.has(id)) ids.add(id);
+  if (selected !== null) ids.add(selected);
+  if (hovered !== null) ids.add(hovered);
+  return ids;
+}
+// D081-P3e END
+
 /** D-072 R3 (X9): the reduced label pass never runs more often than this while the camera moves. */
 export const MOVING_LABEL_PASS_INTERVAL_MS = 120;
 
