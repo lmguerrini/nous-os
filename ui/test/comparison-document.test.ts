@@ -23,7 +23,7 @@ const PERFORMANCE_PATH = ["dist", "evidence", "performance.json"].join("/");
 const LAYOUT_SCALE_PATH = ["dist", "evidence", "layout-scale.json"].join("/");
 
 /** The document states this band for the engine's size; the command beside it must reproduce it. */
-const LINE_COUNT_BAND = { atLeast: 10000, below: 11000 } as const;
+const LINE_COUNT_BAND = { atLeast: 11000, below: 12000 } as const;
 
 test("the comparison document transcribes no timing figure", async () => {
   assertNoTimingFigures(await readFile(DOCUMENT_PATH, "utf8"));
