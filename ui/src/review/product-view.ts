@@ -224,10 +224,13 @@ export function prepareProductProjection(
   validateSemanticEdgeCarriers(semanticEdges, result, snapshot);
   const visualIds = new Set<string>();
   const structuralPresentation = new Map<string, StructuralVisualPresentation>();
+  // D081-P3d BEGIN: use one membership index for the full visual-relation validation pass.
+  const domainNodeIds = new Set(result.domainNodeIds);
+  // D081-P3d END
   for (const relation of result.visualRelations) {
     if (!relation.visualId.startsWith("visual:") || sourceIds.has(relation.visualId) ||
         visualIds.has(relation.visualId) || relation.semantic !== false ||
-        !result.domainNodeIds.includes(relation.source) || !result.domainNodeIds.includes(relation.target) ||
+        !domainNodeIds.has(relation.source) || !domainNodeIds.has(relation.target) ||
         new Set(relation.underlyingEdgeIds).size !== relation.underlyingEdgeIds.length ||
         relation.underlyingEdgeIds.some(id => !sourceEdges.has(id)) ||
         (relation.kind === "lifted-route" && relation.underlyingEdgeIds.length === 0))

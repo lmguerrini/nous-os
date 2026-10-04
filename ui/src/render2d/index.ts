@@ -25,6 +25,12 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { createFilamentProgram, FilamentProgram } from "#render2d/filament-program.ts";
+import {
+  createLiveRelationGeometryBindings, createLiveRelationMaterialBindings,
+  liveRelationGeometryWitnesses, liveRelationMaterialBindings,
+} from "#render2d/relation-bindings.ts";
+import type { LiveRelationGeometryBindings, LiveRelationMaterialBindings, RelationMaterialBinding, RenderRelationGeometryWitness } from "#render2d/relation-bindings.ts";
+export type { RelationMaterialBinding, RenderRelationGeometryWitness } from "#render2d/relation-bindings.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
 import {
   buildRenderModel,
@@ -70,18 +76,6 @@ export type RenderNodeGlowWitness = {
   readonly viewportCenter: { readonly x: number; readonly y: number };
   readonly coreRadiusPx: number;
   readonly haloRadiusPx: number;
-};
-
-/** This records the live material programs bound to one relation and does not expose graph semantics. */
-export type RelationMaterialBinding = {
-  readonly relationId: string;
-  readonly materialTypes: readonly string[];
-};
-
-/** This reports one relation's live draw control point and does not inspect the render model. */
-export type RenderRelationGeometryWitness = {
-  readonly relationId: string;
-  readonly controlPoint: { readonly x: number; readonly y: number };
 };
 
 /** This records ids and incidence read from the mounted Sigma graph and does not inspect the render model. */
@@ -809,66 +803,6 @@ function mountDistinctCanvas(
   };
 }
 
-/** This records material programs after their live processing pass and does not infer them from graph attributes. */
-type LiveRelationMaterialBindings = {
-  observe(sigma: Sigma): void;
-  record(fingerprint: number, materialType: string): void;
-  materialTypesFor(sigma: Sigma, relationId: string): readonly string[];
-};
-
-/** This records control points written into the live program attribute buffer and does not derive them from display attributes. */
-type LiveRelationGeometryBindings = {
-  observe(sigma: Sigma): void;
-  record(fingerprint: number, controlPoint: { readonly x: number; readonly y: number }): void;
-  controlPointFor(sigma: Sigma, relationId: string): { readonly x: number; readonly y: number } | undefined;
-};
-
-/** This creates a live material-program recorder and does not construct bindings from relation types. */
-function createLiveRelationMaterialBindings(): LiveRelationMaterialBindings {
-  let materialTypesByFingerprint = new Map<number, string[]>();
-  return {
-    observe(sigma: Sigma): void {
-      sigma.on("beforeProcess", () => {
-        materialTypesByFingerprint = new Map<number, string[]>();
-      });
-    },
-    record(fingerprint: number, materialType: string): void {
-      const materialTypes = materialTypesByFingerprint.get(fingerprint) ?? [];
-      materialTypes.push(materialType);
-      materialTypesByFingerprint.set(fingerprint, materialTypes);
-    },
-    materialTypesFor(sigma: Sigma, relationId: string): readonly string[] {
-      const fingerprint = relationFingerprints(sigma).get(relationId);
-      if (fingerprint === undefined) {
-        throw new TypeError(`live relation ${relationId} has no Sigma fingerprint`);
-      }
-      return [...(materialTypesByFingerprint.get(fingerprint) ?? [])];
-    },
-  };
-}
-
-/** This creates a recorder for the actual control attributes written by the live filament program. */
-function createLiveRelationGeometryBindings(): LiveRelationGeometryBindings {
-  let controlPointsByFingerprint = new Map<number, { readonly x: number; readonly y: number }>();
-  return {
-    observe(sigma: Sigma): void {
-      sigma.on("beforeProcess", () => {
-        controlPointsByFingerprint = new Map<number, { readonly x: number; readonly y: number }>();
-      });
-    },
-    record(fingerprint, controlPoint): void {
-      controlPointsByFingerprint.set(fingerprint, controlPoint);
-    },
-    controlPointFor(sigma: Sigma, relationId: string): { readonly x: number; readonly y: number } | undefined {
-      const fingerprint = relationFingerprints(sigma).get(relationId);
-      if (fingerprint === undefined) {
-        throw new TypeError(`live relation ${relationId} has no Sigma fingerprint`);
-      }
-      return controlPointsByFingerprint.get(fingerprint);
-    },
-  };
-}
-
 /** This instruments a filament program's actual live processing and does not create another relation. */
 function createObservedFilamentProgram(
   material: FilamentUniformMaterial,
@@ -951,52 +885,6 @@ function createPickingCapableNodeProgram(screenPaint: ScreenPaintControl): NodeP
       this.unbindProgram(pick);
     }
   };
-}
-
-/** This reads material programs that actually processed every live relation and does not inspect source graph semantics. */
-function liveRelationMaterialBindings(sigma: Sigma, bindings: LiveRelationMaterialBindings): readonly RelationMaterialBinding[] {
-  const graph = sigma.getGraph();
-  return [...graph.edges()].sort().map((relationId) => {
-    const materialTypes = bindings.materialTypesFor(sigma, relationId);
-    if (materialTypes.length === 0) {
-      throw new TypeError(`live relation ${relationId} has no processed material program`);
-    }
-    return { relationId, materialTypes };
-  });
-}
-
-/** This reconstructs Sigma's internal processing-order fingerprints from public display state and does not infer a material binding. */
-function relationFingerprints(sigma: Sigma): ReadonlyMap<string, number> {
-  const graph = sigma.getGraph();
-  const relationIds = [...graph.edges()];
-  if (sigma.getSetting("zIndex")) {
-    relationIds.sort((left, right) => {
-      const leftData = sigma.getEdgeDisplayData(left);
-      const rightData = sigma.getEdgeDisplayData(right);
-      if (leftData === undefined || rightData === undefined) {
-        throw new TypeError("live relation fingerprint requires display data");
-      }
-      return leftData.zIndex - rightData.zIndex;
-    });
-  }
-  const firstRelationFingerprint = graph.nodes().length + 1;
-  return new Map(relationIds.map((relationId, offset) => [relationId, firstRelationFingerprint + offset]));
-}
-
-/** This reads control attributes from the live filament program and does not recreate them with a geometry helper. */
-function liveRelationGeometryWitnesses(
-  sigma: Sigma,
-  bindings: LiveRelationGeometryBindings,
-): readonly RenderRelationGeometryWitness[] {
-  const graph = sigma.getGraph();
-  return [...graph.edges()].sort().map((relationId) => {
-    const controlPoint = bindings.controlPointFor(sigma, relationId);
-    if (controlPoint === undefined) {
-      throw new TypeError(`live relation ${relationId} has no processed control-point attributes`);
-    }
-    const viewportControlPoint = sigma.framedGraphToViewport(controlPoint);
-    return { relationId, controlPoint: { x: viewportControlPoint.x, y: viewportControlPoint.y } };
-  });
 }
 
 /** This reads ids and incidence from the mounted Sigma graph and does not use the render model. */

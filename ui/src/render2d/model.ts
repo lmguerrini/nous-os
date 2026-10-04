@@ -520,8 +520,10 @@ export function edgeLabelCandidatesForState(
   if (focusedRelation !== null) {
     relevant.add(focusedRelation);
   }
-  if (state.focusedId !== null && model.graph.hasNode(state.focusedId)) {
-    for (const edgeId of model.graph.edges(state.focusedId)) {
+  const focusedNodeEdges = state.focusedId !== null && model.graph.hasNode(state.focusedId)
+    ? new Set(model.graph.edges(state.focusedId)) : null;
+  if (focusedNodeEdges !== null) {
+    for (const edgeId of focusedNodeEdges) {
       relevant.add(edgeId);
     }
   }
@@ -531,7 +533,7 @@ export function edgeLabelCandidatesForState(
   return [...candidateIds].map((id) => {
     const attributes = model.graph.getEdgeAttributes(id);
     const selected = id === selectedRelation;
-    const focused = id === focusedRelation || (state.focusedId !== null && model.graph.hasNode(state.focusedId) && model.graph.edges(state.focusedId).includes(id));
+    const focused = id === focusedRelation || (focusedNodeEdges?.has(id) ?? false);
     return {
       id,
       text: attributes.labelText,
