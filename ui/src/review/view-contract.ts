@@ -556,6 +556,8 @@ export type ProductView = {
   frameFocus?(ids: readonly string[]): Promise<void>;
   /** Frames every visible node. */
   fit(): Promise<void>;
+  /** Optional live world-to-host projection for nonsemantic Fractal rail overlays. */
+  projectPoint?(point: { readonly x: number; readonly y: number; readonly z: number }): { readonly x: number; readonly y: number };
   witness(): ViewWitness;
   destroy(): void;
 };

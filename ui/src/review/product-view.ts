@@ -1278,6 +1278,9 @@ export const createProductView: CreateProductView = async (input) => {
     const state = handle.readCameraState();
     if (!sameCamera(lastCamera, state)) {
       lastCamera = state;
+      // C2 Fractal-only rail overlay follows the same settled camera as the product renderers.
+      if (container.hasAttribute('data-fractal-rails-active'))
+        container.dispatchEvent(new Event('d080-fractal-camera-motion'));
       cameraFrameTimes.push(now);
       if (cameraFrameTimes.length > 120) cameraFrameTimes.shift();
       cameraWatch.lastChangeMs = now;
@@ -2103,6 +2106,7 @@ export const createProductView: CreateProductView = async (input) => {
     frame: (ids) => frameIds(ids, true),
     frameFocus: (ids) => frameIds(ids, false, 60, 0.78),
     fit: () => frameIds([...visible], false),
+    projectPoint: (point) => project(point),
     witness() {
       if (!handle) throw new Error("view destroyed");
       const r = container.getBoundingClientRect();

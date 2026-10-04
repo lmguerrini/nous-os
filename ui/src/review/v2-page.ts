@@ -57,6 +57,20 @@ import type { Insets } from './view-contract.ts';
 import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
 import { summarizeD081Bundles } from './toolbar-status.ts';
 import { createProductView } from './product-view.ts';
+// C2 Fractal-only integration imports. Natural and Indra do not call these modules.
+import { computeCanopyLayout, type CanopyLayout } from '../fractal/canopy-layout.ts';
+import { certifyCanopy } from '../fractal/canopy-certificate.ts';
+import { adaptFractalDates, fractalDateRuleCounts } from '../fractal/date-adapter.ts';
+// D081-P7b BEGIN: Fractal-only ink and status contracts.
+import { canopyBandForZoom, canopyMarks, canopyZoomStep, type CanopyMark } from '../fractal/canopy-reveal.ts';
+import { canopyGraphStatus } from '../fractal/canopy-status.ts';
+// D081-P7 BEGIN
+import { canopyEvidenceArcs } from '../fractal/evidence-edges.ts';
+// D081-P7 END
+import { appendCanopyExplanation, canopyRenderPositions, mountCanopyRailLayer, visibleCanopyRails,
+    type CanopyRailLayer, type CanopyEvidenceStroke } from '../fractal/renderer-adapter.ts';
+import type { D081GraphStatus } from './toolbar-status.ts';
+// D081-P7b END.
 import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
 import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import { centeringNodeId } from './panel.ts';
@@ -630,6 +644,9 @@ export class V2Page {
         // D081-P3b END
     }
     private d081Emit() {
+        // D081-FRACTAL-MERGE BEGIN: the canopy owns the public status contract while active.
+        if (this.canopyActive()) { this.publishCanopyStatus(); return; }
+        // D081-FRACTAL-MERGE END.
         if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function')
             window.dispatchEvent(new CustomEvent('d081:status', { detail: this.d081Status() }));
     }
@@ -649,6 +666,9 @@ export class V2Page {
     }
     private d081Publish(route: RouteResult, eligibleEdges: number, eligibleNodes: number,
         declaredAggregateMembers = 0, declaredAggregateGroups = 0) {
+        // D081-FRACTAL-MERGE BEGIN: canopy status counts painted marks and evidence.
+        if (this.canopyActive()) return;
+        // D081-FRACTAL-MERGE END.
         // D081-P6c BEGIN: level-5 passage rows are detail, not dataset nodes.
         const visible = [...this.rendered].filter(id => this.datasetNodeIds.has(id)).length;
         // Disclosure and LOD decide what is visible; they must not shrink the denominator and
@@ -753,6 +773,83 @@ export class V2Page {
     /** True when the flag or an injected pipeline serves every organization through the typed
      * pipeline; false, only the views that are always typed (Fractal) leave the product view. */
     private readonly typedByDefault: boolean;
+    // C2 FRACTAL-ONLY BEGIN: isolated to the large reference dataset; small projection fixtures stay intact.
+    private canopy: CanopyLayout | null = null;
+    private canopyRailLayer: CanopyRailLayer | null = null;
+    // D081-P7b BEGIN: publish the counts of Fractal ink and represented real IDs.
+    private canopyMarksShown: readonly CanopyMark[] = [];
+    private canopyStatus: D081GraphStatus | null = null;
+    private canopyStatusSignature = '';
+    private canopyStatusAt = 0;
+    private canopyLastQualityMs = 0;
+    private canopyQualityRecorded = false;
+    private readonly coreStatusGetter = () => this.d081Status();
+    private readonly canopyStatusGetter = () => this.canopyStatus && ({ ...this.canopyStatus,
+        msSinceInteraction: Math.max(0, performance.now() - this.canopyStatusAt) });
+    private publishCanopyStatus(): void {
+        if (!this.canopyActive() || !this.canopyRailLayer) return;
+        const stats = this.canopyRailLayer.stats();
+        const eligibleEdges = this.index.edges.filter(edge => relationVisible(
+            edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading)).length;
+        const elapsed = Math.max(0, performance.now() - this.canopyStatusAt);
+        if (elapsed >= 400 && !this.canopyQualityRecorded) {
+            this.canopyLastQualityMs = elapsed;
+            this.canopyQualityRecorded = true;
+        }
+        // D081-P7d BEGIN: dataset count excludes drawer-loaded passages.
+        const status = canopyGraphStatus({ marks: this.canopyMarksShown, visible: this.rendered.size,
+            totalNodes: this.canopyDatasetNodes.length, evidenceDrawn: stats.evidenceDrawn,
+            evidenceBundles: stats.evidenceBundles, evidenceBundled: stats.evidenceBundled,
+            eligibleEdges, totalEdges: this.index.edges.length, lod: this.lod,
+            edgeBudget: this.lod === 'far' ? Math.min(300, DENSITY_BUDGETS[this.density].arcs)
+                : DENSITY_BUDGETS[this.density].arcs,
+            msSinceInteraction: elapsed, msToFullQuality: this.canopyLastQualityMs });
+        // D081-P7d END.
+        const signature = JSON.stringify({ ...status, msSinceInteraction: 0 });
+        this.canopyStatus = status;
+        const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
+        owner.__d081 = { ...owner.__d081, status: this.canopyStatusGetter };
+        if (signature !== this.canopyStatusSignature) {
+            this.canopyStatusSignature = signature;
+            window.dispatchEvent(new CustomEvent('d081:status', { detail: status }));
+        }
+    }
+    // D081-P7b END.
+    private canopyNodeCount = 0;
+    // D081-P7d BEGIN.
+    private canopyDetailStep = 0;
+    // D081-P7d END.
+    // D081-P7d BEGIN: drawer passage loads are outside the fixed graph snapshot.
+    private readonly canopyDatasetNodes: readonly V2Node[];
+    // D081-P7d END.
+    private canopyIngested = false;
+    private canopyActive(): boolean {
+        return this.axes.organization === 'fractal' && this.index.nodes.length > V2_CAP
+            && enabledExperimentalOrganizations().has('fractal');
+    }
+    private async prepareCanopy(): Promise<CanopyLayout> {
+        // D081-P7d BEGIN: build the canopy from the immutable dataset snapshot.
+        if (this.canopy && this.canopyNodeCount === this.canopyDatasetNodes.length) return this.canopy;
+        // C0 rules are applied to a Fractal-only copy before typed validation. The page and its
+        // Natural/Indra snapshots retain the unmodified source index and date semantics.
+        if (!this.canopyIngested) {
+            const adapted = adaptFractalDates(this.index.nodes.filter(node => node.level <= 4));
+            await normalizeRawLedger({ manifest: this.manifest,
+                index: { schema: 'nousos.review-graph/2', nodes: adapted, edges: this.index.edges } });
+            this.canopyIngested = true;
+        }
+        const began = performance.now();
+        const layout = computeCanopyLayout(this.canopyDatasetNodes, this.index.edges);
+        this.recordProjectionPhase('canopyPrecompute', performance.now() - began);
+        const certificate = certifyCanopy(layout, this.canopyDatasetNodes, this.index.edges);
+        if (!certificate.addressUnique || !certificate.bounded || !certificate.sourceEdgeAccounting)
+            throw new Error('Canopy certificate failed');
+        this.canopy = layout;
+        this.canopyNodeCount = this.canopyDatasetNodes.length;
+        // D081-P7d END.
+        return layout;
+    }
+    // C2 FRACTAL-ONLY END.
     private projectionInput: ProjectionPipelineInput | undefined;
     private readonly fractalPipeline: ProjectionPipelineInput | undefined;
     private readonly projectionRegistry: ProjectionRegistry;
@@ -849,6 +946,9 @@ export class V2Page {
         this.datasetNodeIds = new Set(index.nodes.filter(node => node.level !== 5).map(node => node.id));
         this.datasetNodeCount = this.datasetNodeIds.size;
         // D081-P6c END.
+        // D081-P7d BEGIN.
+        this.canopyDatasetNodes = [...index.nodes];
+        // D081-P7d END.
         // D081-P6 BEGIN: depth lookup is reused by each 3D wheel sample.
         this.wheelLevels = new Map(index.nodes.map(node => [node.id, node.level]));
         // D081-P6 END.
@@ -864,7 +964,7 @@ export class V2Page {
         this.density = normalizeDensity(density);
         if (typeof window !== 'undefined')
             (window as typeof window & { __d081?: { status?: () => unknown } }).__d081 =
-                { ...(window as typeof window & { __d081?: object }).__d081, status: () => this.d081Status() };
+                { ...(window as typeof window & { __d081?: object }).__d081, status: this.coreStatusGetter };
         // D081-P3g BEGIN: the event is sent only after the label DOM pass completes.
         if (typeof window !== 'undefined') window.addEventListener('d081:labels-settled', () => {
             if (this.axes.projection !== '3d' || !this.d081LastInteraction) return;
@@ -1031,12 +1131,15 @@ export class V2Page {
     }
     private visible() {
         // D081-P3b BEGIN complete Indra domain
-        if (this.density === 'complete' && (!this.typedActive() || this.indraPearlsView())) return completeVisible(this.index);
+        if (this.density === 'complete' && !this.canopyActive() && (!this.typedActive() || this.indraPearlsView())) return completeVisible(this.index);
         // D081-P3b END
         const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
         for (const [id, count] of this.autoPageCounts) pages.set(id, count);
         for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
-        return v2Visible(this.index, this.history.state, pages, V2_CAP,
+        const state = this.canopyActive() ? { ...this.history.state,
+            expanded: new Set([...this.history.state.expanded,
+                ...this.index.nodes.filter(node => node.level <= 2).map(node => node.id)]) } : this.history.state;
+        return v2Visible(this.index, state, pages, V2_CAP,
             this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId);
     }
     private disclosureKey() {
@@ -1238,10 +1341,11 @@ export class V2Page {
         const target = window as typeof window & { __d073?: { projectionWitness?: () => unknown } };
         (target.__d073 ??= {}).projectionWitness = () => this.projectionWitnessRecord();
     }
-    /** Whether the current view is drawn by the typed pipeline: every view under the flag or an
-     * injected pipeline, otherwise only the views the organization register marks as always typed. */
+    /** Whether the current view is drawn by the typed pipeline. C2's flagged canopy uses the
+     * product renderer to preserve all three morphologies over the complete reference hierarchy. */
     private typedActive(): boolean {
-        return this.typedByDefault || (ORGANIZATION_PROJECTIONS[this.axes.organization].typed === 'always' && !this.legacyIndraView());
+        return !this.canopyActive() && (this.typedByDefault ||
+            (ORGANIZATION_PROJECTIONS[this.axes.organization].typed === 'always' && !this.legacyIndraView()));
     }
     private legacyIndraView(): boolean {
         return this.legacyIndra && this.axes.organization === 'indra';
@@ -1263,9 +1367,10 @@ export class V2Page {
         }
         return this.projectionInput;
     }
-    /** The organization the product view draws; Fractal and Holographic never reach it. */
+    /** The organization the product view draws; C2 Fractal reuses Natural materials on its own positions. */
     private legacyOrganization(): Organization {
         const { organization } = this.axes;
+        if (this.canopyActive()) return 'natural';
         if (organization === 'fractal' || organization === 'holographic')
             throw new Error(`${organization === 'fractal' ? 'Fractal' : 'Holographic'} is only served by the typed projection pipeline`);
         return organization;
@@ -1988,6 +2093,13 @@ export class V2Page {
     private retireLegacyView(): void {
         const view = this.view, host = this.viewHost;
         if (!view && !host) return;
+        this.canopyRailLayer?.destroy();
+        this.canopyRailLayer = null;
+        // D081-P7b BEGIN: a retired Fractal view cannot keep serving stale counts.
+        this.canopyStatus = null;
+        const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
+        if (owner.__d081?.status === this.canopyStatusGetter) owner.__d081.status = this.coreStatusGetter;
+        // D081-P7b END.
         this.view = null;
         this.viewHost = null;
         this.lastLodKey = null;
@@ -2718,11 +2830,38 @@ export class V2Page {
             this.retireTypedRenderer();
             // D-080 A5b pre-view measurement begins after the view choice, before projection inputs.
             const preViewBegan = performance.now();
+            const canopy = this.canopyActive() ? await this.prepareCanopy() : null;
             const organization = this.legacyOrganization();
             this.suppressZoomUntil = performance.now() + 900;
             const disclosed = this.visible();
-            const ids = new Set(disclosed.nodes.map(n => n.id));
-            const visibleById = new Map(disclosed.nodes.map(node => [node.id, node]));
+            // D081-P7d BEGIN: the canopy reveal owns its representatives independently of
+            // manual disclosure. A fixed graph snapshot excludes later passage fetches.
+            const projection = this.axes.projection;
+            let canopyViewMarks: ReturnType<typeof canopyMarks> = [];
+            if (canopy) {
+                const focusId = this.selected ?? this.revealState.focusClusterId
+                    ?? this.history.state.manualOrder.at(-1) ?? null;
+                const rootWidth = Math.max(1, canopy.bounds.x[1] - canopy.bounds.x[0]);
+                const clearWidth = Math.max(1, (element('render-root').clientWidth || 1000)
+                    - this.insets.left - this.insets.right);
+                const pixelsPerUnit = Math.max(0.05, this.revealCamera.zoom) * clearWidth / rootWidth;
+                const band = canopyBandForZoom(this.revealCamera.zoom);
+                const previousAxes = this.view?.witness().axes as PageAxes | undefined;
+                const sameCanopyCamera = previousAxes?.organization === 'fractal'
+                    && previousAxes.projection === projection;
+                canopyViewMarks = canopyMarks(canopy, this.canopyDatasetNodes, band, focusId,
+                    pixelsPerUnit, projection, sameCanopyCamera && this.view?.projectPoint
+                        ? point => this.view!.projectPoint!(point) : undefined, this.canopyDatasetNodes);
+            }
+            const canopyNodeById = canopy
+                ? new Map(this.canopyDatasetNodes.map(node => [node.id, node])) : null;
+            const sceneNodes = canopy
+                ? [...new Map([...disclosed.nodes.filter(node => canopy.positions.has(node.id)),
+                    ...canopyViewMarks.map(mark => canopyNodeById!.get(mark.id)!)].map(node => [node.id, node])).values()]
+                : disclosed.nodes;
+            const ids = new Set(sceneNodes.map(n => n.id));
+            const visibleById = new Map(sceneNodes.map(node => [node.id, node]));
+            // D081-P7d END.
             const visibleParents = new Set(disclosed.nodes.map(node => node.parent).filter((id): id is string => id !== null));
             const hiddenCount = (node: V2Node) => {
                 const hidden = disclosed.hidden.get(node.id) ?? 0;
@@ -2732,13 +2871,13 @@ export class V2Page {
             const layoutEdges = projectLayoutRelations(
                 this.index.nodes, this.index.edges, ids, this.axes.reading, 'natural', 'essential',
             ).edges;
-            const projection = this.axes.projection;
-            const usePrevious = this.layoutSource === 'flat-community' && organization === 'natural'
+            const usePrevious = !canopy && this.layoutSource === 'flat-community' && organization === 'natural'
                 && this.layoutProjection === projection && this.axes.morphology === this.lastMorphology;
             // D-080 A5b projection/result-adaptation region. Serialize the actual layout
             // inputs, including continuity seeds, so a returning mode gets the same object.
             const layoutInput: LayoutInput = {
-                nodes: disclosed.nodes.map(n => ({
+                // D081-P7d BEGIN: include revealed records in the Fractal scene.
+                nodes: sceneNodes.map(n => ({
                     id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
                     hiddenDescendants: hiddenCount(n),
                 })),
@@ -2750,14 +2889,20 @@ export class V2Page {
                 ...(organization === 'indra' ? { expandZ: this.appearance.expandZ } : {}),
                 ...(usePrevious ? { previous: this.rawPositions } : {}),
             };
-            const layoutKey = pageLayoutKey(this.manifest.digest, layoutInput);
+            // D081-FRACTAL-MERGE BEGIN: the canopy has its own immutable layout cache.
+            const layoutKey = canopy ? `fractal-canopy:${projection}:${this.manifest.digest}:${canopy.digest}:${[...ids].sort().join('|')}`
+                : pageLayoutKey(this.manifest.digest, layoutInput);
             this.recordProjectionPhase('projectionInput', performance.now() - projectionInputBegan);
             const projectionBegan = performance.now();
             const reused = this.pageResults.get(layoutKey) as LayoutResult | undefined;
             this.projectionCacheOutcome = reused ? 'hit' : 'miss';
             // D081-P3c BEGIN: large classic layouts run in the embedded worker.
-            const result = reused ?? await computeClassicLayout(layoutInput);
+            const result: LayoutResult = reused ?? (canopy
+                ? { positions: canopyRenderPositions(canopy, sceneNodes.map(node => node.id), projection),
+                    containers: [], source: 'fractal-canopy' }
+                : await computeClassicLayout(layoutInput));
             // D081-P3c END
+            // D081-FRACTAL-MERGE END.
             this.recordProjectionPhase('projectionCompute', reused ? 0 : performance.now() - projectionBegan);
             if (!reused) this.pageResults.set(layoutKey, result);
             // End D-080 A5b projection/result-adaptation region.
@@ -2765,14 +2910,15 @@ export class V2Page {
             // on screen — a refresh that fails mid-way must leave the page describing the view it
             // actually displays, not the one it wanted.
             const nextRawPositions = result.positions;
-            const flat3d = organization === 'natural' && projection === '3d';
+            const flat3d = !canopy && organization === 'natural' && projection === '3d';
             const nextCanonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
             const expanded = flat3d
                 ? applyExpansion(nextCanonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
                 : result.positions;
             const next = new Map<string, Point3>();
-            for (const n of disclosed.nodes)
+            for (const n of sceneNodes)
                 next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
+            // D081-P7d END.
             const nextCommunities = result.communities ?? [];
             const active = this.renderedRelations.get(this.selected ?? '')?.source
                 ?? this.index.edges.find(edge => edge.id === this.selected)?.source
@@ -2783,10 +2929,15 @@ export class V2Page {
             // incremental stability — existing positions are seeds, only fresh nodes are placed).
             const budget = DENSITY_BUDGETS[this.density];
             const routingBegan = performance.now();
-            const availableArcs = this.density === 'complete'
+            // D081-FRACTAL-MERGE BEGIN: Completa remains the core route only off Fractal.
+            const projectedArcs = this.density === 'complete' && !canopy
                 ? completeRelations(this.index, this.axes.reading)
                 : projectRelations(this.index.nodes, this.index.edges, ids, this.axes.reading,
                     organization, this.relationDetail, active);
+            const canopyArcs = canopy ? canopyEvidenceArcs(projectedArcs.edges) : null;
+            const availableArcs = canopyArcs ? { ...projectedArcs,
+                edges: canopyArcs, total: canopyArcs.length } : projectedArcs;
+            // D081-FRACTAL-MERGE END.
             const communityOf = communityResolver(this.index.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
             const tiers = manualExpansionTiers(
@@ -2800,7 +2951,7 @@ export class V2Page {
             const byImportance = new Map(disclosed.nodes.map(node => [node.id, node.importance.value]));
             const priority = [...tiers.priorityChildren, ...this.focusedRenderPriority(disclosed.nodes),
                 ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
-            const selection = this.density === 'complete'
+            const selection = this.density === 'complete' && !canopy
                 ? { rendered: disclosed.nodes.map(node => node.id), dropped: [] }
                 : this.selectLod({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
@@ -2813,11 +2964,17 @@ export class V2Page {
                 communityOf,
             }, this.lastNodeSelection);
             let renderedIds = new Set(selection.rendered);
-            if (this.density !== 'complete' && this.neighbourhoodDepth && focusPriority) {
+            // D081-FRACTAL-MERGE BEGIN: canopy representatives win over the core density set.
+            if (canopy) {
+                renderedIds = new Set(canopyViewMarks.map(mark => mark.id));
+                if (this.selected && visibleById.has(this.selected)) renderedIds.add(this.selected);
+            }
+            // D081-FRACTAL-MERGE END.
+            if (this.density !== 'complete' && this.neighbourhoodDepth && focusPriority && !canopy) {
                 // D-079 reading contract: focus traverses exactly the selected semantic class.
                 const allowed = this.index.edges.filter(edge => relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading));
                 renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
-            } else if (this.density !== 'complete' && this.restoreNeighbourhood && this.neighbourhoodBefore) renderedIds = new Set(this.neighbourhoodBefore.nodes);
+            } else if (this.density !== 'complete' && this.restoreNeighbourhood && this.neighbourhoodBefore && !canopy) renderedIds = new Set(this.neighbourhoodBefore.nodes);
             const routedInput: RouteRelation[] = availableArcs.edges.map(edge => ({
                 id: edge.id, channel: 'lifted', source: edge.source, target: edge.target,
                 class: edge.class, type: edge.type, count: edge.count,
@@ -2825,15 +2982,16 @@ export class V2Page {
             }));
             // The reading mask belongs to routing's audit as well as its drawing. Keep the
             // source relations that the older projector omitted so each has a suppression cause.
-            if (this.axes.reading !== 'combined') for (const edge of this.index.edges)
+            if (!canopy && this.axes.reading !== 'combined') for (const edge of this.index.edges)
                 if (!relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading))
                     routedInput.push({ id: edge.id, channel: 'semantic', source: edge.source,
                         target: edge.target, class: edge.class, type: edge.type, count: 1 });
-            const route = this.density === 'complete'
+            const route = this.density === 'complete' && !canopy
                 ? completeRoute(availableArcs.edges, renderedIds)
                 : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
                 renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
-                budget: organization === 'indra' && this.relationDetail === 'essential'
+                budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs)
+                    : organization === 'indra' && this.relationDetail === 'essential'
                     ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                 focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
             this.recordProjectionPhase('relationRouting', performance.now() - routingBegan);
@@ -2844,7 +3002,9 @@ export class V2Page {
                 return { ...base, id: edge.id, source: edge.from.id, target: edge.to.id,
                     count: edge.count, underlying: originals.flatMap(item => item.underlying),
                     lifted: base.lifted || edge.from.kind === 'aggregate' || edge.to.kind === 'aggregate' || originals.length > 1,
-                    width: Math.max(0.65, Math.sqrt(edge.count)) };
+                    width: canopy ? Math.min(7, 0.85 + Math.log1p(edge.count) * 0.7)
+                        * (edge.type === 'contains' && canopy.lineageIds.includes(edge.to.id) ? 1.8 : 1)
+                        : Math.max(0.65, Math.sqrt(edge.count)) };
             });
             this.restoreNeighbourhood = false;
             const pinnedRendered = [...pinned].filter(id => renderedIds.has(id)).sort();
@@ -2854,7 +3014,9 @@ export class V2Page {
                 arcs: { rendered: shown.length, available: availableArcs.total, pinned: pinnedArcsRendered.length, pinnedIds: pinnedArcsRendered },
             };
             const nextRenderedRelations = new Map(shown.map(edge => [edge.id, edge]));
+            // D081-P7 BEGIN
             const nextArcTotal = availableArcs.total;
+            // D081-P7 END
             // An Indra container whose children the LOD dropped draws as a closed pearl, never as
             // an empty shell; the drawing reads the open flag, positions are untouched.
             const renderedChildren = new Map<string, number>();
@@ -2880,7 +3042,11 @@ export class V2Page {
             const nextLayoutSource = result.source;
             // D-080 A5b result adaptation timing.
             const adaptationBegan = performance.now();
-            const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
+            // D081-P7b BEGIN: Fractal evidence uses one endpoint-clipped canvas pass.
+            // D081-P7d BEGIN.
+            const adapted = adaptV2(sceneNodes, canopy ? [] : shown, next, this.manifest.digest);
+            // D081-P7d END.
+            // D081-P7b END.
             this.recordProjectionPhase('resultAdaptation', performance.now() - adaptationBegan);
             this.recordProjectionPhase('preView', performance.now() - preViewBegan);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
@@ -2905,9 +3071,11 @@ export class V2Page {
                 try {
                     applied = this.view.updateVisibleSubset({
                         visibleNodeIds: renderedIds,
-                        edges: shown,
+                        // D081-P7b BEGIN: Fractal edges and titles have one camera-following pass.
+                        edges: canopy ? [] : shown,
                         containers: nextContainers,
-                        labelBudget: budget.labels,
+                        labelBudget: canopy ? 0 : budget.labels,
+                        // D081-P7b END.
                     });
                 }
                 catch { applied = false; }
@@ -2924,13 +3092,27 @@ export class V2Page {
                     this.arcTotal = nextArcTotal;
                     this.containers = nextContainers;
                     this.previousVisible = renderedIds;
+                    // D081-P7 BEGIN: in-place zoom changes the counted marks too.
+                    // D081-P7b BEGIN: keep overlay evidence and status with this visible set.
+                    this.canopyRailLayer?.update(renderedIds, this.selected, undefined,
+                        canopyViewMarks, shown as CanopyEvidenceStroke[]);
+                    if (canopy) {
+                        this.canopyMarksShown = canopyViewMarks;
+                        this.canopyStatusAt = performance.now();
+                        this.canopyQualityRecorded = false;
+                        this.publishCanopyStatus();
+                    }
+                    // D081-P7b END.
+                    // D081-P7 END.
                     this.lastNodeSelection = selection;
                     if (this.selected)
                         this.view.select(this.selected);
                     this.updateEmphasis();
                     this.syncFocusControls();
                     this.renderPanel();
-                    element('status').textContent = 'Grafo pronto';
+                    element('status').textContent = canopy
+                        ? 'Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica'
+                        : 'Grafo pronto';
                     element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
                     if (added.length && this.positions.size > added.length)
                         this.pulse(added);
@@ -2996,8 +3178,10 @@ export class V2Page {
                 await new Promise<void>(resolve => setTimeout(resolve, 0));
             // D081-P3c END
             let mounted: ProductView;
+            let nextRailLayer: CanopyRailLayer | null = null;
             try {
-                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(shown.map(edge => edge.id)), axes: { ...this.axes, organization }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                // D081-FRACTAL-MERGE BEGIN: canopy owns its edge and title layers.
+                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const hint = (canopy || this.axes.organization === 'indra') && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -3014,6 +3198,24 @@ export class V2Page {
                             if (this.hoverRefreshTimer) clearTimeout(this.hoverRefreshTimer);
                         } }
                 });
+                // D081-P7b END.
+                if (canopy) {
+                    // D081-P7b BEGIN: one measured viewport owns labels, evidence, and status.
+                    appendCanopyExplanation(nextHost, canopy, this.axes.reading, this.insets);
+                    // D081-P7d BEGIN: morphology changes the canopy ink, never its positions.
+                    nextRailLayer = mountCanopyRailLayer(nextHost, canopy, mounted, renderedIds, this.axes.reading,
+                        projection, this.axes.morphology, this.selected, 30000, this.insets, canopyViewMarks, this.axes.labels,
+                        () => { if (this.canopyActive() && this.canopyRailLayer) this.renderPanel(); },
+                        shown as CanopyEvidenceStroke[],
+                        () => { if (this.canopyRailLayer === nextRailLayer) this.publishCanopyStatus(); },
+                        () => { if (this.canopyRailLayer === nextRailLayer) {
+                            this.canopyStatusAt = performance.now(); this.canopyQualityRecorded = false;
+                        } },
+                        edge => { if (this.canopyRailLayer === nextRailLayer)
+                            this.edgeTooltip(edge ? { kind: 'edge', ...edge } : null); });
+                    // D081-P7d END.
+                    // D081-P7b END.
+                }
             }
             catch (error) {
                 nextHost.remove();
@@ -3028,11 +3230,23 @@ export class V2Page {
             }
             const previousView = this.view;
             const previousHost = this.viewHost;
+            const previousRailLayer = this.canopyRailLayer;
             this.view = mounted;
             this.viewHost = nextHost;
+            this.canopyRailLayer = nextRailLayer;
+            if (canopy) {
+                this.canopyMarksShown = canopyViewMarks;
+                this.canopyStatusAt = performance.now();
+                this.canopyQualityRecorded = false;
+                this.publishCanopyStatus();
+            } else {
+                this.canopyStatus = null;
+                const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
+                if (owner.__d081?.status === this.canopyStatusGetter) owner.__d081.status = this.coreStatusGetter;
+            }
             this.installProjectionPerfHook();
             try { previousView?.destroy(); }
-            finally { previousHost?.remove(); }
+            finally { previousRailLayer?.destroy(); previousHost?.remove(); }
             // D-072 R1: the replacement is on screen — only now does the page state describe it.
             // A failed refresh above leaves every field at the last good values, matching the
             // view that is actually displayed (witness, labels, panel counts included).
@@ -3045,6 +3259,9 @@ export class V2Page {
             this.rendered = renderedIds;
             this.lodCounts = nextLodCounts;
             this.renderedRelations = nextRenderedRelations;
+            // D081-FRACTAL-MERGE BEGIN: read the committed visible set for canopy status.
+            if (canopy) this.publishCanopyStatus();
+            // D081-FRACTAL-MERGE END.
             this.publishReveal(route, renderedIds);
             this.d081Publish(route, availableArcs.total, this.density === 'complete' ? this.index.nodes.length : disclosed.nodes.length,
                 declaredAggregateCounts.members, declaredAggregateCounts.groups);
@@ -3129,8 +3346,10 @@ export class V2Page {
             this.syncFocusControls();
             if (added.length && this.positions.size > added.length)
                 this.pulse(added);
-            element('status').textContent = 'Grafo pronto';
-            const status = this.d081Status();
+            element('status').textContent = canopy
+                ? 'Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica'
+                : 'Grafo pronto';
+            const status = canopy ? this.canopyStatus ?? this.d081Status() : this.d081Status();
             element('counter').textContent = `${formatCount(status.nodes.visible)} visibili · ${formatCount(status.nodes.represented)}/${formatCount(status.nodes.total)} rappresentati · ${formatCount(status.edges.drawn)} archi`;
             element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
             (element('back') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
@@ -3330,7 +3549,7 @@ export class V2Page {
         this.density = next;
         // D081-P3b BEGIN: the resident lower-density view remains visible while
         // the worker prepares the full Indra domain; disclose that recovery state.
-        if (next === 'complete') {
+        if (next === 'complete' && !this.canopyActive()) {
             this.d081Quality = 'recupero';
             this.d081Metrics.nodes.eligible = this.index.nodes.length;
             this.d081Metrics.edges.eligible = completeRelations(this.index, this.axes.reading).total;
@@ -3393,6 +3612,9 @@ export class V2Page {
     }
     /** Labels actually placed by the view in its last pass. */
     private labelCount(): number {
+        // D081-P7 BEGIN: report the one Fractal overlay label pass, not the disabled product pass.
+        if (this.canopyActive()) return this.canopyRailLayer?.stats().labels ?? 0;
+        // D081-P7 END.
         if (this.typedActive()) {
             try { return this.projectionRenderer?.readPlacedLabelIds?.().length ?? 0; }
             catch { return 0; }
@@ -3405,6 +3627,9 @@ export class V2Page {
         }
     }
     private titleCount(): number {
+        // D081-P7b BEGIN: Fractal paints no product container titles.
+        if (this.canopyActive()) return 0;
+        // D081-P7b END.
         // The typed label pass places labels only; it does not place product container titles.
         if (this.typedActive()) return 0;
         try { return this.view?.witness().titleCount ?? 0; }
@@ -3416,6 +3641,7 @@ export class V2Page {
         return focusMembers(nodes, this.index.edges.filter(edge => relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading)), id);
     }
     private updateEmphasis() {
+        if (this.canopyActive()) this.canopyRailLayer?.update(this.rendered, this.selected);
         if (!this.selected) {
             this.view?.setFocusStyle?.(null);
             const resting = this.hovered || this.hoveredEdge ? restingEmphasis({
@@ -3491,6 +3717,22 @@ export class V2Page {
         }
         const brain = brainForMode(merged, this.brainChoices);
         const next: PageAxes = { ...merged, brain };
+        // C2 Fractal-only entry starts at the fitted band even if the prior view was deeply zoomed.
+        if (merged.organization === 'fractal' && this.index.nodes.length > V2_CAP
+            && enabledExperimentalOrganizations().has('fractal')
+            && (this.axes.organization !== 'fractal' || merged.projection !== this.axes.projection)) {
+            this.lod = 'far';
+            // D081-P7d BEGIN.
+            this.canopyDetailStep = 0;
+            // D081-P7d END.
+            this.pendingLod = null;
+            this.auto.clear();
+            this.autoPageCounts.clear();
+            this.revealState = emptyRevealState();
+            this.revealCamera = { zoom: 1, band: 'far', settled: true };
+            this.overviewRatio = null;
+            this.lastRevealSampleKey = '';
+        }
         if (merged.organization !== this.axes.organization && !this.supportsOrganization(merged.organization))
             throw new Error(`View is not registered: ${merged.organization}`);
         // D081-P6 BEGIN.
@@ -3599,6 +3841,9 @@ export class V2Page {
     setInsets(value: Parameters<ProductView['setInsets']>[0]) {
         this.insets = initialViewInsets(value);
         this.view?.setInsets(this.insets);
+        // C4 FRACTAL-ONLY BEGIN: the rail canvas and labels follow panel/toolbar inset changes.
+        this.canopyRailLayer?.setInsets(this.insets);
+        // C4 FRACTAL-ONLY END.
     }
     setSemanticZoom(on: boolean) {
         this.zoomOn = on;
@@ -3692,10 +3937,19 @@ export class V2Page {
         if (this.pendingLod !== null && settled) {
             this.lod = this.pendingLod;
             this.pendingLod = null;
+            // D081-P7d BEGIN.
+            if (this.canopyActive()) this.canopyDetailStep = canopyZoomStep(zoom);
+            // D081-P7d END.
             void this.refresh();
             return;
         }
-        if (changed) void this.refresh();
+        // D081-P7d BEGIN: refresh representative marks at settled half-octave steps,
+        // including camera changes inside one legacy LOD band.
+        const detailStep = this.canopyActive() ? canopyZoomStep(zoom) : 0;
+        const canopyChanged = settled && this.canopyActive() && detailStep !== this.canopyDetailStep;
+        if (canopyChanged) this.canopyDetailStep = detailStep;
+        if (changed || canopyChanged) void this.refresh();
+        // D081-P7d END.
     }
     /** D-073 C4: the typed pipeline's share of `tickZoom`. The mounted renderer reports the live
      * camera ratio (Sigma's camera state in 2D, the rig's visual state camera in 3D); the same
@@ -3777,6 +4031,7 @@ export class V2Page {
             ], drawnSourceIds, reading: this.axes.reading, relationDetail: this.relationDetail,
             organization: this.axes.organization as Axes['organization'], activeId: this.selected });
         const represented = countAggregateRepresentation(this.index.nodes, this.rendered);
+        const canopyRailStats = this.canopyActive() ? this.canopyRailLayer?.stats() : undefined;
         const visibility = this.view ? buildVisibilityWitness({
             axes: this.axes as Axes, relationDetail: this.relationDetail, density: this.density,
             nodes: this.index.nodes, renderedNodeIds: this.rendered,
@@ -3784,7 +4039,10 @@ export class V2Page {
                 source: edge.source, target: edge.target, class: edge.class })),
             sourceEdges: [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
                 source: edge.source, target: edge.target, class: edge.class })),
-            labels: productVisibility?.labels.drawn ?? this.labelCount(),
+            // D081-P7b BEGIN: the product title layer is suppressed in Fractal.
+            labels: this.canopyActive() ? this.labelCount()
+                : productVisibility?.labels.drawn ?? this.labelCount(),
+            // D081-P7b END.
             aggregateCount: represented.drawn,
             representedCount: represented.represented,
             starCount: productVisibility?.stars.drawn ?? 0,
@@ -3794,8 +4052,25 @@ export class V2Page {
             ...viewWitness,
             ...(visibility ? { visibility } : {}),
             // The typed page keeps its own axes record; there is no product view to ask.
-            ...(this.view ? {} : { axes: this.axes, nodeViewport: typedPositions }),
+            ...(this.view && !this.canopyActive() ? {} : { axes: this.axes,
+                ...(this.view ? {} : { nodeViewport: typedPositions }) }),
             ...(this.typedActive() ? { projection: this.projectionWitnessRecord() } : {}),
+            ...(this.canopyActive() && this.canopy ? { fractal: {
+                construction: 'contracting-binary-similarities', digest: this.canopy.digest,
+                band: this.lod === 'far' ? 'fit' : this.lod === 'near' ? 'deep' : 'mid',
+                addressCount: this.canopy.positions.size,
+                railStrokes: canopyRailStats?.drawn ?? visibleCanopyRails(this.canopy, this.rendered).length,
+                visibleRealNodesByLevel: Object.fromEntries([1, 2, 3, 4, 5].map(level =>
+                    [level, [...this.rendered].filter(id => this.canopy?.positions.get(id)?.level === level).length])),
+                railTreeOnly: canopyRailStats?.treeOnly ?? true,
+                railCycleFree: canopyRailStats?.cycleFree ?? true,
+                paletteValid: canopyRailStats?.paletteValid ?? true,
+                palette: 'bw',
+                thicknessRatio: volumeStats(this.positions).ratios.third,
+                crossDomain: this.canopy.crossDomain,
+                structuralCrossDomain: this.canopy.structuralCrossDomain,
+                dateRules: fractalDateRuleCounts(),
+            } } : {}),
             layoutSource: this.layoutSource,
             containers: this.containers,
             communities: this.communities,
@@ -3962,7 +4237,9 @@ export class V2Page {
         // density's allowance.
         line(controls, 'Nodi', `${formatCount(this.lodCounts.nodes.rendered)} di ${formatCount(this.lodCounts.nodes.available)} disponibili · ${formatCount(this.lodCounts.nodes.pinned)} fissati`);
         line(controls, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili · ${formatCount(this.lodCounts.arcs.pinned)} fissati`);
-        line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), labelBudgetOf(this.density)));
+        // D081-FRACTAL-MERGE BEGIN: the canvas canopy owns 44 title slots.
+        line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), this.canopyActive() ? 44 : labelBudgetOf(this.density)));
+        // D081-FRACTAL-MERGE END.
         line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa' }[this.density]);
         // D081-P3 BEGIN complete graph metric; P5 owns the surrounding panel rows.
         line(controls, 'Grafo', this.density === 'complete'

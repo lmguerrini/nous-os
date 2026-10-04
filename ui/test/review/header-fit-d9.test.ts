@@ -22,7 +22,9 @@ test('the ordinary selector keeps recursive Indra primary and exposes experiment
   const axis = header.slice(header.indexOf('data-axis="organization"'), header.indexOf('data-axis="reading"'));
   assert.deepEqual([...axis.matchAll(/data-value="([a-z-]+)"/g)].map(match => match[1]), ['natural', 'indra', 'indra-pearls', 'fractal', 'holographic']);
   assert.match(axis, /<button data-value="indra-pearls" hidden[^>]*>Indra's Pearls · Möbius\/Schottky \(sperimentale\)/);
-  assert.match(axis, /<button data-value="fractal" hidden[^>]*>Fractal \(sperimentale\)/);
+  // D081-P7 BEGIN: user-facing name for the flagged canopy entry.
+  assert.match(axis, /<button data-value="fractal" hidden[^>]*>Fractal · sperimentale/);
+  // D081-P7 END.
   assert.match(axis, /<button data-value="holographic" hidden/);
   assert.equal([...header.matchAll(/data-value="indra"/g)].length, 1, 'one Indra button in the header');
   assert.match(axis, /data-value="indra" title="Indra ricorsiva/);

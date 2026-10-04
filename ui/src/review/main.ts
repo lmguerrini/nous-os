@@ -1,6 +1,9 @@
 import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } from "./model.ts";
 import type { ReviewExport, ReviewNode } from "./model.ts";
 import { createProductView } from "./product-view.ts";
+// D081-P7 BEGIN
+import { removeUnflaggedFractalControls } from "../fractal/flagged-control.ts";
+// D081-P7 END
 import { DEFAULT_AXES, experimentalOrganizationsEnabled, indraSwitchNeedsReload, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, resolveExperimentalOrganization, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
 import type { Axes, AxesInput, PageAxes, ProductView, ViewWitness } from "./view-contract.ts";
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
@@ -131,6 +134,9 @@ const errors: string[] = [];
 const VIEW_STORAGE_KEY = "d073.view";
 const VIEW_URL_PARAMETER = "view";
 const experimentalFlags = experimentalOrganizationsEnabled(location.search, location.hash);
+// D081-P7 BEGIN: an unflagged page has no Fractal control in its live DOM.
+removeUnflaggedFractalControls(document, experimentalFlags.has("fractal"));
+// D081-P7 END.
 const indraPearlsSelected = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : location.hash).get("indra") === "pearls"
   && experimentalFlags.has("indra-pearls");
 let experimentalSuspensionNotice: string | null = null;
