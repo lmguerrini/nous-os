@@ -186,7 +186,7 @@ const resetRecording = () => {
 /** `discloseConversations` seeds `auto` with the projects (semantic-zoom style, unpinned), so the
  * 200 conversations are disclosed from the start and a level change really re-selects them. */
 function makePage(discloseConversations = false, deps: V2PageDeps = {}): V2Page {
-  const page = new V2PageClass(MANIFEST, fixtureIndex(), AXES, APPEARANCE, PALETTE, {}, "complete", { createView: fakeCreateView, ...deps });
+  const page = new V2PageClass(MANIFEST, fixtureIndex(), AXES, APPEARANCE, PALETTE, {}, "balanced", { createView: fakeCreateView, ...deps });
   if (discloseConversations)
     for (const n of page.index.nodes)
       if (n.level === 2)

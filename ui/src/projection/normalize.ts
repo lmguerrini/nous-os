@@ -164,7 +164,10 @@ function validateNode(row: RawJsonObject, path: string): RawGraphNode {
   field(x, 'level', path, v => v === 1 || v === 2 || v === 3 || v === 4);
   field(x, 'parent', path, stringOrNull);
   for (const key of ['parents', 'domains']) field(x, key, path, strings);
-  for (const key of ['subkind', 'status', 'primary_domain', 'display_label', 'date', 'origin', 'snippet', 'statement', 'scope', 'why']) field(x, key, path, string, true);
+  for (const key of ['subkind', 'status', 'primary_domain', 'display_label', 'origin', 'snippet', 'statement', 'scope', 'why']) field(x, key, path, string, true);
+  // D081-P3b BEGIN: the reference index contains 118 explicitly unknown dates.
+  field(x, 'date', path, stringOrNull, true);
+  // D081-P3b END
   field(x, 'epistemic_status', path, stringOrNull, true);
   field(x, 'level_skip', path, v => typeof v === 'boolean', true);
   field(x, 'domain_mentions', path, strings, true);

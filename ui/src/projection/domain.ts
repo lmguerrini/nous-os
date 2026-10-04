@@ -12,6 +12,8 @@ export interface DomainSelectionOptions {
   readonly selectionPolicy?: string;
   readonly selectionPolicyVersion?: string;
   readonly levelPolicy?: string;
+  /** D081-P3b: explicit complete Indra request; ordinary disclosure keeps V2_CAP. */
+  readonly maxNodes?: number;
 }
 
 function codepointOrder(a: string, b: string): number {
@@ -39,13 +41,18 @@ export function selectAnalyticalDomain(
   if (!snapshot.digest || !selectionPolicy || !selectionPolicyVersion || !levelPolicy) {
     throw new Error('Analytical domain requires a snapshot digest and named policies');
   }
+  // D081-P3b BEGIN: only the named complete Indra policy may lift the ordinary cap.
+  if (options.maxNodes !== undefined && (selectionPolicy !== 'd081-indra-complete'
+    || !Number.isSafeInteger(options.maxNodes) || options.maxNodes > snapshot.nodes.length))
+    throw new Error('Invalid complete Indra domain budget');
+  // D081-P3b END
 
   const selected = new Set<NodeId>();
   for (const id of disclosedNodeIds) {
     if (typeof id !== 'string' || !id) throw new Error('Invalid disclosed node ID');
     if (selected.has(id)) throw new Error(`Duplicate disclosed node ID: ${id}`);
     selected.add(id);
-    if (selected.size > V2_CAP) throw new Error(`Analytical domain exceeds ${V2_CAP} nodes`);
+    if (selected.size > (options.maxNodes ?? V2_CAP)) throw new Error(`Analytical domain exceeds ${options.maxNodes ?? V2_CAP} nodes`);
   }
 
   const fullNodeIds = new Set<NodeId>();
@@ -71,7 +78,7 @@ export function selectAnalyticalDomain(
     selectionPolicyVersion, levelPolicy, nodeIds });
   return Object.freeze({ snapshotDigest: snapshot.digest, domainDigest, selectionPolicy,
     selectionPolicyVersion, levelPolicy, nodeIds: Object.freeze(nodeIds),
-    edgeIds: Object.freeze(edgeIds), maxNodes: V2_CAP });
+    edgeIds: Object.freeze(edgeIds), maxNodes: options.maxNodes ?? V2_CAP });
 }
 
 /** Use the existing progressive disclosure semantics, including its 850-node cap. */

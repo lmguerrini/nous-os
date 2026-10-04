@@ -248,6 +248,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ])],
     ["#render-common/projection-style.ts", new Set([
       "TYPED_LABEL_CAMERA",
+      // D081-P3b BEGIN: the counted-bundle presentation token is read by the renderer.
+      "TYPED_COMPLETE_BUNDLE_LABEL",
+      // D081-P3b END
       "readProjectionStyle",
       "typedLabelKind",
       "typedLabelTexts",

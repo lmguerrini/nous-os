@@ -76,7 +76,7 @@ test('an Indra disclosure refresh calls the one-shot camera anchor once at the o
     } as unknown as ProductView;
   };
   const page = new V2Page(manifest, index, { projection: '2d', morphology: 'stellar', organization: 'indra',
-    colour: 'bw', labels: true, reading: 'attested' }, appearance, palette, {}, 'complete', { createView });
+    colour: 'bw', labels: true, reading: 'attested' }, appearance, palette, {}, 'balanced', { createView });
   await page.refresh();
   const first = mounts[0]!.positions.get('domain:a')!;
   (page as unknown as { cursor: { x: number; y: number } }).cursor = { x: 400, y: 300 };
@@ -117,7 +117,7 @@ for (const moved of [true, false]) {
       } as unknown as ProductView;
     };
     const page = new V2Page(manifest, index, { projection: '3d', morphology: 'stellar', organization: 'natural',
-      colour: 'bw', labels: true, reading: 'attested' }, appearance, palette, {}, 'complete', { createView });
+      colour: 'bw', labels: true, reading: 'attested' }, appearance, palette, {}, 'balanced', { createView });
     await page.refresh();
     (page as unknown as { cursor: { x: number; y: number } }).cursor = { x: 400, y: 300 };
     page.history.expand('project:a:1');

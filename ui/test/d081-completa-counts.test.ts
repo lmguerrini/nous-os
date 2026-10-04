@@ -29,6 +29,9 @@ test('Completa represents every eligible node as a glyph and accounts for every 
   assert.equal(projected.total, index.edges.length + index.nodes.length - 1);
   assert.equal(route.drawn.reduce((sum, edge) => sum + edge.count, 0), projected.total);
   assert.ok(route.drawn.some(edge => edge.count > 1), 'parallel relations use counted bundles');
+  const zoomed = completeRoute(projected.edges, rendered, true);
+  assert.equal(zoomed.drawn.length, projected.total, 'semantic zoom separates every parallel member');
+  assert.ok(zoomed.drawn.every(edge => edge.count === 1));
 });
 
 test('movement settles by 351 ms and legacy density budgets are unchanged', () => {

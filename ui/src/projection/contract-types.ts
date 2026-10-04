@@ -24,7 +24,9 @@ export interface RawGraphNode {
   readonly domains: readonly string[]; readonly domain_mentions?: readonly string[];
   readonly primary_domain?: string; readonly primary_domain_anchors?: Readonly<Record<string, number>>;
   readonly title: string; readonly display_label?: string; readonly title_full: string;
-  readonly date?: string; readonly origin?: string; readonly snippet?: string;
+  // D081-P3b BEGIN: indexed source dates may be explicitly unknown.
+  readonly date?: string | null; readonly origin?: string; readonly snippet?: string;
+  // D081-P3b END
   readonly importance: Readonly<{ value: number; components: Readonly<Record<string, number>> }>;
   readonly size: number;
   readonly counts: Readonly<{ children: number; descendants: number; canon: number; passages: number; live_proposals?: number }>;

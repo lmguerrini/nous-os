@@ -33,12 +33,12 @@ export function completeRelations(index: V2Index, reading: Reading): RelationPro
 }
 
 /** Parallel source edges share one visible line. No fan or global line cap discards a source. */
-export function completeRoute(relations: readonly LiftedRelation[], rendered: ReadonlySet<string>): RouteResult {
+export function completeRoute(relations: readonly LiftedRelation[], rendered: ReadonlySet<string>, splitParallel = false): RouteResult {
   const buckets = new Map<string, LiftedRelation[]>();
   for (const relation of relations) {
     const [from, to] = relation.source < relation.target
       ? [relation.source, relation.target] : [relation.target, relation.source];
-    const key = JSON.stringify([from, to, relation.class, relation.type]);
+    const key = JSON.stringify([from, to, relation.class, relation.type, splitParallel ? relation.id : '']);
     const bucket = buckets.get(key) ?? [];
     bucket.push(relation);
     buckets.set(key, bucket);

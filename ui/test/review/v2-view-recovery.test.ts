@@ -205,7 +205,7 @@ const muteErrorLog = <T>(action: () => Promise<T>): Promise<T> => {
 };
 
 function makePage(deps: V2PageDeps = {}, discloseConversations = false): V2Page {
-  const page = new V2PageClass(MANIFEST, fixtureIndex(), AXES, APPEARANCE, PALETTE, {}, "complete", { createView: fakeCreateView, ...deps });
+  const page = new V2PageClass(MANIFEST, fixtureIndex(), AXES, APPEARANCE, PALETTE, {}, "balanced", { createView: fakeCreateView, ...deps });
   if (discloseConversations)
     // Semantic-zoom style disclosure (unpinned by design): the projects enter `auto`, which
     // discloses their conversations without pinning them, so the density budget really binds.

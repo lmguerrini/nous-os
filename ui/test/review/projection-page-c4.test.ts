@@ -161,7 +161,7 @@ const typedPage = async (index: V2Index, axes: Partial<Axes> = {}, renderer?: Pr
     dimension: '2d', mount() {}, updateVisibleSubset() {}, destroy() {},
     onPick() {}, onHover() {},
   });
-  const page = new Page(MANIFEST, index, { ...AXES, ...axes }, APPEARANCE, PALETTE, {}, 'complete',
+  const page = new Page(MANIFEST, index, { ...AXES, ...axes }, APPEARANCE, PALETTE, {}, 'balanced',
     { projectionPipeline: fake.input, ...(legacyIndra ? { legacyIndra } : {}) });
   await page.refresh();
   return { page, snapshot, input: fake.input };
@@ -176,7 +176,7 @@ test('audit 1: the typed indra branch reproduces the legacy hidden-count max-up 
     camera: () => null, witness: () => ({ axes: {}, visibleRect: { left: 0, top: 0, width: 800, height: 600 },
       nodeViewport: {}, labels: [] }),
   }) as unknown as ProductView;
-  const legacyPage = new Page(MANIFEST, index, { ...AXES, organization: 'indra' }, APPEARANCE, PALETTE, {}, 'complete', { createView, legacyIndra: true });
+  const legacyPage = new Page(MANIFEST, index, { ...AXES, organization: 'indra' }, APPEARANCE, PALETTE, {}, 'balanced', { createView, legacyIndra: true });
   await legacyPage.refresh();
   const legacyPositions = (legacyPage as unknown as { rawPositions: ReadonlyMap<string, { x: number; y: number; z: number }> }).rawPositions;
   assert.ok(legacyPositions);
@@ -367,9 +367,9 @@ test('typed 2D and 3D mounts report placed label IDs synchronously while density
       readPlacedLabelIds: () => placed,
     });
     const labels = () => (page.witness() as { lod: { labels: { rendered: number; available: number } } }).lod.labels;
-    assert.deepEqual(labels(), { rendered: 2, available: 60 }, `${dimension} reports the mounted overlay IDs`);
+    assert.deepEqual(labels(), { rendered: 2, available: 40 }, `${dimension} reports the mounted overlay IDs`);
     placed = ['placed-c'];
-    assert.deepEqual(labels(), { rendered: 1, available: 60 }, `${dimension} reads the latest pass without requesting a frame`);
+    assert.deepEqual(labels(), { rendered: 1, available: 40 }, `${dimension} reads the latest pass without requesting a frame`);
   }
 });
 

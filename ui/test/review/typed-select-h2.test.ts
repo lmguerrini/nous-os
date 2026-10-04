@@ -217,7 +217,7 @@ async function typedPage(options: { axes?: Record<string, unknown>; index?: V2In
       (pageRef as unknown as { buildDefaultPipeline(): ProjectionPipelineInput }).buildDefaultPipeline().panel.show(host, pick, result, snap, step) },
   };
   const client = createProjectionWorkerClient({ fallbackProjections: [fractalProjection, indrasPearlsProjection, holographicProjection] });
-  const page: V2Page = new Page(MANIFEST, index, { ...AXES, ...options.axes } as never, APPEARANCE, PALETTE, {}, 'complete',
+  const page: V2Page = new Page(MANIFEST, index, { ...AXES, ...options.axes } as never, APPEARANCE, PALETTE, {}, 'balanced',
     { projectionPipeline: input, projectionWorker: client });
   pageRef = page;
   if (options.expand !== false) for (const item of index.nodes) if (item.level === 2) page.history.expand(item.id);
@@ -509,7 +509,7 @@ test('a relation with an endpoint outside the domain is not counted as an availa
     styleLegacy: () => { throw new Error('legacy not used'); },
     panel: { show() {} },
   };
-  const page: V2Page = new Page(MANIFEST, index, { ...AXES, organization: 'indra' } as never, APPEARANCE, PALETTE, {}, 'complete',
+  const page: V2Page = new Page(MANIFEST, index, { ...AXES, organization: 'indra' } as never, APPEARANCE, PALETTE, {}, 'balanced',
     { projectionPipeline: input, projectionRegistry: registry });
   for (const item of index.nodes) if (item.level === 2) page.history.expand(item.id);
   await page.refresh();

@@ -3,6 +3,7 @@ import { cameraRevealZoom, emptyRevealState, focusOnlyReveal, revealClusterOf, s
 import type { RevealDecision, RevealState } from './reveal-controller.ts';
 import { buildRevealWitness, routeRelationsAfterLOD } from './relation-routing.ts';
 import { COMPLETE_IDLE_MS, completeQuality, completeRelations, completeRoute, completeVisible } from './completa.ts';
+import { completeIndraOverlay } from './completa-indra.ts';
 import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-routing.ts';
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphManifest } from './graph-v2.ts';
@@ -592,9 +593,16 @@ export class V2Page {
     private d081Quality: 'movimento' | 'recupero' | 'completa' = 'completa';
     private d081QualityTimer: ReturnType<typeof setTimeout> | null = null;
     private d081Status() {
-        return { ...this.d081Metrics, quality: this.d081Quality,
+        // D081-P3b BEGIN: both typed renderers suppress dense lines while the camera moves.
+        const movingIndra = this.d081Quality === 'movimento' && this.density === 'complete'
+            && this.indraPearlsView();
+        return { ...this.d081Metrics,
+            ...(movingIndra ? { edges: { ...this.d081Metrics.edges, drawn: 0, bundled: 0, bundles: 0 },
+                hint: 'Rilascia la camera: gli archi tornano quando il movimento termina.' } : {}),
+            quality: this.d081Quality,
             msSinceInteraction: this.d081LastInteraction ? Math.round(performance.now() - this.d081LastInteraction) : 0,
             msToFullQuality: this.d081LastFullMs };
+        // D081-P3b END
     }
     private d081Emit() {
         if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function')
@@ -625,7 +633,8 @@ export class V2Page {
                 total: this.index.edges.length + this.index.nodes.filter(node => node.parent !== null).length },
             depth: { level: this.lod === 'far' ? 1 : this.lod === 'intermediate' ? 2 : 3,
                 label: this.lod === 'far' ? 'Panoramica' : this.lod === 'intermediate' ? 'Intermedia' : 'Ravvicinata' },
-            limit: this.density === 'complete' && !this.typedActive() ? null
+            // D081-P3b BEGIN: typed Indra's full domain has no projection cap.
+            limit: this.density === 'complete' && (!this.typedActive() || this.indraPearlsView()) ? null
                 : this.density === 'complete'
                     ? { kind: 'proiezione', value: V2_CAP, reason: 'Il dominio della proiezione corrente è ancora limitato.' }
                     : { kind: 'densità', value: DENSITY_BUDGETS[this.density].nodes,
@@ -633,6 +642,7 @@ export class V2Page {
             hint: represented === eligibleNodes ? null : this.density === 'complete' && this.typedActive()
                 ? 'La proiezione corrente limita ancora i nodi; apri un contenitore per rivelarne altri.'
                 : 'Ingrandisci o apri un contenitore per rivelare altri nodi; scegli Completa per rappresentare tutti i nodi.',
+            // D081-P3b END
         };
         const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
         if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.index.nodes.length)} rappresentati · ${formatCount(route.drawn.length)} archi`;
@@ -946,7 +956,9 @@ export class V2Page {
         });
     }
     private visible() {
-        if (this.density === 'complete' && !this.typedActive()) return completeVisible(this.index);
+        // D081-P3b BEGIN complete Indra domain
+        if (this.density === 'complete' && (!this.typedActive() || this.indraPearlsView())) return completeVisible(this.index);
+        // D081-P3b END
         const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
         for (const [id, count] of this.autoPageCounts) pages.set(id, count);
         for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
@@ -1219,7 +1231,12 @@ export class V2Page {
         this.recordProjectionPhase('snapshotPreparation', performance.now() - preViewBegan);
         assertPageSnapshotIndex(this.index, snapshot);
         const disclosed = this.visible();
-        const domain = selectAnalyticalDomain(snapshot, disclosed.nodes.map(node => node.id));
+        // D081-P3b BEGIN: only typed Indra's Completa names the full domain.
+        const completeIndra = this.density === 'complete' && this.indraPearlsView();
+        const domain = selectAnalyticalDomain(snapshot, disclosed.nodes.map(node => node.id),
+            completeIndra ? { selectionPolicy: 'd081-indra-complete', selectionPolicyVersion: '1',
+                levelPolicy: 'all-indexed-nodes-v1', maxNodes: snapshot.nodes.length } : {});
+        // D081-P3b END
         // GATE-B audit 2: the typed relations honour the relation-detail control and the
         // legacy-style focus source (selected relation, its source node, the selection, hover).
         const active = this.projectionFocus();
@@ -1399,8 +1416,11 @@ export class V2Page {
         }
         this.rendered = new Set(visibility.nodeIds);
         this.publishReveal(lod.route, this.rendered);
-        this.d081Publish(lod.route, this.index.edges.length,
+        // D081-P3b BEGIN typed Indra edge eligibility
+        this.d081Publish(lod.route, this.density === 'complete' && this.indraPearlsView()
+            ? lod.route.drawn.reduce((sum, edge) => sum + edge.count, 0) : this.index.edges.length,
             this.density === 'complete' ? this.index.nodes.length : this.visible().nodes.length);
+        // D081-P3b END
         this.routePickById = lod.pickMap;
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
@@ -1537,8 +1557,10 @@ export class V2Page {
      * domain, three levels deep. A domain outside 1..cap is refused here with the assembly's own code. */
     private indraRequestFor(snapshot: SemanticGraphSnapshot, domain: AnalyticalDomain,
         dimension: Dimension): ProjectionRequest<'indras-pearls'> {
-        if (domain.nodeIds.length === 0 || domain.nodeIds.length > V2_CAP)
-            throw new IndraProjectionRefusal('invalid-request', `domain size ${domain.nodeIds.length} outside 1..${V2_CAP}`);
+        // D081-P3b BEGIN: domain.maxNodes records the explicit Complete request.
+        if (domain.nodeIds.length === 0 || domain.nodeIds.length > domain.maxNodes)
+            throw new IndraProjectionRefusal('invalid-request', `domain size ${domain.nodeIds.length} outside 1..${domain.maxNodes}`);
+        // D081-P3b END
         const [lowest, highest] = INDRA_EXPAND_Z_RANGE;
         return { id: 'indras-pearls', snapshotDigest: snapshot.digest, domain,
             parameters: { dimension, maxDepth: INDRA_PAGE_MAX_DEPTH, maxWords: INDRA_PAGE_MAX_WORDS,
@@ -1955,6 +1977,37 @@ export class V2Page {
     private typedLodVisibility(styled: StyledProjection, snapshot: SemanticGraphSnapshot,
         allDisclosed: readonly V2Node[], active: string | null, revision: number) {
         const result = styled.projection;
+        // D081-P3b BEGIN: full Indra is a resident typed scene. Its source edges and
+        // containment links are routed once, with parallel links counted on the line.
+        // The ordinary typed LOD below is untouched for Essenziale and Bilanciata.
+        if (this.density === 'complete' && this.indraPearlsView()) {
+            const { rendered, relations, route, visuals: synthetic, displayResult } =
+                completeIndraOverlay(this.index, this.axes.reading, result, this.lod === 'near');
+            const extraStyle = this.styleTypedProjection(displayResult, snapshot).visualStyle;
+            const displayStyled: StyledProjection = { ...styled, projection: displayResult,
+                visualStyle: { ...styled.visualStyle, ...Object.fromEntries(synthetic.map(item =>
+                    [item.visualId, item.underlyingEdgeIds.length
+                        ? styled.edgeStyle[item.underlyingEdgeIds[0]!] ?? extraStyle[item.visualId] ?? {}
+                        : extraStyle[item.visualId] ?? {}])) } };
+            const base = projectionVisibility(result, snapshot, revision, 1, rendered);
+            const visibility: RenderVisibility = { ...base, semanticEdgeIds: new Set(),
+                visualRelationIds: new Set(synthetic.map(item => item.visualId)), density: 1 };
+            validateRenderVisibility(displayResult, visibility, snapshot);
+            const pickMap = new Map<string, PickResult>();
+            for (let index = 0; index < route.drawn.length; index++) {
+                const edge = route.drawn[index]!, visual = synthetic[index]!;
+                const sourceId = edge.sourceRelationIds.find(id => !id.startsWith('contains:'));
+                if (sourceId) pickMap.set(visual.visualId, { kind: 'semantic-edge', id: sourceId });
+                else pickMap.set(visual.visualId, { kind: 'node', id: edge.to.id });
+            }
+            const counts = { nodes: { rendered: rendered.size, available: result.domainNodeIds.length,
+                pinned: 0, pinnedIds: [] as string[] },
+                arcs: { rendered: synthetic.length, available: relations.total,
+                    pinned: 0, pinnedIds: [] as string[] } };
+            return { visibility, counts, selection: { rendered: [...rendered], dropped: [] },
+                route, displayStyled, pickMap };
+        }
+        // D081-P3b END
         const budget = DENSITY_BUDGETS[this.density];
         const communityOf = communityResolver(this.index.nodes);
         // A Holographic focus on a region discloses only that region's members to the level of detail.
@@ -2217,8 +2270,11 @@ export class V2Page {
         this.projectionVisibility = visibility;
         this.rendered = new Set(visibility.nodeIds);
         this.publishReveal(lod.route, this.rendered);
-        this.d081Publish(lod.route, this.index.edges.length,
+        // D081-P3b BEGIN typed Indra edge eligibility
+        this.d081Publish(lod.route, this.density === 'complete' && this.indraPearlsView()
+            ? lod.route.drawn.reduce((sum, edge) => sum + edge.count, 0) : this.index.edges.length,
             this.density === 'complete' ? this.index.nodes.length : this.visible().nodes.length);
+        // D081-P3b END
         this.routePickById = lod.pickMap;
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
@@ -3179,6 +3235,17 @@ export class V2Page {
         if (next === this.density)
             return;
         this.density = next;
+        // D081-P3b BEGIN: the resident lower-density view remains visible while
+        // the worker prepares the full Indra domain; disclose that recovery state.
+        if (next === 'complete' && this.indraPearlsView()) {
+            this.d081Quality = 'recupero';
+            this.d081Metrics.nodes.eligible = this.index.nodes.length;
+            this.d081Metrics.edges.eligible = completeRelations(this.index, this.axes.reading).total;
+            this.d081Metrics.limit = null;
+            this.d081Metrics.hint = 'La scena completa si sta preparando; attendi il raffinamento.';
+            this.d081Emit();
+        }
+        // D081-P3b END
         await this.refresh();
     }
     get densitySetting() { return this.density; }
@@ -3488,6 +3555,10 @@ export class V2Page {
                 this.d081Metrics.depth = { level: next === 'far' ? 1 : next === 'intermediate' ? 2 : 3,
                     label: next === 'far' ? 'Panoramica' : next === 'intermediate' ? 'Intermedia' : 'Ravvicinata' };
                 this.d081Emit();
+                // D081-P3b BEGIN: the complete resident scene stays visible while a
+                // semantic zoom revision splits or rejoins counted parallel lines.
+                if (this.indraPearlsView()) void this.refresh();
+                // D081-P3b END
             }
             return;
         }

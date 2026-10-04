@@ -227,7 +227,7 @@ async function typedPage(options: { axes?: Record<string, unknown>; client?: Pro
     } },
   };
   const deps = { projectionPipeline: input, ...(options.client ? { projectionWorker: options.client } : {}), ...options.deps };
-  const page: V2Page = new Page(MANIFEST, index, { ...AXES, ...options.axes } as never, APPEARANCE, PALETTE, {}, 'complete', deps);
+  const page: V2Page = new Page(MANIFEST, index, { ...AXES, ...options.axes } as never, APPEARANCE, PALETTE, {}, 'balanced', deps);
   pageRef = page;
   if (options.expand !== false) for (const node of index.nodes) if (node.level === 2) page.history.expand(node.id);
   await page.refresh();

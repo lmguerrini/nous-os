@@ -5,6 +5,7 @@ import { buildMorphologyGeometry, NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_
 import type { MorphologyGeometry } from "#engine/morphology-geometry.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas, stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
+import { TYPED_COMPLETE_BUNDLE_LABEL } from "#render-common/projection-style.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import Sigma from "sigma";
@@ -1550,12 +1551,16 @@ export function mountProjection2d(
     const start = viewport(a); const end = viewport(b);
     context!.moveTo(start.x, start.y); context!.lineTo(end.x, end.y);
   };
+  // The dense Indra line pass rests during camera motion.
+  let movingLines = false;
+  let linesStillTimer: ReturnType<typeof setTimeout> | undefined;
   const draw = (): void => {
     if (context === null) return;
     const box = canvas.getBoundingClientRect();
     if (box.width <= 0 || box.height <= 0) return;
     context.setTransform(canvas.width / box.width, 0, 0, canvas.height / box.height, 0, 0);
     context.clearRect(0, 0, box.width, box.height);
+    if (movingLines) return;
     for (const relation of scene.visualRelations.values()) {
       const a = scene.nodes.get(relation.source)?.position;
       const b = scene.nodes.get(relation.target)?.position;
@@ -1565,6 +1570,15 @@ export function mountProjection2d(
       context.lineWidth = Math.max(1 / 2 / 2, styleNumber(record, 'widthPermille', SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE);
       context.strokeStyle = styleColor(record, "#8fa8ac");
       context.beginPath(); line(a, b); context.stroke();
+      // Every parallel bundle declares the extra relations.
+      if (relation.visualId.startsWith("visual:d081:") && relation.count > 1) {
+        const midpoint = viewport({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+        context.globalAlpha = TYPED_COMPLETE_BUNDLE_LABEL.alpha;
+        context.fillStyle = styleColor(record, "#bfc6cc");
+        context.font = TYPED_COMPLETE_BUNDLE_LABEL.font;
+        context.fillText(`+${relation.count - 1}`, midpoint.x + TYPED_COMPLETE_BUNDLE_LABEL.offsetPx,
+          midpoint.y - TYPED_COMPLETE_BUNDLE_LABEL.offsetPx);
+      }
     }
     context.globalAlpha = 1;
   };
@@ -1583,7 +1597,8 @@ export function mountProjection2d(
   // The mount types its Sigma over the projection attribute records; the canvas lookup only
   // touches the layer registry, which is generic-independent.
   requiredCanvas(sigma as unknown as Sigma, 'labels').before(morphologyCanvas);
-  const nativeTier = scene.nodes.size >= DENSE_SCENE_THRESHOLD;
+  // Density changes can cross the native GPU threshold in place.
+  let nativeTier = scene.nodes.size >= DENSE_SCENE_THRESHOLD;
   const layerPolicy = distinctLayerPolicy({ nativeTier, nativeLabelsUsed: false });
   const collapsed = layerPolicy.collapse
     .map(id => sigma.getCanvases()[id])
@@ -1594,7 +1609,7 @@ export function mountProjection2d(
     .map(id => sigma.getCanvases()[id])
     .filter((item): item is HTMLCanvasElement => item !== undefined);
   const previousShrinkBacking = shrinkable.map(item => [item.width, item.height] as const);
-  const detached = layerPolicy.pickingOnly
+  const detached = ['edges', 'nodes']
     .map(id => sigma.getCanvases()[id])
     .filter((item): item is HTMLCanvasElement => item !== undefined);
   const previousDetachedDisplay = detached.map(item => item.style.display);
@@ -1710,7 +1725,19 @@ export function mountProjection2d(
     visualPickIndex = buildScreenPickIndex([], [], relations, bounds.width, bounds.height);
     pickFrame = JSON.stringify([sigma.getCamera().getState(), bounds.width, bounds.height]);
   };
+  // Keep native glyphs responsive and restore counted relations when the camera rests.
+  let lastLineCameraFrame = JSON.stringify(sigma.getCamera().getState());
   const redraw = (): void => {
+    const lineCameraFrame = JSON.stringify(sigma.getCamera().getState());
+    if (lineCameraFrame !== lastLineCameraFrame) {
+      lastLineCameraFrame = lineCameraFrame;
+      if (nativeTier && scope?.density === 'complete'
+        && scene.styled.projection.determinism.algorithmId === "indras-pearls") {
+        movingLines = true;
+        if (linesStillTimer !== undefined) clearTimeout(linesStillTimer);
+        linesStillTimer = setTimeout(() => { linesStillTimer = undefined; movingLines = false; draw(); }, TYPED_COMPLETE_BUNDLE_LABEL.idleMs);
+      }
+    }
     drawMorphology(); draw(); visuals.draw(); labelPass();
     const bounds = container.getBoundingClientRect();
     const frame = JSON.stringify([sigma.getCamera().getState(), bounds.width, bounds.height]);
@@ -1801,8 +1828,18 @@ export function mountProjection2d(
         }
       }
       scene = next;
+      // Switch the already-mounted Sigma layers with the scene size.
+      const nextNativeTier = next.nodes.size >= DENSE_SCENE_THRESHOLD;
+      if (nextNativeTier !== nativeTier) {
+        nativeTier = nextNativeTier;
+        detached.forEach((item, index) => { item.style.display = nativeTier ? previousDetachedDisplay[index] ?? '' : 'none'; });
+      }
       contentKey = nextKey;
       scope = nextScope;
+      if (!nativeTier || scope?.density !== 'complete') {
+        movingLines = false;
+        if (linesStillTimer !== undefined) { clearTimeout(linesStillTimer); linesStillTimer = undefined; }
+      }
       labelBudget = nextScope?.labelBudget ?? labelBudget;
       morphology = nextMorphology;
       // One deterministic rebuild per applied revision (an expansion, never a frame): the engine
@@ -1829,6 +1866,7 @@ export function mountProjection2d(
       containerIds: [...scene.containers.keys()], fieldIds: [...scene.fields.keys()] }),
     setDerivedMorphology: morphology => visuals.setMorphology(morphology),
     destroy(): void {
+      if (linesStillTimer !== undefined) clearTimeout(linesStillTimer);
       if (pickSettleTimer !== undefined) clearTimeout(pickSettleTimer);
       hoverGate.destroy();
       container.removeEventListener('pointermove', onPointerMoveCapture, true);

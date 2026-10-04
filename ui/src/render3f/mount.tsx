@@ -23,7 +23,7 @@ import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { EMPTY_LABEL_BOUNDS, SHIPPING_RENDER_DEFAULTS, mountProjectionLabelOverlay } from "#render2d/model.ts";
-import { readProjectionStyle, typedLabelKind, typedLabelTexts, TYPED_LABEL_CAMERA } from "#render-common/projection-style.ts";
+import { readProjectionStyle, typedLabelKind, typedLabelTexts, TYPED_LABEL_CAMERA, TYPED_COMPLETE_BUNDLE_LABEL } from "#render-common/projection-style.ts";
 import type { ProjectionLabelCandidate, ProjectionLabelOverlay } from "#render2d/model.ts";
 import { createTypedProjectionLayer } from "#render-common/typed-layer.ts";
 import {
@@ -317,6 +317,20 @@ export function mount(
   // D-073 W4f: the typed path reads its whole-scene options (morphology, label budget) from the
   // style bridge's reserved scope record, falling back to the engine defaults for the basic bridge.
   let currentStyled: StyledProjection | null = typedInput?.styled ?? null;
+  // D081-P3b BEGIN: counted dense relations keep their own small visible labels.
+  let typedBundleLabels: { source: Coordinates; target: Coordinates; count: number }[] = [];
+  let typedMoving = false;
+  const updateBundleLabels = (input: Render3fTypedInput): void => {
+    const positions = input.styled.projection.positions3;
+    typedBundleLabels = input.styled.projection.visualRelations.flatMap(relation => {
+      if (!relation.visualId.startsWith('visual:d081:') || relation.count <= 1
+        || !input.visibility.visualRelationIds.has(relation.visualId)) return [];
+      const a = positions?.[relation.source], b = positions?.[relation.target];
+      return a && b ? [{ source: a, target: b, count: relation.count }] : [];
+    });
+  };
+  if (typedInput) updateBundleLabels(typedInput);
+  // D081-P3b END
   const initialScope = currentStyled !== null ? readProjectionStyle(currentStyled) : null;
   let derivedMorphology: ProjectionVisualsMorphology = initialScope?.morphology ?? "stellar";
   let typedLabelBudget: number | undefined = initialScope?.labelBudget;
@@ -449,18 +463,42 @@ export function mount(
     renderer.render(threeScene, rig.camera);
     if (!typedPicker) distinct?.draw();
     visuals?.draw();
+    // D081-P3b BEGIN: labels live on the typed overlay and follow the camera.
+    if (!typedMoving && typedBundleLabels.length && visuals?.canvas) {
+      const overlay = visuals.canvas, context = overlay.getContext('2d');
+      const box = overlay.getBoundingClientRect();
+      if (context && box.width > 0 && box.height > 0) {
+        context.setTransform(overlay.width / box.width, 0, 0, overlay.height / box.height, 0, 0);
+        const ink = currentStyled && readProjectionStyle(currentStyled)?.star;
+        if (ink) context.fillStyle = ink;
+        context.font = TYPED_COMPLETE_BUNDLE_LABEL.font;
+        for (const bundle of typedBundleLabels) {
+          const a = rig.graphToViewport(bundle.source), b = rig.graphToViewport(bundle.target);
+          context.fillText(`+${bundle.count - 1}`, (a.x + b.x) / 2 + TYPED_COMPLETE_BUNDLE_LABEL.offsetPx,
+            (a.y + b.y) / 2 - TYPED_COMPLETE_BUNDLE_LABEL.offsetPx);
+        }
+      }
+    }
+    // D081-P3b END
   };
   brainEnvelope?.setRefitCallback(renderFrame);
   const syncCameraState = (): void => {
+    // D081-P3b BEGIN
+    typedMoving = true;
+    // D081-P3b END
     if (brainEnvelope) brainEnvelope.setLod("moving");
     if (visuals) visuals.setQuality("moving", false);
     if (visuals || brainEnvelope) {
       typedLayer.setQuality("moving");
       if (visualsStillTimer !== undefined) clearTimeout(visualsStillTimer);
+      // D081-P3b BEGIN: dense typed Indra returns at the status contract's 350 ms boundary.
+      const denseIndra = currentStyled?.projection.determinism.algorithmId === "indras-pearls"
+        && readProjectionStyle(currentStyled)?.density === "complete";
       visualsStillTimer = setTimeout(() => {
         visualsStillTimer = undefined;
-        if (!destroyed) { visuals?.setQuality("full"); typedLayer.setQuality("full"); brainEnvelope?.setLod("full"); renderFrame(); }
-      }, DERIVED_STILL_MS);
+        if (!destroyed) { typedMoving = false; visuals?.setQuality("full"); typedLayer.setQuality("full"); brainEnvelope?.setLod("full"); renderFrame(); }
+      }, denseIndra ? TYPED_COMPLETE_BUNDLE_LABEL.idleMs : DERIVED_STILL_MS);
+      // D081-P3b END
     }
     currentState = createVisualState(visualGraph, {
       ...currentState,
@@ -624,6 +662,9 @@ export function mount(
           derivedMorphology = nextScope.morphology;
         }
         typedLayer.update(next.geometry, update.styled);
+        // D081-P3b BEGIN
+        updateBundleLabels(update);
+        // D081-P3b END
         acceptVisuals(update);
         updateLabels();
         renderFrame();
@@ -639,6 +680,9 @@ export function mount(
           visuals?.setMorphology(nextScope.morphology);
         }
         typedLayer.update(typedPicker.geometry, update.styled);
+        // D081-P3b BEGIN
+        updateBundleLabels(update);
+        // D081-P3b END
         acceptVisuals(update);
         updateLabels();
         renderFrame();

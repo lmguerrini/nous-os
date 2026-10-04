@@ -77,7 +77,6 @@ export const INDRA_SPHERE_BOUND = 0.95;
 export const INDRA_EXPAND_Z_RANGE: readonly [number, number] = [0.3, 2.5];
 export const INDRA_MAX_TOLERANCE = 0.05;
 export const INDRA_MAX_DEPTH_LIMIT = 16;
-const INDRA_DOMAIN_NODE_CAP = 850;
 const ABORT_CHECK_INTERVAL = 64;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const CONTAINMENT_SLACK = 1e-9;
@@ -303,8 +302,11 @@ function assertIndraRequest(snapshot: SemanticGraphSnapshot, request: Projection
   const { domain, parameters } = request;
   if (request.id !== 'indras-pearls' || request.snapshotDigest !== snapshot.digest || domain.snapshotDigest !== snapshot.digest)
     throw new IndraProjectionRefusal('invalid-request', 'snapshot digest mismatch');
-  if (domain.nodeIds.length === 0 || domain.nodeIds.length > domain.maxNodes || domain.nodeIds.length > INDRA_DOMAIN_NODE_CAP)
-    throw new IndraProjectionRefusal('invalid-request', `domain size ${domain.nodeIds.length} outside 1..${INDRA_DOMAIN_NODE_CAP}`);
+  // D081-P3b BEGIN: the domain contract supplies the budget. Complete Indra requests
+  // name the full snapshot size; ordinary disclosed requests retain their 850 budget.
+  if (domain.nodeIds.length === 0 || domain.nodeIds.length > domain.maxNodes || domain.maxNodes > Math.max(850, snapshot.nodes.length))
+    throw new IndraProjectionRefusal('invalid-request', `domain size ${domain.nodeIds.length} outside 1..${domain.maxNodes}`);
+  // D081-P3b END
   if (parameters.dimension !== '2d' && parameters.dimension !== '3d')
     throw new IndraProjectionRefusal('invalid-request', 'unsupported Indra dimension');
   if (!Number.isSafeInteger(parameters.maxDepth) || parameters.maxDepth < 1 || parameters.maxDepth > INDRA_MAX_DEPTH_LIMIT)
