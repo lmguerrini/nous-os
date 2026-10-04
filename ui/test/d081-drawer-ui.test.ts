@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { relationLabel } from '../src/review/node-drawer.ts';
+import { italianCount, relationLabel } from '../src/review/node-drawer.ts';
 
 const source = readFileSync(new URL('../src/review/node-drawer.ts', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../review/index.html', import.meta.url), 'utf8');
@@ -80,4 +80,22 @@ test('drawer remains keyboard accessible and below toolbar with the approved gla
   assert.match(html, /#node-detail-drawer \{[^}]*inset:calc\(var\(--toolbar-height\) \+ 14px\)/);
   assert.match(html, /backdrop-filter:blur\(16px\) saturate\(125%\)/);
   assert.match(html, /\.drawer-skeleton span \{[^}]*animation/);
+});
+
+test('drawer cards, provenance quotes, and relation rows expose readable fields', () => {
+  assert.equal(italianCount(0, 'fonte', 'fonti'), '0 fonti');
+  assert.equal(italianCount(1, 'fonte', 'fonti'), '1 fonte');
+  assert.equal(italianCount(5, 'fonte', 'fonti'), '5 fonti');
+  assert.equal(relationLabel('card'), 'Ponte esplorativo');
+  assert.match(source, /text\(cached\.body\.header\)/);
+  assert.match(source, /createElement\('h3'\)/);
+  assert.match(source, /createElement\('blockquote'\)/);
+  assert.match(source, /Mostra tutto/);
+  assert.match(source, /italianDate\(item\.date\)/);
+  assert.match(source, /Apri passaggio/);
+  assert.match(source, /Nessuna relazione.*attestata.*esplorativa.*strutturale/s);
+  assert.match(source, /title\.setAttribute\('aria-label',.*type\.direction/);
+  assert.match(source, /text\(item\.statement\)/);
+  assert.match(source, /this\.technical\(article, list\(item\.technical\)/);
+  assert.match(html, /\.node-drawer-quote\.clamped \{[^}]*max-height:9em/);
 });

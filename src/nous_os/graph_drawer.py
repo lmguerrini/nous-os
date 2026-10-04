@@ -11,7 +11,7 @@ KIND = {"domain": "Dominio", "project": "Progetto", "system": "Sistema", "work":
         "conversation": "Conversazione", "proposal": "Proposta", "attachment_source": "Allegato",
         "non_conversation_source": "Fonte", "passage": "Passaggio"}
 EXPLORATORY = {"application": "Applicazione", "continuity": "Continuità", "analogy": "Analogia",
-               "dependency": "Dipendenza", "resonance": "Risonanza", "card": "Carta di collegamento",
+               "dependency": "Dipendenza", "resonance": "Risonanza", "card": "Ponte esplorativo",
                "contradiction": "Contraddizione"}
 ROLE = {"user": "Fondatore", "assistant": "Assistente", "human": "Fondatore", "system": "Sistema"}
 AGGREGATES = {"domain", "project", "system", "work"}
@@ -19,23 +19,67 @@ SOURCES = {"attachment_source", "non_conversation_source"}
 
 
 def _short(value: object, length: int = 420) -> str:
-    text = " ".join(str(value or "").split())
+    text = _display(value)
     return text if len(text) <= length else text[:length - 1].rstrip() + "…"
 
 
 def _date(value: object) -> str:
-    return str(value or "")[:10]
+    raw = str(value or "")[:10]
+    try:
+        year, month, day = (int(part) for part in raw.split("-"))
+        return f"{day} {('gen feb mar apr mag giu lug ago set ott nov dic'.split())[month - 1]} {year}"
+    except (ValueError, IndexError):
+        return raw
+
+
+def _display(value: object) -> str:
+    """Decode only a single layer of literal text escapes for display."""
+    return re.sub(r'\\(?:n|t|r|"|\\)', lambda m: {r'\n': '\n', r'\t': '\t', r'\r': '\r', r'\"': '"', r'\\': '\\'}[m.group()], str(value or '')).strip()
+
+
+def _technical_text(value: object) -> bool:
+    text = str(value or '').strip()
+    return bool(text and (re.fullmatch(r'[0-9a-fA-F]{32,}', text) or
+                          re.fullmatch(r'(?:[A-Z0-9]{20,}|(?:asr|src|ent)_[A-Z0-9]{16,})', text)))
+
+
+def _readable(value: object) -> str:
+    return 'Impronta tecnica del file (nessun testo leggibile)' if _technical_text(value) else _display(value)
+
+
+def _count(n: int, singular: str, plural: str) -> str:
+    return f'{n} {singular if n == 1 else plural}'
+
+
+TECH_LABELS = {'source_id': 'Identificativo della fonte', 'snapshot_digest': 'Impronta dello snapshot',
+               'start_byte': 'Posizione nel testo (byte iniziale)', 'end_byte': 'Posizione nel testo (byte finale)',
+               'asset_digest': 'Impronta del file', 'asset_id': 'Identificativo del file',
+               'conversation': 'Identificativo della conversazione', 'raw_text': 'Testo verificato originale'}
+
+
+def _message(record: dict) -> str:
+    if record.get('kind') != 'message':
+        return 'Messaggio non identificato singolarmente: il passaggio è localizzato per posizione nel testo (vedi Dettagli tecnici)'
+    role = ROLE.get(str(record.get('role', '')).lower(), '')
+    date = _date(record.get('date')) if record.get('date') else ''
+    if not role and not date:
+        return 'Messaggio non identificato singolarmente: il passaggio è localizzato per posizione nel testo (vedi Dettagli tecnici)'
+    author = "dell'Assistente" if role == 'Assistente' else f'del {role}' if role else ''
+    return ' '.join(part for part in ('Messaggio', author, f'del {date}' if date else '') if part)
 
 
 def _readable_context(value: object) -> str:
     text = str(value or "").strip()
-    if any(marker in text for marker in ('content_type', 'ntent_type', '"parts"', '"payload"', '\\"', '{"', '"}')):
+    if any(marker in text for marker in ('content_type', 'ntent_type', '"parts"', '"payload"', '{"', '"}')):
         return ""
     return text
 
 
 def _title(node: dict) -> str:
-    return str(node.get("title") or node.get("title_full") or "Senza titolo")
+    raw = _display(node.get("title") or node.get("title_full") or "Senza titolo")
+    parts = [_date(part.strip()) if re.fullmatch(r'\d{4}-\d{2}-\d{2}', part.strip()) else part.strip()
+             for part in raw.split(' · ') if part.strip()]
+    return ' · '.join(parts)
 
 
 class DrawerData:
@@ -93,6 +137,19 @@ class DrawerData:
         kind = node.get("kind", "")
         detail = self.detail(identifier) or {}
         item = {"id": identifier, "title": _title(node), "kind_label": KIND.get(kind, "Elemento")}
+        if _technical_text(item['title']):
+            item['technical'] = [{"label": 'Titolo originale', "value": item['title']}]
+            item['title'] = 'Impronta tecnica del file (nessun testo leggibile)'
+        if kind == "passage":
+            raw_span = (detail.get("citation") or {}).get("span") or ""
+            if _technical_text(raw_span):
+                item["title"] = "Impronta tecnica del file (nessun testo leggibile)"
+                item["technical"] = [{"label": TECH_LABELS["raw_text"], "value": str(raw_span)}]
+            elif _display(raw_span) != str(raw_span):
+                item["technical"] = [{"label": TECH_LABELS["raw_text"], "value": str(raw_span)}]
+            else:
+                # Exported passage titles can contain an empty date segment.
+                item["title"] = " · ".join(part for part in _title(node).split(" · ") if part.strip())
         if with_text:
             if kind == "passage":
                 citation = detail.get("citation") or {}
@@ -100,7 +157,7 @@ class DrawerData:
                 if value:
                     context = " ".join(x for x in (_readable_context(detail.get("context_before")), value,
                                                      _readable_context(detail.get("context_after"))) if x)
-                    item["text"] = _short(context or value, 900)
+                    item["text"] = _short(_readable(value) if _technical_text(value) else _readable(context or value), 900)
                 else:
                     item["text"] = "Il testo del passaggio non è disponibile."
                 record = detail.get("record") or {}
@@ -118,32 +175,47 @@ class DrawerData:
             elif kind == "proposal":
                 statement = detail.get("statement") or ""
                 spans = [c.get("span") for c in detail.get("citations", []) if c.get("span")]
-                item["text"] = _short(statement or (spans[0] if spans else "Testo della proposta non disponibile."), 900)
+                raw = statement or (spans[0] if spans else "Testo della proposta non disponibile.")
+                item["text"] = _short(_readable(raw), 900)
+                if _technical_text(raw) or _display(raw) != str(raw):
+                    item["technical"] = [{"label": TECH_LABELS["raw_text"], "value": str(raw)}]
                 if node.get("origin") == "USER_AUTHORED":
                     item["author"] = "Fondatore"
                 if node.get("date"):
                     item["date"] = _date(node["date"])
+                parent = self.nodes.get(node.get('parent'))
+                if parent:
+                    item['source'] = {'id': parent['id'], 'title': _title(parent)}
             elif kind in AGGREGATES:
-                evidence = detail.get("evidence") or (detail.get("entity") or {}).get("evidence") or []
-                span = next((e.get("span") for e in evidence if e.get("span")), "")
-                item["text"] = _short(span or "Nessun passaggio testuale verificato per questo elemento.", 900)
+                candidates = [edge["source"] for edge in self.edges.get(identifier, [])
+                              if edge.get("type") == "mentions" and edge.get("target") == identifier]
+                candidates = sorted(set(candidates), key=lambda x: (
+                    -int((self.nodes.get(x) or {}).get("status") == "canon"),
+                    -int((self.nodes.get(x) or {}).get("subkind") == "DECISION"),
+                    -len(self.edges.get(x, [])), x))
+                statement = next((s for x in candidates if (s := (self.detail(x) or {}).get('statement'))
+                                  and not s.lstrip().startswith('#') and not s.strip().isupper()), '')
+                if statement:
+                    item["text"] = _short(_readable(statement), 900)
+                else:
+                    item["text"] = f"{_count(len(candidates), 'elemento collegato', 'elementi collegati')}"
             elif kind in SOURCES:
                 spans = detail.get("spans") or []
                 span = next((s.get("span") for s in spans if s.get("span")), "")
                 file_name = detail.get("file_name")
                 owner = detail.get("owner_conversation")
                 conversation = self.nodes.get("conversation:" + str(owner)) if owner else None
-                prefix = (f"Allegato: {file_name}. " if file_name else "")
+                prefix = (f"{'Allegato' if kind == 'attachment_source' else 'Fonte'}: {file_name}. " if file_name else "")
                 if conversation:
                     prefix += f"Conversazione di origine: {_title(conversation)}. "
                     item["source"] = {"id": conversation["id"], "title": _title(conversation)}
                 item["text"] = _short(prefix +
-                                      (span if span and not re.fullmatch(r"[a-f0-9]{64}", span) else
+                                      (_readable(span) if span and not _technical_text(span) else
                                        "Nessun passaggio testuale verificato per questa fonte."), 900)
             elif kind == "conversation":
                 first = next((x for x in self.children.get(identifier, []) if self.nodes.get(x, {}).get("kind") == "proposal"), None)
                 proposal = self.detail(first) if first else None
-                item["text"] = _short((proposal or {}).get("statement") or "Il testo integrale della conversazione non è disponibile.", 900)
+                item["text"] = _short(_readable((proposal or {}).get("statement") or "Il testo integrale della conversazione non è disponibile."), 900)
             else:
                 item["text"] = "Nessun testo verificato disponibile."
             if node.get("date") and "date" not in item:
@@ -171,62 +243,83 @@ class DrawerData:
         if kind in AGGREGATES:
             descendants = [self.nodes[x] for x in self.descendants(identifier) if x in self.nodes]
             by_kind = Counter(x.get("kind") for x in descendants)
-            sentences.append(f"Questo {KIND.get(kind, 'elemento').lower()} comprende {len(descendants)} elementi nella sua gerarchia, tra cui {by_kind['conversation']} conversazioni, {by_kind['proposal']} proposte e {by_kind['attachment_source'] + by_kind['non_conversation_source']} fonti.")
-            direct = sorted((self.nodes[x] for x in self.members(identifier) if x in self.nodes),
-                            key=lambda x: (-float((x.get("importance") or {}).get("value") or 0), x["id"]))
+            direct_ids = [x for x in self.children.get(identifier, []) if x in self.nodes]
+            direct = sorted((self.nodes[x] for x in direct_ids),
+                            key=lambda x: (-int((x.get('counts') or {}).get('children') or 0), x['id']))
+            classified = len(self.members(identifier)) if kind == 'domain' else len(direct)
+            sentences.append(f"Questo {KIND.get(kind, 'elemento').lower()} ha {_count(len(direct), 'figlio diretto', 'figli diretti')} nella gerarchia e {_count(classified, 'elemento classificato', 'elementi classificati')} nel dominio." if kind == 'domain' else
+                             f"Questo {KIND.get(kind, 'elemento').lower()} comprende {_count(len(descendants), 'elemento', 'elementi')} nella sua gerarchia, tra cui {_count(by_kind['conversation'], 'conversazione', 'conversazioni')}, {_count(by_kind['proposal'], 'proposta', 'proposte')} e {_count(by_kind['attachment_source'] + by_kind['non_conversation_source'], 'fonte', 'fonti')}.")
             if direct:
-                sentences.append("Fra gli elementi direttamente collegati compaiono " + ", ".join(_title(x) for x in direct[:3]) + ".")
-                stop = {"allegato", "fonte", "messaggio", "senza", "titolo", "project", "progetto",
-                        "with", "from", "part", "the", "and", "della", "delle", "degli", "dello",
-                        "assistant", "readme", "final", "handoff", "using"}
-                themes = Counter(word.casefold() for child in direct if child.get("kind") not in SOURCES
-                                 for word in set(re.findall(r"[^\W\d_]{4,}", _title(child)))
-                                 if word.casefold() not in stop)
-                repeated = [(word, count) for word, count in sorted(themes.items(), key=lambda pair: (-pair[1], pair[0])) if count >= 2][:3]
-                if repeated:
-                    sentences.append("Nei titoli ricorrono " + ", ".join(f"{word} ({count})" for word, count in repeated) + ".")
+                projects = [self.nodes[x] for x in self.members(identifier)
+                            if (self.nodes.get(x) or {}).get('kind') in {'project', 'system'}]
+                projects.sort(key=lambda x: (-int((x.get('counts') or {}).get('children') or 0), x['id']))
+                if projects:
+                    sentences.append(("Il principale progetto o sistema per numero di figli diretti è " if len(projects) == 1 else "I principali progetti e sistemi per numero di figli diretti sono ") + "; ".join(f"«{_title(x)}» ({(x.get('counts') or {}).get('children', 0)})" for x in projects[:3]) + ".")
+                conversations = sorted((x for x in self.members(identifier) if (self.nodes.get(x) or {}).get('kind') == 'conversation'),
+                                       key=lambda x: (-int((self.nodes[x].get('counts') or {}).get('live_proposals') or 0), x))
+                if conversations:
+                    sentences.append(("La conversazione più ampia è " if len(conversations) == 1 else "Le conversazioni più ampie sono ") + "; ".join(f"«{_title(self.nodes[x])}» ({_count(int((self.nodes[x].get('counts') or {}).get('live_proposals') or 0), 'proposta', 'proposte')})" for x in conversations[:2]) + ".")
             else:
                 sentences.append("Non risultano elementi figli nella gerarchia disponibile.")
-            if counts.get("live_proposals") is not None:
-                sentences.append(f"I dati registrano {counts['live_proposals']} proposte attive e {counts.get('passages', 0)} passaggi citati per questo elemento.")
+            if kind == 'domain':
+                member_nodes = [self.nodes[x] for x in self.members(identifier) if x in self.nodes]
+                conv = sum(x.get('kind') == 'conversation' for x in member_nodes)
+                attachments = sum(x.get('kind') == 'attachment_source' for x in member_nodes)
+                sentences.append(f"Le proposte provengono da {_count(conv, 'conversazione', 'conversazioni')} e {_count(attachments, 'allegato', 'allegati')}.")
+            elif counts.get("live_proposals") is not None:
+                sentences.append(f"I dati registrano {_count(counts['live_proposals'], 'proposta attiva', 'proposte attive')} e {_count(counts.get('passages', 0), 'passaggio citato', 'passaggi citati')} per questo elemento.")
             evidence = detail.get("evidence") or (detail.get("entity") or {}).get("evidence") or []
             span = next((e.get("span") for e in evidence if e.get("span")), None)
             if span:
-                sentences.append("Un passaggio attestato riporta: «" + _short(span, 180) + "».")
+                sentences.append("Un passaggio attestato riporta: «" + _short(_readable(span), 180) + "».")
             links = Counter((edge["type"], "uscente" if edge["source"] == identifier else "entrante") for edge in self.edges.get(identifier, []))
             if links:
                 (link_type, direction), count = links.most_common(1)[0]
                 label = self._relation_label(link_type, direction)
-                sentences.append(f"Il collegamento più frequente è «{label}», presente {count} volte.")
+                sentences.append(f"Il collegamento più frequente è «{label}», presente {'una volta' if count == 1 else str(count) + ' volte'}.")
             else:
                 sentences.append("Non risultano collegamenti registrati oltre alla gerarchia dei contenuti.")
             facts = [{"label": "Elementi", "value": len(descendants)}, {"label": "Proposte attive", "value": counts.get("live_proposals", by_kind["proposal"])}]
         elif kind == "proposal":
-            statement = _short(detail.get("statement"), 230)
+            statement = _short(_readable(detail.get("statement")), 230)
             spans = [c.get("span") for c in detail.get("citations", []) if c.get("span")]
             sentences.append(f"La proposta descrive: {statement}" if statement else "Il testo della proposta non è disponibile nei dati verificati.")
-            sentences.append(f"È sostenuta da {len(spans)} passaggi citati con testo disponibile.")
+            sentences.append(f"È sostenuta da {_count(len(spans), 'passaggio citato', 'passaggi citati')} con testo disponibile.")
             if spans:
-                sentences.append("Un passaggio riporta: «" + _short(spans[0], 190) + "»." )
+                sentences.append("Un passaggio riporta: «" + _short(_readable(spans[0]), 190) + "»." )
             if node.get("date"):
                 sentences.append(f"La data registrata è {_date(node['date'])}.")
             else:
                 sentences.append("La data del contenuto non è disponibile.")
-            relation_classes = {"esplorativa" if e.get("class") == "exploratory" else "attestata"
-                                for e in self.edges.get(identifier, []) if e.get("type") != "classified_in"}
-            if relation_classes:
-                sentences.append("Sono registrati collegamenti " + " e ".join(sorted(relation_classes)) + " per questa proposta.")
+            relation = self.relations(identifier, 0, 10, '')
+            relevant = [t for g in relation['groups'] if g['class'] != 'strutturale' for t in g['types']]
+            if relevant:
+                attested = [t for g in relation['groups'] if g['class'] == 'attestata' for t in g['types']]
+                exploratory = [t for g in relation['groups'] if g['class'] == 'esplorativa' for t in g['types']]
+                parts = []
+                for types, adjective in ((attested, 'attestato'), (exploratory, 'esplorativo')):
+                    if types:
+                        number = sum(t['count'] for t in types)
+                        direction = ' in entrata' if all(t['direction'] == 'entrante' for t in types) else ' in uscita' if all(t['direction'] == 'uscente' for t in types) else ''
+                        examples = ', '.join(f"{t['label']} {t['count']}" for t in types[:4])
+                        if len(types) == 1 and types[0]['count'] == 1 and types[0]['items']:
+                            linked = types[0]['items'][0]
+                            examples = f"{types[0]['label']}: {linked['title']}" if linked['title'].lower().endswith(' · ' + linked['kind_label'].lower()) else f"{types[0]['label']}: {linked['title']} · {linked['kind_label'].lower()}"
+                        plural = 'attestati' if adjective == 'attestato' else 'esplorativi'
+                        parts.append(f"{_count(number, 'collegamento ' + adjective, 'collegamenti ' + plural)}{direction} ({examples})")
+                sentences.append('Ha ' + ' e '.join(parts) + '.')
             facts = [{"label": "Passaggi citati", "value": len(spans)}]
         elif kind == "conversation":
             children = [self.nodes[x] for x in self.children.get(identifier, []) if x in self.nodes]
-            sentences.append(f"La conversazione contiene {len(children)} proposte verificabili nel grafo e {counts.get('passages', 0)} passaggi citati.")
+            sentences.append(f"La conversazione contiene {_count(len(children), 'proposta verificabile', 'proposte verificabili')} nel grafo e {_count(counts.get('passages', 0), 'passaggio citato', 'passaggi citati')}.")
             if children:
-                sentences.append("Tra gli argomenti registrati: " + ", ".join(_title(x) for x in children[:3]) + ".")
+                children.sort(key=lambda x: (-int(x.get('status') == 'canon'), -int(x.get('subkind') == 'DECISION'), -len(self.edges.get(x['id'], [])), x['id']))
+                sentences.append("Tra gli argomenti registrati: " + "; ".join(f'«{_title(x)}»' for x in children[:3]) + ".")
             else:
                 sentences.append("Non sono disponibili proposte collegate a questa conversazione.")
             inventory = detail.get("inventory") or {}
             if inventory.get("messages"):
-                sentences.append(f"L'inventario registra {inventory['messages']} messaggi; il testo integrale non è incluso in questa proiezione.")
+                sentences.append(f"L'inventario registra {_count(inventory['messages'], 'messaggio', 'messaggi')}; il testo integrale non è incluso in questa proiezione.")
             else:
                 sentences.append("Il testo integrale della conversazione non è incluso in questa proiezione.")
             if node.get("date"):
@@ -235,8 +328,8 @@ class DrawerData:
         elif kind in SOURCES:
             children = [self.nodes[x] for x in self.children.get(identifier, []) if x in self.nodes]
             name = detail.get("file_name")
-            sentences.append(f"La fonte è un allegato denominato {name}." if name else "Questa fonte conserva passaggi citati nel grafo.")
-            sentences.append(f"Da questa fonte derivano {len(children)} proposte e {counts.get('passages', 0)} passaggi citati.")
+            sentences.append(f"La fonte è {'un allegato' if kind == 'attachment_source' else 'un file'} denominato {name}." if name else "Questa fonte conserva passaggi citati nel grafo.")
+            sentences.append(f"Da questa fonte derivano {_count(len(children), 'proposta', 'proposte')} e {_count(counts.get('passages', 0), 'passaggio citato', 'passaggi citati')}.")
             owner = detail.get("owner_conversation")
             if owner and "conversation:" + owner in self.nodes:
                 sentences.append(f"La conversazione di origine è «{_title(self.nodes['conversation:' + owner])}».")
@@ -249,7 +342,7 @@ class DrawerData:
         else:
             citation = detail.get("citation") or {}
             text = citation.get("span")
-            sentences = [f"Il passaggio citato riporta: «{_short(text, 220)}»." if text else "Il testo del passaggio non è disponibile.",
+            sentences = [f"Il passaggio citato riporta: «{_short(_readable(text), 220)}»." if text else "Il testo del passaggio non è disponibile.",
                          "Questo passaggio documenta una proposta nel grafo."]
             record = detail.get("record") or {}
             sentences.append(f"La data registrata è {_date(record['date'])}." if record.get("date") else "La data del passaggio non è disponibile.")
@@ -261,7 +354,7 @@ class DrawerData:
             insufficient = True
         result = self._base(identifier, "summary", "partial" if insufficient else "ok",
                             "Alcuni dettagli non sono disponibili nei dati verificati." if insufficient else None)
-        result.update({"title": _title(node), "kind_label": KIND.get(kind, "Elemento"),
+        result.update({"title": self._item(identifier, with_text=False)['title'], "kind_label": KIND.get(kind, "Elemento"),
                        "sentences": sentences[:6], "facts": facts, "insufficient": insufficient})
         return result
 
@@ -273,7 +366,7 @@ class DrawerData:
         elif kind == "proposal":
             ids = [identifier] + self.children.get(identifier, [])
         elif kind in SOURCES:
-            ids = [identifier] + self.descendants(identifier)
+            ids = self.descendants(identifier)
         elif kind == "conversation":
             ids = self.descendants(identifier)
         elif kind in AGGREGATES:
@@ -297,6 +390,9 @@ class DrawerData:
                                      "Nessun passaggio o figlio verificato è disponibile per questo elemento.")
         result = self._base(identifier, "content", state, message)
         result.update({"total": total, "offset": offset, "limit": limit, "items": page})
+        if kind in SOURCES:
+            count = sum(self.nodes.get(x, {}).get('kind') == 'proposal' for x in self.children.get(identifier, []))
+            result['header'] = f"{_count(count, 'proposta deriva', 'proposte derivano')} da questo allegato · testo integrale non disponibile in questa proiezione" if kind == 'attachment_source' else 'Testo integrale non disponibile in questa proiezione'
         if query:
             result["query"] = query
         return result
@@ -320,7 +416,7 @@ class DrawerData:
             conversations = [x for x in descendants if x.get("kind") == "conversation"]
             for evidence in (detail.get("evidence") or [])[:1]:
                 if evidence.get("span"):
-                    chain.append({"step": "passaggio", "label": "Passaggio attestato", "value": _short(evidence["span"], 300)})
+                    chain.append({"step": "passaggio", "label": "Passaggio attestato", "value": _short(_readable(evidence["span"]), 300)})
             listed = sorted(conversations + sources, key=lambda x: (_title(x).casefold(), x["id"]))
             aggregate = {"conversations": len(conversations), "sources": len(sources),
                          "attachments": sum(x.get("kind") == "attachment_source" for x in sources),
@@ -348,16 +444,17 @@ class DrawerData:
                     passage_id = next((x for x in self.children.get(identifier, []) if x.startswith("passage:")), None)
                     passage = self.detail(passage_id) if passage_id else None
                     passage_record = (passage or {}).get("record") or {}
-                    if passage_record.get("kind") == "message":
-                        chain.append({"step": "messaggio", "label": "Messaggio", "value": "Messaggio citato nella fonte"})
-                    chain.append({"step": "passaggio", "label": "Passaggio citato", "value": _short(citation["span"], 300),
+                    chain.append({"step": "messaggio", "label": "Messaggio", "value": _message(passage_record)})
+                    chain.append({"step": "passaggio", "label": "Passaggio citato", "value": _short(_readable(citation["span"]), 300),
                                   **({"id": passage_id} if passage_id else {})})
                     role = passage_record.get("role")
                     if role:
                         chain.append({"step": "autore", "label": "Autore", "value": ROLE.get(str(role).lower(), str(role).capitalize())})
                     for key in ("source_id", "snapshot_digest", "start_byte", "end_byte"):
                         if citation.get(key) is not None:
-                            technical.append({"label": key, "value": str(citation[key])})
+                            technical.append({"label": TECH_LABELS[key], "value": str(citation[key])})
+                    if _display(citation['span']) != str(citation['span']) or _technical_text(citation['span']):
+                        technical.append({"label": TECH_LABELS['raw_text'], "value": str(citation['span'])})
                 if node.get("origin") == "USER_AUTHORED" and not any(x["step"] == "autore" for x in chain):
                     chain.append({"step": "autore", "label": "Autore", "value": "Fondatore"})
             elif kind == "passage":
@@ -367,16 +464,17 @@ class DrawerData:
                 if sid in self.nodes:
                     chain.append({"step": "allegato" if self.nodes[sid].get("kind") == "attachment_source" else "file",
                                   "label": "Fonte", "value": _title(self.nodes[sid]), "id": sid})
-                if record.get("kind") == "message":
-                    chain.append({"step": "messaggio", "label": "Messaggio", "value": "Messaggio citato nella fonte"})
+                chain.append({"step": "messaggio", "label": "Messaggio", "value": _message(record)})
                 if citation.get("span"):
-                    chain.append({"step": "passaggio", "label": "Passaggio", "value": _short(citation["span"], 300)})
+                    chain.append({"step": "passaggio", "label": "Passaggio", "value": _short(_readable(citation["span"]), 300)})
                 role = record.get("role")
                 if role:
                     chain.append({"step": "autore", "label": "Autore", "value": ROLE.get(str(role).lower(), str(role).capitalize())})
                 for key in ("source_id", "snapshot_digest", "start_byte", "end_byte"):
                     if citation.get(key) is not None:
-                        technical.append({"label": key, "value": str(citation[key])})
+                        technical.append({"label": TECH_LABELS[key], "value": str(citation[key])})
+                if citation.get('span') and (_display(citation['span']) != str(citation['span']) or _technical_text(citation['span'])):
+                    technical.append({"label": TECH_LABELS['raw_text'], "value": str(citation['span'])})
             elif kind == "conversation":
                 inventory = detail.get("inventory") or {}
                 chain.append({"step": "origine", "label": "Origine", "value": "Conversazione registrata nell'inventario"})
@@ -385,7 +483,7 @@ class DrawerData:
                     chain.append({"step": "acquisizione", "label": "Acquisizione", "value": str(inventory["provider"])})
                 for key in ("conversation",):
                     if inventory.get(key):
-                        technical.append({"label": key, "value": str(inventory[key])})
+                        technical.append({"label": TECH_LABELS[key], "value": str(inventory[key])})
             elif kind in SOURCES:
                 chain.append({"step": "origine", "label": "Origine", "value": "Allegato acquisito" if kind == "attachment_source" else "Fonte acquisita"})
                 owner = detail.get("owner_conversation")
@@ -396,12 +494,12 @@ class DrawerData:
                 spans = detail.get("spans") or []
                 span = next((s.get("span") for s in spans if s.get("span") and not re.fullmatch(r"[a-f0-9]{64}", s["span"])), None)
                 if span:
-                    chain.append({"step": "passaggio", "label": "Passaggio citato", "value": _short(span, 300)})
+                    chain.append({"step": "passaggio", "label": "Passaggio citato", "value": _short(_readable(span), 300)})
                 if detail.get("provider"):
                     chain.append({"step": "acquisizione", "label": "Acquisizione", "value": str(detail["provider"])})
                 for key in ("source_id", "snapshot_digest", "asset_digest", "asset_id"):
                     if detail.get(key):
-                        technical.append({"label": key, "value": str(detail[key])})
+                        technical.append({"label": TECH_LABELS[key], "value": str(detail[key])})
             date = record.get("date") or node.get("date") or detail.get("source_date")
             if date:
                 chain.append({"step": "data", "label": "Data", "value": _date(date)})
@@ -422,7 +520,7 @@ class DrawerData:
     @staticmethod
     def _relation_label(kind: str, direction: str) -> str:
         if kind == "classified_in":
-            return "Classificato in" if direction == "uscente" else "Contiene"
+            return "Classificato in" if direction == "uscente" else "Classificati qui"
         if kind == "mentions":
             return "Menziona" if direction == "uscente" else "Menzionato in"
         if kind == "relates":
@@ -439,7 +537,10 @@ class DrawerData:
             kind = edge["type"]
             cls = "strutturale" if kind == "classified_in" else ("esplorativa" if edge.get("class") == "exploratory" or kind in EXPLORATORY else "attestata")
             key = (cls, kind, direction)
-            buckets[key][other] = self._item(other, with_text=False)
+            item = self._item(other, with_text=False)
+            if kind == 'card' and edge.get('explanation'):
+                item['statement'] = _readable(edge['explanation'])
+            buckets[key][other] = item
         parent = (self.node(identifier) or {}).get("parent")
         if parent in self.nodes:
             buckets[("strutturale", "parent", "uscente")][parent] = self._item(parent, with_text=False)
@@ -461,7 +562,8 @@ class DrawerData:
                 ordered = sorted(nodes.values(), key=lambda x: (x["title"].casefold(), x["id"]))
                 start = offset if group else 0
                 size = limit if group else min(limit, 10)
-                types.append({"key": key, "label": ("Contenuto in" if direction == "uscente" else "Contiene") if kind == "parent" else self._relation_label(kind, direction),
+                types.append({"key": key, "label": ("Contenuto in" if direction == "uscente" else "Contiene direttamente") if kind == "parent" else self._relation_label(kind, direction),
+                              "relation_class": cls.capitalize(),
                               "direction": direction, "count": len(ordered), "items": ordered[start:start + size],
                               "has_more": start + size < len(ordered)})
             if types:
