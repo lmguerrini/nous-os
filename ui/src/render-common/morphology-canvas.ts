@@ -3,7 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
+import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
@@ -126,6 +126,19 @@ export const NEURAL_EDGE_MID_MIN_PX = 0.6;
 export function neuralSomaTaperRatio(baseRatio: number, degree: number): number {
   void degree;
   return baseRatio;
+}
+
+/** Width at a routed branch: each split retains 76% of its parent's proximal width. */
+export function neuralBranchedWidthPx(progress: number, sampleCount: number, depth: number,
+  body: number, radius: number, ratio: number): number {
+  if (!depth) return body;
+  const split = Math.min(depth, Math.max(0, progress / 10));
+  const root = neuralJoinedRootWidthPx(body, radius, ratio);
+  const dwindled = root * 0.76 ** split;
+  const tail = Math.max(0, progress - depth * 10);
+  const finish = Math.max(10, (sampleCount - 1) / 2 - depth * 10);
+  const fade = Math.min(1, tail / finish);
+  return body + (dwindled - body) * (1 - fade * fade * (3 - 2 * fade));
 }
 
 /**
@@ -496,7 +509,13 @@ export type NeuralSomaFrame = {
   readonly radius: number;
   readonly eccentricity: number;
   readonly harmonics: readonly SomaOutlineHarmonic[];
+  readonly spindle?: boolean;
 };
+
+/** A broad, smooth lobe extends the leading soma pole into its strongest real process. */
+export function somaSpindleFactor(theta: number): number {
+  return 1 + 0.16 * Math.cos(theta) - 0.045 * Math.cos(2 * theta);
+}
 
 /** The screen frame of every soma of a neural geometry under one projection. Per frame, per node:
  * the same clamp, elongation and orientation formulas the node pass draws with. */
@@ -521,11 +540,13 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
     ];
     const projectedUnit = Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
     const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
-    const projectedEccentricity = Math.sqrt(1 + ((node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
+    const projectedEccentricity = Math.sqrt(1 + ((node.spindleRatio ?? node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
     frames.set(node.id, {
       x: p.x, y: p.y, angle, radius,
-      eccentricity: somaDrawnElongation(projectedEccentricity, node.outline ?? []),
+      eccentricity: node.spindleRatio ? clamp(projectedEccentricity * somaElongationFactor(node.outline ?? []), 1.04, 1.9)
+        : somaDrawnElongation(projectedEccentricity, node.outline ?? []),
       harmonics: node.outline ?? [],
+      spindle: !!node.spindleRatio,
     });
   }
   return frames;
@@ -544,7 +565,8 @@ export function somaOutlineRadiusAtAngle(frame: NeuralSomaFrame, polarAngle: num
   const bulge = 1 + clamp(
     somaOutlineIrregularity(frame.harmonics, parameter) * somaIrregularityScale(frame.radius) * SOMA_IRREGULARITY_BOOST,
     -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
-  return bulge * major * minor / Math.hypot(minor * Math.cos(parameter), major * Math.sin(parameter));
+  return bulge * (frame.spindle ? somaSpindleFactor(parameter) : 1)
+    * Math.hypot(major * Math.cos(parameter), minor * Math.sin(parameter));
 }
 
 /**
@@ -998,8 +1020,12 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         // centre-line only; it cannot turn the shaft into a zoom-scaled band.
         const body = Math.max(0.3, appearance.edgeWidth * widthFactor
           * (emphasis?.radiusMultiplier ?? 1));
-        return neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx,
+        const ordinary = neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx,
           [(part.trunkSourceCount ?? 1) <= 1, (part.trunkTargetCount ?? 1) <= 1]);
+        return Math.max(ordinary,
+          neuralBranchedWidthPx(i, points.length, part.sourceBranches?.length ?? 0, body, startRadius, rootRatios[0]),
+          neuralBranchedWidthPx(points.length - 1 - i, points.length, part.targetBranches?.length ?? 0,
+            body, endRadius, rootRatios[1]));
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);
@@ -1420,8 +1446,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         ];
         const projectedUnit = Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
         const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
-        const projectedEccentricity = Math.sqrt(1 + ((node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
-        eccentricity = somaDrawnElongation(projectedEccentricity, harmonics);
+        const projectedEccentricity = Math.sqrt(1 + ((node.spindleRatio ?? node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
+        eccentricity = node.spindleRatio ? clamp(projectedEccentricity * somaElongationFactor(harmonics), 1.04, 1.9)
+          : somaDrawnElongation(projectedEccentricity, harmonics);
       }
       const major = radius * eccentricity, minor = radius;
       const steps = simplified ? 12 : moving ? 16 : 32;
@@ -1434,8 +1461,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           const bulge = 1 + clamp(
             somaOutlineIrregularity(harmonics, theta) * irregularityScale * SOMA_IRREGULARITY_BOOST,
             -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
-          const ex = major * Math.cos(theta) * bulge;
-          const ey = minor * Math.sin(theta) * bulge;
+          const silhouette = bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1);
+          const ex = major * Math.cos(theta) * silhouette;
+          const ey = minor * Math.sin(theta) * silhouette;
           const x = p.x + cosA * ex - sinA * ey;
           const y = p.y + sinA * ex + cosA * ey;
           if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);

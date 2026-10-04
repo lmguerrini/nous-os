@@ -4,7 +4,7 @@ import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { buildContainerGeometry } from "#engine/container-geometry.ts";
 import type { MorphologyContainerInput, MorphologyContainerPath } from "#engine/container-geometry.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
-import { clusterNeuralTrunks, type NeuralTrunk } from "#engine/neural-trunks.ts";
+import { arborizeNeuralTrunk, clusterNeuralTrunks, neuralBranchRoute, type NeuralBranch, type NeuralTrunk } from "#engine/neural-trunks.ts";
 
 export { buildContainerGeometry, morphologyHash };
 export type { MorphologyContainerInput, MorphologyContainerPath };
@@ -19,6 +19,9 @@ export type MorphologyNodeShape = MorphologyNodeInput & {
   readonly degree: number; readonly axis: Coordinates; readonly eccentricity: number;
   readonly outline: readonly SomaOutlineHarmonic[]; readonly bundles?: readonly NeuralBundle[];
   readonly trunks?: readonly NeuralTrunk[];
+  readonly arbors?: readonly NeuralBranch[];
+  /** Canvas silhouette along the strongest real trunk; the legacy ellipse metric stays stable. */
+  readonly spindleRatio?: number | undefined;
   readonly rootRatio?: number;
   readonly haloRadiusRatio?: number; readonly haloAlphaLimit?: number;
 };
@@ -28,6 +31,7 @@ export type MorphologySegment = {
   readonly curvature: number; readonly path: "straight" | "soft-curve" | "wave";
   readonly trunkSourceCount?: number; readonly trunkTargetCount?: number;
   readonly trunkSourceWidthFactor?: number | undefined; readonly trunkTargetWidthFactor?: number | undefined;
+  readonly sourceBranches?: readonly NeuralBranch[]; readonly targetBranches?: readonly NeuralBranch[];
 };
 export type MorphologyGeometry = {
   readonly morphology: Morphology; readonly nodes: readonly MorphologyNodeShape[];
@@ -256,9 +260,13 @@ function segment(id: string, edgeId: string, a: Coordinates, b: Coordinates, wid
     curvature: contract.path === "straight" ? 0 : curvature, path: contract.path };
 }
 
-/** Build paths once per layout or curvature change. No camera-dependent aesthetic input. */
+const neuralGeometryCache = new WeakMap<readonly MorphologyNodeInput[], WeakMap<readonly MorphologyEdgeInput[], Map<number, MorphologyGeometry>>>();
+/** Build paths once per drawn subset and curvature. No camera-dependent aesthetic input. */
 export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly MorphologyNodeInput[], edges: readonly MorphologyEdgeInput[],
   colonies: readonly MorphologyColonyInput[] = [], curvature = 1, containers: readonly MorphologyContainerInput[] = []): MorphologyGeometry {
+  const cached = morphology === "neural" && !colonies.length && !containers.length
+    ? neuralGeometryCache.get(nodes)?.get(edges)?.get(curvature) : undefined;
+  if (cached) return cached;
   const byId = new Map(nodes.map(node => [node.id, node]));
   const incident = new Map(nodes.map(node => [node.id, [] as { id: string; point: Coordinates; weight: number }[]]));
   for (const edge of edges) {
@@ -273,6 +281,9 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
       id: item.id, direction: sub(item.point, node.position),
       length: norm(sub(item.point, node.position)), weight: item.weight,
     }))) : [];
+    const arbors = morphology === "neural" ? trunks.map(trunk => arborizeNeuralTrunk(trunk,
+      connections.map(item => ({ id: item.id, direction: sub(item.point, node.position),
+        length: norm(sub(item.point, node.position)), weight: item.weight })))) : [];
     const bundles = morphology === "neural" ? neuralAngularBundles(connections.map(item => ({
       id: item.id, direction: sub(item.point, node.position), weight: item.weight,
     }))) : [];
@@ -282,7 +293,9 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
         eccentricity: connections.length >= NEURAL_HUB_DEGREE
           ? Math.max(1.24, covarianceShape.eccentricity) : covarianceShape.eccentricity } : covarianceShape;
     return { ...node, degree: connections.length, ...axisShape,
-      bundles, trunks, rootRatio: neuralRootRatio(connections.length),
+      bundles, trunks, arbors,
+      spindleRatio: morphology === "neural" && trunks.length ? Math.min(1.86, 1.65 + 0.035 * Math.log2(connections.length + 1)) : undefined,
+      rootRatio: neuralRootRatio(connections.length),
       haloRadiusRatio: NEURAL_HALO_MAX_RADIUS_RATIO, haloAlphaLimit: NEURAL_HALO_MAX_ALPHA,
       outline: morphology === "neural" ? incidentSomaHarmonics(axisShape.axis, trunks) : somaOutlineHarmonics(node.id) };
   });
@@ -304,30 +317,47 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
         edge.width * (proximal ? NEURAL_TAPER.proximal : NEURAL_TAPER.distal),
         edge.width * (proximal ? NEURAL_TAPER.distal : NEURAL_TAPER.proximal),
         morphology, curvature, null, insetA, insetB, edge.width * NEURAL_TAPER.mid);
-      const samples = [...original.samples];
-      const routeEnd = (trunk: NeuralTrunk | undefined, node: MorphologyNodeShape, reverse: boolean) => {
-        if (!trunk || trunk.edgeIds.length < 2) return;
-        const branch = add(node.position, mul(trunk.direction, trunk.branchDistance));
-        const root = reverse ? samples.length - 1 : 0;
-        samples[root] = add(node.position, mul(trunk.direction, somaRadius(node, trunk.direction)));
-        for (let j = 1; j <= 5; j++) {
-          const index = reverse ? root - j : j;
-          const t = j / 5;
-          samples[index] = mix(samples[root]!, branch, t * t * (3 - 2 * t));
+      const sourceBranches = startTrunk && startTrunk.edgeIds.length > 1 && a.arbors
+        ? neuralBranchRoute(a.arbors.find(root => root.edgeIds.includes(edge.id))!, edge.id) : [];
+      const targetBranches = endTrunk && endTrunk.edgeIds.length > 1 && b.arbors
+        ? neuralBranchRoute(b.arbors.find(root => root.edgeIds.includes(edge.id))!, edge.id) : [];
+      if (!sourceBranches.length && !targetBranches.length)
+        return { id: edge.id, source: edge.source, target: edge.target, segments: [original] };
+      const anchors: Coordinates[] = [startTrunk && startTrunk.edgeIds.length > 1
+        ? add(a.position, mul(startTrunk.direction, somaRadius(a, startTrunk.direction))) : original.source];
+      for (const branch of sourceBranches) anchors.push(add(a.position, mul(branch.direction, branch.distance)));
+      for (const branch of [...targetBranches].reverse()) anchors.push(add(b.position, mul(branch.direction, branch.distance)));
+      anchors.push(endTrunk && endTrunk.edgeIds.length > 1
+        ? add(b.position, mul(endTrunk.direction, somaRadius(b, endTrunk.direction))) : original.target);
+      const samples: Coordinates[] = [];
+      for (let section = 0; section < anchors.length - 1; section++) {
+        const p0 = anchors[section]!, p1 = anchors[section + 1]!;
+        const span = norm(sub(p1, p0));
+        const incoming = section === 0 || section === 1 && sourceBranches.length > 0
+          ? unit(sub(anchors[1]!, anchors[0]!)) : unit(sub(p1, anchors[section - 1]!));
+        const outgoing = section === 0 || section + 2 >= anchors.length
+          ? unit(sub(p1, p0)) : unit(sub(anchors[section + 2]!, p0));
+        const c1 = add(p0, mul(incoming, span * 0.34));
+        const c2 = add(p1, mul(outgoing, -span * 0.34));
+        const terminal = !targetBranches.length && section === anchors.length - 2;
+        const sway = terminal ? Math.min(8, span * 0.075) * curvature : 0;
+        const phase = (morphologyHash(edge.id) % 6283) / 1000;
+        const sideways = normal(p0, p1);
+        const steps = terminal ? 15 : 10;
+        for (let j = section === 0 ? 0 : 1; j <= steps; j++) {
+          const t = j / steps;
+          const point = cubic(p0, c1, c2, p1, t);
+          samples.push(add(point, mul(sideways, sway * Math.sin(Math.PI * t) ** 2
+            * Math.sin(2 * Math.PI * t + phase))));
         }
-        for (let j = 6; j <= 8; j++) {
-          const index = reverse ? root - j : j;
-          samples[index] = mix(branch, samples[index]!, (j - 5) / 3);
-        }
-      };
-      routeEnd(startTrunk, a, false);
-      routeEnd(endTrunk, b, true);
+      }
       return { id: edge.id, source: edge.source, target: edge.target, segments: [{ ...original,
         source: samples[0]!, target: samples[samples.length - 1]!, samples,
         trunkSourceCount: startTrunk?.edgeIds.length ?? 1,
         trunkTargetCount: endTrunk?.edgeIds.length ?? 1,
         trunkSourceWidthFactor: startTrunk?.rootWidthFactor,
-        trunkTargetWidthFactor: endTrunk?.rootWidthFactor }] };
+        trunkTargetWidthFactor: endTrunk?.rootWidthFactor,
+        sourceBranches, targetBranches }] };
     }
     const sourceColony = colonyByNode.get(a.id), targetColony = colonyByNode.get(b.id);
     const branched = Boolean(sourceColony && sourceColony.id === targetColony?.id);
@@ -339,5 +369,13 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
   // invent off-edge branch points or a colony-centre detour.
   const branchPoints = morphology === "mycelium"
     ? shaped.filter(node => node.degree >= 3).map(node => node.position) : [];
-  return { morphology, nodes: shaped, edges: routed, drawnSegments, branchPoints, containers: buildContainerGeometry(morphology, containers), colonies };
+  const result = { morphology, nodes: shaped, edges: routed, drawnSegments, branchPoints, containers: buildContainerGeometry(morphology, containers), colonies };
+  if (morphology === "neural" && !colonies.length && !containers.length) {
+    let byEdges = neuralGeometryCache.get(nodes);
+    if (!byEdges) { byEdges = new WeakMap(); neuralGeometryCache.set(nodes, byEdges); }
+    let byCurvature = byEdges.get(edges);
+    if (!byCurvature) { byCurvature = new Map(); byEdges.set(edges, byCurvature); }
+    byCurvature.set(curvature, result);
+  }
+  return result;
 }

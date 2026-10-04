@@ -4,6 +4,7 @@ import { morphologyHash } from "#engine/stable-hash.ts";
 import { buildMorphologyGeometry, type MorphologyNodeShape } from "#engine/morphology-geometry.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneAggregate, SceneEdge, SceneNode, SceneTokenEncoding } from "#scene/contract.ts";
+type NeuralRoute = ReturnType<typeof buildMorphologyGeometry>["drawnSegments"][number];
 
 /** This stores deterministic instanced-node input arrays and does not allocate Three resources. */
 export type NodeBuffers = {
@@ -60,14 +61,15 @@ export type SrgbColor = {
 /** This converts the complete scene into deterministic typed arrays and does not allocate renderer resources. */
 export function buildSceneBuffers(scene: Scene): SceneBuffers {
   const neuralEdges = scene.edges.filter(edge => edge.filament.hotMixPermille > 0);
-  const neuralShapes = neuralEdges.length ? new Map(buildMorphologyGeometry("neural",
+  const neuralGeometry = neuralEdges.length ? buildMorphologyGeometry("neural",
     scene.nodes.map(node => ({ id: node.id, position: node.position, radius: node.radiusPx })),
-    neuralEdges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, width: edge.bodyWidthPx }))).nodes
-    .map(node => [node.id, node])) : new Map<string, MorphologyNodeShape>();
+    neuralEdges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, width: edge.bodyWidthPx }))) : null;
+  const neuralShapes = new Map<string, MorphologyNodeShape>(neuralGeometry?.nodes.map(node => [node.id, node]) ?? []);
+  const neuralRoutes = new Map<string, NeuralRoute>(neuralGeometry?.edges.map(edge => [edge.id, edge.segments[0]!]) ?? []);
   return {
     nodes: buildNodeBuffers(scene.nodes, scene.tokenEncoding,
       new Set(neuralEdges.flatMap(edge => [edge.source, edge.target])), neuralShapes),
-    filaments: buildFilamentBuffers(scene.edges, scene.tokens.peak, scene.tokenEncoding, scene.nodes, neuralShapes),
+    filaments: buildFilamentBuffers(scene.edges, scene.tokens.peak, scene.tokenEncoding, scene.nodes, neuralShapes, neuralRoutes),
     aggregates: buildAggregateBuffers(scene.aggregates, scene.tokenEncoding),
   };
 }
@@ -144,6 +146,7 @@ export function buildFilamentBuffers(
   encoding: SceneTokenEncoding,
   nodes: readonly SceneNode[] = [],
   neuralShapes: ReadonlyMap<string, MorphologyNodeShape> = new Map(),
+  neuralRoutes: ReadonlyMap<string, NeuralRoute> = new Map(),
 ): FilamentBuffers {
   const ordered = [...edges].sort(compareStackingPriority);
   const startPositions = new Float32Array(ordered.length * coordinateCount());
@@ -179,17 +182,20 @@ export function buildFilamentBuffers(
     const sourceNode = neuralShapes.get(edge.source), targetNode = neuralShapes.get(edge.target);
     const sourceTrunk = neural && (sourceNode?.degree ?? 0) >= 8 ? sourceNode?.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
     const targetTrunk = neural && (targetNode?.degree ?? 0) >= 8 ? targetNode?.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
-    const sourceBranch = sourceTrunk && sourceTrunk.edgeIds.length > 1 && sourceNode ? {
-      x: sourceNode.position.x + sourceTrunk.direction.x * sourceTrunk.branchDistance,
-      y: sourceNode.position.y + sourceTrunk.direction.y * sourceTrunk.branchDistance,
-      z: sourceNode.position.z + sourceTrunk.direction.z * sourceTrunk.branchDistance } : null;
-    const targetBranch = targetTrunk && targetTrunk.edgeIds.length > 1 && targetNode ? {
-      x: targetNode.position.x + targetTrunk.direction.x * targetTrunk.branchDistance,
-      y: targetNode.position.y + targetTrunk.direction.y * targetTrunk.branchDistance,
-      z: targetNode.position.z + targetTrunk.direction.z * targetTrunk.branchDistance } : null;
+    const route = neuralRoutes.get(edge.id);
+    const sourceRoot = route?.sourceBranches?.[0], targetRoot = route?.targetBranches?.[0];
+    const sourceBranch = sourceRoot && sourceNode ? {
+      x: sourceNode.position.x + sourceRoot.direction.x * sourceRoot.distance,
+      y: sourceNode.position.y + sourceRoot.direction.y * sourceRoot.distance,
+      z: sourceNode.position.z + sourceRoot.direction.z * sourceRoot.distance } : null;
+    const targetBranch = targetRoot && targetNode ? {
+      x: targetNode.position.x + targetRoot.direction.x * targetRoot.distance,
+      y: targetNode.position.y + targetRoot.direction.y * targetRoot.distance,
+      z: targetNode.position.z + targetRoot.direction.z * targetRoot.distance } : null;
     const control = sourceBranch && targetBranch ? {
       x: (sourceBranch.x + targetBranch.x) / 2, y: (sourceBranch.y + targetBranch.y) / 2,
-      z: (sourceBranch.z + targetBranch.z) / 2 } : sourceBranch ?? targetBranch ?? edge.controlPoint;
+      z: (sourceBranch.z + targetBranch.z) / 2 } : sourceBranch ?? targetBranch
+      ?? route?.samples[Math.floor(route.samples.length / 2)] ?? edge.controlPoint;
     writeCoordinates(controlPositions, edgeIndex, control);
     writeCoordinates(endPositions, edgeIndex, neural ? nodeCenters.get(edge.target) ?? end : end);
     writeColor(colorsSrgb, edgeIndex, tokenToSrgb(edge.token, encoding));
