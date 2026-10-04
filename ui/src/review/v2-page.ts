@@ -6,6 +6,7 @@ import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
+import type { LayoutInput, LayoutResult } from './layout-v2.ts';
 import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
 import { typedNodeViewport } from './typed-node-viewport.ts';
 import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, volumeStats, VOLUME_READOUT_HELP } from './volume.ts';
@@ -20,13 +21,14 @@ import type { V2Index, V2Node } from './v2-core.ts';
 import type { TypedPathStep } from './v2-relations.ts';
 import type { AnalyticalDomain, Dimension, NaturalArrangement, PickResult, ProjectionRequest, ProjectionResult, ProjectionRenderer, RawJson, RecursiveLevel, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec3, VisualRelation } from '../projection/contract-types.ts';
 import { selectAnalyticalDomain } from '../projection/domain.ts';
-import { ProjectionRegistry } from '../projection/registry.ts';
-import { deriveFractalCommunities, fractalCommunityLevelId, FractalProjectionRefusal, fractalProjection } from '../projection/fractal.ts';
+import { ProjectionRegistry, ProjectionResultCache, projectionCacheKeyDigest } from '../projection/registry.ts';
+import { PageResultCache, pageLayoutKey } from '../projection/page-result-cache.ts';
+import { deriveFractalCommunities, fractalCommunityLevelId, FractalProjectionRefusal, fractalProjection, FRACTAL_PROJECTION_VERSION } from '../projection/fractal.ts';
 import { certifyFractalDynamics, fractalContractParameters } from '../fractal/parameters.ts';
 import { naturalProjection, NATURAL_LAYOUT_VERSION, resolveNaturalArrangement } from '../projection/natural-bridge.ts';
 import { projectLegacyIndra } from '../projection/legacy-indra.ts';
-import { INDRA_EXPAND_Z_RANGE, INDRA_GENERATOR_POLICY, IndraProjectionRefusal, indraRequestForLevelToken, indrasPearlsProjection } from '../projection/indra.ts';
-import { HOLOGRAPHIC_MAX_EIGEN_TOLERANCE, HOLOGRAPHIC_MAX_MODES, HOLOGRAPHIC_MAX_RESTARTS, HOLOGRAPHIC_STATED_BASELINE, holographicProjection } from '../projection/holographic.ts';
+import { INDRA_EXPAND_Z_RANGE, INDRA_GENERATOR_POLICY, INDRA_PROJECTION_VERSION, IndraProjectionRefusal, indraRequestForLevelToken, indrasPearlsProjection } from '../projection/indra.ts';
+import { HOLOGRAPHIC_MAX_EIGEN_TOLERANCE, HOLOGRAPHIC_MAX_MODES, HOLOGRAPHIC_MAX_RESTARTS, HOLOGRAPHIC_STATED_BASELINE, HOLOGRAPHIC_PROJECTION_VERSION, holographicProjection } from '../projection/holographic.ts';
 import { EIGENSPACE_POLICY_VERSION } from '../holographic/geometry.ts';
 import { createProjectionWorkerClient } from '../projection/worker-client.ts';
 import type { ProjectionParametersPayload } from '../projection/worker-protocol.ts';
@@ -557,6 +559,9 @@ export class V2Page {
     private lastRevealSampleKey = '';
     private pointerFocusTimer: number | null = null;
     private revealRoute: RouteResult | null = null;
+    // D-080 A5b reveal-witness region: coalesce expensive audit construction after settle.
+    private revealWitnessTimer: ReturnType<typeof setTimeout> | null = null;
+    private pendingRevealBuild: (() => void) | null = null;
     private routePickById = new Map<string, PickResult>();
     private revealRecord: (ReturnType<typeof buildRevealWitness> & {
         band: RevealState['band']; zoom: number;
@@ -597,6 +602,32 @@ export class V2Page {
     private typedWhyResult: ReturnType<typeof typedV2Path> = null;
     private naturalArrangement: NaturalArrangement | null = null;
     private typedNaturalCache: { raw: ProjectionResult; detail: RelationDetail; active: string | null; result: ProjectionResult } | null = null;
+    // D-080 A5b projection/result-adaptation region: completed outputs only, shared across returning modes.
+    private readonly pageResults = new PageResultCache<ProjectionResult | LayoutResult>();
+    /** Injected clients may be stateful test seams; only the page-owned worker is memoized here. */
+    private readonly cacheWorkerResults: boolean;
+    private readonly projectionPhases = new Map<string, { count: number; lastMs: number; totalMs: number; maxMs: number }>();
+    private projectionCacheOutcome: 'hit' | 'miss' | null = null;
+    private recordProjectionPhase(name: string, ms: number): void {
+        const phase = this.projectionPhases.get(name) ?? { count: 0, lastMs: 0, totalMs: 0, maxMs: 0 };
+        phase.count++; phase.lastMs = ms; phase.totalMs += ms; phase.maxMs = Math.max(phase.maxMs, ms);
+        this.projectionPhases.set(name, phase);
+    }
+    private installProjectionPerfHook(): void {
+        if (typeof window !== 'object') return;
+        const target = window as typeof window & { __d080?: { perf?: () => Record<string, unknown>; [key: string]: unknown } };
+        const base = target.__d080?.perf;
+        if (base && (base as typeof base & { a5bPage?: V2Page }).a5bPage === this) return;
+        const wrapped = (() => {
+            const prior = base?.() ?? {};
+            return { ...prior, phases: { ...((prior.phases as Record<string, unknown> | undefined) ?? {}),
+                ...Object.fromEntries(this.projectionPhases) },
+                projectionCache: { ...this.pageResults.stats, last: this.projectionCacheOutcome } };
+        }) as typeof base & { a5bPage?: V2Page };
+        wrapped.a5bPage = this;
+        (target.__d080 ??= {}).perf = wrapped;
+    }
+    // End D-080 A5b projection/result-adaptation region.
     /** D-073 C4: the default pipeline's snapshot memo — the page index is append-only, so the
      * source-node and edge counts plus the materialized passage id list detect every change. */
     private snapshotMemo: { sourceCount: number; edgeCount: number; passageKey: string; snapshot: SemanticGraphSnapshot } | null = null;
@@ -661,7 +692,9 @@ export class V2Page {
         this.fractalPipeline = deps.fractalPipeline;
         this.legacyIndra = deps.legacyIndra === true || legacyIndraFlagEnabled();
         this.projectionClient = deps.projectionWorker ?? (deps.projectionRegistry !== undefined ? null : undefined);
-        this.projectionRegistry = deps.projectionRegistry ?? new ProjectionRegistry();
+        this.cacheWorkerResults = deps.projectionWorker === undefined;
+        // D-080 A5b projection cache bound for the default typed registry.
+        this.projectionRegistry = deps.projectionRegistry ?? new ProjectionRegistry(new ProjectionResultCache(8));
         if (!this.projectionRegistry.has('natural')) this.projectionRegistry.register(naturalProjection);
         if (!this.projectionRegistry.has('indra-legacy'))
             this.projectionRegistry.register({ id: 'indra-legacy', version: 'layout-v2/indra-recursive',
@@ -723,7 +756,11 @@ export class V2Page {
         }, { passive: true });
         if (typeof window === 'object' && window !== null)
             (window as typeof window & { __d074?: { revealWitness: () => unknown } }).__d074 =
-                { revealWitness: () => this.revealRecord };
+                { revealWitness: () => {
+                    // Explicit proof reads happen after the camera call stack and may flush the idle work.
+                    this.flushRevealWitness();
+                    return this.revealRecord;
+                } };
         if (typeof window === 'object' && window !== null) {
             const proofWindow = window as typeof window & {
                 __d080Renderer?: { brain: () => unknown; brainView: (name: 'front' | 'side' | 'top' | 'iso') => ReturnType<Render3fRendererHandle['readCameraState']> | null };
@@ -746,6 +783,7 @@ export class V2Page {
                 },
             };
         }
+        this.installProjectionPerfHook();
     }
     static async load(manifest: GraphManifest, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}): Promise<V2Page> {
         element('status').textContent = 'Caricamento del grafo\u2026 indice';
@@ -802,6 +840,23 @@ export class V2Page {
     }
     private publishReveal(route: RouteResult, rendered: ReadonlySet<string>,
         exclusions?: RevealWitnessInput['exclusions']): void {
+        this.revealRoute = route;
+        if (this.revealWitnessTimer !== null) clearTimeout(this.revealWitnessTimer);
+        const settledRendered = new Set(rendered);
+        this.pendingRevealBuild = () => this.buildSettledRevealWitness(route, settledRendered, exclusions);
+        this.revealWitnessTimer = setTimeout(() => {
+            this.flushRevealWitness();
+        }, 0);
+    }
+    private flushRevealWitness(): void {
+        if (this.revealWitnessTimer !== null) clearTimeout(this.revealWitnessTimer);
+        this.revealWitnessTimer = null;
+        const build = this.pendingRevealBuild;
+        this.pendingRevealBuild = null;
+        build?.();
+    }
+    private buildSettledRevealWitness(route: RouteResult, rendered: ReadonlySet<string>,
+        exclusions?: RevealWitnessInput['exclusions']): void {
         const disclosed = new Set(this.visible().nodes.map(node => node.id));
         const focus = this.revealState.focusClusterId;
         const inFocus = (id: string) => focus !== null && revealClusterOf(this.index, id) === focus;
@@ -820,7 +875,6 @@ export class V2Page {
                 ...this.index.nodes.filter(node => this.history.state.overview && node.level === 1).map(node => node.id)]),
             ...(exclusions ? { exclusions } : {}),
         };
-        this.revealRoute = route;
         const record = buildRevealWitness(input);
         this.revealRecord = {
             ...record,
@@ -979,9 +1033,12 @@ export class V2Page {
         return this.axes.arrangement ?? this.naturalArrangement ?? resolveNaturalArrangement(this.axes.morphology);
     }
     private async refreshProjection(epoch: number): Promise<void> {
+        // D-080 A5b typed pre-view timing; compute itself is recorded in runProjection.
+        const preViewBegan = performance.now();
         const input = this.typedPipeline();
         const registry = this.projectionRegistry;
         const snapshot = await input.snapshot();
+        this.recordProjectionPhase('snapshotPreparation', performance.now() - preViewBegan);
         assertPageSnapshotIndex(this.index, snapshot);
         const disclosed = this.visible();
         const domain = selectAnalyticalDomain(snapshot, disclosed.nodes.map(node => node.id));
@@ -1035,7 +1092,10 @@ export class V2Page {
                     layoutRelationPolicy,
                     volumeExpansion: { x: this.appearance.expandX, y: this.appearance.expandY, z: this.appearance.expandZ },
                     ...(continuityAnchors ? { continuityAnchors } : {}) } };
+            const naturalBegan = performance.now();
             const outcome = await registry.project<ProjectionResult>('natural', snapshot, request);
+            this.projectionCacheOutcome = outcome.cacheHit ? 'hit' : 'miss';
+            this.recordProjectionPhase('projectionCompute', outcome.cacheHit ? 0 : performance.now() - naturalBegan);
             const cached = this.typedNaturalCache;
             const typed = cached?.raw === outcome.result && cached.detail === this.relationDetail
                 && cached.active === (active ?? null) ? cached.result
@@ -1096,6 +1156,7 @@ export class V2Page {
             styled = { ...legacyStyled, projection: await this.withTypedRelations(legacyStyled.projection, typedRelations) };
         }
         if (epoch !== this.projectionEpoch) return;
+        this.recordProjectionPhase('preView', performance.now() - preViewBegan);
         const result = styled.projection;
         assertPageProjection(result, domain, dimension);
         styled = this.withSelectionEmphasis(styled);
@@ -1251,12 +1312,35 @@ export class V2Page {
      * given. A request the client cancelled because a newer refresh superseded it rejects as cancelled. */
     private async runProjection<I extends 'fractal' | 'indras-pearls' | 'holographic'>(
         snapshot: SemanticGraphSnapshot, request: ProjectionRequest<I>): Promise<ProjectionResult> {
+        // D-080 A5b projection/result-adaptation region. The registry's cache does not cover
+        // worker requests, so keep one bounded page cache over both execution paths.
+        const version = request.id === 'indras-pearls' ? INDRA_PROJECTION_VERSION
+            : request.id === 'fractal' ? FRACTAL_PROJECTION_VERSION : HOLOGRAPHIC_PROJECTION_VERSION;
+        const key = projectionCacheKeyDigest({ snapshotDigest: snapshot.digest,
+            domainDigest: request.domain.domainDigest, algorithmId: request.id,
+            algorithmVersion: version, parameters: request.parameters,
+            ...(request.requestedLevelId === undefined ? {} : { requestedLevelId: request.requestedLevelId }) });
+        const cached = this.cacheWorkerResults ? this.pageResults.get(key) as ProjectionResult | undefined : undefined;
+        if (cached) {
+            this.projectionCacheOutcome = 'hit';
+            this.recordProjectionPhase('projectionCompute', 0);
+            return cached;
+        }
+        this.projectionCacheOutcome = 'miss';
+        const began = performance.now();
         const client = this.workerClient();
-        if (client === null) return (await this.projectionRegistry.project<ProjectionResult>(request.id, snapshot, request)).result;
-        const { abort: _abort, ...rest } = request;
-        return (await client.project({ projectionId: rest.id, snapshot, domain: rest.domain,
-            parameters: rest.parameters as ProjectionParametersPayload, slot: rest.id,
-            ...(rest.requestedLevelId === undefined ? {} : { requestedLevelId: rest.requestedLevelId }) })).result;
+        let result: ProjectionResult;
+        if (client === null) result = (await this.projectionRegistry.project<ProjectionResult>(request.id, snapshot, request)).result;
+        else {
+            const { abort: _abort, ...rest } = request;
+            result = (await client.project({ projectionId: rest.id, snapshot, domain: rest.domain,
+                parameters: rest.parameters as ProjectionParametersPayload, slot: rest.id,
+                ...(rest.requestedLevelId === undefined ? {} : { requestedLevelId: rest.requestedLevelId }) })).result;
+        }
+        this.recordProjectionPhase('projectionCompute', performance.now() - began);
+        if (this.cacheWorkerResults) this.pageResults.set(key, result);
+        return result;
+        // End D-080 A5b projection/result-adaptation region.
     }
     private workerClient(): ProjectionWorkerClient | null {
         if (this.projectionClient === undefined)
@@ -2316,6 +2400,8 @@ export class V2Page {
             if (this.typedActive()) { await this.refreshProjection(projectionEpoch); return; }
             // Back on the product view: the typed renderer a Fractal view left behind is retired.
             this.retireTypedRenderer();
+            // D-080 A5b pre-view measurement begins after the view choice, before projection inputs.
+            const preViewBegan = performance.now();
             const organization = this.legacyOrganization();
             this.suppressZoomUntil = performance.now() + 900;
             const disclosed = this.visible();
@@ -2326,13 +2412,16 @@ export class V2Page {
                 const hidden = disclosed.hidden.get(node.id) ?? 0;
                 return hidden && !visibleParents.has(node.id) ? Math.max(hidden, node.counts.descendants) : hidden;
             };
+            const projectionInputBegan = performance.now();
             const layoutEdges = projectLayoutRelations(
                 this.index.nodes, this.index.edges, ids, this.axes.reading, 'natural', 'essential',
             ).edges;
             const projection = this.axes.projection;
             const usePrevious = this.layoutSource === 'flat-community' && organization === 'natural'
                 && this.layoutProjection === projection && this.axes.morphology === this.lastMorphology;
-            const result = computeLayout({
+            // D-080 A5b projection/result-adaptation region. Serialize the actual layout
+            // inputs, including continuity seeds, so a returning mode gets the same object.
+            const layoutInput: LayoutInput = {
                 nodes: disclosed.nodes.map(n => ({
                     id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
                     hiddenDescendants: hiddenCount(n),
@@ -2344,7 +2433,16 @@ export class V2Page {
                 projection,
                 ...(organization === 'indra' ? { expandZ: this.appearance.expandZ } : {}),
                 ...(usePrevious ? { previous: this.rawPositions } : {}),
-            });
+            };
+            const layoutKey = pageLayoutKey(this.manifest.digest, layoutInput);
+            this.recordProjectionPhase('projectionInput', performance.now() - projectionInputBegan);
+            const projectionBegan = performance.now();
+            const reused = this.pageResults.get(layoutKey) as LayoutResult | undefined;
+            this.projectionCacheOutcome = reused ? 'hit' : 'miss';
+            const result = reused ?? computeLayout(layoutInput);
+            this.recordProjectionPhase('projectionCompute', reused ? 0 : performance.now() - projectionBegan);
+            if (!reused) this.pageResults.set(layoutKey, result);
+            // End D-080 A5b projection/result-adaptation region.
             // D-072 R1: everything this refresh computes is held in locals until the new view is
             // on screen — a refresh that fails mid-way must leave the page describing the view it
             // actually displays, not the one it wanted.
@@ -2366,6 +2464,7 @@ export class V2Page {
             // node: whatever stays visible keeps its exact coordinates (the layout's own
             // incremental stability — existing positions are seeds, only fresh nodes are placed).
             const budget = DENSITY_BUDGETS[this.density];
+            const routingBegan = performance.now();
             const availableArcs = projectRelations(
                 this.index.nodes, this.index.edges, ids, this.axes.reading,
                 organization, this.relationDetail, active,
@@ -2415,6 +2514,7 @@ export class V2Page {
                 budget: organization === 'indra' && this.relationDetail === 'essential'
                     ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                 focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
+            this.recordProjectionPhase('relationRouting', performance.now() - routingBegan);
             const relationById = new Map(availableArcs.edges.map(edge => [edge.id, edge]));
             let shown: LiftedRelation[] = route.drawn.map(edge => {
                 const originals = edge.sourceRelationIds.map(id => relationById.get(id)).filter((item): item is LiftedRelation => !!item);
@@ -2451,7 +2551,11 @@ export class V2Page {
                     ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) });
             }));
             const nextLayoutSource = result.source;
+            // D-080 A5b result adaptation timing.
+            const adaptationBegan = performance.now();
             const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
+            this.recordProjectionPhase('resultAdaptation', performance.now() - adaptationBegan);
+            this.recordProjectionPhase('preView', performance.now() - preViewBegan);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
             const old = this.view?.readCamera();
             const disclosureChanged = this.disclosureKey() !== this.lastDisclosureKey
@@ -2582,6 +2686,7 @@ export class V2Page {
             const previousHost = this.viewHost;
             this.view = mounted;
             this.viewHost = nextHost;
+            this.installProjectionPerfHook();
             try { previousView?.destroy(); }
             finally { previousHost?.remove(); }
             // D-072 R1: the replacement is on screen — only now does the page state describe it.
