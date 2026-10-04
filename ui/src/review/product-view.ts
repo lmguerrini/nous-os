@@ -2,6 +2,7 @@ import { createVisualState } from "../engine/visual-state.ts";
 import type { VisualStateCamera } from "../engine/visual-state.ts";
 import type { Coordinates } from "../engine/contract.ts";
 import type { GraphRendererHandle } from "../engine/renderer-handle.ts";
+import type { RendererCameraState } from "../engine/renderer-handle.ts";
 import { DEFAULT_CALIBRATION } from "../engine/calibration.ts";
 import { SCENE_PERMILLE_SCALE } from "../scene/contract.ts";
 import { mount as mount2d } from "../render2d/index.ts";
@@ -27,6 +28,7 @@ import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
 import type { RelationClass } from "./reading.ts";
 import { buildVisibilityWitness, countAggregateRepresentation } from './visibility-witness.ts';
+import { PerfRecord } from './perf-record.ts';
 import { cachedStarfieldStars } from '../render-common/starfield.ts';
 import type { ReviewEdge } from "./model.ts";
 import { indraArcPresentation } from "./v2-relations.ts";
@@ -610,7 +612,18 @@ export const createProductView: CreateProductView = async (input) => {
   let hoverFrame = 0;
   let movingLabelFrame = 0;
   let destroyed = false;
-  let lastCamera = "";
+  let lastCamera: RendererCameraState | null = null;
+  const sameCamera = (a: RendererCameraState | null, b: RendererCameraState): boolean => !!a &&
+    a.x === b.x && a.y === b.y && a.angle === b.angle && a.ratio === b.ratio &&
+    a.bounds.x[0] === b.bounds.x[0] && a.bounds.x[1] === b.bounds.x[1] &&
+    a.bounds.y[0] === b.bounds.y[0] && a.bounds.y[1] === b.bounds.y[1] &&
+    // These optional values are reported by the perspective rig only.
+    (a as ReviewCameraState).targetZ === (b as ReviewCameraState).targetZ &&
+    (a as ReviewCameraState).framingTangent === (b as ReviewCameraState).framingTangent &&
+    (a as ReviewCameraState).orbit?.[0] === (b as ReviewCameraState).orbit?.[0] &&
+    (a as ReviewCameraState).orbit?.[1] === (b as ReviewCameraState).orbit?.[1] &&
+    (a as ReviewCameraState).orbit?.[2] === (b as ReviewCameraState).orbit?.[2] &&
+    (a as ReviewCameraState).orbit?.[3] === (b as ReviewCameraState).orbit?.[3];
   let cameraLabelTimer: ReturnType<typeof setTimeout> | undefined;
   // D-072 P1a: the scheduled backing-store scale of the canvas layers. The view shadows
   // `window.devicePixelRatio` with a live getter for its whole lifetime: the only per-draw readers
@@ -629,7 +642,7 @@ export const createProductView: CreateProductView = async (input) => {
   const qualityController = new InteractionQualityController(() => {
     // A timer can win a race with the next camera-watch frame. Keep reduced drawing until that
     // frame has observed the final camera state, then arm a fresh restore deadline.
-    if (handle !== null && JSON.stringify(handle.readCameraState()) !== lastCamera) {
+    if (handle !== null && !sameCamera(lastCamera, handle.readCameraState())) {
       qualityController.touch();
       startCameraWatch();
       return;
@@ -641,6 +654,7 @@ export const createProductView: CreateProductView = async (input) => {
   // through `__d072.marks()` — quality flips, resolution applies, label passes, remounts.
   const movingLabelSchedule = new MovingLabelPassSchedule();
   const scheduleMarks = new ScheduleMarks();
+  const perfRecord = new PerfRecord();
   let flowCanvas: HTMLCanvasElement | null = null;
   let flowContext: CanvasRenderingContext2D | null = null;
   let flowCleared = true;
@@ -649,8 +663,16 @@ export const createProductView: CreateProductView = async (input) => {
     readonly project: Parameters<typeof drawFlowLayer>[2];
     readonly style: MorphologyCanvasStyle;
   } | null = null;
+  let flowWidth = 0, flowHeight = 0;
   const flowLoop = { running: false, raf: 0, origin: null as number | null, lastFrameMs: 0, resumedAtMs: 0, frameCostMs: 0, frames: 0, windowStartMs: 0, measuredFps: 0 };
-  const flowAnimatesNow = () => flowAnimates({ intensity: appearance.flowIntensity, speed: appearance.flowSpeed, motionEnabled: flowMotion, reducedMotion: input.reducedMotion });
+  const flowAnimationState = { intensity: appearance.flowIntensity, speed: appearance.flowSpeed, motionEnabled: flowMotion, reducedMotion: input.reducedMotion };
+  const flowRunState = { allowed: false, hidden: false, animatedEdges: 0 };
+  const flowAnimatesNow = () => {
+    flowAnimationState.intensity = appearance.flowIntensity;
+    flowAnimationState.speed = appearance.flowSpeed;
+    flowAnimationState.motionEnabled = flowMotion;
+    return flowAnimates(flowAnimationState);
+  };
   const ensureFlowCanvas = () => {
     if (flowCanvas) return flowCanvas;
     const canvas = document.createElement("canvas");
@@ -664,6 +686,8 @@ export const createProductView: CreateProductView = async (input) => {
   const sizeFlowCanvas = () => {
     const canvas = ensureFlowCanvas();
     const box = canvas.getBoundingClientRect();
+    flowWidth = box.width;
+    flowHeight = box.height;
     // D-072 R3 (X9): the flow layer sizes at the scheduled scale — motion never changes it, so a
     // resize mid-drag keeps the rest resolution instead of swapping the backing store.
     const width = Math.max(1, Math.round(box.width * scheduledDevicePixelRatio));
@@ -684,10 +708,9 @@ export const createProductView: CreateProductView = async (input) => {
       if (!flowCleared) clearFlowOverlay();
       return;
     }
-    const box = flowCanvas.getBoundingClientRect();
-    if (box.width === 0 || box.height === 0) return;
-    flowContext.setTransform(flowCanvas.width / box.width, 0, 0, flowCanvas.height / box.height, 0, 0);
-    flowContext.clearRect(0, 0, box.width, box.height);
+    if (flowWidth === 0 || flowHeight === 0) return;
+    flowContext.setTransform(flowCanvas.width / flowWidth, 0, 0, flowCanvas.height / flowHeight, 0, 0);
+    flowContext.clearRect(0, 0, flowWidth, flowHeight);
     flowCleared = false;
     // A forced draw (the test hook, captures) never fades: the phase is the caller's, full alpha.
     flowContext.globalAlpha = force ? 1 : flowLayerResumeAlpha(now - flowLoop.resumedAtMs);
@@ -713,9 +736,13 @@ export const createProductView: CreateProductView = async (input) => {
     const began = performance.now();
     drawFlowOverlay(now);
     flowLoop.frameCostMs = performance.now() - began;
+    perfRecord.frame(flowLoop.frameCostMs, 'flow');
     if (now - flowLoop.windowStartMs >= 1000) { flowLoop.measuredFps = flowLoop.frames; flowLoop.frames = 0; flowLoop.windowStartMs = now; }
     flowLoop.frames += 1;
-    if (flowLayerShouldRun({ allowed, hidden: document.hidden, animatedEdges: flowAnimatedEdgeCount() })) flowLoop.raf = requestAnimationFrame(flowTick);
+    flowRunState.allowed = allowed;
+    flowRunState.hidden = document.hidden;
+    flowRunState.animatedEdges = flowAnimatedEdgeCount();
+    if (flowLayerShouldRun(flowRunState)) flowLoop.raf = requestAnimationFrame(flowTick);
     else {
       flowLoop.running = false;
       if (!document.hidden) { clearFlowOverlay(); redrawMorphology(); }
@@ -1131,7 +1158,9 @@ export const createProductView: CreateProductView = async (input) => {
     // the reserved rectangles can never sit at two different placements. While the camera moves
     // the renderer's own repaint consumes the fresh discs; no extra pass is scheduled here.
     if (!moving) redrawMorphology();
-    scheduleMarks.record(moving ? "label-pass-moving" : "label-pass-full", began, performance.now() - began);
+    const labelMs = performance.now() - began;
+    scheduleMarks.record(moving ? "label-pass-moving" : "label-pass-full", began, labelMs);
+    perfRecord.phase(moving ? "labelMoving" : "firstLabelPass", labelMs);
   }
   // D-072 P1a: no polling at rest. The camera watch loop runs only while something moves — a
   // pressed pointer on the canvas, an open motion window (wheel, keys, a programmatic camera
@@ -1140,6 +1169,7 @@ export const createProductView: CreateProductView = async (input) => {
   // runs a forever rAF loop anymore: the flow layer above is the only always-on animation, and it
   // pauses whenever nothing can animate.
   const cameraWatch = { running: false, lastChangeMs: null as number | null, motionUntilMs: 0 };
+  const cameraRunState = { nowMs: 0, lastChangeMs: null as number | null, pressed: false, motionUntilMs: 0 };
   const cameraFrameTimes: number[] = [];
   // The full label pass runs in a task after the quality transition. Camera frames retain the
   // reduced pass; a full placement and its morphology redraw run only once at rest.
@@ -1216,10 +1246,11 @@ export const createProductView: CreateProductView = async (input) => {
     startCameraWatch();
   };
   function cameraWatchTick(now: number) {
+    const frameStart = performance.now();
     frameId = 0;
     if (destroyed || handle === null) { cameraWatch.running = false; return; }
-    const state = JSON.stringify(handle.readCameraState());
-    if (state !== lastCamera) {
+    const state = handle.readCameraState();
+    if (!sameCamera(lastCamera, state)) {
       lastCamera = state;
       cameraFrameTimes.push(now);
       if (cameraFrameTimes.length > 120) cameraFrameTimes.shift();
@@ -1232,13 +1263,19 @@ export const createProductView: CreateProductView = async (input) => {
         movingLabelFrame = requestAnimationFrame(runMovingLabelPass);
       }
     }
-    if (!cameraWatchShouldRun({ nowMs: now, lastChangeMs: cameraWatch.lastChangeMs, pressed: pressedAt !== null, motionUntilMs: cameraWatch.motionUntilMs })) {
+    cameraRunState.nowMs = now;
+    cameraRunState.lastChangeMs = cameraWatch.lastChangeMs;
+    cameraRunState.pressed = pressedAt !== null;
+    cameraRunState.motionUntilMs = cameraWatch.motionUntilMs;
+    if (!cameraWatchShouldRun(cameraRunState)) {
       cameraWatch.running = false;
       rebuildScreenPickIndex();
       scheduleHoverPick();
+      perfRecord.frame(performance.now() - frameStart);
       return;
     }
     frameId = requestAnimationFrame(cameraWatchTick);
+    perfRecord.frame(performance.now() - frameStart);
   }
   /** The edges the drawing shows for one node subset: reading-allowed relations whose both
    * endpoints are in the subset — exactly the set the mounted graph's subgraph would keep. */
@@ -1372,6 +1409,8 @@ export const createProductView: CreateProductView = async (input) => {
     // reading-allowed edges whose both endpoints are visible, the exact set the previous
     // subgraph-plus-reading filter produced.
     drawnEdges = resolveDrawnEdges(input.data.edges, visible);
+    const routedAt = performance.now();
+    perfRecord.phase("routing", routedAt - began);
     drawnEdgeIds = new Set(drawnEdges.map((edge) => edge.id));
     if (lodMode) for (const id of drawnEdgeIds) mountedEdgeIds.add(id);
     // The mounted graph: in LOD mode every disclosed node stays mounted — picking, witnesses and
@@ -1380,7 +1419,10 @@ export const createProductView: CreateProductView = async (input) => {
     const all = subgraph(axes.organization === "indra" ? prepared.indraGraph : prepared.flatGraph, lodMode ? mountedIds : visible);
     const subset = { ...all, edges: all.edges.filter((edge) => drawnEdgeIds.has(edge.id)) };
     const anchors = restrictAnchors(fullAnchor(axes), lodMode ? mountedIds : visible);
+    const layoutAt = performance.now();
+    perfRecord.phase("layout", layoutAt - routedAt);
     const { palette, presentation, morphologyInput, geometry } = buildDrawnScene(anchors);
+    perfRecord.phase("scene", performance.now() - layoutAt);
     container.style.backgroundColor = palette.background;
     morphologyInteraction.containerColor = palette.container;
     morphologyInteraction.focusIds = new Set([...(emphasis ?? []), ...(selected ? [selected] : [])]);
@@ -1483,11 +1525,13 @@ export const createProductView: CreateProductView = async (input) => {
     }
     // The mounted camera (any restored or solved framing included) is the watch loop's baseline:
     // only changes from here on are motion.
-    lastCamera = JSON.stringify(handle.readCameraState());
+    lastCamera = handle.readCameraState();
     rebuildScreenPickIndex();
     labelPass();
     syncFlowLoop();
-    scheduleMarks.record("mount", began, performance.now() - began);
+    const mountMs = performance.now() - began;
+    scheduleMarks.record("mount", began, mountMs);
+    perfRecord.phase("mount", mountMs);
   }
   function saveCamera() {
     const camera = handle?.readCameraState();
@@ -1824,6 +1868,10 @@ export const createProductView: CreateProductView = async (input) => {
     cameraWatchRunning: () => cameraWatch.running,
     cameraFrames: () => cameraFrameTimes,
     marks: () => scheduleMarks.list(),
+  };
+  (globalThis as typeof globalThis & { __d080?: Record<string, unknown> }).__d080 = {
+    ...((globalThis as typeof globalThis & { __d080?: Record<string, unknown> }).__d080 ?? {}),
+    perf: () => perfRecord.snapshot(morphologyInteraction.quality, scheduledDevicePixelRatio),
   };
   async function frameIds(ids: readonly string[], anchorFirst: boolean, marginPx = 32, fill = 0.9) {
     // The framing belongs to the renderer mounted now; a remount during the animation must not receive a camera

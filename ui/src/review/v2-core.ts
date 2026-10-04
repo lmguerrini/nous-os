@@ -41,8 +41,27 @@ export type V2Visible = {
 };
 const copy = (s: DisclosureState): DisclosureState => ({ expanded: new Set(s.expanded), pages: new Map(s.pages), manualOrder: [...s.manualOrder], overview: s.overview ?? false });
 export const emptyDisclosure = (): DisclosureState => ({ expanded: new Set(), pages: new Map(), manualOrder: [] });
+const visibleResults = new WeakMap<V2Index, Map<string, V2Visible>>();
+const VISIBLE_RESULT_CACHE_CAP = 16;
+function disclosureKey(state: DisclosureState, auto: AutoDisclosure, cap: number, preferredParentId?: string): string {
+    return JSON.stringify([cap, preferredParentId, state.overview ?? false,
+        [...state.expanded].sort(), [...state.pages].sort(([a], [b]) => a.localeCompare(b)), state.manualOrder,
+        auto instanceof Map ? [...auto].sort(([a], [b]) => a.localeCompare(b)) : [...auto].sort()]);
+}
 export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisclosure = new Set(), cap = V2_CAP,
     preferredParentId?: string): V2Visible {
+    // The index is an immutable projection snapshot. Disclosure collections are mutable, so their
+    // contents, rather than their object identities, select a result. Bound retained samples.
+    const key = disclosureKey(state, auto, cap, preferredParentId);
+    let results = visibleResults.get(index);
+    const cached = results?.get(key);
+    if (cached) return cached;
+    const remember = (result: V2Visible): V2Visible => {
+        if (!results) { results = new Map(); visibleResults.set(index, results); }
+        if (results.size >= VISIBLE_RESULT_CACHE_CAP) results.delete(results.keys().next().value!);
+        results.set(key, result);
+        return result;
+    };
     const autoHas = (id: string) => auto.has(id);
     const autoPage = (id: string) => auto instanceof Map ? auto.get(id) ?? 0 : V2_AUTO_PAGE;
     const byId = new Map(index.nodes.map(n => [n.id, n]));
@@ -122,12 +141,12 @@ export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisc
                 node.level === 4 ? node.counts.passages : 0) - shown;
             if (missing > 0) windowHidden.set(node.id, missing);
         }
-        return { nodes: windowNodes,
+        return remember({ nodes: windowNodes,
             edges: index.edges.filter(e => windowIds.has(e.source) && windowIds.has(e.target)),
             hidden: windowHidden, capped: true,
-            counts: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level, windowNodes.filter(n => n.level === level).length])) };
+            counts: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level, windowNodes.filter(n => n.level === level).length])) });
     }
-    return { nodes, edges: index.edges.filter(e => ids.has(e.source) && ids.has(e.target)), hidden, capped, counts: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level, nodes.filter(n => n.level === level).length])) };
+    return remember({ nodes, edges: index.edges.filter(e => ids.has(e.source) && ids.has(e.target)), hidden, capped, counts: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level, nodes.filter(n => n.level === level).length])) });
 }
 export class DisclosureHistory {
     state = emptyDisclosure();

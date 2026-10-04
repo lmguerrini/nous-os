@@ -53,8 +53,15 @@ export function flowAnimates(state: {
   return state.motionEnabled && !state.reducedMotion && !prefersReducedMotionNow() && state.intensity > 0 && state.speed > 0;
 }
 
+let reducedMotionQuery: MediaQueryList | null | undefined;
+let reducedMotion = false;
 function prefersReducedMotionNow(): boolean {
-  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reducedMotionQuery === undefined) {
+    reducedMotionQuery = typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
+    reducedMotion = reducedMotionQuery?.matches ?? false;
+    reducedMotionQuery?.addEventListener?.("change", (event) => { reducedMotion = event.matches; });
+  }
+  return reducedMotion;
 }
 
 /** Soft luminous pulse envelope: brightness at a normalised arc distance from the pulse centre.
