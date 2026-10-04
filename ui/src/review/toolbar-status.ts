@@ -13,7 +13,8 @@ export function parseGraphToolbarCounts(counter: string, cap: string): GraphTool
 }
 
 export function formatGraphToolbarStatus(counts: GraphToolbarCounts): string {
-  return `${counts.visibleNodes.toLocaleString("it-IT")} di ${counts.totalNodes.toLocaleString("it-IT")} elementi`;
+  const visible = counts.visibleNodes.toLocaleString("it-IT"), total = counts.totalNodes.toLocaleString("it-IT");
+  return `${visible} di ${total} ${counts.totalNodes === 1 ? "elemento" : "elementi"}`;
 }
 
 export function formatGraphPanelCounts(counter: string, counts: GraphToolbarCounts): string {
@@ -21,6 +22,6 @@ export function formatGraphPanelCounts(counter: string, counts: GraphToolbarCoun
   const visibleEdges = match?.[3] ? Number(match[3]) : null;
   const totalEdges = match?.[4] ? Number(match[4]) : null;
   const edges = visibleEdges === null || totalEdges === null ? "" :
-    ` e ${visibleEdges.toLocaleString("it-IT")} relazioni su ${totalEdges.toLocaleString("it-IT")}`;
-  return `Sono visibili ${counts.visibleNodes.toLocaleString("it-IT")} nodi su ${counts.totalNodes.toLocaleString("it-IT")}${edges}.`;
+    ` e ${visibleEdges.toLocaleString("it-IT")} ${visibleEdges === 1 ? "relazione" : "relazioni"} su ${totalEdges.toLocaleString("it-IT")}`;
+  return `Sono visibili ${counts.visibleNodes.toLocaleString("it-IT")} ${counts.visibleNodes === 1 ? "nodo" : "nodi"} su ${counts.totalNodes.toLocaleString("it-IT")}${edges}.`;
 }

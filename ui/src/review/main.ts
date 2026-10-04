@@ -33,6 +33,7 @@ import { normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
 import { GIZMO_IDLE_GRACE_MS, gizmoShouldRun } from "./gizmo-schedule.ts";
 import { formatGraphPanelCounts, formatGraphToolbarStatus, parseGraphToolbarCounts } from "./toolbar-status.ts";
+import { NodeDrawer } from "./node-drawer.ts";
 
 const get = <T extends Element>(id: string): T => {
   const item = document.getElementById(id);
@@ -43,6 +44,36 @@ const viewport = get<HTMLElement>("viewport");
 /** The renderers own this element; the overlays stay its siblings so no remount can remove them. */
 const renderRoot = get<HTMLElement>("render-root");
 const details = get<HTMLElement>("details");
+const nodeDrawerHost = get<HTMLElement>("node-detail-drawer");
+let canvasPickPending = false;
+viewport.addEventListener("click", (event) => {
+  if (!(event.target instanceof Node) || !renderRoot.contains(event.target)) return;
+  canvasPickPending = true;
+  window.setTimeout(() => { canvasPickPending = false; }, 5000);
+});
+let drawerSelectionId: string | null = null;
+const nodeDrawer = new NodeDrawer(nodeDrawerHost, (id) => {
+  if (v2) {
+    // V2Page.select() also frames the camera and mutates reveal state. The mounted renderer's
+    // select() only updates visual emphasis, which is the safe behavior for drawer navigation.
+    (v2 as unknown as { view?: { select(id: string): void } }).view?.select(id);
+  } else void select(id);
+  drawerSelectionId = id;
+  void nodeDrawer.open(id);
+});
+const drawerSelectionObserver = new MutationObserver(() => {
+  const selected = details.querySelector<HTMLElement>(".selection-card[data-node-id]")?.dataset.nodeId ?? null;
+  if (!canvasPickPending) return;
+  canvasPickPending = false;
+  if (selected && (selected !== drawerSelectionId || nodeDrawerHost.hidden)) {
+    drawerSelectionId = selected;
+    void nodeDrawer.open(selected);
+  } else if (!selected && drawerSelectionId) {
+    drawerSelectionId = null;
+    nodeDrawer.close();
+  }
+});
+drawerSelectionObserver.observe(details, { childList: true, subtree: true });
 const status = get<HTMLElement>("status");
 let data: ReviewExport;
 let v2: V2Page | null = null;
@@ -465,7 +496,7 @@ function updateSummary() {
   const counter = get<HTMLElement>("counter");
   const statusText = get<HTMLElement>("human-status");
   statusText.textContent = graph.nodes.length
-    ? `${graph.nodes.length.toLocaleString("it-IT")} di ${data.nodes.length.toLocaleString("it-IT")} elementi`
+    ? `${graph.nodes.length.toLocaleString("it-IT")} di ${data.nodes.length.toLocaleString("it-IT")} ${data.nodes.length === 1 ? "elemento" : "elementi"}`
     : "Nessun elemento con questi filtri";
   const counts = get<HTMLElement>("graph-status-counts");
   const counterText = counter.textContent;
@@ -476,10 +507,10 @@ function updateSummary() {
   const totalEdges = Number(counterText.match(/ · \d+\/(\d+) relazioni/)?.[1] ?? data.edges.length);
   counts.textContent = graphCounts
     ? formatGraphPanelCounts(counterText, graphCounts)
-    : `Sono visibili ${visibleNodes.toLocaleString("it-IT")} nodi su ${totalNodes.toLocaleString("it-IT")} e ${visibleEdges.toLocaleString("it-IT")} relazioni su ${totalEdges.toLocaleString("it-IT")}.`;
+    : `Sono visibili ${visibleNodes.toLocaleString("it-IT")} ${visibleNodes === 1 ? "nodo" : "nodi"} su ${totalNodes.toLocaleString("it-IT")} ${totalNodes === 1 ? "nodo" : "nodi"} e ${visibleEdges.toLocaleString("it-IT")} ${visibleEdges === 1 ? "relazione" : "relazioni"} su ${totalEdges.toLocaleString("it-IT")} ${totalEdges === 1 ? "relazione" : "relazioni"}.`;
   const levels = get<HTMLElement>("graph-status-levels");
   levels.textContent = graphCounts?.levels
-    ? `Elementi per livello: ${graphCounts.levels.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} elementi`; }).join("; ")}.`
+    ? `Elementi per livello: ${graphCounts.levels.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} ${count === "1" ? "elemento" : "elementi"}`; }).join("; ")}.`
     : "Conteggio per livello non fornito dal caricamento attivo.";
   const cap = get<HTMLElement>("graph-status-cap");
   cap.textContent = get<HTMLElement>("v2-cap").textContent || "Limite di dettaglio: nessun avviso attivo.";
@@ -497,7 +528,7 @@ function syncLoadedGraphStatus(): void {
   get<HTMLElement>("human-status").textContent = formatGraphToolbarStatus(counts);
   get<HTMLElement>("graph-status-counts").textContent = formatGraphPanelCounts(counter, counts);
   get<HTMLElement>("graph-status-levels").textContent = counts.levels
-    ? `Elementi per livello: ${counts.levels.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} elementi`; }).join("; ")}.`
+    ? `Elementi per livello: ${counts.levels.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} ${count === "1" ? "elemento" : "elementi"}`; }).join("; ")}.`
     : "Conteggio per livello non fornito dal caricamento attivo.";
   get<HTMLElement>("graph-status-cap").textContent = counts.cap || "Limite di dettaglio: nessun avviso attivo.";
   const identity = data?.export_digest;
@@ -588,8 +619,8 @@ async function mount() {
       },
       events: {
         onPick: (target) => {
-          if (target) void select(target.id);
-          else void reset();
+          if (target) { drawerSelectionId = target.id; void select(target.id); void nodeDrawer.open(target.id); }
+          else { drawerSelectionId = null; nodeDrawer.close(); void reset(); }
         },
         onDoublePick: (target) => {
           if (target?.kind === "node") void enqueue(async () => {

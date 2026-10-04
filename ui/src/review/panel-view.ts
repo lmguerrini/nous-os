@@ -343,6 +343,9 @@ function buildStructuralContainerPanel(container: VisualContainer): PanelModel {
 
 export function renderSelection(host: HTMLElement, model: PanelModel, onRelation: (id: string) => void): void {
   const root = document.createElement('article'); root.className = 'selection-card';
+  const technicalModel = asRecord(model.technical);
+  if (typeof technicalModel.id === 'string' && Object.prototype.hasOwnProperty.call(technicalModel, 'title_full'))
+    root.dataset.nodeId = technicalModel.id;
   const title = document.createElement('h2'); title.textContent = model.title; title.title = model.fullTitle ?? model.title; root.append(title);
   const badges = document.createElement('div'); badges.className = 'selection-badges';
   for (const label of [model.type, model.badge, model.epistemic, ...(model.projectionExperimental ? ['Sperimentale'] : [])].filter(Boolean)) { const badge = document.createElement('span'); badge.className = 'selection-badge'; badge.textContent = label!; badges.append(badge); }
