@@ -671,6 +671,7 @@ def serve(*, export_path: Path, static_root: Path = Path("ui/dist/review"), port
 def serve_graph(*, graph: Path, port: int = 8769, static_root: Path | None = None) -> None:
     """Serve a verified v2 dataset and the built page without accessing the underlying stores."""
     from nous_os.review_graph import encoded, normalize
+    from nous_os.graph_drawer import DrawerData
 
     manifest = json.loads((graph / "manifest.json").read_bytes())
     if manifest.get("schema") != "nousos.review-graph/2":
@@ -686,6 +687,7 @@ def serve_graph(*, graph: Path, port: int = 8769, static_root: Path | None = Non
     nodes = {n["id"]: n for n in index["nodes"]}
     offsets = json.loads((graph / "details-offsets.json").read_bytes())
     detail_file = graph / "details.jsonl"
+    drawer = DrawerData(index, offsets, detail_file, manifest)
     children: dict[str, list[str]] = {}
     for node in index["nodes"]:
         children.setdefault(node["parent"], []).append(node["id"])
@@ -758,18 +760,48 @@ def serve_graph(*, graph: Path, port: int = 8769, static_root: Path | None = Non
                 return
             if parsed.scheme or parsed.netloc or parsed.fragment or route not in {
                     "/api/graph/manifest", "/api/graph/index", "/api/graph/node",
-                    "/api/graph/children", "/api/graph/search"}:
+                    "/api/graph/children", "/api/graph/search", "/api/graph/drawer"}:
                 send(404, {"error": "route not found"})
                 return
             try:
                 params = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
                 keys = {"/api/graph/manifest": set(), "/api/graph/index": set(),
                         "/api/graph/node": {"id"}, "/api/graph/children": {"id", "offset", "limit"},
-                        "/api/graph/search": {"q", "limit"}}[route]
+                        "/api/graph/search": {"q", "limit"},
+                        "/api/graph/drawer": {"id", "section", "offset", "limit", "q", "group"}}[route]
                 if len(params) != len(dict(params)) or any(k not in keys for k, _ in params):
                     raise ValueError("invalid query parameters")
                 args = dict(params)
-                if route == "/api/graph/manifest":
+                if route == "/api/graph/drawer":
+                    identifier = args.get("id", "")
+                    section = args.get("section", "")
+                    if not identifier or len(identifier) > 180 or not re.fullmatch(r"[A-Za-z0-9_:.-]+", identifier):
+                        send(400, {"error": "Identificativo del nodo non valido."})
+                        return
+                    if section not in {"summary", "content", "provenance", "relations"}:
+                        send(400, {"error": "Sezione del drawer non valida."})
+                        return
+                    try:
+                        offset = int(args.get("offset", "0"))
+                        limit = int(args.get("limit", "25"))
+                    except ValueError:
+                        send(400, {"error": "Intervallo di paginazione non valido."})
+                        return
+                    query = args.get("q", "")
+                    group = args.get("group", "")
+                    if not 0 <= offset <= 1000000 or not 1 <= limit <= 50 or len(query) > 200 or len(group) > 80:
+                        send(400, {"error": "Intervallo o filtro non valido."})
+                        return
+                    if (query and section != "content") or (group and section != "relations") or (group and not re.fullmatch(r"[a-z_]+:(uscente|entrante)", group)):
+                        send(400, {"error": "Filtro non valido per questa sezione."})
+                        return
+                    try:
+                        send(200, drawer.section(identifier, section, offset=offset, limit=limit, query=query.strip(), group=group))
+                    except KeyError:
+                        send(404, {"error": "Nodo non trovato nel grafo."})
+                    except ValueError as error:
+                        send(400, {"error": str(error)})
+                elif route == "/api/graph/manifest":
                     send(200, manifest)
                 elif route == "/api/graph/index":
                     # This route is intentionally the one large bounded response.
@@ -813,7 +845,7 @@ def serve_graph(*, graph: Path, port: int = 8769, static_root: Path | None = Non
                                          "title": node["title"]})
                     send(200, {"query": query, "total": len(hits), "results": hits[:limit]})
             except (ValueError, TypeError):
-                send(400, {"error": "invalid query parameters"})
+                send(400, {"error": "Parametri della richiesta non validi." if route == "/api/graph/drawer" else "invalid query parameters"})
 
         def log_message(self, format, *args):
             pass
