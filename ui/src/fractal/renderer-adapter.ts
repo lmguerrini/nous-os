@@ -61,46 +61,81 @@ export function canopySmoothControls(points: readonly Readonly<{ x: number; y: n
 
 /** The fixed IFS positions remain identical; only the ink grammar changes. */
 export function canopyMorphologyWidth(base: number, morphology: Morphology): number {
-  return morphology === 'stellar' ? Math.max(0.75, base * 0.48)
-    : morphology === 'neural' ? Math.max(1.25, base * 1.12)
-      : Math.max(0.55, base * 0.36);
+  return morphology === 'stellar' ? Math.max(0.9, Math.min(1.55, base * 0.43))
+    : morphology === 'neural' ? Math.max(3.8, Math.min(10, base * 2.25))
+      : Math.max(0.7, Math.min(1.05, base * 0.34));
 }
 
 export function canopyGlyphKind(morphology: Morphology): 'star' | 'soma' | 'hypha' {
   return morphology === 'stellar' ? 'star' : morphology === 'neural' ? 'soma' : 'hypha';
 }
 
+/** Screen-space glyphs preserve the shared IFS centre in every morphology. */
+export function canopyJunctionOutline(radius: number, morphology: Morphology, direction = 0):
+  readonly Readonly<{ x: number; y: number }>[] {
+  const points: { x: number; y: number }[] = [];
+  if (morphology === 'stellar') for (let i = 0; i < 8; i++) {
+    const angle = direction + i * Math.PI / 4;
+    const r = i % 2 ? radius * 0.25 : radius;
+    points.push({ x: Math.cos(angle) * r, y: Math.sin(angle) * r });
+  } else if (morphology === 'neural') {
+    const lobes = [{ angle: direction, strength: 0.26 },
+      { angle: direction + Math.PI * 0.76, strength: 0.16 }];
+    for (let i = 0; i < 24; i++) {
+      const angle = i * Math.PI / 12;
+      const r = radius * somaLobeFactor(lobes, angle) * (1 + 0.065 * Math.sin(3 * angle + direction));
+      points.push({ x: Math.cos(angle) * r, y: Math.sin(angle) * r });
+    }
+  } else for (let i = 0; i < 7; i++) {
+    const angle = direction + i * Math.PI * 2 / 7;
+    const r = radius * (i % 2 ? 0.79 : 1);
+    points.push({ x: Math.cos(angle) * r, y: Math.sin(angle) * r });
+  }
+  return points;
+}
+
 function paintJunction(context: CanvasRenderingContext2D, x: number, y: number,
   radius: number, morphology: Morphology, ink: string, direction = 0): void {
+  const outline = canopyJunctionOutline(radius, morphology, direction);
   context.beginPath();
-  if (morphology === 'stellar') {
-    for (let i = 0; i < 8; i++) {
-      const angle = direction + i * Math.PI / 4;
-      const r = i % 2 ? radius * 0.38 : radius;
-      const px = x + Math.cos(angle) * r, py = y + Math.sin(angle) * r;
-      if (i === 0) context.moveTo(px, py); else context.lineTo(px, py);
-    }
-    context.closePath();
-  } else if (morphology === 'neural') {
-    const lobes = [{ angle: direction, strength: 0.22 },
-      { angle: direction + Math.PI, strength: 0.13 }];
-    for (let i = 0; i <= 16; i++) {
-      const angle = i * Math.PI / 8;
-      const r = radius * somaLobeFactor(lobes, angle) * (1 + 0.045 * Math.sin(3 * angle + direction));
-      const px = x + Math.cos(angle) * r, py = y + Math.sin(angle) * r;
-      if (i === 0) context.moveTo(px, py); else context.lineTo(px, py);
-    }
-    context.closePath();
-  } else context.arc(x, y, Math.max(0.9, radius * 0.38), 0, Math.PI * 2);
+  outline.forEach((point, i) => i === 0 ? context.moveTo(x + point.x, y + point.y)
+    : context.lineTo(x + point.x, y + point.y));
+  context.closePath();
   context.fillStyle = ink; context.fill();
 }
 
-function paintNeuralRail(context: CanvasRenderingContext2D,
-  controls: ReturnType<typeof canopySmoothControls>, width: number, ink: string): void {
+function paintLeaf(context: CanvasRenderingContext2D, x: number, y: number,
+  morphology: Morphology, direction: number): void {
+  if (morphology === 'stellar') {
+    context.beginPath(); context.arc(x, y, 4.1, 0, Math.PI * 2);
+    context.fillStyle = 'rgba(220, 226, 236, .11)'; context.fill();
+    context.beginPath(); context.arc(x, y, 1.55, 0, Math.PI * 2);
+  } else if (morphology === 'neural') {
+    // The same broad leading lobe used by core Neural leaves gives the small
+    // canopy record a shoulder and one tapered tip along its parent rail.
+    const lobes = [{ angle: 0, strength: 0.28 }];
+    context.beginPath();
+    for (let i = 0; i < 16; i++) {
+      const angle = i * Math.PI / 8;
+      const r = 2.9 * somaLobeFactor(lobes, angle);
+      const localX = Math.cos(angle) * r * 1.35, localY = Math.sin(angle) * r;
+      const px = x + localX * Math.cos(direction) - localY * Math.sin(direction);
+      const py = y + localX * Math.sin(direction) + localY * Math.cos(direction);
+      if (i === 0) context.moveTo(px, py); else context.lineTo(px, py);
+    }
+    context.closePath();
+  } else {
+    context.beginPath(); context.arc(x, y, 1.05, 0, Math.PI * 2);
+  }
+  context.fillStyle = '#e8e8e8'; context.fill();
+}
+
+function sampleRail(controls: ReturnType<typeof canopySmoothControls>, steps = 5):
+  readonly Readonly<{ x: number; y: number }>[] {
   const points: { x: number; y: number }[] = [];
-  for (const segment of controls) for (let step = 0; step <= 5; step++) {
+  for (const segment of controls) for (let step = 0; step <= steps; step++) {
     if (points.length && step === 0) continue;
-    const t = step / 5, u = 1 - t;
+    const t = step / steps, u = 1 - t;
     points.push({
       x: u ** 3 * segment.from.x + 3 * u ** 2 * t * segment.c1.x
         + 3 * u * t ** 2 * segment.c2.x + t ** 3 * segment.to.x,
@@ -108,6 +143,12 @@ function paintNeuralRail(context: CanvasRenderingContext2D,
         + 3 * u * t ** 2 * segment.c2.y + t ** 3 * segment.to.y,
     });
   }
+  return points;
+}
+
+export function paintNeuralRail(context: CanvasRenderingContext2D,
+  controls: ReturnType<typeof canopySmoothControls>, width: number, ink: string): void {
+  const points = sampleRail(controls);
   if (points.length < 2) return;
   context.fillStyle = ink;
   for (const band of neuralRibbonProfile(width)) {
@@ -127,6 +168,49 @@ function paintNeuralRail(context: CanvasRenderingContext2D,
     context.closePath();
     context.globalAlpha = band.alpha;
     context.fill();
+  }
+  context.globalAlpha = 1;
+}
+
+/** Three close hyphae share both junctions; only the middle of a long rail fans out. */
+export function canopyHyphaOffset(fraction: number, lane: number, spread: number): number {
+  return lane * spread * Math.sin(Math.PI * fraction)
+    + (lane === 0 ? 0 : 0.36 * Math.sin(Math.PI * fraction)
+      * Math.sin(4 * Math.PI * fraction + lane));
+}
+
+export function paintMyceliumRail(context: CanvasRenderingContext2D,
+  controls: ReturnType<typeof canopySmoothControls>, width: number, ink: string): void {
+  const points = sampleRail(controls, 4);
+  if (points.length < 2) return;
+  const span = Math.hypot(points.at(-1)!.x - points[0]!.x, points.at(-1)!.y - points[0]!.y);
+  const spread = Math.min(2.4, Math.max(0, (span - 5) * 0.17));
+  context.strokeStyle = ink; context.lineCap = 'round';
+  for (const lane of [-1, 0, 1]) {
+    context.beginPath();
+    points.forEach((point, i) => {
+      const before = points[Math.max(0, i - 1)]!, after = points[Math.min(points.length - 1, i + 1)]!;
+      const dx = after.x - before.x, dy = after.y - before.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const t = i / (points.length - 1);
+      const offset = canopyHyphaOffset(t, lane, spread);
+      const x = point.x - dy / length * offset, y = point.y + dx / length * offset;
+      if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    });
+    context.lineWidth = lane === 0 ? width : Math.max(0.58, width * 0.72);
+    context.globalAlpha = lane === 0 ? 0.86 : 0.68;
+    context.stroke();
+  }
+  // Short side branchlets sprout from existing filament ink, never float free.
+  if (span > 16) for (const index of [Math.floor(points.length * 0.32), Math.floor(points.length * 0.69)]) {
+    const point = points[index]!, before = points[index - 1]!, after = points[index + 1]!;
+    const dx = after.x - before.x, dy = after.y - before.y;
+    const length = Math.hypot(dx, dy) || 1;
+    const sign = index < points.length / 2 ? -1 : 1;
+    context.beginPath(); context.moveTo(point.x, point.y);
+    context.lineTo(point.x - sign * dy / length * 4 + dx / length * 1.5,
+      point.y + sign * dx / length * 4 + dy / length * 1.5);
+    context.lineWidth = 0.62; context.globalAlpha = 0.75; context.stroke();
   }
   context.globalAlpha = 1;
 }
@@ -268,6 +352,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   let currentIds = ids;
   let currentMarks = marks;
   let currentEvidence = evidence;
+  const railByAddress = new Map(layout.rails.map(rail => [rail.address, rail]));
   let drawablePrefixes = new Set<string>(['root']);
   const rebuildPrefixes = (visible: ReadonlySet<string>) => {
     drawablePrefixes = new Set(['root']);
@@ -381,7 +466,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
         context.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, segment.to.x, segment.to.y);
       }
       else context.lineTo(to.x, to.y);
-      context.lineWidth = Math.min(8, canopyMorphologyWidth(canopyRailWidth(rail, reading), morphology)
+      context.lineWidth = Math.min(10, canopyMorphologyWidth(canopyRailWidth(rail, reading), morphology)
         * (highlighted ? 1.18 : 1));
       // Neutral structure, purple-grey exploratory evidence, one selected gold path.
       // In 3D the position projector and depth order are the same as Natural's nodes.
@@ -393,20 +478,13 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       if (morphology === 'neural' && smooth)
         paintNeuralRail(context, controls.map(segment => ({ ...segment,
           c1: inside(segment.c1), c2: inside(segment.c2) })), context.lineWidth, ink);
+      else if (morphology === 'mycelium' && smooth)
+        paintMyceliumRail(context, controls.map(segment => ({ ...segment,
+          c1: inside(segment.c1), c2: inside(segment.c2) })), context.lineWidth, ink);
       else context.stroke();
-      if (morphology === 'mycelium' && Math.hypot(to.x - from.x, to.y - from.y) > 15) {
-        const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2;
-        const dx = to.x - from.x, dy = to.y - from.y, length = Math.hypot(dx, dy);
-        const sign = rail.address.endsWith('0') ? -1 : 1;
-        context.beginPath(); context.moveTo(mx, my);
-        context.quadraticCurveTo(mx - sign * dy / length * 4, my + sign * dx / length * 4,
-          mx - sign * dy / length * 8 + dx / length * 4,
-          my + sign * dx / length * 8 + dy / length * 4);
-        context.lineWidth = 0.65; context.stroke();
-      }
       for (const junction of [from, to]) {
         paintJunction(context, junction.x, junction.y,
-          morphology === 'neural' ? 2.5 : morphology === 'stellar' ? 2.2 : 1.5,
+          morphology === 'neural' ? 4.8 : morphology === 'stellar' ? 3.4 : 1.3,
           morphology, ink, Math.atan2(to.y - from.y, to.x - from.x));
       }
       drawn++;
@@ -416,15 +494,32 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     if (root) {
       const p = view.projectPoint!(projection === '3d' ? root.to3d : root.to);
       if (canopyEndpointVisible(p, safe))
-        paintJunction(context, p.x, p.y, 4.7, morphology, '#e8e8e8');
+        paintJunction(context, p.x, p.y,
+          morphology === 'neural' ? 7 : morphology === 'stellar' ? 5 : 2.5,
+          morphology, '#e8e8e8');
     }
     const semantic = [...layout.positions.values()].filter(row => row.level <= 3 && currentIds.has(row.id));
     for (const row of semantic) {
       const p = view.projectPoint!(projection === '3d' ? row.point3d : row.point);
       if (![p.x, p.y].every(Number.isFinite)) continue;
       if (p.x < safe.left || p.x > safe.right || p.y < safe.top || p.y > safe.bottom) continue;
-      paintJunction(context, p.x, p.y, row.level === 1 ? 5.2 : row.level === 2 ? 4.3 : 2.7,
+      const radius = morphology === 'neural'
+        ? row.level === 1 ? 8 : row.level === 2 ? 6.5 : 5
+        : morphology === 'stellar'
+          ? row.level === 1 ? 5 : row.level === 2 ? 4.3 : 3.5
+          : row.level === 1 ? 2.8 : row.level === 2 ? 2.3 : 1.7;
+      paintJunction(context, p.x, p.y, radius,
         morphology, row.level === 3 ? 'rgba(199, 205, 214, .88)' : '#e8e8e8');
+    }
+    for (const mark of currentMarks) {
+      const row = layout.positions.get(mark.id);
+      if (!row || row.level < 4 || !currentIds.has(mark.id)) continue;
+      const point = projection === '3d' ? row.point3d : row.point;
+      const p = view.projectPoint!(point);
+      if (!canopyEndpointVisible(p, safe)) continue;
+      const rail = railByAddress.get(row.address);
+      const parent = rail ? view.projectPoint!(projection === '3d' ? rail.from3d : rail.from) : p;
+      paintLeaf(context, p.x, p.y, morphology, Math.atan2(p.y - parent.y, p.x - parent.x));
     }
     context.font = '11px system-ui, sans-serif';
     const explanation = host.querySelector<HTMLElement>('#fractal-canopy-explanation');
