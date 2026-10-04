@@ -14,7 +14,10 @@ test('toolbar presents named groups and keeps graph diagnostics out of its visib
   assert.match(html, /id="counter" hidden/);
   assert.match(html, /id="status" role="status" hidden/);
   assert.match(html, /id="human-status" role="status"/);
-  assert.match(main, /statusText\.textContent = graph\.nodes\.length[\s\S]*?di \$\{data\.nodes\.length/);
+  // D081-P5 BEGIN: status now names rendered and total values, and avoids calling visible nodes all elements.
+  assert.match(main, /statusText\.textContent = graphCounts \? formatLegacyToolbarStatus/);
+  assert.match(main, /formatD081GraphStatus\(contract\)/);
+  // D081-P5 END.
   assert.match(html, /backdrop-filter:blur\(var\(--blur\)\)/);
 });
 

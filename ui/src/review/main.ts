@@ -35,7 +35,8 @@ import type { GraphManifest } from "./graph-v2.ts";
 import { normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
 import { GIZMO_IDLE_GRACE_MS, gizmoShouldRun } from "./gizmo-schedule.ts";
-import { formatGraphPanelCounts, formatGraphToolbarStatus, parseGraphToolbarCounts } from "./toolbar-status.ts";
+import { formatD081GraphStatus, formatGraphPanelCounts, formatLegacyToolbarStatus, parseGraphToolbarCounts } from "./toolbar-status.ts";
+import type { D081GraphStatus } from "./toolbar-status.ts";
 import { NodeDrawer } from "./node-drawer.ts";
 
 const get = <T extends Element>(id: string): T => {
@@ -317,12 +318,69 @@ function syncToolbarSummary(): void {
   ].join(" · ");
 }
 syncToolbarSummary();
+const toolbarSections = new Map<HTMLElement, HTMLDetailsElement>();
+function installToolbarSections(): void {
+  const labels = new Map<string, string>([
+    ['projection', 'Vista'], ['view-presets', 'Orientamento'], ['morphology', 'Morfologia'],
+    ['organization', 'Organizzazione'], ['reading', 'Lettura'], ['v2-relation-control', 'Relazioni'],
+    ['density-control', 'Densità'], ['environment-control', 'Ambiente'], ['appearance-group', 'Aspetto'],
+  ]);
+  const controls = get<HTMLElement>('toolbar-controls');
+  const targets = [...controls.querySelectorAll<HTMLElement>('.axis[data-axis], #view-presets, #v2-relation-control, #density-control, #environment-control, #appearance-group, .tools')];
+  for (const target of targets) {
+    const section = document.createElement('details');
+    section.className = 'toolbar-section';
+    section.open = true;
+    const summary = document.createElement('summary');
+    summary.textContent = target.classList.contains('tools') ? 'Strumenti' : labels.get(target.dataset.axis ?? target.id) ?? 'Controlli';
+    section.append(summary);
+    target.before(section);
+    section.append(target);
+    toolbarSections.set(target, section);
+  }
+  const syncVisibility = () => toolbarSections.forEach((section, target) => {
+    section.hidden = target.hidden;
+  });
+  new MutationObserver(syncVisibility).observe(controls, { attributes: true, subtree: true, attributeFilter: ['hidden'] });
+  syncVisibility();
+}
+installToolbarSections();
+const toolbarPosition = get<HTMLSelectElement>('toolbar-position');
+const TOOLBAR_POSITION_KEY = 'd081.toolbarPosition';
+const toolbarInitiallyCollapsed = Boolean(readLocal(storage, 'd081.toolbarCollapsed', false));
+get<HTMLElement>('review-toolbar').classList.toggle('toolbar-collapsed', toolbarInitiallyCollapsed);
+function applyToolbarPosition(position: string): void {
+  const left = position === 'left';
+  document.body.classList.toggle('toolbar-left', left);
+  get<HTMLElement>('review-toolbar').classList.toggle('toolbar-left', left);
+  toolbarPosition.value = left ? 'left' : 'top';
+  updateInsets();
+}
+applyToolbarPosition(readLocal(storage, TOOLBAR_POSITION_KEY, 'top'));
+syncToolbarToggle();
+toolbarPosition.addEventListener('change', () => {
+  const position = toolbarPosition.value === 'left' ? 'left' : 'top';
+  writeLocal(storage, TOOLBAR_POSITION_KEY, position);
+  applyToolbarPosition(position);
+});
+function syncToolbarToggle(): void {
+  const header = get<HTMLElement>('review-toolbar');
+  const button = get<HTMLButtonElement>('toolbar-toggle');
+  const collapsed = header.classList.contains('toolbar-collapsed');
+  const label = collapsed ? 'Mostra la barra dei comandi' : 'Nascondi la barra dei comandi';
+  button.setAttribute('aria-expanded', String(!collapsed));
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  button.innerHTML = collapsed
+    ? '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.25 4 5.75 6-5.75 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    : '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7.25 10 13l6-5.75" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
 get<HTMLButtonElement>("toolbar-toggle").addEventListener("click", () => {
   const header = get<HTMLElement>("review-toolbar");
   const collapsed = header.classList.toggle("toolbar-collapsed");
-  const button = get<HTMLButtonElement>("toolbar-toggle");
-  button.setAttribute("aria-expanded", String(!collapsed));
-  button.textContent = collapsed ? "Apri barra" : "Chiudi barra";
+  writeLocal(storage, 'd081.toolbarCollapsed', collapsed);
+  get<HTMLButtonElement>("toolbar-toggle").setAttribute("aria-expanded", String(!collapsed));
+  syncToolbarToggle();
   updateInsets();
 });
 function syncBrainControls(): void {
@@ -512,12 +570,11 @@ function updateSummary() {
   get<HTMLElement>("focus-chip").hidden = axes.reading === "attested" || !graph.edges.some((edge) => relationClass(edge, byId) === "exploratory");
   const counter = get<HTMLElement>("counter");
   const statusText = get<HTMLElement>("human-status");
-  statusText.textContent = graph.nodes.length
-    ? `${graph.nodes.length.toLocaleString("it-IT")} di ${data.nodes.length.toLocaleString("it-IT")} ${data.nodes.length === 1 ? "elemento" : "elementi"}`
-    : "Nessun elemento con questi filtri";
   const counts = get<HTMLElement>("graph-status-counts");
   const counterText = counter.textContent;
   const graphCounts = parseGraphToolbarCounts(counterText, get<HTMLElement>("v2-cap").textContent);
+  statusText.textContent = graphCounts ? formatLegacyToolbarStatus(counterText, graphCounts)
+    : `Nodi ${graph.nodes.length.toLocaleString("it-IT")} visibili / ${data.nodes.length.toLocaleString("it-IT")} totali; archi disegnati ${graph.edges.length.toLocaleString("it-IT")} / ${data.edges.length.toLocaleString("it-IT")} totali`;
   const visibleNodes = graphCounts?.visibleNodes ?? graph.nodes.length;
   const totalNodes = graphCounts?.totalNodes ?? data.nodes.length;
   const visibleEdges = Number(counterText.match(/ · (\d+)\//)?.[1] ?? graph.edges.length);
@@ -531,32 +588,74 @@ function updateSummary() {
     : "Conteggio per livello non fornito dal caricamento attivo.";
   const cap = get<HTMLElement>("graph-status-cap");
   cap.textContent = get<HTMLElement>("v2-cap").textContent || "Limite di dettaglio: nessun avviso attivo.";
+  get<HTMLElement>("graph-status-hint").textContent = "Il conteggio di nodi rappresentati e aggregati non è fornito dalla vista corrente. Per rivelare altri elementi, amplia i filtri oppure seleziona Completa e attendi il recupero.";
   get<HTMLElement>("graph-status-identity").textContent = `Identificativo dell’esportazione: ${data.export_digest}.`;
   const layoutText = get<HTMLElement>("arrangement-inspector").textContent.trim();
   get<HTMLElement>("graph-status-layout").textContent = layoutText ? `Disposizione: ${layoutText}.` : `Disposizione attiva: ${axes.organization === "indra" ? "Indra" : axes.organization === "natural" ? "Natural" : axes.organization}.`;
+  syncContractGraphStatus();
   updateButtons();
   updatePanel();
 }
+function readD081Status(): D081GraphStatus | null {
+  try {
+    const api = (window as Window & { __d081?: { status?: () => D081GraphStatus } }).__d081;
+    const status = api?.status?.();
+    return status?.nodes && status?.edges && status?.depth ? status : null;
+  } catch { return null; }
+}
+function syncContractGraphStatus(): void {
+  const contract = readD081Status();
+  if (!contract) return;
+  const formatted = formatD081GraphStatus(contract);
+  get<HTMLElement>('human-status').textContent = formatted.line;
+  get<HTMLElement>('human-status').title = formatted.line;
+  get<HTMLElement>('graph-status-counts').textContent = formatted.details[0];
+  get<HTMLElement>('graph-status-levels').textContent = `${formatted.details[1]} ${formatted.details[2]} ${formatted.details[3]}`;
+  get<HTMLElement>('graph-status-cap').textContent = `${formatted.details[4]} ${formatted.details[5]}`;
+  get<HTMLElement>('graph-status-hint').textContent = formatted.details[6];
+}
+function syncGraphStatusRenderingRows(): void {
+  const rows = [...details.querySelectorAll<HTMLElement>('#v2-controls > .detail-row')];
+  const descriptions = rows.flatMap(row => {
+    const label = row.querySelector('dt')?.textContent?.trim();
+    const value = row.querySelector('dd')?.textContent?.trim();
+    if (!label || !value) return [];
+    if (label === 'Nodi') return [`Elementi disegnati: ${value}.`];
+    if (label === 'Archi') return [`Connessioni disegnate: ${value}.`];
+    if (label === 'Etichette') return [`Etichette mostrate: ${value}.`];
+    if (label === 'Densità') return [`Livello di dettaglio scelto: ${value}.`];
+    if (label === 'Grafo') return [`Dimensione della vista: ${value}.`];
+    if (label === 'Volume 3D') return [`Proporzioni del volume 3D: ${value}.`];
+    return [];
+  });
+  get<HTMLElement>('graph-status-rendering').textContent = descriptions.join(' ');
+}
+const graphStatusRenderingObserver = new MutationObserver(syncGraphStatusRenderingRows);
+graphStatusRenderingObserver.observe(details, { childList: true, characterData: true, subtree: true });
 /** V2 owns these DOM updates; mirror them into the visible toolbar and graph status surface. */
 function syncLoadedGraphStatus(): void {
   const counter = get<HTMLElement>("counter").textContent;
   const counts = parseGraphToolbarCounts(counter, get<HTMLElement>("v2-cap").textContent);
   if (!counts) return;
-  get<HTMLElement>("human-status").textContent = formatGraphToolbarStatus(counts);
+  get<HTMLElement>("human-status").textContent = formatLegacyToolbarStatus(counter, counts);
+  get<HTMLElement>("human-status").title = get<HTMLElement>("human-status").textContent;
   get<HTMLElement>("graph-status-counts").textContent = formatGraphPanelCounts(counter, counts);
   get<HTMLElement>("graph-status-levels").textContent = counts.levels
     ? `Elementi per livello: ${counts.levels.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} ${count === "1" ? "elemento" : "elementi"}`; }).join("; ")}.`
     : "Conteggio per livello non fornito dal caricamento attivo.";
   get<HTMLElement>("graph-status-cap").textContent = counts.cap || "Limite di dettaglio: nessun avviso attivo.";
+  get<HTMLElement>("graph-status-hint").textContent = "Il conteggio di nodi rappresentati e aggregati non è fornito dalla vista corrente. Per rivelare altri elementi, amplia i filtri oppure seleziona Completa e attendi il recupero.";
   const identity = data?.export_digest;
   if (identity) get<HTMLElement>("graph-status-identity").textContent = `Identificativo dell’esportazione: ${identity}.`;
   const layoutText = get<HTMLElement>("arrangement-inspector").textContent.trim();
   get<HTMLElement>("graph-status-layout").textContent = layoutText ? `Disposizione: ${layoutText}.` : `Disposizione attiva: ${axes.organization === "indra" ? "Indra" : "Natural"}.`;
+  syncContractGraphStatus();
   updateInsets();
 }
 const graphStatusObserver = new MutationObserver(syncLoadedGraphStatus);
 for (const id of ["status", "counter", "v2-cap"])
   graphStatusObserver.observe(get<HTMLElement>(id), { childList: true, characterData: true, subtree: true });
+window.addEventListener('d081:status', syncContractGraphStatus);
 function syncFocusPresentation(): void {
   if (axes.projection === "3d" && !focusMode) view?.setEmphasis(null);
   else if (stack?.current) view?.setEmphasis(new Set(stack.current.ids));
@@ -847,10 +946,13 @@ function reviewInsets(): { top: number; right: number; bottom: number; left: num
     const surface = document.getElementById(id);
     return surface && !surface.hidden ? Math.max(width, Math.min(surface.getBoundingClientRect().width, viewport.clientWidth / 3)) : width;
   }, 0);
+  const toolbar = get<HTMLElement>("review-toolbar");
+  const leftDock = !document.fullscreenElement && toolbar.classList.contains('toolbar-left') && !toolbar.classList.contains('toolbar-collapsed');
   const topInset = document.fullscreenElement ? get<HTMLElement>("fullscreen-bar").offsetHeight + 16
-    : get<HTMLElement>("review-toolbar").offsetHeight + 10;
+    : leftDock ? 0 : toolbar.offsetHeight + 10;
   document.documentElement.style.setProperty("--toolbar-height", `${topInset}px`);
-  return { top: topInset, right: Math.max(appearanceInset, panelInset, drawerInset, overlayInset), bottom: 0, left: 0 };
+  const leftInset = document.fullscreenElement ? 0 : leftDock ? Math.ceil(toolbar.getBoundingClientRect().width + 10) : 0;
+  return { top: topInset, right: Math.max(appearanceInset, panelInset, drawerInset, overlayInset), bottom: 0, left: leftInset };
 }
 function updateInsets(): void {
   (v2 ?? view)?.setInsets(reviewInsets());
@@ -1193,7 +1295,13 @@ get<HTMLButtonElement>("preset-delete").addEventListener("click", () => {
 });
 get<HTMLButtonElement>("fullscreen-collapse").addEventListener("click", () => {
   const bar = get<HTMLElement>("fullscreen-bar"); bar.classList.toggle("collapsed");
-  get<HTMLButtonElement>("fullscreen-collapse").textContent = bar.classList.contains("collapsed") ? "Espandi barra (T)" : "Riduci barra (T)";
+  const button = get<HTMLButtonElement>("fullscreen-collapse");
+  const collapsed = bar.classList.contains("collapsed");
+  button.setAttribute('aria-label', collapsed ? 'Espandi la barra fullscreen' : 'Riduci la barra fullscreen');
+  button.title = `${collapsed ? 'Espandi' : 'Riduci'} la barra fullscreen · tasto T`;
+  button.innerHTML = collapsed
+    ? '<svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="m7.25 4 5.75 6-5.75 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    : '<svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="M4 7.25 10 13l6-5.75" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   updateInsets();
 });
 get<HTMLButtonElement>("immersive-toggle").addEventListener("click", () => {
