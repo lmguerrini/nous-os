@@ -521,7 +521,7 @@ export function somaSpindleFactor(theta: number): number {
  * the same clamp, elongation and orientation formulas the node pass draws with. */
 export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: Coordinates) => ProjectedPoint,
   style: MorphologyCanvasStyle, contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT],
-  appearance: AppearanceOptions): ReadonlyMap<string, NeuralSomaFrame> {
+  appearance: AppearanceOptions, projection: "2d" | "3d" = "2d"): ReadonlyMap<string, NeuralSomaFrame> {
   const frames = new Map<string, NeuralSomaFrame>();
   for (const node of geometry.nodes) {
     const p = project(node.position);
@@ -541,10 +541,16 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
     const projectedUnit = Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
     const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
     const projectedEccentricity = Math.sqrt(1 + ((node.spindleRatio ?? node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
+    // A 3D camera can foreshorten a trunk almost to a point. Keep its soma spindle legible in the
+    // overlay, while orienting it along that trunk's projected direction. The radius above still
+    // uses the node's existing projected screen scale. The 2D projection keeps its approved frame.
+    const eccentricity = projection === "3d" && node.spindleRatio
+      ? clamp(node.spindleRatio * somaElongationFactor(node.outline ?? []), 1.6, 2.2)
+      : node.spindleRatio ? clamp(projectedEccentricity * somaElongationFactor(node.outline ?? []), 1.04, 1.9)
+        : somaDrawnElongation(projectedEccentricity, node.outline ?? []);
     frames.set(node.id, {
       x: p.x, y: p.y, angle, radius,
-      eccentricity: node.spindleRatio ? clamp(projectedEccentricity * somaElongationFactor(node.outline ?? []), 1.04, 1.9)
-        : somaDrawnElongation(projectedEccentricity, node.outline ?? []),
+      eccentricity,
       harmonics: node.outline ?? [],
       spindle: !!node.spindleRatio,
     });
@@ -1287,7 +1293,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   // D-072 V5: the drawn soma frames exist before the dendrites, so the junction pass and the node
   // pass below paint the very same somata (one source of truth per frame).
-  const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance) : null;
+  const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance, projection) : null;
   if (!testHook()?.hideEdges) {
     const gradientCapable = typeof context.createLinearGradient === "function";
     const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames);
