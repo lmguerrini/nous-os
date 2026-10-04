@@ -104,12 +104,13 @@ export class NodeDrawer {
     if (message) { const status = doc.createElement('p'); status.className = isError ? 'drawer-error' : 'drawer-loading'; status.setAttribute('role', isError ? 'alert' : 'status'); status.textContent = message; root.append(status); }
     if (this.payload) {
       const node = this.node(), detail = this.detail();
-      const tabs = doc.createElement('nav'); tabs.className = 'node-drawer-tabs'; tabs.setAttribute('aria-label', 'Sezioni del dettaglio');
+      const tabs = doc.createElement('div'); tabs.className = 'node-drawer-tabs'; tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Sezioni del dettaglio');
       for (const name of ['Sintesi', 'Contenuto', 'Provenienza', 'Relazioni']) {
-        const button = doc.createElement('button'); button.type = 'button'; button.dataset.action = 'tab'; button.dataset.tab = name; button.textContent = name; button.setAttribute('aria-pressed', String(this.tab === name)); tabs.append(button);
+        const button = doc.createElement('button'); button.type = 'button'; button.id = `node-drawer-tab-${name.toLocaleLowerCase()}`; button.dataset.action = 'tab'; button.dataset.tab = name; button.textContent = name;
+        button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(this.tab === name)); button.setAttribute('aria-controls', 'node-drawer-panel'); button.tabIndex = this.tab === name ? 0 : -1; tabs.append(button);
       }
       root.append(tabs);
-      const content = doc.createElement('div'); content.className = 'node-drawer-content';
+      const content = doc.createElement('div'); content.className = 'node-drawer-content'; content.id = 'node-drawer-panel'; content.setAttribute('role', 'tabpanel'); content.setAttribute('aria-labelledby', `node-drawer-tab-${this.tab.toLocaleLowerCase()}`); content.tabIndex = 0;
       if (this.tab === 'Sintesi') this.renderSummary(content, node, detail);
       if (this.tab === 'Provenienza') this.renderProvenance(content, node, detail);
       if (this.tab === 'Contenuto') this.renderContent(content, detail);

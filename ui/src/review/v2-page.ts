@@ -343,6 +343,8 @@ function afterPaint(): Promise<void> {
 export type V2PageDeps = {
     readonly createView?: CreateProductView;
     readonly safeSelect?: typeof safeSelectNodes;
+    /** Notifies the review shell after a camera-neutral canvas pick updates page selection. */
+    readonly onNodePicked?: (id: string) => void;
     /** Opt-in B8 path; absent is the unchanged D-072 page. */
     readonly projectionPipeline?: ProjectionPipelineInput;
     /** The same default pipeline the `?projection=natural` URL flag builds, as an explicit
@@ -538,6 +540,7 @@ export class V2Page {
     /** D-072 R1: how this page creates its views and selects its LOD set; injectable for tests. */
     private readonly createView: CreateProductView;
     private readonly selectLod: typeof safeSelectNodes;
+    private readonly onNodePicked: ((id: string) => void) | undefined;
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
     /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
     private userMovedSinceFit = false;
@@ -652,6 +655,7 @@ export class V2Page {
         this.density = normalizeDensity(density);
         this.createView = deps.createView ?? createProductView;
         this.selectLod = deps.safeSelect ?? safeSelectNodes;
+        this.onNodePicked = deps.onNodePicked;
         this.typedByDefault = deps.projectionPipeline !== undefined || defaultPipelineEnabled() || deps.useDefaultPipeline === true;
         this.projectionInput = deps.projectionPipeline ?? (this.typedByDefault ? this.buildDefaultPipeline() : undefined);
         this.fractalPipeline = deps.fractalPipeline;
@@ -1819,6 +1823,7 @@ export class V2Page {
         this.updateEmphasis();
         this.syncFocusControls();
         this.renderPanel();
+        this.onNodePicked?.(id);
     }
     /** A provenance link of an explanation card: its source record is selected on its own. A source the
      * result draws and the mask shows becomes the typed selection; any other is selected as a page node. */

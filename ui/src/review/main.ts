@@ -69,6 +69,11 @@ function drawerTitle(id: string): string {
   const node = data?.nodes.find((item) => item.id === id);
   return node ? humanLabel(node, data) : id;
 }
+function showNodeDrawer(id: string): void {
+  drawerSelectionId = id;
+  nodeDrawer.setDisplayTitle(drawerTitle(id));
+  void nodeDrawer.open(id);
+}
 const drawerSelectionObserver = new MutationObserver(() => {
   const selected = details.querySelector<HTMLElement>(".selection-card[data-node-id]")?.dataset.nodeId ?? null;
   if (!canvasPickPending) return;
@@ -1469,7 +1474,7 @@ async function load() {
   if (probe.ok) {
     const manifest = await probe.json() as GraphManifest;
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
-    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density);
+    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density, { onNodePicked: showNodeDrawer });
     // D080-A3 BEGIN: the page resolves the brain default and stored choice on first entry.
     axes = { ...axes, brain: v2.brainEnabled };
     syncBrainControls();
