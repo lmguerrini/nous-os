@@ -68,7 +68,9 @@ test("one cached line layer is surface-bound, view-facing and cheaper during mot
     brain.setLod("full");
     assert.equal(line.geometry,full);
     assert.equal(brain.witness().lineSegments,count);
-    assert.ok(BRAIN_GLASS_INTERIOR_ALPHA<=0.03);
+    // D081-P2 BEGIN: the permitted visibility step raises this ceiling to 0.035.
+    assert.ok(BRAIN_GLASS_INTERIOR_ALPHA<=0.035);
+    // D081-P2 END
     const another=createBrainEnvelope(nodes);
     try {
       assert.equal(((another.group.children[0] as THREE.Mesh).children[0] as THREE.LineSegments).geometry,full);

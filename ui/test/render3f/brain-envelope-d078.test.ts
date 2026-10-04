@@ -46,8 +46,10 @@ test("glass alpha stays within the sphere language and is transparent through th
   assert.equal(material.blendEquation, THREE.MaxEquation);
   assert.equal(material.blendEquationAlpha, THREE.MaxEquation);
   assert.match(material.fragmentShader, /vec3\(0\.84, 0\.87, 0\.91\) \* alpha, alpha/);
-  assert.equal(BRAIN_GLASS_INTERIOR_ALPHA, 0.03);
-  assert.equal(BRAIN_GLASS_RIM_ALPHA, 0.12);
+  // D081-P2 BEGIN: visibility constants retain the measured 15–20% step.
+  assert.equal(BRAIN_GLASS_INTERIOR_ALPHA, 0.035);
+  assert.equal(BRAIN_GLASS_RIM_ALPHA, 0.14);
+  // D081-P2 END
   assert.match(material.fragmentShader, /float rim = pow\(1\.0 - f, 1\.9\)/);
   assert.match(material.fragmentShader, /float sylvian =/);
   assert.match(material.fragmentShader, /float central =/);

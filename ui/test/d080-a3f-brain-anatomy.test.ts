@@ -39,9 +39,11 @@ test("seeded cortical contours meander on one bounded line layer",()=>{
     assert.ok(diagonal>100,`${diagonal} spatial meanders`);
     assert.ok(shell.geometry.getAttribute("position").count/3<=BRAIN_TRIANGLE_BUDGET);
     assert.ok(points.count/2<=BRAIN_LINE_SEGMENT_BUDGET);
-    assert.equal((lines.material as THREE.ShaderMaterial).uniforms.lineAlpha!.value,0.35);
+    // D081-P2 BEGIN: line visibility rises by 17% over D-080.
+    assert.equal((lines.material as THREE.ShaderMaterial).uniforms.lineAlpha!.value,0.41);
     assert.equal((lines.material as THREE.ShaderMaterial).blendEquation,THREE.MaxEquation);
-    assert.ok(BRAIN_GLASS_INTERIOR_ALPHA<=0.03);
+    assert.ok(BRAIN_GLASS_INTERIOR_ALPHA<=0.035);
+    // D081-P2 END
     assert.ok(BRAIN_GLASS_RIM_ALPHA<=0.20);
     const fullCount=points.count;
     brain.setLod("moving");

@@ -30,8 +30,9 @@ export type BrainEnvelope = {
   dispose(): void;
 };
 
-export const BRAIN_GLASS_INTERIOR_ALPHA = Math.min(NEURAL_BRAIN_ENVELOPE_OPACITY, 0.03);
-export const BRAIN_GLASS_RIM_ALPHA = 0.12;
+export const BRAIN_GLASS_INTERIOR_ALPHA = Math.min(NEURAL_BRAIN_ENVELOPE_OPACITY, 0.035);
+export const BRAIN_GLASS_RIM_ALPHA = 0.14;
+export const BRAIN_GLASS_LINE_ALPHA = 0.41;
 export const BRAIN_TRIANGLE_BUDGET = 20_000;
 export const BRAIN_LINE_SEGMENT_BUDGET = 8_000;
 export const BRAIN_PREFERENCES_KEY = "d080.brain-by-mode";
@@ -406,7 +407,7 @@ function resources() {
       blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
     });
     const lineMaterial = new THREE.ShaderMaterial({
-      uniforms:{ lineAlpha:{value:0.35} },
+      uniforms:{ lineAlpha:{value:BRAIN_GLASS_LINE_ALPHA} },
       vertexShader:`varying vec3 vNormal, vView;
         void main() { vec4 p=modelViewMatrix*vec4(position,1.0);
           vNormal=normalize(normalMatrix*normal); vView=-p.xyz;
