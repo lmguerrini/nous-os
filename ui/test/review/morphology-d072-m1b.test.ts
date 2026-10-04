@@ -42,7 +42,7 @@ import {
   STELLAR_DUST_MIN_PER_CLUSTER,
   STELLAR_DUST_SIZE_PX,
 } from "#render-common/starfield.ts";
-import { flowHeadPositionPx, setFlowMotionAllowed, setFlowNow } from "#render-common/flow.ts";
+import { flowHeadPositionPx, flowWaveAlpha, setFlowMotionAllowed, setFlowNow } from "#render-common/flow.ts";
 
 // ---------------------------------------------------------------- recording context
 
@@ -465,28 +465,12 @@ test("M1b flow: the highlight head advances monotonically from source to target"
     assert.ok(advance <= 50 / 1000 * 90 + 1e-9, `t=${milliseconds}: head jumped ${advance}`);
     previous = head;
   }
-  // Draw level: the lit portion of one exploratory relation moves toward the target frame by frame.
-  // The frames start past the restart fade-in (the head enters the source smoothly, so t=0 is dark).
-  const { geometry, style } = neuralScene();
-  setFlowMotionAllowed(true);
+  // The single broad maximum moves toward the target without a trail of short strokes.
   const centres: number[] = [];
   for (const milliseconds of [200, 400, 600, 800, 1000]) {
-    setFlowNow(milliseconds);
-    const { context, ops } = recordingContext();
-    drawMorphologyCanvas(context, geometry, project, style, appearance({ flowIntensity: 1, flowSpeed: 1 }));
-    let weight = 0, sum = 0;
-    for (let index = 0; index < ops.length - 1; index += 1) {
-      if (ops[index]!.op !== "moveTo" || ops[index + 1]!.op !== "lineTo") continue;
-      const following = ops.slice(index + 2, index + 5).find(op => op.op === "stroke");
-      if (!following) continue;
-      const alpha = alphaOf((following.args as unknown[])[0]);
-      if (alpha <= 0.05) continue;
-      const [x1] = ops[index]!.args as [number, number];
-      const [x2] = (ops[index + 1]!.args as [number, number]);
-      weight += alpha; sum += alpha * (x1 + x2) / 2;
-    }
-    assert.ok(weight > 0, `t=${milliseconds}: no highlight drawn`);
-    centres.push(sum / weight);
+    const samples = Array.from({ length: 201 }, (_, distance) =>
+      flowWaveAlpha(distance, 200, milliseconds, 1, 1));
+    centres.push(samples.indexOf(Math.max(...samples)));
   }
   for (let index = 1; index < centres.length; index += 1)
     assert.ok(centres[index]! > centres[index - 1]! + 1e-6,
@@ -521,17 +505,20 @@ test("M1b flow: reduced-motion frames are identical", () => {
   assert.deepEqual(opsAt(0), opsAt(700), "with motion disallowed the clock must not change a single op");
 });
 
-test("M1b flow: drawFlowLayer draws only the travelling highlights", () => {
+test("M1b flow: drawFlowLayer modulates the full edge profile without a separate bar", () => {
   const { geometry, style } = neuralScene();
   setFlowMotionAllowed(true);
   setFlowNow(300);
   const { context, ops, gradients } = recordingContext();
   drawFlowLayer(context, geometry, project, style, appearance({ flowIntensity: 0.6, flowSpeed: 1 }));
-  assert.ok(ops.some(op => op.op === "stroke"), "highlights were drawn");
-  const allowed = new Set(["composite", "beginPath", "moveTo", "lineTo", "stroke"]);
-  for (const op of ops)
-    assert.ok(allowed.has(op.op), `drawFlowLayer must not ${op.op} (highlights only)`);
-  assert.equal(gradients.length, 0, "the overlay builds no gradients");
+  assert.ok(ops.some(op => op.op === "fill"), "the wave is painted inside the edge profile");
+  assert.equal(ops.filter(op => op.op === "stroke").length, 0, "no stroke-only inner bar");
+  assert.ok(gradients.some(gradient => gradient.kind === "linear"), "the wave uses the radial edge profile");
+  const alongEdgeAlpha = gradients.filter(gradient => gradient.kind === "linear")
+    .map(gradient => alphaOf(gradient.stops.find(stop => stop.offset === 0.5)?.colour));
+  const peaks = alongEdgeAlpha.slice(1, -1).filter((value, index) =>
+    value > alongEdgeAlpha[index]! && value >= alongEdgeAlpha[index + 2]!).length;
+  assert.ok(peaks <= 1, "a still-frame edge has at most one bright maximum");
   assert.ok(ops.filter(op => op.op === "composite" && op.args[0] === "lighter").length >= 1);
 });
 

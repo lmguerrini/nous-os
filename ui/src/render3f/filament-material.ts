@@ -328,13 +328,13 @@ void main() {
     float fade = min(0.08, max(bodyHalfWidth * 1.5, 2.0 * u_devicePixelRatio) / span);
     float longitudinal = smoothstep(0.0, fade, parameter)
       * smoothstep(0.0, fade, 1.0 - parameter);
-    float lightPosition = v_propagationPermille.z > 0.0
-      ? v_propagationPermille.x / u_permilleScale : 1.0;
-    float trail = max(v_propagationPermille.y / u_permilleScale, 0.025);
-    float behind = lightPosition - parameter;
-    float beam = smoothstep(0.0, min(trail * 0.25, 0.04), behind)
-      * (1.0 - smoothstep(trail * 0.35, trail, behind));
-    float hot = (v_hotAndWobble.x / u_permilleScale) * beam;
+    // A two-edge-length spatial period allows at most one peak on a visible edge.
+    // Reduced motion has a uniform static cue, so no travelling segment can appear.
+    float lightPosition = v_propagationPermille.x / u_permilleScale;
+    float wave = v_propagationPermille.z > 0.0
+      ? 0.5 + 0.5 * cos(3.14159265 * (parameter - 2.0 * lightPosition))
+      : 0.65;
+    float hot = min(0.24, 0.24 * v_hotAndWobble.x / u_permilleScale) * wave;
     float alpha = clamp(v_opacity * radial * longitudinal
       * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
     if (alpha <= 0.0) discard;

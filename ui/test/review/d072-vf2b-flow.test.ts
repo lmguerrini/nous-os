@@ -5,7 +5,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { drawFlowLayer } from "#render-common/morphology-canvas.ts";
 import { setFlowMotionAllowed, setFlowNow } from "#render-common/flow.ts";
 
-test("dense beam stays on each arc with bounded, gradient-free path work", () => {
+test("dense flow fills one continuous edge profile per arc with bounded gradient work", () => {
   const counts: Record<string, number> = {};
   const count = (name: string) => { counts[name] = (counts[name] ?? 0) + 1; };
   class FakeOffscreenCanvas {
@@ -27,7 +27,7 @@ test("dense beam stays on each arc with bounded, gradient-free path work", () =>
   const context = {
     canvas: { width: 1200, height: 800, getBoundingClientRect: () => ({ width: 600, height: 400 }) },
     globalAlpha: 1, globalCompositeOperation: "source-over", lineCap: "butt", lineJoin: "miter",
-    beginPath() { count("beginPath"); }, moveTo() { count("moveTo"); }, lineTo() { count("lineTo"); },
+    beginPath() { count("beginPath"); }, moveTo() { count("moveTo"); }, lineTo() { count("lineTo"); }, closePath() {},
     stroke() { count("stroke"); }, fill() { count("fill"); }, drawImage() { count("drawImage"); },
     save() {}, restore() {}, translate() {}, rotate() {},
     createLinearGradient() { count("linear"); return { addColorStop() {} }; },
@@ -52,13 +52,14 @@ test("dense beam stays on each arc with bounded, gradient-free path work", () =>
     setFlowNow(500);
     drawFlowLayer(context, geometry, project, style, appearance);
     const first = { ...counts };
-    assert.ok((first.stroke ?? 0) >= 25 && (first.stroke ?? 0) <= 180,
-      "dense flow draws a bounded number of sections per arc");
-    assert.equal(first.beginPath, first.stroke);
+    assert.ok((first.fill ?? 0) >= 30 && (first.fill ?? 0) <= 1200,
+      "dense flow draws bounded profile sections per arc");
+    assert.equal(first.stroke ?? 0, 0, "no separate stroke-only bars");
+    assert.equal(first.beginPath, first.fill);
     assert.equal(first.drawImage ?? 0, 0, "a sprite chord cannot leave a curved arc");
-    assert.ok((first.moveTo ?? 0) <= 180 && (first.lineTo ?? 0) <= 1500,
-      "path commands scale with visible arcs and their bends");
-    assert.equal(first.linear ?? 0, 0);
+    assert.ok((first.moveTo ?? 0) <= 1200 && (first.lineTo ?? 0) <= 3600,
+      "profile sections scale with visible arcs and their bends");
+    assert.equal(first.linear, first.fill, "each section uses the edge cross-section gradient");
     assert.equal(first.contextRadial ?? 0, 0);
     assert.equal(first.radial ?? 0, 0, "the beam has no bright radial dot");
     assert.equal(first.spriteLinear ?? 0, 0);
@@ -66,21 +67,21 @@ test("dense beam stays on each arc with bounded, gradient-free path work", () =>
     for (const key of Object.keys(counts)) counts[key] = 0;
     setFlowNow(900);
     drawFlowLayer(context, geometry, project, style, appearance);
-    assert.ok((counts.stroke ?? 0) > 0 && (counts.stroke ?? 0) <= 180);
-    assert.equal(counts.beginPath, counts.stroke);
+    assert.ok((counts.fill ?? 0) >= 30 && (counts.fill ?? 0) <= 1200);
+    assert.equal(counts.stroke ?? 0, 0);
+    assert.equal(counts.beginPath, counts.fill);
     assert.equal(counts.radial ?? 0, 0, "a steady second frame makes no gradient");
     assert.equal(counts.spriteLinear ?? 0, 0);
-    assert.equal(counts.linear ?? 0, 0);
+    assert.equal(counts.linear, counts.fill);
     assert.equal(counts.contextRadial ?? 0, 0);
-    assert.equal(counts.fill ?? 0, 0);
     assert.equal(counts.spriteFill ?? 0, 0);
 
     for (const key of Object.keys(counts)) counts[key] = 0;
     const smallStyle = { ...style, edges: new Map([...style.edges].slice(0, 5)) };
     drawFlowLayer(context, geometry, project, smallStyle, appearance);
-    assert.ok((counts.stroke ?? 0) > 0 && (counts.stroke ?? 0) <= 30);
-    assert.equal(counts.beginPath, counts.stroke);
-    assert.ok((counts.moveTo ?? 0) <= 30 && (counts.lineTo ?? 0) <= 240);
+    assert.ok((counts.fill ?? 0) >= 5 && (counts.fill ?? 0) <= 200);
+    assert.equal(counts.beginPath, counts.fill);
+    assert.ok((counts.moveTo ?? 0) <= 200 && (counts.lineTo ?? 0) <= 600);
   } finally {
     setFlowMotionAllowed(false);
     global.OffscreenCanvas = original;

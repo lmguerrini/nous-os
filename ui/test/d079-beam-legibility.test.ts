@@ -45,7 +45,7 @@ test('reduced motion leaves the travelling layer empty', () => {
   assert.equal(strokes, 0);
 });
 
-test('the travelling core bends with a Mycelium arc rather than crossing its chord', () => {
+test('the full-width travelling wave bends with a Mycelium arc rather than crossing its chord', () => {
   const geometry = buildMorphologyGeometry('mycelium', [
     { id: 'a', position: { x: 0, y: 0, z: 0 }, radius: 4 },
     { id: 'b', position: { x: 200, y: 0, z: 0 }, radius: 4 },
@@ -53,7 +53,8 @@ test('the travelling core bends with a Mycelium arc rather than crossing its cho
   const lineY: number[] = [];
   const context = {
     canvas: { width: 300, height: 120, getBoundingClientRect: () => ({ width: 300, height: 120 }) },
-    beginPath() {}, moveTo() {}, lineTo(_x: number, y: number) { lineY.push(y); }, stroke() {},
+    beginPath() {}, moveTo() {}, lineTo(_x: number, y: number) { lineY.push(y); }, closePath() {}, fill() {},
+    createLinearGradient() { return { addColorStop() {} }; },
     globalAlpha: 1, globalCompositeOperation: 'source-over', lineCap: 'round', lineJoin: 'round',
   } as unknown as CanvasRenderingContext2D;
   const style = { fieldColor: 'rgb(0, 0, 0)', nodes: new Map(), edges: new Map([['ab', {

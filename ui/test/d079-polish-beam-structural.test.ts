@@ -35,16 +35,15 @@ const style = {
     presentation: { category: 'exploratory' as const, opacityPermille: 1000, widthPermille: 1000 } }]]),
 };
 
-test('2D and 3D travelling cores follow their filaments, with only a faint bounded glow', () => {
+test('2D and 3D travelling waves fill the edge profile without a separate glow stroke', () => {
   for (const projection of ['2d', '3d'] as const) {
-    const strokes: { width: number; alpha: number }[] = [];
+    let fills = 0, strokes = 0, gradients = 0;
     const context = {
       canvas: { width: 200, height: 100,
         getBoundingClientRect: () => ({ width: 200, height: 100 }) },
-      beginPath() {}, moveTo() {}, lineTo() {},
-      stroke(this: { lineWidth: number; globalAlpha: number }) {
-        strokes.push({ width: this.lineWidth, alpha: this.globalAlpha });
-      },
+      beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+      stroke() { strokes++; }, fill() { fills++; },
+      createLinearGradient() { gradients++; return { addColorStop() {} }; },
       drawImage() {}, globalAlpha: 1, globalCompositeOperation: 'source-over',
       lineWidth: 1, lineCap: 'butt', lineJoin: 'miter',
     } as unknown as CanvasRenderingContext2D;
@@ -52,18 +51,16 @@ test('2D and 3D travelling cores follow their filaments, with only a faint bound
     setFlowNow(3000);
     drawFlowLayer(context, geometry, point => ({ x: point.x + 20, y: point.y + 40, scale: 1 }),
       style, { ...DEFAULT_APPEARANCE, flowIntensity: 1, flowSpeed: 1 }, projection);
-    assert.equal(strokes.length, 6, `${projection} draws one glow and a five-section core`);
-    const glow = strokes[0]!, core = strokes[3]!;
-    assert.equal(core!.width, 1.8, `${projection} core clears the thin-edge pixel floor`);
-    assert.equal(glow!.width, 4.2, `${projection} glow has a faint, bounded pixel floor`);
-    assert.ok(glow!.alpha < core!.alpha * 0.3, `${projection} glow stays faint`);
+    assert.ok(fills > 0, `${projection} fills its edge profile`);
+    assert.equal(strokes, 0, `${projection} adds no narrow bar`);
+    assert.equal(gradients, fills, `${projection} uses one radial profile per filled section`);
   }
   assert.deepEqual(flowBeamWidthsPx(1), { core: 1.8, glow: 4.2 });
   assert.ok(FLOW_BEAM_GLOW_ALPHA <= 0.15);
   setFlowMotionAllowed(false);
 });
 
-test('the dense 2D and 3D beam follows the same narrow path strokes', () => {
+test('the dense 2D and 3D wave follows the same filled edge paths', () => {
   const manyNodes = [{ id: 'hub', position: { x: 0, y: 0, z: 0 }, radius: 5 },
     ...Array.from({ length: 13 }, (_, i) => ({ id: `child:${i}`,
       position: { x: 100, y: i, z: 0 }, radius: 5 }))];
@@ -75,13 +72,14 @@ test('the dense 2D and 3D beam follows the same narrow path strokes', () => {
       category: 'exploratory' as const, opacityPermille: 1000, widthPermille: 1000 } }] as const)) };
   try {
     for (const projection of ['2d', '3d'] as const) {
-      const widths: number[] = [];
+      let fills = 0, strokes = 0;
       let sprites = 0;
       const context = {
         canvas: { width: 200, height: 100,
           getBoundingClientRect: () => ({ width: 200, height: 100 }) },
-        beginPath() {}, moveTo() {}, lineTo() {},
-        stroke(this: { lineWidth: number }) { widths.push(this.lineWidth); },
+        beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+        stroke() { strokes++; }, fill() { fills++; },
+        createLinearGradient() { return { addColorStop() {} }; },
         drawImage() { sprites++; },
         globalAlpha: 1, globalCompositeOperation: 'source-over',
         lineWidth: 1, lineCap: 'butt', lineJoin: 'miter',
@@ -90,8 +88,8 @@ test('the dense 2D and 3D beam follows the same narrow path strokes', () => {
       setFlowNow(3000);
       drawFlowLayer(context, manyGeometry, point => ({ x: point.x + 20, y: point.y + 40, scale: 1 }),
         manyStyle, { ...DEFAULT_APPEARANCE, flowIntensity: 1, flowSpeed: 1 }, projection);
-      assert.ok(widths.length >= 13, `${projection} draws each dense beam`);
-      assert.ok(widths.every(width => width === 1.8 || width === 4.2));
+      assert.ok(fills >= 13, `${projection} draws each dense edge`);
+      assert.equal(strokes, 0, `${projection} adds no stroke-only beam`);
       assert.equal(sprites, 0, `${projection} stays on the arc rather than a sprite chord`);
     }
   } finally { setFlowMotionAllowed(false); }

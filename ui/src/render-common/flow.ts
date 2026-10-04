@@ -75,22 +75,30 @@ export function flowPulseAlpha(distanceNormalised: number, centre: number, inten
   return Math.min(1, Math.max(0, intensity)) * Math.exp(-(delta * delta) / (2 * sigma * sigma));
 }
 
-// ---------------------------------------------------------------- D-072 V13 travelling highlight
-//
-// The exploratory flow no longer oscillates a symmetric pulse: a luminous head really travels from
-// the relation's source to its target at a uniform speed in screen pixels per second, with a short
-// bright head and a fading tail behind it, and a smooth fade-in each time it restarts. The cycle of
-// one edge is its own projected length plus the tail, so the tail fully drains past the target
-// before the head re-enters at the source — nothing ahead of the head, ever.
+// ---------------------------------------------------------------- travelling flow
+// The two-edge-length cosine above is the live profile. The older head/tail helpers remain exported
+// for compatibility with historical evidence tests; no renderer draws their separate strokes.
 
 /** Head travel speed at speed 1, in screen px/s. Every edge shares it: uniform speed, per-edge cycle. */
 export const FLOW_HEAD_SPEED_PX_S = 32;
+/** The spatial wave occupies two edge lengths: a visible edge can contain at most one peak. */
+export const FLOW_WAVE_PERIOD_LENGTHS = 2;
+/** The wave changes opacity modestly and never replaces the continuous base edge. */
+export const FLOW_WAVE_MAX_ALPHA = 0.24;
+/** One smooth, periodic travelling wave over the full edge, including its off-edge return. */
+export function flowWaveAlpha(atPx: number, edgeLengthPx: number, elapsedMilliseconds: number,
+  speed: number, intensity: number): number {
+  if (!(edgeLengthPx > 0) || !(speed > 0) || !(intensity > 0)) return 0;
+  const travel = elapsedMilliseconds / 1000 * speed * FLOW_HEAD_SPEED_PX_S;
+  const phase = 2 * Math.PI * (atPx - travel) / (FLOW_WAVE_PERIOD_LENGTHS * edgeLengthPx);
+  return FLOW_WAVE_MAX_ALPHA * Math.min(1, Math.max(0, intensity)) * (1 + Math.cos(phase)) * 0.5;
+}
 /** Reach of the bright head, in px along the path from the head backwards. */
 export const FLOW_HEAD_PX = 24;
 /** A narrow core can be substantially brighter than its base filament without obscuring nodes. */
 export const FLOW_HEAD_CORE_ALPHA_RATIO = 0.76;
 export const FLOW_HEAD_MAX_ALPHA = 0.68;
-/** Historical bound retained for the head-size contract; the live beam is a path stroke. */
+/** Historical bound retained for the head-size contract. */
 export const FLOW_HEAD_MAX_SIZE_PX = 18;
 /** Total reach of the fading tail behind the head, in px (head included). */
 export const FLOW_TAIL_PX = 72;
@@ -98,12 +106,12 @@ export const FLOW_TAIL_PX = 72;
 export function flowTailLengthPx(arcLengthPx: number): number {
   return Math.max(48, Math.min(112, arcLengthPx * 0.28));
 }
-/** Drawn beam is longer than the legacy tail envelope while retaining its path-relative scaling. */
+/** Historical beam-length helper retained for older evidence tests. */
 export const FLOW_BEAM_LENGTH_FACTOR = 1.7;
 export function flowBeamLengthPx(arcLengthPx: number): number {
   return flowTailLengthPx(arcLengthPx) * FLOW_BEAM_LENGTH_FACTOR;
 }
-/** Peak opacity on the separate layer at the default intensity. */
+/** Historical head opacity helper retained for older evidence tests. */
 export function flowHeadAlpha(intensity: number): number {
   return Math.min(FLOW_HEAD_MAX_ALPHA, 0.68 * Math.min(1, Math.max(0, intensity) / 0.6));
 }

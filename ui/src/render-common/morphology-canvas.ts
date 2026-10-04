@@ -14,12 +14,8 @@ import {
   EDGE_CATEGORY_SET,
   FLOW_HALO_ALPHA,
   FLOW_HALO_WIDTH_MULTIPLIER,
-  FLOW_STATIC_CORE_ALPHA,
-  FLOW_BEAM_GLOW_ALPHA,
-  flowBeamWidthsPx,
-  flowBeamLengthPx,
-  flowHeadAlpha,
-  flowHeadPositionPx,
+  FLOW_WAVE_MAX_ALPHA,
+  flowWaveAlpha,
   flowMotionAllowedNow,
   flowNow,
   selectFlowEdges,
@@ -1097,14 +1093,6 @@ export function neuralEdgeDensity(radialFraction: number): number {
   return shoulder * shoulder;
 }
 
-/** A beam changes only longitudinal brightness inside the existing edge density. */
-export function neuralFlowModulation(behindPx: number, tailPx: number, peak: number): number {
-  if (behindPx < 0 || behindPx > tailPx || tailPx <= 0) return 0;
-  const rise = Math.min(1, behindPx / Math.max(4, tailPx * 0.06));
-  const decay = Math.min(1, (tailPx - behindPx) / Math.max(8, tailPx * 0.24));
-  return peak * rise * rise * (3 - 2 * rise) * decay * decay * (3 - 2 * decay);
-}
-
 /** Paint adjacent tapered quads with one continuously sampled cross-section. */
 function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   modulation?: (distancePx: number) => number): void {
@@ -1114,29 +1102,34 @@ function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyE
     const dx = b.x - a.x, dy = b.y - a.y, span = Math.hypot(dx, dy);
     if (span < 1e-5) continue;
     const nx = -dy / span, ny = dx / span;
-    const halfA = paint.widthAt(i) * 0.5, halfB = paint.widthAt(i + 1) * 0.5;
-    const half = Math.max(halfA, halfB);
-    const midX = (a.x + b.x) * 0.5, midY = (a.y + b.y) * 0.5;
-    const gradient = context.createLinearGradient(midX - nx * half, midY - ny * half,
-      midX + nx * half, midY + ny * half);
-    const along = (cumulative[i]! + cumulative[i + 1]!) * 0.5;
-    const endFade = Math.min(1, along / Math.max(2, halfA), (totalPx - along) / Math.max(2, halfB));
-    const light = modulation ? Math.max(modulation(along),
-      0.65 * modulation(cumulative[i]!), 0.65 * modulation(cumulative[i + 1]!)) : 1;
-    if (light <= 0) continue;
-    for (let stop = 0; stop <= 12; stop++) {
-      const radial = Math.abs(stop / 6 - 1);
-      const density = neuralEdgeDensity(radial);
-      gradient.addColorStop(stop / 12, rgba(paint.color,
-        clamp(paint.alpha * endFade * density * light, 0, 1)));
+    // The animated pass samples more often along long projected segments. It changes only
+    // longitudinal opacity; every sample retains the base edge's radial density and width.
+    const steps = modulation ? Math.ceil(span / 12) : 1;
+    for (let step = 0; step < steps; step++) {
+      const t0 = step / steps, t1 = (step + 1) / steps, t = (t0 + t1) * 0.5;
+      const x0 = a.x + dx * t0, y0 = a.y + dy * t0;
+      const x1 = a.x + dx * t1, y1 = a.y + dy * t1;
+      const halfA = paint.widthAt(i + t0) * 0.5, halfB = paint.widthAt(i + t1) * 0.5;
+      const half = Math.max(halfA, halfB);
+      const midX = (x0 + x1) * 0.5, midY = (y0 + y1) * 0.5;
+      const gradient = context.createLinearGradient(midX - nx * half, midY - ny * half,
+        midX + nx * half, midY + ny * half);
+      const along = cumulative[i]! + span * t;
+      const endFade = Math.min(1, along / Math.max(2, halfA), (totalPx - along) / Math.max(2, halfB));
+      const light = modulation ? modulation(along) : 1;
+      for (let stop = 0; stop <= 12; stop++) {
+        const radial = Math.abs(stop / 6 - 1);
+        gradient.addColorStop(stop / 12, rgba(paint.color,
+          clamp(paint.alpha * endFade * neuralEdgeDensity(radial) * light, 0, 1)));
+      }
+      context.fillStyle = gradient;
+      context.beginPath();
+      context.moveTo(x0 - nx * halfA, y0 - ny * halfA);
+      context.lineTo(x1 - nx * halfB, y1 - ny * halfB);
+      context.lineTo(x1 + nx * halfB, y1 + ny * halfB);
+      context.lineTo(x0 + nx * halfA, y0 + ny * halfA);
+      context.closePath(); context.fill();
     }
-    context.fillStyle = gradient;
-    context.beginPath();
-    context.moveTo(a.x - nx * halfA, a.y - ny * halfA);
-    context.lineTo(b.x - nx * halfB, b.y - ny * halfB);
-    context.lineTo(b.x + nx * halfB, b.y + ny * halfB);
-    context.lineTo(a.x + nx * halfA, a.y + ny * halfA);
-    context.closePath(); context.fill();
   }
 }
 
@@ -1230,110 +1223,26 @@ function drawNeuralDetail(context: CanvasRenderingContext2D, paint: MorphologyEd
   return drawn;
 }
 
-type FlowTrail = { readonly paint: MorphologyEdgePaint; readonly head: number; readonly tail: number };
-/** A constant-width beam never exceeds a locally thinner stretch of its filament. */
-function flowTrailEdgeWidthPx(paint: MorphologyEdgePaint): number {
-  let minimum = Infinity;
-  for (let i = 0; i < paint.points.length - 1; i++) minimum = Math.min(minimum, paint.widthAt(i + 0.5));
-  return minimum;
-}
-function flowPointAt(trail: FlowTrail, distance: number): { x: number; y: number } {
-  const { points, cumulative } = trail.paint;
-  for (let i = 0; i < cumulative.length - 1; i++) {
-    if (distance > cumulative[i + 1]! && i < cumulative.length - 2) continue;
-    const span = cumulative[i + 1]! - cumulative[i]!;
-    const t = span > 0 ? clamp((distance - cumulative[i]!) / span, 0, 1) : 0;
-    return { x: points[i]!.x + (points[i + 1]!.x - points[i]!.x) * t,
-      y: points[i]!.y + (points[i + 1]!.y - points[i]!.y) * t };
-  }
-  return points[points.length - 1]!;
-}
-
-/** Append the clipped section of an arc to the current shared path; one move and only the source
- * polyline's actual bends, without the former per-segment subdivisions or per-arc strokes. */
-function appendFlowTail(context: CanvasRenderingContext2D, trail: FlowTrail, from: number, to: number): void {
-  const { points, cumulative } = trail.paint;
-  if (to <= from) return;
-  const first = flowPointAt(trail, from);
-  context.moveTo(first.x, first.y);
-  for (let i = 1; i < cumulative.length - 1; i++)
-    if (cumulative[i]! > from && cumulative[i]! < to) context.lineTo(points[i]!.x, points[i]!.y);
-  const last = flowPointAt(trail, to);
-  context.lineTo(last.x, last.y);
-}
-
 function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: readonly MorphologyEdgePaint[],
   now: number, speed: number, intensity: number): void {
-  if (!paints.length) return;
-  const trails: FlowTrail[] = [];
   for (const paint of paints) {
-    const tail = flowBeamLengthPx(paint.totalPx);
-    const cycle = paint.totalPx + tail;
-    const head = flowHeadPositionPx(now, speed, cycle);
-    if (head > 0 && head - tail < paint.totalPx) trails.push({ paint, head, tail });
+    drawNeuralProfile(context, paint,
+      distance => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity));
   }
-  if (!trails.length) return;
-  const peak = flowHeadAlpha(intensity);
-  const previousAlpha = context.globalAlpha;
-  const previousCap = context.lineCap;
-  context.lineCap = "butt"; // adjacent opacity sections meet without bright round-cap knots
-  for (const trail of trails) {
-    const { head, tail, paint } = trail;
-    if (paint.neural) {
-      drawNeuralProfile(context, paint, distance => neuralFlowModulation(head - distance, tail, peak));
-      continue;
-    }
-    const width = flowBeamWidthsPx(flowTrailEdgeWidthPx(paint));
-    // Keep the moving layer clear of node centres; the base filament still reaches each endpoint.
-    const clearance = Math.min(4, paint.totalPx * 0.1);
-    const from = Math.max(clearance, head - tail);
-    const to = Math.min(paint.totalPx - clearance, head);
-    if (to <= from) continue;
-    const stroke = (start: number, end: number, px: number, alpha: number, color: string) => {
-      const clippedStart = Math.max(from, start), clippedEnd = Math.min(to, end);
-      if (clippedEnd <= clippedStart) return;
-      context.beginPath();
-      appendFlowTail(context, trail, clippedStart, clippedEnd);
-      context.strokeStyle = color;
-      context.lineWidth = px;
-      context.globalAlpha = previousAlpha * peak * alpha;
-      context.stroke();
-    };
-    stroke(head - tail, head, width.glow, FLOW_BEAM_GLOW_ALPHA, "rgb(192, 192, 192)");
-    // Most of the long core has one uniform luminance. Short sections soften both ends of
-    // the travelling segment and drain continuously at the ends of the arc.
-    const stops = [0, 0.05, 0.11, 0.89, 0.95, 1];
-    const alphas = [0.2, 0.62, 1, 0.62, 0.2];
-    for (let i = 0; i < alphas.length; i++)
-      stroke(head - tail + tail * stops[i]!, head - tail + tail * stops[i + 1]!,
-        width.core, alphas[i]!, "rgb(248, 248, 248)");
-  }
-  context.lineCap = previousCap;
-  context.globalAlpha = previousAlpha;
 }
 
-/** The reduced-motion (and still-flow) exploratory cue: a static line whose brightness rises
- * toward the target of the relation, so the direction stays readable with no animation (V13). */
+/** Reduced motion keeps the entire exploratory profile continuously and uniformly lit. */
 function drawEdgeStaticCue(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   intensity: number, gradientCapable: boolean): void {
-  if (paint.neural && gradientCapable) {
-    drawNeuralProfile(context, paint, distance => FLOW_STATIC_CORE_ALPHA * intensity
-      * (0.4 + 0.6 * distance / paint.totalPx));
+  const staticAlpha = FLOW_WAVE_MAX_ALPHA * 0.65 * intensity;
+  if (gradientCapable) {
+    drawNeuralProfile(context, paint, () => staticAlpha);
     return;
   }
   const { points, color, alpha, widthAt } = paint;
-  const first = points[0]!, last = points[points.length - 1]!;
-  const chord = Math.hypot(last.x - first.x, last.y - first.y);
-  if (gradientCapable && chord > 0) {
-    const gradient = context.createLinearGradient(first.x, first.y, last.x, last.y);
-    gradient.addColorStop(0, rgba(color, clamp(alpha * FLOW_STATIC_CORE_ALPHA * 0.55 * intensity, 0, 1)));
-    gradient.addColorStop(1, rgba(color, clamp(alpha * FLOW_STATIC_CORE_ALPHA * 1.45 * intensity, 0, 1)));
-    context.strokeStyle = gradient;
-  } else {
-    context.strokeStyle = rgba(color, clamp(alpha * FLOW_STATIC_CORE_ALPHA * intensity, 0, 1));
-  }
-  context.lineWidth = Math.max(0.5, widthAt((points.length - 1) / 2) * 0.7);
-  context.beginPath(); context.moveTo(first.x, first.y);
+  context.strokeStyle = rgba(color, clamp(alpha * staticAlpha, 0, 1));
+  context.lineWidth = widthAt((points.length - 1) / 2);
+  context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
   for (const point of points.slice(1)) context.lineTo(point.x, point.y);
   context.stroke();
 }
@@ -1753,14 +1662,14 @@ function flowProjectionAnchors(geometry: MorphologyGeometry,
 }
 
 /**
- * The travelling flow highlights alone (D-072 V13 architecture): a small dedicated canvas can call
+ * The travelling flow profile alone: a small dedicated canvas can call
  * this every frame while the scene below stays painted, so the exploratory reading stops repainting
  * the whole graph. The caller owns the layer completely — sizing, the transform and the clear before
- * each call; this function only draws the moving heads and tails of the exploratory relations the
+ * each call; this function only draws the smooth brightness wave of exploratory relations the
  * shared budget selected (same deterministic selection the inline pass would draw, so both layers
  * agree without coordination). Reads the shared flow clock (`setFlowNow`/`setFlowMotionAllowed`,
- * driven today by the product view's animation loop). Nothing else is drawn: no base lines, no halo
- * ribbons, no static cue, no nodes.
+ * driven today by the product view's animation loop). Nothing else is drawn: no base lines, no
+ * static cue, no nodes. Each overlay quad uses the base edge's cross-section and width.
  *
  * Signature:
  * `drawFlowLayer(context, geometry, project, style, appearance = DEFAULT_APPEARANCE, projection = "2d")`

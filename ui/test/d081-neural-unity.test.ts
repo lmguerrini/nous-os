@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { neuralScreenWidthAt } from "#engine/morphology-geometry.ts";
-import { neuralEdgeDensity, neuralFlowModulation, neuralRootInsideSoma, somaLobeFactor, somaOutlineRadiusAtAngle,
+import { neuralEdgeDensity, neuralRootInsideSoma, somaLobeFactor, somaOutlineRadiusAtAngle,
   type NeuralSomaFrame } from "#render-common/morphology-canvas.ts";
+import { flowWaveAlpha, FLOW_WAVE_MAX_ALPHA, FLOW_WAVE_PERIOD_LENGTHS } from "#render-common/flow.ts";
 import { FILAMENT_FRAGMENT_SHADER } from "#render3f/filament-material.ts";
 import { NODE_FRAGMENT_SHADER } from "#render3f/node-material.ts";
 
@@ -30,13 +31,30 @@ test("root taper and edge density are continuous and contain the exploratory lig
     previous = density;
   }
   assert.equal(neuralEdgeDensity(1), 0);
-  for (let along = -5; along <= 105; along++) {
-    const light = neuralFlowModulation(along, 100, 0.6);
-    assert.ok(light >= 0 && light <= 0.6);
+  for (let along = 0; along <= 100; along++) {
+    const light = flowWaveAlpha(along, 100, 400, 1, 0.6);
+    assert.ok(light >= 0 && light <= FLOW_WAVE_MAX_ALPHA);
     for (let radial = 0; radial <= 1; radial += 0.05)
       assert.ok(neuralEdgeDensity(radial) * light <= neuralEdgeDensity(radial) + 1e-12);
   }
   assert.match(FILAMENT_FRAGMENT_SHADER, /float radial = 1\.0 - smoothstep\(0\.0, 1\.0, distance \/ max\(bodyHalfWidth, feather\)\)/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /outputColor = vec4\(color \* alpha, alpha\)/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /0\.5 \+ 0\.5 \* cos\(3\.14159265 \* \(parameter - 2\.0 \* lightPosition\)\)/);
   assert.match(NODE_FRAGMENT_SHADER, /rootLobe/);
+});
+
+test("one long wave keeps a continuous edge with at most one still-frame maximum", () => {
+  assert.ok(FLOW_WAVE_PERIOD_LENGTHS >= 1);
+  for (const length of [12, 60, 240, 1000]) for (const now of [0, 400, 1400, 4200, 12000]) {
+    const samples = Array.from({ length: 1001 }, (_, index) =>
+      flowWaveAlpha(length * index / 1000, length, now, 1, 0.8));
+    const maxima = samples.slice(1, -1).filter((value, index) =>
+      value > samples[index]! && value >= samples[index + 2]!).length;
+    assert.ok(maxima <= 1, `length=${length} time=${now}: ${maxima} peaks`);
+    for (let index = 1; index < samples.length; index++)
+      assert.ok(Math.abs(samples[index]! - samples[index - 1]!) < 0.01);
+    assert.ok(samples.every(value => value >= 0 && value <= FLOW_WAVE_MAX_ALPHA));
+  }
+  assert.equal(flowWaveAlpha(40, 100, 800, 1, 0), 0);
+  assert.equal(flowWaveAlpha(40, 100, 800, 0, 1), 0);
 });
