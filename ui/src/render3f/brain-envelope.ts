@@ -7,12 +7,14 @@ export type BrainLod = "full" | "moving";
 export type BrainWitness = {
   enabled: boolean; lod: BrainLod; triangles: number;
   center: number[]; axes: number[][]; scale: number;
+  extentRatios: number[];
   contained: { nodes: [number, number]; edgeSamples: [number, number] };
   minMargin: number; outside: string[];
 };
 export function emptyBrainWitness(): BrainWitness {
   return { enabled:false,lod:"full",triangles:0,center:[0,0,0],
     axes:[[1,0,0],[0,1,0],[0,0,1]],scale:0,
+    extentRatios:[0,0,0],
     contained:{nodes:[0,0],edgeSamples:[0,0]},minMargin:0,outside:[] };
 }
 export type BrainEnvelope = {
@@ -81,30 +83,47 @@ const smoothMax = (a: number, b: number, k: number): number => {
   return Math.max(a, b) + h * h * k * 0.25;
 };
 
-/** Positive inside. Local +Z is frontal, -Z occipital, +Y superior. */
+/** The volume enclosed by the outer silhouette includes the empty sagittal fissure. */
+export function brainContainmentField(p: Point): number {
+  const frontal = 1 + 0.10 * Math.max(0, p.z);
+  const occipital = 1 - 0.08 * Math.max(0, -p.z);
+  const halfWidth = frontal * occipital;
+  const left = ellipsoid(p, -0.37, 0.11, 0.02, 0.74 * halfWidth, 0.77, 1.13);
+  const right = ellipsoid(p, 0.37, 0.11, 0.02, 0.74 * halfWidth, 0.77, 1.13);
+  const cerebellum = ellipsoid(p, 0, -0.54, -0.79, 0.57, 0.34, 0.43);
+  const stem = ellipsoid(p, 0, -0.87, -0.43, 0.18, 0.42, 0.23);
+  return smoothMax(smoothMax(smoothMax(left, right, 0.055), cerebellum, 0.055), stem, 0.07);
+}
+
+/** Positive inside tissue. Local +Z is frontal, -Z occipital, +Y superior. */
 export function brainField(p: Point): number {
   const frontal = 1 + 0.10 * Math.max(0, p.z);
   const occipital = 1 - 0.08 * Math.max(0, -p.z);
   const halfWidth = frontal * occipital;
-  const left = ellipsoid(p, -0.34, 0.11, 0.02, 0.75 * halfWidth, 0.77, 1.13);
-  const right = ellipsoid(p, 0.34, 0.11, 0.02, 0.75 * halfWidth, 0.77, 1.13);
+  const left = ellipsoid(p, -0.37, 0.11, 0.02, 0.74 * halfWidth, 0.77, 1.13);
+  const right = ellipsoid(p, 0.37, 0.11, 0.02, 0.74 * halfWidth, 0.77, 1.13);
   let cerebrum = smoothMax(left, right, 0.055);
-  // The longitudinal fissure descends from the crown, while the deep bridge remains joined.
-  const midline = Math.max(Math.abs(p.x) - 0.055, 0.61 - p.y);
+  // A cut through the upper 40% of the hemispheres; the lower callosal bridge joins them.
+  // Its narrow opening avoids making the graph's central points determine the fit.
+  const midline = Math.max(Math.abs(p.x) - 0.075, 0.275 - p.y);
   cerebrum = Math.min(cerebrum, midline);
   // Bilateral Sylvian grooves divide temporal tissue from frontal/parietal tissue.
   const lateral = Math.exp(-Math.pow((Math.abs(p.x) - 0.71) / 0.15, 2))
     * Math.exp(-Math.pow((p.y + 0.27 + 0.12 * p.z) / 0.09, 2))
     * Math.max(0, 1 - Math.abs(p.z) / 1.05);
   cerebrum -= 0.12 * lateral;
-  // Fine, low-amplitude folds follow the cortical wall rather than making new lobes.
-  const folds = Math.sin(15 * p.z + 4 * p.y + 2 * p.x) * Math.sin(17 * p.y - 3 * p.z)
-    + 0.45 * Math.sin(26 * p.z - 8 * p.x + 3 * p.y);
-  cerebrum += 0.025 * folds;
+  // Shallow, coherent grooves: the visible crest/sulcus contrast is in the glass shader.
+  // These do not distort the overall silhouette into a wavy cloud.
+  const crown = Math.max(0, Math.min(1, (p.y - 0.23) / 0.28));
+  const crownGroove = Math.pow(Math.max(0,
+    Math.cos(15 * p.z + 1.5 * Math.sin(3.5 * Math.abs(p.x)))), 10);
+  cerebrum -= 0.013 * crown * crownGroove;
   const cerebellum = ellipsoid(p, 0, -0.54, -0.79, 0.57, 0.34, 0.43)
-    + 0.013 * Math.cos(18 * p.x) * Math.cos(8 * p.z);
+    - 0.018 * Math.pow(Math.cos(35 * (p.y + 0.035 * Math.sin(5 * p.x))), 8);
   const stem = ellipsoid(p, 0, -0.87, -0.43, 0.18, 0.42, 0.23);
-  return smoothMax(smoothMax(cerebrum, cerebellum, 0.10), stem, 0.07);
+  const transverse = Math.exp(-Math.pow((p.y + 0.40) / 0.055, 2))
+    * Math.max(0, Math.min(1, (-p.z - 0.44) / 0.20));
+  return smoothMax(smoothMax(cerebrum, cerebellum, 0.055) - 0.045 * transverse, stem, 0.07);
 }
 
 const GRID: Record<BrainLod, number> = { full: 30, moving: 18 };
@@ -176,6 +195,7 @@ function meshField(resolution: number): THREE.BufferGeometry {
 function resources() {
   if (shared === null) {
     const full = meshField(GRID.full), moving = meshField(GRID.moving);
+    full.computeBoundingBox();
     if (full.getAttribute("position").count / 3 > BRAIN_TRIANGLE_BUDGET)
       throw new Error("Brain triangle budget exceeded");
     const material = new THREE.ShaderMaterial({
@@ -188,7 +208,7 @@ function resources() {
         varying vec3 vNormal, vView, vLocal;
         void main() { float f = abs(dot(normalize(vNormal), normalize(vView)));
           float rim = pow(1.0 - f, 1.9);
-          float light = max(0.0, dot(normalize(vNormal), normalize(vec3(-0.4, 0.8, 0.45))));
+          rim *= rim;
           float lateral = smoothstep(0.48, 0.70, abs(vLocal.x));
           float sylvianLine = vLocal.y + 0.27 + 0.12 * vLocal.z;
           float sylvian = lateral * exp(-pow(sylvianLine / 0.065, 2.0))
@@ -196,14 +216,26 @@ function resources() {
           float centralLine = vLocal.z - (0.07 + 0.18 * vLocal.y);
           float central = lateral * smoothstep(-0.35, 0.05, vLocal.y)
             * exp(-pow(centralLine / 0.055, 2.0));
-          float shoulders = lateral * (exp(-pow((abs(sylvianLine) - 0.11) / 0.075, 2.0))
-            + exp(-pow((abs(centralLine) - 0.10) / 0.075, 2.0)));
-          float folds = lateral * smoothstep(-0.1, 0.45, vLocal.y)
-            * pow(0.5 + 0.5 * sin(11.0 * vLocal.z + 7.0 * vLocal.y
-              + 1.2 * sin(4.0 * vLocal.z)), 6.0);
-          float anatomy = clamp(0.72 + 0.28 * light + 0.16 * shoulders
-            + 0.12 * folds - 0.58 * max(sylvian, central), 0.24, 1.0);
+          float crown = smoothstep(0.22, 0.50, vLocal.y);
+          float crownPhase = 15.0 * vLocal.z + 1.5 * sin(3.5 * abs(vLocal.x));
+          float crownSulci = crown * pow(max(0.0, cos(crownPhase)), 10.0);
+          float crownCrest = crown * pow(max(0.0, cos(crownPhase + 0.72)), 10.0);
+          float sideWall = smoothstep(0.52, 0.76, abs(vLocal.x));
+          float sidePhase = 13.0 * vLocal.y + 1.25 * sin(4.5 * vLocal.z);
+          float sideSulci = sideWall * pow(max(0.0, cos(sidePhase)), 12.0);
+          float sideCrest = sideWall * pow(max(0.0, cos(sidePhase + 0.70)), 12.0);
+          float posterior = (1.0 - smoothstep(-0.62, -0.43, vLocal.z))
+            * (1.0 - smoothstep(-0.33, -0.22, vLocal.y));
+          float folia = posterior * pow(abs(cos(35.0 *
+            (vLocal.y + 0.035 * sin(5.0 * vLocal.x)))), 8.0);
+          float transverse = posterior * exp(-pow((vLocal.y + 0.40) / 0.055, 2.0));
+          float cuts = max(max(sylvian, central), max(0.75 * crownSulci,
+            max(0.75 * sideSulci, max(0.70 * folia, transverse))));
+          float folds = max(crownCrest, sideCrest);
+          float anatomy = clamp(0.96 + 0.22 * folds - 0.76 * cuts, 0.15, 1.16);
+          // The rim belongs to the silhouette, not to every translucent fold.
           float alpha = min(0.15, interiorAlpha * anatomy + rimAlpha * rim);
+          alpha = min(0.18, alpha + 0.045 * rim * anatomy);
           // Premultiply for MAX blending: overlapping front faces keep their strongest glass
           // sample instead of adding brightness across the fissure or cerebellum.
           gl_FragColor = vec4(vec3(0.84, 0.87, 0.91) * alpha, alpha); }`,
@@ -258,26 +290,40 @@ function principalAxes(points: readonly Point[]): THREE.Vector3[] {
 }
 
 export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axes: THREE.Vector3[]; scale: number; margin: number } {
-  const axes = principalAxes(points);
-  const min = new THREE.Vector3(Infinity,Infinity,Infinity), max = new THREE.Vector3(-Infinity,-Infinity,-Infinity);
-  for (const p of points) {
-    const v = new THREE.Vector3(p.x,p.y,p.z);
-    for (let i=0;i<3;i++) { const s=v.dot(axes[i]!); min.setComponent(i,Math.min(min.getComponent(i),s)); max.setComponent(i,Math.max(max.getComponent(i),s)); }
-  }
-  const center = new THREE.Vector3();
-  for (let i=0;i<3;i++) center.addScaledVector(axes[i]!, Number.isFinite(min.getComponent(i)) ? (min.getComponent(i)+max.getComponent(i))/2 : 0);
-  const fieldAt = (p: Point, scale: number): number => {
-    const v = new THREE.Vector3(p.x,p.y,p.z).sub(center);
-    return brainField({ x:v.dot(axes[0]!)/scale, y:v.dot(axes[1]!)/scale, z:v.dot(axes[2]!)/scale });
+  const baseAxes = principalAxes(points);
+  // PCA has no sign. Choose the frontal direction that encloses the points most
+  // tightly; otherwise one arbitrary eigenvector sign can double the shell.
+  const axisChoices = [baseAxes,
+    [baseAxes[0]!.clone().negate(), baseAxes[1]!.clone(), baseAxes[2]!.clone().negate()]];
+  const fitWithAxes = (axes: THREE.Vector3[]) => {
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    const local = points.map(p => axes.map(a => p.x*a.x + p.y*a.y + p.z*a.z));
+    for (const q of local) for (let i=0;i<3;i++) {
+      min[i]=Math.min(min[i]!,q[i]!);max[i]=Math.max(max[i]!,q[i]!);
+    }
+    const middle = min.map((lo,i) => Number.isFinite(lo) ? (lo+max[i]!)/2 : 0);
+    const center = new THREE.Vector3();
+    for(let i=0;i<3;i++) center.addScaledVector(axes[i]!,middle[i]!);
+    const relative = local.map(q => ({x:q[0]!-middle[0]!,y:q[1]!-middle[1]!,z:q[2]!-middle[2]!}));
+    const clears = (scale:number):boolean => {
+      for(const p of relative) if(brainContainmentField({x:p.x/scale,y:p.y/scale,z:p.z/scale})<0.055) return false;
+      return true;
+    };
+    let hi=1;
+    for(const p of relative) hi=Math.max(hi,Math.hypot(p.x,p.y,p.z));
+    while(!clears(hi))hi*=2;
+    let lo=0;
+    for(let i=0;i<25;i++) {
+      const mid=(lo+hi)/2;
+      if(clears(mid))hi=mid;else lo=mid;
+    }
+    let minField=Infinity;
+    for(const p of relative) minField=Math.min(minField,
+      brainContainmentField({x:p.x/hi,y:p.y/hi,z:p.z/hi}));
+    return {center,axes,scale:hi,margin:Number.isFinite(minField)?minField*hi:0};
   };
-  let hi = Math.max(1, ...points.map(p => new THREE.Vector3(p.x,p.y,p.z).distanceTo(center)));
-  while (points.some(p => fieldAt(p,hi)<0.055)) hi*=2;
-  let lo=0;
-  for(let i=0;i<25;i++) {
-    const mid=(lo+hi)/2;
-    if (points.every(p=>fieldAt(p,mid)>=0.055)) hi=mid; else lo=mid;
-  }
-  return {center,axes,scale:hi,margin:Math.min(...points.map(p=>fieldAt(p,hi)))*hi};
+  const fits = axisChoices.map(fitWithAxes);
+  return fits[1]!.scale < fits[0]!.scale ? fits[1]! : fits[0]!;
 }
 
 export function brainEdgeSamples(edges: readonly SceneEdge[]): { id: string; point: Point }[] {
@@ -326,13 +372,24 @@ export function createBrainEnvelope(nodes: readonly SceneNode[], edges: readonly
     mesh.scale.setScalar(fit.scale);
     const inside=(p:Point)=>{
       const v=new THREE.Vector3(p.x,p.y,p.z).sub(fit.center);
-      return brainField({x:v.dot(x!)/fit.scale,y:v.dot(y!)/fit.scale,z:v.dot(z!)/fit.scale});
+      return brainContainmentField({x:v.dot(x!)/fit.scale,y:v.dot(y!)/fit.scale,z:v.dot(z!)/fit.scale});
     };
     const nodeMargins=currentNodes.map(n=>({id:n.id,margin:inside(n.position)}));
     const edgeMargins=samples.map(s=>({id:s.id,margin:inside(s.point)}));
     const outside=[...new Set([...nodeMargins,...edgeMargins].filter(v=>v.margin<0).map(v=>v.id))];
+    const contour=pool.full.boundingBox!;
+    const extentRatios=[x!,y!,z!].map((axis,i)=>{
+      let lo=Infinity,hi=-Infinity;
+      for(const point of [...currentNodes.map(n=>n.position),...samples.map(s=>s.point)]) {
+        const projection=point.x*axis.x+point.y*axis.y+point.z*axis.z;
+        lo=Math.min(lo,projection);hi=Math.max(hi,projection);
+      }
+      const shellSpan=(contour.max.getComponent(i)-contour.min.getComponent(i))*fit.scale;
+      return Number.isFinite(lo)&&shellSpan>0?(hi-lo)/shellSpan:0;
+    });
     report={enabled:true,lod,triangles:mesh.geometry.getAttribute("position").count/3,
       center:fit.center.toArray(),axes:fit.axes.map(a=>a.toArray()),scale:fit.scale,
+      extentRatios,
       contained:{nodes:[nodeMargins.filter(v=>v.margin>=0).length,nodeMargins.length],
         edgeSamples:[edgeMargins.filter(v=>v.margin>=0).length,edgeMargins.length]},
       minMargin:nodeMargins.length+edgeMargins.length
@@ -341,8 +398,8 @@ export function createBrainEnvelope(nodes: readonly SceneNode[], edges: readonly
   update(nodes,edges);
   return {group, update, axes:()=>fit.axes, center:()=>fit.center,
     framingSphere:()=>group.visible ? new THREE.Sphere(fit.center.clone(),fit.scale*1.6) : null,
-    setLod(next){if(lod===next)return; lod=next;mesh.geometry=pool[next];report={...report,lod,triangles:mesh.geometry.getAttribute("position").count/3};},
-    witness:()=>({...report,contained:{nodes:[...report.contained.nodes],edgeSamples:[...report.contained.edgeSamples]},outside:[...report.outside]}),
+    setLod(next){if(lod===next)return; lod=next;mesh.geometry=pool[next];report.lod=lod;report.triangles=mesh.geometry.getAttribute("position").count/3;},
+    witness:()=>({...report,extentRatios:[...report.extentRatios],contained:{nodes:[...report.contained.nodes],edgeSamples:[...report.contained.edgeSamples]},outside:[...report.outside]}),
     // Keep the deterministic meshes cached across an off/on toggle; an off view creates no draw call.
     dispose(){group.remove(mesh);pool.uses--;}
   };

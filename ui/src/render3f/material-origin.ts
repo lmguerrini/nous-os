@@ -384,6 +384,9 @@ export function assertNoSemanticDepthRouting(sources: readonly RendererSource[])
   for (const source of sources) {
     const tokens = sourceTokens(source);
     const bindings = localBindings(tokens);
+    // D080-A3d BEGIN: resolve local depth aliases once, including cycles.
+    const governedBindings = resolveGovernedBindings(bindings);
+    // D080-A3d END
     for (let index = 0; index < tokens.length; index += 1) {
       const token = tokens[index];
       if (token === undefined) {
@@ -407,7 +410,7 @@ export function assertNoSemanticDepthRouting(sources: readonly RendererSource[])
             SyntaxKind.SemicolonToken,
             SyntaxKind.CloseBraceToken,
           ]));
-          if (carriesGovernedDepth(tokens.slice(operatorIndex + 1, end), bindings, new Set())) {
+          if (carriesGovernedDepth(tokens.slice(operatorIndex + 1, end), governedBindings)) {
             throw depthFailure(source, tokens, chainStart(tokens, index), end);
           }
         }
@@ -426,7 +429,7 @@ export function assertNoSemanticDepthRouting(sources: readonly RendererSource[])
             SyntaxKind.SemicolonToken,
             SyntaxKind.CloseBraceToken,
           ]));
-          if (carriesGovernedDepth(tokens.slice(subscriptClose + 2, end), bindings, new Set())) {
+          if (carriesGovernedDepth(tokens.slice(subscriptClose + 2, end), governedBindings)) {
             throw depthFailure(source, tokens, chainStart(tokens, index - 1), end);
           }
         }
@@ -439,7 +442,7 @@ export function assertNoSemanticDepthRouting(sources: readonly RendererSource[])
         const depthArgument = isTokenValue(token, "setZ")
           ? setterArguments[0]
           : isThirdComponentIndex(setterArguments[0] ?? []) ? setterArguments[1] : undefined;
-        if (depthArgument !== undefined && carriesGovernedDepth(depthArgument, bindings, new Set())) {
+        if (depthArgument !== undefined && carriesGovernedDepth(depthArgument, governedBindings)) {
           throw depthFailure(source, tokens, chainStart(tokens, index), setterClose + 1);
         }
       }
@@ -452,7 +455,7 @@ export function assertNoSemanticDepthRouting(sources: readonly RendererSource[])
       }
       const close = matchingClose(tokens, index + 1);
       const argumentsList = splitTopLevel(tokens.slice(index + 2, close), SyntaxKind.CommaToken);
-      if (carriesGovernedDepth(argumentsList[2] ?? [], bindings, new Set())) {
+      if (carriesGovernedDepth(argumentsList[2] ?? [], governedBindings)) {
         throw depthFailure(source, tokens, callStart, close + 1);
       }
     }
@@ -863,28 +866,36 @@ function literalOrigin(
   return undefined;
 }
 
-function carriesGovernedDepth(
-  tokens: readonly SourceToken[],
-  bindings: LocalBindings,
-  seen: Set<string>,
-): boolean {
-  for (const token of tokens) {
-    const key = token.value.toLowerCase();
-    if (GOVERNED_DEPTH_NAMES.has(key)) {
-      return true;
-    }
-    if (token.kind === SyntaxKind.Identifier && !seen.has(token.value)) {
-      const initializers = bindings.get(token.value);
-      if (initializers !== undefined) {
-        const nextSeen = new Set(seen).add(token.value);
-        if (initializers.some((initializer) => carriesGovernedDepth(initializer, bindings, nextSeen))) {
-          return true;
-        }
+// D080-A3d BEGIN: a fixed-point closure avoids exponential alias traversal in
+// a renderer with many repeated geometry locals. It preserves cycle detection.
+function resolveGovernedBindings(bindings: LocalBindings): ReadonlySet<string> {
+  const governed = new Set<string>();
+  const dependents = new Map<string, Set<string>>();
+  for (const [name, initializers] of bindings) for (const initializer of initializers) {
+    for (const token of initializer) {
+      if (GOVERNED_DEPTH_NAMES.has(token.value.toLowerCase())) governed.add(name);
+      if (token.kind === SyntaxKind.Identifier) {
+        const users = dependents.get(token.value) ?? new Set<string>();
+        users.add(name);
+        dependents.set(token.value, users);
       }
     }
   }
+  const queue = [...governed];
+  for (let i=0; i<queue.length; i++) for(const user of dependents.get(queue[i]!) ?? []) {
+    if (!governed.has(user)) { governed.add(user); queue.push(user); }
+  }
+  return governed;
+}
+
+function carriesGovernedDepth(tokens: readonly SourceToken[], governedBindings: ReadonlySet<string>): boolean {
+  for (const token of tokens) {
+    if (GOVERNED_DEPTH_NAMES.has(token.value.toLowerCase())
+      || (token.kind === SyntaxKind.Identifier && governedBindings.has(token.value))) return true;
+  }
   return false;
 }
+// D080-A3d END
 
 /**
  * A subscript that addresses the third component of an interleaved vector — `[2]`, `[offset + 2]`,
