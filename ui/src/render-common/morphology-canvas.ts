@@ -16,6 +16,8 @@ import {
   FLOW_HALO_ALPHA,
   FLOW_HALO_WIDTH_MULTIPLIER,
   FLOW_WAVE_MAX_ALPHA,
+  flowHeadPositionPx,
+  flowPulseLengthPx,
   flowWaveAlpha,
   flowMotionAllowedNow,
   flowNow,
@@ -896,6 +898,61 @@ export type MorphologyEdgePaint = {
   readonly detailEndPx: number;
 };
 
+// D081-P1G BEGIN: keep projected edge work inside the canvas. Distances remain measured along
+// the original edge so a clipped travelling pulse does not restart at the viewport boundary.
+export function clipEdgePaint(paint: MorphologyEdgePaint, width: number, height: number): MorphologyEdgePaint[] {
+  const lastIndex = paint.points.length - 1;
+  // A wide soma root can still touch the canvas while its centreline is outside it.
+  const margin = Math.max(32, paint.widthAt(0) * 0.5 + 4,
+    paint.widthAt(lastIndex * 0.5) * 0.5 + 4, paint.widthAt(lastIndex) * 0.5 + 4);
+  const box = [-margin, width + margin, -margin, height + margin] as const;
+  const runs: { point: ProjectedPoint; index: number; distance: number }[][] = [];
+  let run: { point: ProjectedPoint; index: number; distance: number }[] = [];
+  const append = (index: number) => {
+    const low = Math.floor(index), fraction = index - low;
+    const a = paint.points[low]!, b = paint.points[Math.min(low + 1, paint.points.length - 1)]!;
+    const distance = paint.cumulative[low]! + (paint.cumulative[Math.min(low + 1, paint.points.length - 1)]! - paint.cumulative[low]!) * fraction;
+    const item = { point: { x: a.x + (b.x - a.x) * fraction, y: a.y + (b.y - a.y) * fraction,
+      scale: a.scale + (b.scale - a.scale) * fraction }, index, distance };
+    if (run.at(-1)?.index !== index) run.push(item);
+  };
+  for (let i = 0; i < paint.points.length - 1; i++) {
+    const a = paint.points[i]!, b = paint.points[i + 1]!;
+    if (![a.x, a.y, b.x, b.y].every(Number.isFinite)) continue;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    let enter = 0, leave = 1;
+    for (const [p, q] of [[-dx, a.x - box[0]], [dx, box[1] - a.x], [-dy, a.y - box[2]], [dy, box[3] - a.y]] as const) {
+      if (p === 0) { if (q < 0) { enter = 1; leave = 0; break; } }
+      else { const t = q / p; if (p < 0) enter = Math.max(enter, t); else leave = Math.min(leave, t); }
+    }
+    if (enter > leave) {
+      if (run.length > 1) runs.push(run);
+      run = [];
+      continue;
+    }
+    if (run.length && Math.abs(run.at(-1)!.index - (i + enter)) > 1e-8) {
+      if (run.length > 1) runs.push(run);
+      run = [];
+    }
+    append(i + enter); append(i + leave);
+    if (leave < 1) { if (run.length > 1) runs.push(run); run = []; }
+  }
+  if (run.length > 1) runs.push(run);
+  return runs.map(items => {
+    // The centreline source has a fixed sample budget; keep the same upper bound after clipping.
+    const bounded = items.length <= 256 ? items : Array.from({ length: 256 }, (_, j) =>
+      items[Math.round(j * (items.length - 1) / 255)]!);
+    return { ...paint, points: bounded.map(item => item.point), cumulative: bounded.map(item => item.distance),
+      widthAt: (i: number) => {
+        const low = Math.min(bounded.length - 1, Math.max(0, Math.floor(i)));
+        const next = Math.min(low + 1, bounded.length - 1);
+        return paint.widthAt(bounded[low]!.index + (bounded[next]!.index - bounded[low]!.index) * (i - low));
+      }, detailStartPx: bounded[0]!.index === 0 ? paint.detailStartPx : 0,
+      detailEndPx: bounded.at(-1)!.index === paint.points.length - 1 ? paint.detailEndPx : 0 };
+  });
+}
+// D081-P1G END
+
 /** A projected C1 centre-line through the existing geometry samples. Work is bounded per
  * original interval, even on long links, and only happens when the base layer repaints. */
 export function smoothNeuralCurve(anchors: readonly ProjectedPoint[]): ProjectedPoint[] {
@@ -926,7 +983,8 @@ export function smoothNeuralCurve(anchors: readonly ProjectedPoint[]): Projected
  * as the inline pass has always done: visible only, selected and focus-adjacent first. Deterministic
  * in the inputs, so the main pass and the separate flow layer always agree. */
 export function selectAnimatedFlowEdges(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
-  project: (point: Coordinates) => ProjectedPoint, bounds: { readonly width: number; readonly height: number }): ReadonlySet<string> {
+  project: (point: Coordinates) => ProjectedPoint, bounds: { readonly width: number; readonly height: number },
+  visiblePaints?: ReadonlySet<string>): ReadonlySet<string> {
   const hoverId = style.interaction?.hoverId;
   const focusIds = style.interaction?.focusIds;
   const focusPositions = new Map<string, Coordinates>();
@@ -955,15 +1013,15 @@ export function selectAnimatedFlowEdges(geometry: MorphologyGeometry, style: Mor
     if (!part.source || !part.target) return true;
     const margin = 12;
     const a = project(part.source), b = project(part.target);
-    return (a.x >= -margin && a.x <= bounds.width + margin && a.y >= -margin && a.y <= bounds.height + margin)
-      || (b.x >= -margin && b.x <= bounds.width + margin && b.y >= -margin && b.y <= bounds.height + margin);
+    return Math.max(a.x, b.x) >= -margin && Math.min(a.x, b.x) <= bounds.width + margin
+      && Math.max(a.y, b.y) >= -margin && Math.min(a.y, b.y) <= bounds.height + margin;
   };
   const candidates = new Map<string, { visible: boolean; priority: number }>();
   for (const part of geometry.drawnSegments) {
     if (style.edges.get(part.edgeId)?.presentation?.category !== "exploratory") continue;
     const selected = hoverId === part.edgeId || (focusIds?.has(part.edgeId) ?? false);
     const priority = selected ? 0 : nearFocus(part) ? 1 : 2;
-    const visible = withinViewport(part);
+    const visible = visiblePaints ? visiblePaints.has(part.edgeId) : withinViewport(part);
     const current = candidates.get(part.edgeId);
     if (!current) candidates.set(part.edgeId, { visible, priority });
     else { current.priority = Math.min(current.priority, priority); current.visible ||= visible; }
@@ -979,7 +1037,8 @@ export function selectAnimatedFlowEdges(geometry: MorphologyGeometry, style: Mor
 function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
   project: (point: Coordinates) => ProjectedPoint, appearance: AppearanceOptions,
   contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT], projection: "2d" | "3d",
-  somaFrames: ReadonlyMap<string, NeuralSomaFrame> | null): MorphologyEdgePaint[] {
+  somaFrames: ReadonlyMap<string, NeuralSomaFrame> | null,
+  bounds: { readonly width: number; readonly height: number }): MorphologyEdgePaint[] {
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   const endpointSomata = somaFrames ? neuralEndpointSomata(geometry) : null;
   const neuralDegree = somaFrames ? new Map(geometry.nodes.map(node => [node.id, node.degree])) : null;
@@ -1107,9 +1166,10 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         : Math.max(0.14, opacity * appearance.edgeOpacity * (emphasis?.brightnessMultiplier ?? 1))),
       0, 1);
     const alpha = focusArcOpacity(focus ?? null, part.edgeId, baseAlpha);
-    paints.push({ part, edgeId: part.edgeId, category, neural: neuralTaper, points, cumulative, totalPx, color, alpha, widthAt,
+    const paint: MorphologyEdgePaint = { part, edgeId: part.edgeId, category, neural: neuralTaper, points, cumulative, totalPx, color, alpha, widthAt,
       detailStartPx: neuralTaper && neuralDetailVisible(points[0]!.scale, startRadius, totalPx) ? startRadius : 0,
-      detailEndPx: neuralTaper && neuralDetailVisible(points[points.length - 1]!.scale, endRadius, totalPx) ? endRadius : 0 });
+      detailEndPx: neuralTaper && neuralDetailVisible(points[points.length - 1]!.scale, endRadius, totalPx) ? endRadius : 0 };
+    paints.push(...clipEdgePaint(paint, bounds.width, bounds.height));
   }
   return paints;
 }
@@ -1152,22 +1212,57 @@ function neuralProfileWidth(paint: MorphologyEdgePaint): number {
   return width;
 }
 
+// D081-P1G BEGIN: a fixed number of colour stops describes the compact light envelope. The
+// number of projected vertices and the full edge length never enter this budget.
+type EdgeModulation = ((distancePx: number) => number) & { centre?: number; radius?: number };
+function pulseVisible(paint: MorphologyEdgePaint, modulation: EdgeModulation): boolean {
+  if (modulation.centre === undefined || modulation.radius === undefined) return true;
+  return modulation.centre + modulation.radius >= paint.cumulative[0]!
+    && modulation.centre - modulation.radius <= paint.cumulative[paint.cumulative.length - 1]!;
+}
+function flowModulation(paint: MorphologyEdgePaint, now: number, speed: number, intensity: number): EdgeModulation {
+  const radius = flowPulseLengthPx(paint.totalPx) * 0.5;
+  const centre = flowHeadPositionPx(now, speed, paint.totalPx + radius * 2);
+  return Object.assign((distance: number) => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity), { centre, radius });
+}
+function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
+  modulation: EdgeModulation, alpha: number): CanvasGradient {
+  const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
+  const first = paint.cumulative[0]!, last = paint.cumulative[paint.cumulative.length - 1]!;
+  const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
+  const distances = [first, last];
+  if (modulation.centre !== undefined && modulation.radius !== undefined) {
+    for (let j = -8; j <= 8; j++) distances.push(clamp(modulation.centre + j * modulation.radius / 8, first, last));
+  } else if (Math.abs(modulation(first) - modulation(last)) > 1e-6 ||
+    Math.abs(modulation(first) - modulation((first + last) * 0.5)) > 1e-6) {
+    for (let j = 1; j < 32; j++) distances.push(first + (last - first) * j / 32);
+  }
+  distances.sort((a, b) => a - b);
+  let previous = -Infinity;
+  for (const distance of distances) {
+    if (distance <= previous + 1e-7) continue;
+    previous = distance;
+    gradient.addColorStop((distance - first) / Math.max(1e-7, last - first),
+      rgba(paint.color, clamp(alpha * modulation(distance), 0, 1)));
+  }
+  return gradient;
+}
+// D081-P1G END
+
 export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   modulation?: (distancePx: number) => number): void {
+  if (modulation && !pulseVisible(paint, modulation as EdgeModulation)) modulation = undefined;
   // Source-over saturation flattens the centre/shoulder ratio at high base opacity. Bound the
   // inline gain so that ratio stays within ten percent of the resting nested-ribbon profile.
   const profileSafeBoost = Math.max(0, 0.416666 / Math.max(paint.alpha, 0.001) - 0.1);
   for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
     if (modulation) {
-      const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
-      const samples = Math.max(24, Math.min(128, Math.ceil(paint.totalPx / 8)));
-      const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
-      for (let stop = 0; stop <= samples; stop++) {
-        const fraction = stop / samples;
-        gradient.addColorStop(fraction, rgba(paint.color,
-          clamp(paint.alpha * layer.alpha * (1 + Math.min(profileSafeBoost, modulation(fraction * paint.totalPx))), 0, 1)));
+      const gain: EdgeModulation = (distance: number) => 1 + Math.min(profileSafeBoost, modulation(distance));
+      const timed = modulation as EdgeModulation;
+      if (timed.centre !== undefined && timed.radius !== undefined) {
+        gain.centre = timed.centre; gain.radius = timed.radius;
       }
-      context.fillStyle = gradient;
+      context.fillStyle = edgeLightGradient(context, paint, gain, paint.alpha * layer.alpha);
     } else context.fillStyle = rgba(paint.color, clamp(paint.alpha * layer.alpha, 0, 1));
     fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
@@ -1177,57 +1272,21 @@ export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: Morp
  * only the gradient coordinate; both continuous outlines still follow every projected point. */
 export function drawNeuralLight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   modulation: (distancePx: number) => number): void {
-  const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
-  const samples = Math.max(24, Math.min(128, Math.ceil(paint.totalPx / 8)));
+  if (!pulseVisible(paint, modulation as EdgeModulation)) return;
   for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
-    const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
-    for (let stop = 0; stop <= samples; stop++) {
-      const fraction = stop / samples;
-      gradient.addColorStop(fraction, rgba(paint.color,
-        clamp(paint.alpha * layer.alpha * modulation(fraction * paint.totalPx), 0, 1)));
-    }
-    context.fillStyle = gradient;
+    context.fillStyle = edgeLightGradient(context, paint, modulation as EdgeModulation, paint.alpha * layer.alpha);
     fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
 }
 
-/** Preserve the pre-existing flow treatment for non-Neural morphologies. */
+/** The same continuous radial profile on Stellar and Mycelium, with a bounded light gradient. */
 function drawLegacyFlowProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   modulation?: (distancePx: number) => number): void {
-  const { points, cumulative, totalPx } = paint;
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i]!, b = points[i + 1]!;
-    const dx = b.x - a.x, dy = b.y - a.y, span = Math.hypot(dx, dy);
-    if (span < 1e-5) continue;
-    const nx = -dy / span, ny = dx / span;
-    // The animated pass samples more often along long projected segments. It changes only
-    // longitudinal opacity; every sample retains the base edge's radial density and width.
-    const steps = modulation ? Math.ceil(span / 12) : 1;
-    for (let step = 0; step < steps; step++) {
-      const t0 = step / steps, t1 = (step + 1) / steps, t = (t0 + t1) * 0.5;
-      const x0 = a.x + dx * t0, y0 = a.y + dy * t0;
-      const x1 = a.x + dx * t1, y1 = a.y + dy * t1;
-      const halfA = paint.widthAt(i + t0) * 0.5, halfB = paint.widthAt(i + t1) * 0.5;
-      const half = Math.max(halfA, halfB);
-      const midX = (x0 + x1) * 0.5, midY = (y0 + y1) * 0.5;
-      const gradient = context.createLinearGradient(midX - nx * half, midY - ny * half,
-        midX + nx * half, midY + ny * half);
-      const along = cumulative[i]! + span * t;
-      const endFade = Math.min(1, along / Math.max(2, halfA), (totalPx - along) / Math.max(2, halfB));
-      const light = modulation ? modulation(along) : 1;
-      for (let stop = 0; stop <= 12; stop++) {
-        const radial = Math.abs(stop / 6 - 1);
-        gradient.addColorStop(stop / 12, rgba(paint.color,
-          clamp(paint.alpha * endFade * neuralEdgeDensity(radial) * light, 0, 1)));
-      }
-      context.fillStyle = gradient;
-      context.beginPath();
-      context.moveTo(x0 - nx * halfA, y0 - ny * halfA);
-      context.lineTo(x1 - nx * halfB, y1 - ny * halfB);
-      context.lineTo(x1 + nx * halfB, y1 + ny * halfB);
-      context.lineTo(x0 + nx * halfA, y0 + ny * halfA);
-      context.closePath(); context.fill();
-    }
+  if (modulation && !pulseVisible(paint, modulation as EdgeModulation)) return;
+  const light = modulation ?? (() => 1);
+  for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
+    context.fillStyle = edgeLightGradient(context, paint, light as EdgeModulation, paint.alpha * layer.alpha);
+    fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
 }
 
@@ -1313,15 +1372,14 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
   for (const paint of paints) {
     if (paint.neural) {
       if (typeof context.createLinearGradient === "function")
-        drawNeuralLight(context, paint, distance => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity));
+        drawNeuralLight(context, paint, flowModulation(paint, now, speed, intensity));
       else {
         for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
           context.fillStyle = rgba(paint.color, clamp(paint.alpha * layer.alpha * FLOW_WAVE_MAX_ALPHA * intensity, 0, 1));
           fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
         }
       }
-    } else drawLegacyFlowProfile(context, paint,
-      distance => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity));
+    } else drawLegacyFlowProfile(context, paint, flowModulation(paint, now, speed, intensity));
   }
 }
 
@@ -1330,16 +1388,14 @@ export function drawEdgeStaticCue(context: CanvasRenderingContext2D, paint: Morp
   intensity: number, gradientCapable: boolean): void {
   const staticAlpha = FLOW_WAVE_MAX_ALPHA * 0.35 * Math.min(1, Math.max(0, intensity / 0.6));
   if (gradientCapable) {
-    if (paint.neural) drawNeuralLight(context, paint, () => staticAlpha);
-    else drawLegacyFlowProfile(context, paint, () => staticAlpha);
+    context.fillStyle = rgba(paint.color, clamp(paint.alpha * staticAlpha, 0, 1));
+    fillRibbon(context, paint.points, i => paint.widthAt(i) * 0.62);
     return;
   }
   const { points, color, alpha, widthAt } = paint;
   if (paint.neural) {
-    for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
-      context.fillStyle = rgba(color, clamp(alpha * layer.alpha * staticAlpha, 0, 1));
-      fillRibbon(context, points, i => widthAt(i) * layer.width);
-    }
+    context.fillStyle = rgba(color, clamp(alpha * staticAlpha, 0, 1));
+    fillRibbon(context, points, i => widthAt(i) * 0.62);
     return;
   }
   context.strokeStyle = rgba(color, clamp(alpha * staticAlpha, 0, 1));
@@ -1402,8 +1458,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance, projection) : null;
   if (!testHook()?.hideEdges) {
     const gradientCapable = typeof context.createLinearGradient === "function";
-    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames);
-    const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds);
+    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames, bounds);
+    const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds,
+      new Set(paints.map(paint => paint.edgeId)));
     const animating = flowMotionAllowedNow() && appearance.flowIntensity > 0 && appearance.flowSpeed > 0;
     const intensity = appearance.flowIntensity;
     // D-072 V13: "separate" leaves the travelling highlights to the dedicated overlay layer
@@ -1420,7 +1477,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         && paint.category === "exploratory" && intensity > 0;
       if (combineNeuralLight) {
         const modulation = animatedHere
-          ? (distance: number) => flowWaveAlpha(distance, paint.totalPx, now, appearance.flowSpeed, intensity)
+          ? flowModulation(paint, now, appearance.flowSpeed, intensity)
           : () => FLOW_WAVE_MAX_ALPHA * 0.35 * Math.min(1, Math.max(0, intensity / 0.6));
         drawNeuralProfile(context, paint, modulation);
       } else drawEdgeBase(context, paint, moving && geometry.morphology === "neural");
@@ -1808,8 +1865,9 @@ export function drawFlowLayer(context: CanvasRenderingContext2D, geometry: Morph
     || cache.anchors.length !== anchors.length || cache.anchors.some((value, index) => value !== anchors[index])) {
     const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
     const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance) : null;
-    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames);
-    const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds);
+    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames, bounds);
+    const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds,
+      new Set(paints.map(paint => paint.edgeId)));
     cache = { geometry, project, style, projection, boundsWidth: bounds.width, boundsHeight: bounds.height,
       canvasWidth: context.canvas.width, canvasHeight: context.canvas.height, appearanceKey,
       hoverId: style.interaction?.hoverId, focusIds: style.interaction?.focusIds,

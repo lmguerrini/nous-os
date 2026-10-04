@@ -101,12 +101,9 @@ test("profile samples composite monotonically and reduced-motion cue stays unifo
   assert.ok(centre > outer && outer > 0);
   assert.ok(Math.abs(centre - (1 - (1 - 0.8 * 0.6) * (1 - 0.8 * 0.4))) < 1e-12);
   drawEdgeStaticCue(context, edge, 0.8, true);
-  assert.equal(fills.length, 4);
+  assert.equal(fills.length, 3);
   const cue = fills[2]!.style;
-  assert.equal(typeof cue, "object");
-  if (typeof cue !== "string") assert.ok(cue.stops.every(stop => stop.alpha === cue.stops[0]!.alpha));
-  const innerCue = fills[3]!.style;
-  if (typeof innerCue !== "string") assert.ok(innerCue.stops.every(stop => stop.alpha === innerCue.stops[0]!.alpha));
+  assert.equal(typeof cue, "string");
 });
 
 test("travelling light preserves the base centre-to-half-width alpha ratio", () => {
