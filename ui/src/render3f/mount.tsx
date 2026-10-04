@@ -155,6 +155,14 @@ type RelationGeometryWitness = {
 };
 
 /** This mounts one shared Three scene behind two cameras and does not derive a second supplied placement. */
+// D081-P6 BEGIN: keep the product-page gesture anchor in the actual wheel adapter.
+export function reviewGestureWheelAnchor(
+  canvas: { readonly __reviewGestureWheelAnchor?: Coordinates },
+  pick: () => Coordinates | undefined,
+): Coordinates | undefined {
+  return canvas.__reviewGestureWheelAnchor ?? pick();
+}
+// D081-P6 END.
 export function mount(
   container: HTMLElement,
   visualGraph: VisualGraph,
@@ -465,7 +473,11 @@ export function mount(
     renderFrame();
   };
   const detachInteractions = attachCameraInteractions(canvas, rig, syncCameraState, (x, y) => {
-    if (!typedPicker) return picker.nodeAnchorAtPosition(x, y);
+    // D081-P6 BEGIN: product-view stationary wheel gesture, set on root capture before this resolver.
+    if (!typedPicker) return reviewGestureWheelAnchor(
+      canvas as HTMLCanvasElement & { __reviewGestureWheelAnchor?: Coordinates },
+      () => picker.nodeAnchorAtPosition(x, y));
+    // D081-P6 END.
     return typedPicker.nodeAnchorAtPosition(x, y,
       (position, out) => rig.projectToViewportInto(position, out),
       (id, position) => {

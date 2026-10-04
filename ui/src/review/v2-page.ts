@@ -422,6 +422,29 @@ export function admissionAnchorAtPointer(
         })[0]?.[0] ?? null;
 }
 
+// D081-P6 BEGIN: use projected centres for the start of a 3D wheel gesture.
+// The admission anchor above retains D-079's depth ordering for all existing callers.
+export function gestureAnchorAtPointer(
+    points: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number }>>,
+    ids: ReadonlySet<string>, cursor: { readonly x: number; readonly y: number },
+    clusterOf?: (id: string) => string | null, preferredCluster?: string | null,
+    levels?: ReadonlyMap<string, number>,
+): string | null {
+    return Object.entries(points).filter(([id, point]) => ids.has(id) &&
+        (!preferredCluster || clusterOf?.(id) === preferredCluster) &&
+        Math.hypot(point.x - cursor.x, point.y - cursor.y) <= Math.max(12, point.radius ?? 0))
+        .sort(([a, pa], [b, pb]) =>
+            Math.hypot(pa.x - cursor.x, pa.y - cursor.y) - Math.hypot(pb.x - cursor.x, pb.y - cursor.y)
+            || ((levels?.get(b) ?? 0) - (levels?.get(a) ?? 0)) || a.localeCompare(b))[0]?.[0] ?? null;
+}
+/** Preserve the live child when a disclosure replaces its layout; fall back to D-079 ordering. */
+export function gestureRemountAnchorId(gestureId: string | null,
+    points: Readonly<Record<string, { readonly x: number; readonly y: number }>>,
+    next: ReadonlySet<string>, fallback: readonly (string | null)[]): string | null {
+    return [gestureId, ...fallback].find(id => id && points[id] && next.has(id)) ?? null;
+}
+// D081-P6 END.
+
 /** Reject missing, out-of-domain and nonfinite coordinates before either typed renderer sees them. */
 export function assertPageProjection(result: ProjectionResult, domain: AnalyticalDomain, dimension: '2d' | '3d'): void {
     if (result.determinism.domainDigest !== domain.domainDigest || result.determinism.snapshotDigest !== domain.snapshotDigest)
@@ -676,6 +699,10 @@ export class V2Page {
     private holographicFocus = false;
     /** The camera key (dimension and view) of the mounted typed renderer: its camera belongs to it. */
     private mountedCameraKey: string | null = null;
+    // D081-P6 BEGIN: one visible centre starts a stationary 3D wheel gesture.
+    private wheelGesture: { id: string; clusterId: string; x: number; y: number;
+        view: ProductView; point: Vec3 } | null = null;
+    // D081-P6 END.
     constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
@@ -717,7 +744,13 @@ export class V2Page {
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
             root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true, capture: true });
+        // D081-P6 BEGIN: root capture runs before the canvas resolves the dolly anchor.
+        root?.addEventListener('wheel', event => this.setGestureWheelAnchor(event), { passive: true, capture: true });
+        // D081-P6 END.
         root?.addEventListener('pointerdown', () => {
+            // D081-P6 BEGIN.
+            this.wheelGesture = null;
+            // D081-P6 END.
             this.pointerDown = true; this.hoverNeedsMove = true; this.edgeTooltip(null);
             if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
             this.pointerFocusTimer = null;
@@ -744,6 +777,10 @@ export class V2Page {
         root?.addEventListener('pointermove', event => {
             const rect = root.getBoundingClientRect();
             this.cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+            // D081-P6 BEGIN.
+            if (this.wheelGesture && Math.hypot(this.cursor.x - this.wheelGesture.x,
+                this.cursor.y - this.wheelGesture.y) > 3) this.wheelGesture = null;
+            // D081-P6 END.
             if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
             if (!this.pointerDown) this.pointerFocusTimer = window.setTimeout(() => {
                 this.pointerFocusTimer = null;
@@ -757,6 +794,9 @@ export class V2Page {
         }, { passive: true, capture: true });
         root?.addEventListener('pointerleave', () => {
             this.cursor = null;
+            // D081-P6 BEGIN.
+            this.wheelGesture = null;
+            // D081-P6 END.
             if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
             this.pointerFocusTimer = null;
         }, { passive: true });
@@ -896,6 +936,50 @@ export class V2Page {
             inclusions: [...rendered].sort(),
         };
     }
+    // D081-P6 BEGIN: carry the start centre through canvas remounts, using the live layout world point.
+    private setGestureWheelAnchor(event: WheelEvent): void {
+        if (!this.view || this.axes.projection !== '3d' ||
+            (this.axes.organization !== 'natural' && this.axes.organization !== 'indra')) return;
+        const root = document.getElementById('render-root');
+        if (!root) return;
+        const rect = root.getBoundingClientRect();
+        const x = event.clientX - rect.left, y = event.clientY - rect.top;
+        if (this.wheelGesture && Math.hypot(x - this.wheelGesture.x, y - this.wheelGesture.y) > 3)
+            this.wheelGesture = null;
+        const clusterOf = (id: string) => revealClusterOf(this.index, id);
+        if (!this.wheelGesture) {
+            const witness = this.view.witness();
+            const levels = new Map(this.index.nodes.map(node => [node.id, node.level]));
+            const id = gestureAnchorAtPointer(witness.nodeViewport, this.rendered,
+                { x: event.clientX, y: event.clientY }, undefined, undefined, levels);
+            const clusterId = id && clusterOf(id);
+            const point = id && witness.positions[id];
+            if (id && clusterId && point) this.wheelGesture = { id, clusterId, x, y,
+                view: this.view, point };
+        }
+        const gesture = this.wheelGesture;
+        const canvas = this.viewHost?.querySelector<HTMLCanvasElement>('canvas[data-render3f-canvas]') as
+            (HTMLCanvasElement & { __reviewGestureWheelAnchor?: Vec3 }) | null;
+        if (!canvas) return;
+        if (!gesture) { delete canvas.__reviewGestureWheelAnchor; return; }
+        // A mounted canvas keeps one world point. A disclosure remount changes the layout,
+        // so read its new witness once before that canvas receives another wheel step.
+        if (gesture.view !== this.view || !this.rendered.has(gesture.id)) {
+            const witness = this.view.witness();
+            const levels = new Map(this.index.nodes.map(node => [node.id, node.level]));
+            if (!witness.positions[gesture.id] || !this.rendered.has(gesture.id)) {
+                const replacement = gestureAnchorAtPointer(witness.nodeViewport, this.rendered,
+                    { x: event.clientX, y: event.clientY }, clusterOf, gesture.clusterId, levels);
+                if (replacement) gesture.id = replacement;
+            }
+            const point = witness.positions[gesture.id];
+            if (point && this.rendered.has(gesture.id)) { gesture.point = point; gesture.view = this.view; }
+        }
+        if (gesture.view === this.view && this.rendered.has(gesture.id))
+            canvas.__reviewGestureWheelAnchor = gesture.point;
+        else delete canvas.__reviewGestureWheelAnchor;
+    }
+    // D081-P6 END.
     /** Settled samples alone may change disclosure; an already mounted camera supplies the positions. */
     private sampleReveal(zoom: number, settled: boolean, focusOnly = false): boolean {
         const sampleKey = `${zoom}|${this.cursor?.x ?? ''}|${this.cursor?.y ?? ''}|${this.selected ?? ''}|${this.cameraKey()}`;
@@ -938,6 +1022,11 @@ export class V2Page {
         const decision = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled,
             cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
             explicitFocusId: this.selected ? this.projectionFocus() : null,
+            // D081-P6 BEGIN: disclosure follows the centred cluster throughout this 3D gesture.
+            preferredClusterId: this.axes.projection === '3d' && this.wheelGesture && this.cursor &&
+                Math.hypot(this.cursor.x - this.wheelGesture.x, this.cursor.y - this.wheelGesture.y) <= 3
+                ? this.wheelGesture.clusterId : null,
+            // D081-P6 END.
             viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState,
             minZoomStep: 1.08 });
         if (focusOnly) {
@@ -2641,8 +2730,13 @@ export class V2Page {
                 const cursor = this.cursor && { x: this.cursor.x + rootRect.left, y: this.cursor.y + rootRect.top };
                 const underPointer = admissionAnchorAtPointer(witness.nodeViewport,
                     new Map(this.index.nodes.map(node => [node.id, node.level])), renderedIds, cursor);
-                const id = [underPointer, this.revealState.focusClusterId, this.selected]
-                    .find(candidate => candidate && witness.nodeViewport[candidate] && next.has(candidate));
+                // D081-P6 BEGIN: the centred gesture child survives Indra's deepest re-pack.
+                const gestureId = this.axes.projection === '3d' && this.wheelGesture && this.cursor &&
+                    Math.hypot(this.cursor.x - this.wheelGesture.x, this.cursor.y - this.wheelGesture.y) <= 3
+                    ? this.wheelGesture.id : null;
+                const id = gestureRemountAnchorId(gestureId, witness.nodeViewport, new Set(next.keys()),
+                    [underPointer, this.revealState.focusClusterId, this.selected]);
+                // D081-P6 END.
                 if (id) anchor = { id, point: witness.nodeViewport[id]! };
             }
             // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
@@ -2732,10 +2826,17 @@ export class V2Page {
                     this.noteCameraIntent();
                     this.view.restoreCamera(old);
                     if (anchor) {
-                        const after = this.view.witness().nodeViewport[anchor.id];
-                        if (after && Math.hypot(after.x - anchor.point.x, after.y - anchor.point.y) > 1)
-                            (this.view as ProductView & { keepNodeAt?: (id: string, point: { x: number; y: number }) => boolean })
-                                .keepNodeAt?.(anchor.id, anchor.point);
+                        // D081-P6 BEGIN: re-check the live projection after Indra's 3D re-pack.
+                        const keepNodeAt = (this.view as ProductView & { keepNodeAt?:
+                            (id: string, point: { x: number; y: number }) => boolean }).keepNodeAt;
+                        const passes = organization === 'indra' && projection === '3d' &&
+                            (this.revealState.band === 'near' || this.revealState.band === 'deep') ? 3 : 1;
+                        for (let pass = 0; pass < passes; pass++) {
+                            const after = this.view.witness().nodeViewport[anchor.id];
+                            if (!after || Math.hypot(after.x - anchor.point.x, after.y - anchor.point.y) <= 1 ||
+                                !keepNodeAt?.call(this.view, anchor.id, anchor.point)) break;
+                        }
+                        // D081-P6 END.
                     }
                     this.lastZoomRatio = (old as { ratio?: number } | null)?.ratio ?? this.lastZoomRatio;
                     this.suppressZoomUntil = 0;
@@ -3120,6 +3221,10 @@ export class V2Page {
         const next: PageAxes = { ...merged, brain };
         if (merged.organization !== this.axes.organization && !this.supportsOrganization(merged.organization))
             throw new Error(`View is not registered: ${merged.organization}`);
+        // D081-P6 BEGIN.
+        if (merged.organization !== this.axes.organization || merged.projection !== this.axes.projection)
+            this.wheelGesture = null;
+        // D081-P6 END.
         if (this.axes.organization === 'indra' && merged.organization !== 'indra')
             this.indraRequestedLevelRefusals.clear();
         // D-073: the arrangement axis is Natural-only — the merged Indra or Fractal view drops it,
@@ -3147,6 +3252,9 @@ export class V2Page {
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
     async fit() {
+        // D081-P6 BEGIN.
+        this.wheelGesture = null;
+        // D081-P6 END.
         this.noteCameraIntent();
         const compacted = stepReveal({ index: this.index, disclosure: this.history.state,
             previous: this.revealState, zoom: 1, settled: true, fit: true,

@@ -31,6 +31,9 @@ export type RevealInput = Readonly<{
   selectionId: string | null; focusId: string | null;
   /** Only an intentional selection may preserve a focus path; hover is merely a camera anchor. */
   explicitFocusId?: string | null;
+  // D081-P6 BEGIN: only a stationary Natural/Indra 3D wheel supplies this cluster.
+  preferredClusterId?: string | null;
+  // D081-P6 END.
   fit?: boolean;
   viewport: Readonly<{ x: number; y: number; width: number; height: number }>;
   positions: ReadonlyMap<string, RevealPosition>;
@@ -123,9 +126,13 @@ export function stepReveal(input: RevealInput): RevealDecision {
   const placed = current.nodes.filter(node => {
     const p = input.positions.get(node.id); return p && inside(p);
   });
-  const nearest = (point: { x: number; y: number }, hit: boolean): V2Node | undefined => {
+  const nearest = (point: { x: number; y: number }, hit: boolean,
+    preferredClusterId?: string | null): V2Node | undefined => {
     let best: V2Node | undefined, bestDistance = Infinity;
     for (const node of placed) {
+      // D081-P6 BEGIN.
+      if (preferredClusterId && clusterOf(node.id) !== preferredClusterId) continue;
+      // D081-P6 END.
       const p = input.positions.get(node.id)!;
       const d = distance(p, point);
       if (hit && d > Math.max(32, p.radius ?? 12)) continue;
@@ -135,14 +142,20 @@ export function stepReveal(input: RevealInput): RevealDecision {
     }
     return best;
   };
-  const cursorNode = input.cursor && nearest(input.cursor, true);
+  // D081-P6 BEGIN: a cross-cluster overlap cannot change the gesture's focus.
+  const cursorNode = input.cursor && (input.preferredClusterId
+    ? nearest(input.cursor, true, input.preferredClusterId) ?? nearest(input.cursor, true)
+    : nearest(input.cursor, true));
+  // D081-P6 END.
   const selected = input.selectionId && byId.has(input.selectionId) ? input.selectionId
     : input.focusId && byId.has(input.focusId) ? input.focusId : null;
   const centered = nearest(center, false);
   const sticky = input.cursor && input.previous.focusClusterId &&
     (input.zoom >= input.previous.lastZoom || input.zoom >= REVEAL_EXIT_THRESHOLDS[0])
     ? input.previous.focusClusterId : null;
-  const cursorCluster = cursorNode ? clusterOf(cursorNode.id) : null;
+  // D081-P6 BEGIN.
+  const cursorCluster = input.preferredClusterId ?? (cursorNode ? clusterOf(cursorNode.id) : null);
+  // D081-P6 END.
   const anchor = cursorNode?.id ?? selected ?? centered?.id ?? null;
   const proposedSource: RevealSource = cursorCluster || sticky && input.cursor ? 'cursor' : selected ? 'selection' : centered ? 'viewport' : null;
   const proposedCluster = cursorCluster ?? sticky ?? (anchor ? clusterOf(anchor) : null);
