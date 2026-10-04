@@ -1,60 +1,55 @@
 type JsonRecord = Record<string, unknown>;
-type DrawerResponse = { node?: unknown; detail?: unknown; relations?: unknown; relations_total?: unknown };
-type PassagePage = { children?: unknown; passages?: unknown; total?: unknown; has_more?: unknown; next_offset?: unknown };
+type Section = 'summary' | 'content' | 'provenance' | 'relations';
+type SectionState = 'idle' | 'loading' | 'ok' | 'empty' | 'partial' | 'error';
+type CachedSection = { state: SectionState; body: JsonRecord; message: string; error: string; offset: number; total: number; query: string };
+type DrawerResponse = { id?: unknown; section?: unknown; state?: unknown; message?: unknown; error?: unknown; [key: string]: unknown };
 const record = (value: unknown): JsonRecord => value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {};
+const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const text = (value: unknown): string => typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+const value = (...items: unknown[]): string => items.map(text).find(item => item.trim()) ?? '';
 /** Decode text fields that contain one JSON-string escaping layer, without changing the source record. */
 export const displayText = (raw: unknown): string => text(raw).replace(/\\(?:u[\da-fA-F]{4}|["\\/bfnrt])/g, escape => {
   if (escape.startsWith('\\u')) return String.fromCharCode(Number.parseInt(escape.slice(2), 16));
   return ({ '\\"': '"', '\\\\': '\\', '\\/': '/', '\\b': '\b', '\\f': '\f', '\\n': '\n', '\\r': '\r', '\\t': '\t' } as Record<string, string>)[escape] ?? escape;
 });
-/** Context is an excerpt: mark its cut edge and remove punctuation stranded at the quote boundary. */
 export const contextExcerpt = (raw: unknown, side: 'before' | 'after'): string => {
   let excerpt = displayText(raw).trim();
   if (!excerpt) return '';
-  if (side === 'before') excerpt = excerpt.replace(/[\s,;:–—-]+$/u, '').trimEnd();
-  else excerpt = excerpt.replace(/^[\s,;:–—-]+/u, '').trimStart();
-  if (!excerpt) return '';
-  return side === 'before' ? `…${excerpt}` : `${excerpt}…`;
+  excerpt = side === 'before' ? excerpt.replace(/[\s,;:–—-]+$/u, '').trimEnd() : excerpt.replace(/^[\s,;:–—-]+/u, '').trimStart();
+  return excerpt ? side === 'before' ? `…${excerpt}` : `${excerpt}…` : '';
 };
-const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
-const value = (...items: unknown[]): string => items.map(text).find(item => item.trim()) ?? '';
 const passageKey = (item: JsonRecord): string => {
-  const citation = record(item.citation);
-  const span = value(citation.span, item.span, item.text, item.context);
-  const source = value(citation.source_id, item.source_id);
-  const digest = value(citation.snapshot_digest, item.snapshot_digest);
-  const start = value(citation.start_byte, item.start_byte);
-  const end = value(citation.end_byte, item.end_byte);
+  const citation = record(item.citation); const span = value(citation.span, item.span, item.text, item.context);
+  const source = value(citation.source_id, item.source_id), digest = value(citation.snapshot_digest, item.snapshot_digest);
+  const start = value(citation.start_byte, item.start_byte), end = value(citation.end_byte, item.end_byte);
   return source || digest || start || end || span ? [source, digest, start, end, span].join('\u0000') : '';
 };
-const passageRichness = (item: JsonRecord): number => Number(Boolean(item.context_before)) + Number(Boolean(item.context_after));
 export const mergePassageItems = (citations: JsonRecord[], passages: JsonRecord[]): JsonRecord[] => {
-  const merged: JsonRecord[] = [];
-  const positions = new Map<string, number>();
+  const merged: JsonRecord[] = []; const positions = new Map<string, number>();
   for (const item of [...citations, ...passages]) {
-    const key = passageKey(item);
-    const position = key ? positions.get(key) : undefined;
-    if (position === undefined) {
-      if (key) positions.set(key, merged.length);
-      merged.push(item);
-    } else if (passageRichness(item) > passageRichness(merged[position]!)) merged[position] = item;
+    const key = passageKey(item); const position = key ? positions.get(key) : undefined;
+    if (position === undefined) { if (key) positions.set(key, merged.length); merged.push(item); }
+    else if (Number(Boolean(item.context_before)) + Number(Boolean(item.context_after)) > Number(Boolean(merged[position]!.context_before)) + Number(Boolean(merged[position]!.context_after))) merged[position] = item;
   }
   return merged;
 };
+const KIND: Record<string, string> = { domain: 'Dominio', project: 'Progetto', work: 'Opera', conversation: 'Conversazione', proposal: 'Proposta', passage: 'Passaggio', canon: 'Canone', memory: 'Memoria', note: 'Nota', attachment: 'Allegato', source: 'Fonte', assertion: 'Asserzione' };
+const kindName = (kind: unknown): string => KIND[text(kind).toLowerCase()] ?? value(kind, 'Elemento');
 const label = (item: JsonRecord): string => value(item.title, item.label, item.name, item.statement);
-const KIND: Record<string, string> = { domain: 'Dominio', project: 'Progetto', work: 'Opera', conversation: 'Conversazione', proposal: 'Proposta', passage: 'Passaggio', canon: 'Canone', memory: 'Memoria', note: 'Nota' };
-const kindName = (node: JsonRecord): string => KIND[value(node.kind, node.type, node.level).toLowerCase()] ?? value(node.kind, node.type, node.level, 'Elemento');
 export const badgeName = (detail: JsonRecord, node: JsonRecord): string => {
   const status = value(detail.canonical_status, detail.overlay_status, detail.standing, detail.epistemic_status, node.status, node.standing).toLowerCase();
   if (status.includes('explor')) return 'Esplorativo · non canonico';
-  if (status.includes('proposal') || status.includes('candidat') || kindName(node) === 'Proposta') return 'Proposta · non canonica';
+  if (status.includes('proposal') || status.includes('candidat') || text(node.kind) === 'proposal') return 'Proposta · non canonica';
   if (status.includes('canon') || detail.canon) return 'Canonico';
-  if (['domain', 'project', 'work', 'conversation', 'passage'].includes(value(node.kind, node.type).toLowerCase())) return 'Strutturale · provenienza';
+  if (['domain', 'project', 'work', 'conversation', 'passage'].includes(text(node.kind).toLowerCase())) return 'Strutturale · provenienza';
   return 'Stato epistemico non indicato';
 };
+const typeLabels: Record<string, string> = { classified_in: 'Classificato in', contains: 'Contiene', member_of: 'Parte di', in_conversation: 'Nella conversazione', co_membership: 'Appartenenza condivisa', mentions: 'Menziona', mentioned_in: 'Menzionato in', linked_to: 'Collegato a', application: 'Applicazione', continuity: 'Continuità', analogy: 'Analogia', dependency: 'Dipendenza', resonance: 'Risonanza', link_card: 'Carta di collegamento', contradiction: 'Contraddizione', contained_in: 'Contenuto in' };
+export const relationLabel = (raw: unknown): string => typeLabels[text(raw).toLowerCase()] ?? 'Relazione';
+const sectionName: Record<Section, string> = { summary: 'Sintesi', content: 'Contenuto', provenance: 'Provenienza', relations: 'Relazioni' };
+const tabs: Section[] = ['summary', 'content', 'provenance', 'relations'];
 
-/** A lazy, read-only detail surface, separate from the graph renderer. */
+/** A lazy, read-only detail surface backed only by the D-081 drawer contract. */
 export class NodeDrawer {
   private readonly host: HTMLElement;
   private readonly onSelect: (id: string) => void;
@@ -62,181 +57,186 @@ export class NodeDrawer {
   private readonly fetcher: typeof fetch;
   private id = '';
   private displayTitle = '';
-  private payload: DrawerResponse | null = null;
-  private pageItems: JsonRecord[] = [];
-  private offset = 0;
-  private total = 0;
-  private loadingChildren = false;
-  private childrenError = '';
-  private tab = 'Sintesi';
-  private query = '';
-  private openToken = 0;
+  private tab: Section = 'summary';
+  private token = 0;
+  private queryTimer: ReturnType<typeof setTimeout> | undefined;
+  private cache = new Map<Section, CachedSection>();
+  private relationCache = new Map<string, { items: JsonRecord[]; offset: number; total: number; loading: boolean; error: string }>();
+  private readonly nodeCaches = new Map<string, { sections: Map<Section, CachedSection>; relations: Map<string, { items: JsonRecord[]; offset: number; total: number; loading: boolean; error: string }> }>();
   constructor(host: HTMLElement, onSelect: (id: string) => void, fetcher: typeof fetch = (input, init) => window.fetch(input, init), onCenter: (id: string) => void = () => {}) {
     this.host = host; this.onSelect = onSelect; this.onCenter = onCenter; this.fetcher = fetcher;
     host.addEventListener('click', event => this.handleClick(event));
     host.addEventListener('input', event => this.handleInput(event));
-    document.addEventListener('keydown', event => { if (event.key === 'Escape' && !host.hidden) this.close(); });
+    host.ownerDocument.addEventListener('keydown', event => { if (event.key === 'Escape' && !host.hidden) this.close(); });
   }
   setDisplayTitle(title: string): void { this.displayTitle = title; }
   async open(id: string): Promise<void> { return this.openWithTitle(id, this.displayTitle); }
   async openWithTitle(id: string, displayTitle: string): Promise<void> {
-    this.id = id; this.displayTitle = displayTitle; this.payload = null; this.pageItems = []; this.offset = 0; this.total = 0; this.loadingChildren = false;
-    this.childrenError = ''; this.tab = 'Sintesi'; this.query = ''; this.host.hidden = false; document.body.classList.add('node-detail-open');
-    const token = ++this.openToken;
-    this.render('Caricamento…');
-    try {
-      const response = await this.fetcher(`/api/graph/node?id=${encodeURIComponent(id)}`);
-      const body = await response.json() as DrawerResponse & { error?: unknown };
-      if (!response.ok) throw new Error(text(body.error) || `HTTP ${response.status}`);
-      if (token !== this.openToken) return;
-      this.payload = body;
-      this.render();
-    } catch (error) {
-      if (token !== this.openToken) return;
-      this.render(`Impossibile caricare il nodo: ${error instanceof Error ? error.message : String(error)}`, true);
+    for (const section of this.cache.values()) if (section.state === 'loading') section.state = 'idle';
+    for (const relation of this.relationCache.values()) relation.loading = false;
+    this.id = id; this.displayTitle = displayTitle; this.token++;
+    const nodeCache = this.nodeCaches.get(id) ?? { sections: new Map<Section, CachedSection>(), relations: new Map<string, { items: JsonRecord[]; offset: number; total: number; loading: boolean; error: string }>() };
+    this.nodeCaches.set(id, nodeCache); this.cache = nodeCache.sections; this.relationCache = nodeCache.relations; this.tab = 'summary';
+    this.host.hidden = false; this.host.ownerDocument.body.classList.add('node-detail-open'); this.render();
+    if (this.entry('summary').state === 'idle' || this.entry('summary').state === 'error') await this.load('summary');
+  }
+  private node(): JsonRecord { return { title: this.entry('summary').body.title }; }
+  close(): void { this.token++; if (this.queryTimer) clearTimeout(this.queryTimer); this.host.hidden = true; this.host.ownerDocument.body.classList.remove('node-detail-open'); this.host.replaceChildren(); }
+  private entry(section: Section): CachedSection {
+    let cached = this.cache.get(section);
+    if (!cached) { cached = { state: 'idle', body: {}, message: '', error: '', offset: 0, total: 0, query: '' }; this.cache.set(section, cached); }
+    return cached;
+  }
+  private async load(section: Section, options: { offset?: number; query?: string; group?: string; relationPage?: boolean } = {}): Promise<void> {
+    const token = this.token;
+    if (options.relationPage) {
+      const group = options.group ?? ''; const item = this.relationCache.get(group) ?? { items: [], offset: 0, total: 0, loading: false, error: '' };
+      if (item.loading) return; item.loading = true; item.error = ''; this.relationCache.set(group, item); this.render();
+      try {
+        const body = await this.request('relations', { offset: item.offset, limit: 50, group });
+        if (token !== this.token) return;
+        const groups = list(record(body).groups).map(record); const type = groups.flatMap(g => list(g.types).map(record)).find(t => value(t.key) === group);
+        const received = list(type?.items).map(record); item.items.push(...received); item.offset += received.length; item.total = Number(type?.count ?? item.offset); item.error = '';
+      } catch (error) { if (token === this.token) item.error = this.errorText(error); }
+      finally { if (token === this.token) { item.loading = false; this.render(); } }
+      return;
     }
-  }
-  close(): void { this.openToken++; this.host.hidden = true; document.body.classList.remove('node-detail-open'); this.host.replaceChildren(); }
-  private async loadChildren(): Promise<void> {
-    if (this.loadingChildren || (this.total > 0 && this.offset >= this.total)) return;
-    const token = this.openToken;
-    this.loadingChildren = true; this.childrenError = ''; this.render();
+    const cached = this.entry(section); if (cached.state === 'loading') return;
+    const paging = options.offset !== undefined;
+    const requestedOffset = options.offset ?? (paging ? cached.offset : 0);
+    const requestedQuery = options.query ?? cached.query;
+    cached.state = 'loading'; cached.error = ''; this.render();
     try {
-      const response = await this.fetcher(`/api/graph/children?id=${encodeURIComponent(this.id)}&offset=${this.offset}&limit=50`);
-      const body = await response.json() as PassagePage & { error?: unknown };
-      if (!response.ok) throw new Error(text(body.error) || `HTTP ${response.status}`);
-      if (token !== this.openToken) return;
-      const items = list(body.children ?? body.passages).map(record);
-      this.pageItems.push(...items);
-      this.offset = Number.isInteger(body.next_offset) ? Number(body.next_offset) : this.offset + items.length;
-      this.total = Number.isFinite(body.total) ? Number(body.total) : this.offset + (body.has_more ? 1 : 0);
-    } catch (error) { if (token === this.openToken) this.childrenError = error instanceof Error ? error.message : String(error); }
-    finally { if (token === this.openToken) { this.loadingChildren = false; this.render(); } }
+      const body = await this.request(section, { offset: requestedOffset, limit: 50, ...(section === 'content' && requestedQuery ? { q: requestedQuery } : {}) });
+      if (token !== this.token) return;
+      const result = record(body); const serverState = text(result.state);
+      if (!['ok', 'empty', 'partial'].includes(serverState)) throw new Error('La risposta del server non contiene uno stato valido.');
+      cached.state = serverState as SectionState; cached.message = text(result.message); cached.body = paging ? this.mergePage(section, cached.body, result) : result;
+      cached.query = requestedQuery;
+      if (section === 'provenance') {
+        const aggregate = record(record(cached.body).aggregate); cached.offset = list(aggregate.items).length;
+        cached.total = Number(aggregate.total ?? result.total ?? (Number(aggregate.conversations) + Number(aggregate.sources) + Number(aggregate.attachments)));
+      } else {
+        cached.offset = Number(result.offset ?? requestedOffset) + list(result.items).length;
+        cached.total = Number(result.total ?? list(record(cached.body).items).length);
+      }
+      if (serverState !== 'ok' && !cached.message) cached.message = 'Questa sezione contiene informazioni parziali.';
+    } catch (error) { if (token === this.token) { cached.state = 'error'; cached.error = this.errorText(error); } }
+    finally { if (token === this.token) { if (cached.state === 'loading') { cached.state = 'error'; cached.error = 'La richiesta non è terminata.'; } this.render(); } }
   }
+  private mergePage(section: Section, prior: JsonRecord, next: JsonRecord): JsonRecord {
+    if (section === 'content') return { ...next, items: [...list(prior.items), ...list(next.items)] };
+    if (section === 'provenance') {
+      const oldAggregate = record(prior.aggregate), newAggregate = record(next.aggregate);
+      return { ...next, aggregate: { ...newAggregate, items: [...list(oldAggregate.items), ...list(newAggregate.items)] } };
+    }
+    return next;
+  }
+  private async request(section: Section, params: { offset?: number; limit?: number; q?: string; group?: string }): Promise<DrawerResponse> {
+    const query = new URLSearchParams({ id: this.id, section });
+    if (params.offset !== undefined) query.set('offset', String(params.offset));
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.q) query.set('q', params.q);
+    if (params.group) query.set('group', params.group);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const response = await Promise.race([
+        this.fetcher(`/api/graph/drawer?${query.toString()}`).then(async res => {
+          const body = await res.json() as DrawerResponse;
+          if (!res.ok || body.error) throw new Error(text(body.error) || `Errore del server (${res.status}).`);
+          return body;
+        }),
+        new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('La richiesta ha superato il tempo previsto.')), 5000); })
+      ]);
+      return response;
+    } finally { if (timeout) clearTimeout(timeout); }
+  }
+  private errorText(error: unknown): string { return error instanceof Error ? error.message : 'Si è verificato un errore inatteso.'; }
   private handleClick(event: Event): void {
-    const target = event.target as HTMLElement | null;
-    const button = target?.closest<HTMLButtonElement>('button[data-action]');
-    if (!button) return;
+    const target = event.target as HTMLElement | null; const button = target?.closest<HTMLButtonElement>('button[data-action]'); if (!button) return;
     const action = button.dataset.action;
     if (action === 'close') this.close();
-    else if (action === 'tab') {
-      this.tab = button.dataset.tab ?? 'Sintesi'; this.render();
-      if (this.tab === 'Contenuto' && this.pageItems.length === 0 && !this.childrenError) void this.loadChildren();
-    } else if (action === 'more') void this.loadChildren();
+    else if (action === 'tab') { const next = button.dataset.tab as Section; if (!tabs.includes(next)) return; this.tab = next; this.render(); if (this.entry(next).state === 'idle') void this.load(next); }
+    else if (action === 'retry') void this.load(this.tab, button.dataset.group ? { group: button.dataset.group, relationPage: true } : {});
+    else if (action === 'more') void this.load(this.tab, { offset: this.entry(this.tab).offset });
+    else if (action === 'more-relations' && button.dataset.group) void this.load('relations', { group: button.dataset.group, relationPage: true });
     else if (action === 'select' && button.dataset.id) this.onSelect(button.dataset.id);
+    else if (action === 'center' && button.dataset.id) this.onCenter(button.dataset.id);
     else if (action === 'center' && this.id) this.onCenter(this.id);
   }
   private handleInput(event: Event): void {
-    const target = event.target as HTMLInputElement | null;
-    if (target?.dataset.action === 'filter') { this.query = target.value; this.render(); }
+    const input = event.target as HTMLInputElement | null; if (input?.dataset.action !== 'filter') return;
+    if (this.queryTimer) clearTimeout(this.queryTimer);
+    this.queryTimer = setTimeout(() => { const c = this.entry('content'); c.state = 'idle'; c.body = {}; c.offset = 0; c.total = 0; c.query = input.value; void this.load('content', { query: input.value }); }, 250);
   }
-  private node(): JsonRecord { return record(this.payload?.node); }
-  private detail(): JsonRecord { return record(this.payload?.detail); }
-  private render(message = '', isError = false): void {
-    const doc = this.host.ownerDocument;
-    const root = doc.createElement('section'); root.className = 'node-drawer-card'; root.setAttribute('aria-label', 'Dettaglio del nodo');
-    const close = doc.createElement('button'); close.className = 'surface-close'; close.type = 'button'; close.dataset.action = 'close'; close.setAttribute('aria-label', 'Chiudi dettaglio'); close.textContent = '×'; root.append(close);
+  private render(): void {
+    const doc = this.host.ownerDocument; const root = doc.createElement('section'); root.className = 'node-drawer-card'; root.setAttribute('aria-label', 'Dettaglio del nodo');
+    const close = this.button('×', 'close'); close.className = 'surface-close'; close.setAttribute('aria-label', 'Chiudi dettaglio'); root.append(close);
     const title = doc.createElement('h2'); title.textContent = label(this.node()) || this.displayTitle || this.id || 'Dettaglio'; root.append(title);
-    const center = doc.createElement('button'); center.type = 'button'; center.dataset.action = 'center'; center.textContent = 'Centra nel grafo'; center.setAttribute('aria-label', 'Centra nel grafo'); root.append(center);
-    if (message) { const status = doc.createElement('p'); status.className = isError ? 'drawer-error' : 'drawer-loading'; status.setAttribute('role', isError ? 'alert' : 'status'); status.textContent = message; root.append(status); }
-    if (this.payload) {
-      const node = this.node(), detail = this.detail();
-      const tabs = doc.createElement('div'); tabs.className = 'node-drawer-tabs'; tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Sezioni del dettaglio');
-      for (const name of ['Sintesi', 'Contenuto', 'Provenienza', 'Relazioni']) {
-        const button = doc.createElement('button'); button.type = 'button'; button.id = `node-drawer-tab-${name.toLocaleLowerCase()}`; button.dataset.action = 'tab'; button.dataset.tab = name; button.textContent = name;
-        button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(this.tab === name)); button.setAttribute('aria-controls', 'node-drawer-panel'); button.tabIndex = this.tab === name ? 0 : -1; tabs.append(button);
-      }
-      root.append(tabs);
-      const content = doc.createElement('div'); content.className = 'node-drawer-content'; content.id = 'node-drawer-panel'; content.setAttribute('role', 'tabpanel'); content.setAttribute('aria-labelledby', `node-drawer-tab-${this.tab.toLocaleLowerCase()}`); content.tabIndex = 0;
-      if (this.tab === 'Sintesi') this.renderSummary(content, node, detail);
-      if (this.tab === 'Provenienza') this.renderProvenance(content, node, detail);
-      if (this.tab === 'Contenuto') this.renderContent(content, detail);
-      if (this.tab === 'Relazioni') this.renderRelations(content);
-      root.append(content);
+    const center = this.button('Centra nel grafo', 'center'); center.dataset.action = 'center'; center.setAttribute('aria-label', 'Centra nel grafo'); root.append(center);
+    const tabList = doc.createElement('div'); tabList.className = 'node-drawer-tabs'; tabList.setAttribute('role', 'tablist'); tabList.setAttribute('aria-label', 'Sezioni del dettaglio');
+    for (const section of tabs) { const name = section; const button = this.button(sectionName[section], 'tab'); button.dataset.tab = section; button.id = `node-drawer-tab-${section}`; button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(this.tab === name)); button.setAttribute('aria-controls', 'node-drawer-panel'); button.tabIndex = this.tab === section ? 0 : -1; tabList.append(button); }
+    root.append(tabList); const panel = doc.createElement('div'); panel.className = 'node-drawer-content'; panel.id = 'node-drawer-panel'; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `node-drawer-tab-${this.tab.toLocaleLowerCase()}`); panel.tabIndex = 0;
+    const cached = this.entry(this.tab);
+    if (cached.state === 'loading') this.renderSkeleton(panel);
+    else if (cached.state === 'idle') this.note(panel, 'Questa sezione non è ancora stata caricata.');
+    else if (cached.state === 'error') { this.note(panel, cached.error, 'drawer-error'); const retry = this.button('Riprova', 'retry'); retry.dataset.action = 'retry'; panel.append(retry); }
+    else { if (cached.message) this.note(panel, cached.message, 'drawer-message'); if (this.tab === 'summary') this.renderSummary(panel, cached.body); if (this.tab === 'content') this.renderContent(panel, cached); if (this.tab === 'provenance') this.renderProvenance(panel, cached); if (this.tab === 'relations') this.renderRelations(panel, cached); }
+    root.append(panel); this.host.replaceChildren(root);
+  }
+  private button(label: string, action: string): HTMLButtonElement { const button = this.host.ownerDocument.createElement('button'); button.type = 'button'; button.dataset.action = action; button.textContent = label; return button; }
+  private note(host: HTMLElement, content: string, cls = ''): void { const p = this.host.ownerDocument.createElement('p'); if (cls) p.className = cls; p.textContent = content; host.append(p); }
+  private line(host: HTMLElement, heading: string, raw: unknown): void { const shown = displayText(raw).trim(); if (!shown) return; const p = this.host.ownerDocument.createElement('p'); const strong = this.host.ownerDocument.createElement('strong'); strong.textContent = `${heading}: `; p.append(strong, this.host.ownerDocument.createTextNode(shown)); host.append(p); }
+  private renderSkeleton(host: HTMLElement): void { const wrap = this.host.ownerDocument.createElement('div'); wrap.className = 'drawer-skeleton'; wrap.setAttribute('role', 'status'); wrap.setAttribute('aria-label', 'Caricamento della sezione'); for (const width of ['92%', '76%', '84%']) { const row = this.host.ownerDocument.createElement('span'); row.style.width = width; wrap.append(row); } host.append(wrap); }
+  private renderSummary(host: HTMLElement, body: JsonRecord): void {
+    this.line(host, 'Tipo', body.kind_label); const sentences = list(body.sentences).map(displayText).filter(sentence => sentence.trim());
+    if (sentences.length) { const prose = this.host.ownerDocument.createElement('div'); prose.className = 'node-drawer-summary'; for (const sentence of sentences) this.note(prose, sentence); host.append(prose); }
+    else this.note(host, value(body.message, 'Non ci sono dati verificati sufficienti per descrivere questo nodo.'), 'drawer-message');
+    for (const fact of list(body.facts).map(record)) this.line(host, text(fact.label), fact.value);
+  }
+  private renderContent(host: HTMLElement, cached: CachedSection): void {
+    const input = this.host.ownerDocument.createElement('input'); input.type = 'search'; input.placeholder = 'Cerca nei contenuti'; input.setAttribute('aria-label', 'Cerca nei contenuti'); input.dataset.action = 'filter'; input.value = cached.query; host.append(input);
+    const items = list(cached.body.items).map(record);
+    for (const item of items) {
+      const article = this.host.ownerDocument.createElement('article'); article.className = 'node-drawer-item'; this.line(article, 'Tipo', item.kind_label); this.line(article, 'Titolo', item.title); this.line(article, 'Autore', item.author); this.line(article, 'Data', item.date);
+      const source = record(item.source); if (source.title) this.line(article, 'Fonte', source.title); this.line(article, 'Testo', item.text);
+      if (Number(item.children_count) > 0) this.line(article, 'Elementi collegati', item.children_count);
+      if (text(item.id)) { const actions = this.host.ownerDocument.createElement('div'); actions.className = 'node-drawer-actions'; const open = this.button('Apri', 'select'); open.dataset.id = text(item.id); const center = this.button('Centra', 'center'); center.dataset.id = text(item.id); actions.append(open, center); article.append(actions); }
+      host.append(article);
     }
-    this.host.replaceChildren(root);
+    if (!items.length && cached.state !== 'loading') this.note(host, cached.message || 'Nessun contenuto corrisponde alla ricerca.');
+    if (cached.offset < cached.total) { const more = this.button('Carica altri', 'more'); host.append(more); }
   }
-  private line(host: HTMLElement, heading: string, raw: unknown): void {
-    this.lineText(host, heading, displayText(raw));
-  }
-  private lineText(host: HTMLElement, heading: string, shown: string): void {
-    if (!shown) return;
-    const p = this.host.ownerDocument.createElement('p'); const strong = this.host.ownerDocument.createElement('strong'); strong.textContent = `${heading}: `;
-    p.append(strong, this.host.ownerDocument.createTextNode(shown)); host.append(p);
-  }
-  private renderSummary(host: HTMLElement, node: JsonRecord, detail: JsonRecord): void {
-    const badge = this.host.ownerDocument.createElement('span'); badge.className = 'node-drawer-badge'; badge.textContent = badgeName(detail, node); host.append(badge);
-    this.line(host, 'Tipo', kindName(node)); this.line(host, 'Livello', node.level); this.line(host, 'Dominio', value(detail.domain, node.domain, node.domain_name));
-    this.line(host, 'Sintesi', value(detail.statement, detail.summary, detail.provenance_line, node.summary, node.description, node.title));
-    const inventory = record(detail.inventory ?? node.inventory);
-    this.line(host, 'Inventario', value(inventory.title, inventory.project_name_inferred && `Progetto dedotto: ${text(inventory.project_name_inferred)}`, inventory.messages && `${text(inventory.messages)} messaggi · ${text(inventory.chars)} caratteri`));
-    if (kindName(node) === 'Conversazione' || ['note', 'memory'].includes(value(node.kind, node.type).toLowerCase())) this.deferred(host);
-  }
-  private deferred(host: HTMLElement): void { const note = this.host.ownerDocument.createElement('p'); note.className = 'drawer-deferred'; note.textContent = 'Testo completo non disponibile in questa build.'; host.append(note); }
-  private renderProvenance(host: HTMLElement, node: JsonRecord, detail: JsonRecord): void {
-    const inventory = record(detail.inventory ?? node.inventory);
-    for (const [heading, raw] of [['Acquisizione', value(detail.acquisition, inventory.acquisitions)], ['ID sorgente', value(detail.source_id, node.source_id)], ['Digest snapshot', value(detail.snapshot_digest, node.snapshot_digest)], ['Intervallo byte', (detail.start_byte !== undefined || detail.end_byte !== undefined) ? `${text(detail.start_byte)}–${text(detail.end_byte)}` : ''], ['Linea di provenienza', detail.provenance_line], ['Titolo originale', value(detail.original_title, inventory.title, node.original_title)], ['Nome file', value(detail.file_name, detail.asset_name, inventory.asset_names)] ] as const) this.line(host, heading, raw);
-    const sourceId = value(detail.source_id, node.source_id);
-    if (sourceId) this.sourceButton(host, sourceId, 'Apri il contesto originale nel grafo');
-    const citations = list(detail.citations).map(record);
-    for (const citation of citations) {
-      this.line(host, 'Citazione', citation.span); this.line(host, 'Sorgente citata', citation.source_id); this.line(host, 'Digest citato', citation.snapshot_digest);
-      if (text(citation.source_id)) this.sourceButton(host, text(citation.source_id), 'Apri la fonte citata nel grafo');
+  private renderProvenance(host: HTMLElement, cached: CachedSection): void {
+    const chain = list(cached.body.chain).map(record);
+    if (chain.length) { const ol = this.host.ownerDocument.createElement('ol'); ol.className = 'node-drawer-chain'; for (const step of chain) { const li = this.host.ownerDocument.createElement('li'); const label = this.host.ownerDocument.createElement('strong'); label.textContent = `${value(step.label, step.step)} → `; li.append(label); if (text(step.id)) { const link = this.button(value(step.value, step.id), 'select'); link.dataset.id = text(step.id); li.append(link); } else li.append(this.host.ownerDocument.createTextNode(displayText(step.value))); ol.append(li); } host.append(ol); }
+    const aggregate = record(cached.body.aggregate);
+    if (Object.keys(aggregate).length) { const counts = this.host.ownerDocument.createElement('p'); counts.textContent = `${value(aggregate.conversations, 0)} conversazioni · ${value(aggregate.sources, 0)} fonti · ${value(aggregate.attachments, 0)} allegati`; host.append(counts);
+      const items = list(aggregate.items).map(record); for (const item of items) { const row = this.host.ownerDocument.createElement('article'); row.className = 'node-drawer-item'; this.line(row, value(item.kind_label, 'Elemento'), item.title); this.line(row, 'Data', item.date); if (text(item.id)) { const b = this.button('Apri', 'select'); b.dataset.id = text(item.id); row.append(b); } host.append(row); }
+      if (cached.offset < cached.total) host.append(this.button('Carica altre fonti', 'more'));
     }
+    const technical = list(cached.body.technical); if (technical.length) { const details = this.host.ownerDocument.createElement('details'); const summary = this.host.ownerDocument.createElement('summary'); summary.textContent = 'Dettagli tecnici'; details.append(summary); for (const item of technical.map(record)) this.line(details, text(item.label), item.value); host.append(details); }
+    if (!chain.length && !Object.keys(aggregate).length && !technical.length) this.note(host, cached.message || 'La provenienza non è disponibile per questo nodo.');
   }
-  private sourceButton(host: HTMLElement, id: string, caption: string): void {
-    const button = this.host.ownerDocument.createElement('button'); button.type = 'button'; button.dataset.action = 'select'; button.dataset.id = id; button.textContent = caption; host.append(button);
-  }
-  private renderContent(host: HTMLElement, detail: JsonRecord): void {
-    const kind = kindName(this.node()).toLowerCase();
-    if (kind === 'conversazione' || ['nota', 'memoria'].includes(kind)) this.deferred(host);
-    const input = this.host.ownerDocument.createElement('input'); input.type = 'search'; input.placeholder = 'Filtra il contenuto caricato'; input.setAttribute('aria-label', 'Filtra il contenuto caricato'); input.dataset.action = 'filter'; input.value = this.query; host.append(input);
-    if (this.childrenError) { const error = this.host.ownerDocument.createElement('p'); error.className = 'drawer-error'; error.textContent = `Errore nel caricamento dei passaggi: ${this.childrenError}`; host.append(error); }
-    const citations = list(detail.citations).map(record);
-    const items = mergePassageItems(citations, this.pageItems);
-    const needle = this.query.trim().toLocaleLowerCase();
-    const filtered = items.filter(item => `${value(item.span, item.text, item.context, item.source_id)} ${value(item.context_before, item.context_after)}`.toLocaleLowerCase().includes(needle));
-    for (const item of filtered) this.renderPassage(host, item);
-    if (!items.length && !this.loadingChildren && !this.childrenError) { const empty = this.host.ownerDocument.createElement('p'); empty.textContent = 'Nessun passaggio verificato disponibile.'; host.append(empty); }
-    if (this.loadingChildren) { const loading = this.host.ownerDocument.createElement('p'); loading.textContent = 'Caricamento dei passaggi…'; host.append(loading); }
-    if (this.offset < this.total) { const more = this.host.ownerDocument.createElement('button'); more.type = 'button'; more.dataset.action = 'more'; more.textContent = 'Carica altri passaggi'; host.append(more); }
-  }
-  private renderPassage(host: HTMLElement, item: JsonRecord): void {
-    const article = this.host.ownerDocument.createElement('article'); article.className = 'node-drawer-passage';
-    this.lineText(article, 'Contesto precedente', contextExcerpt(item.context_before, 'before'));
-    const quote = this.host.ownerDocument.createElement('blockquote'); const span = value(record(item.citation).span, item.span, item.text, item.context);
-    const mark = this.host.ownerDocument.createElement('mark'); mark.textContent = displayText(span); quote.append(mark); article.append(quote);
-    this.lineText(article, 'Contesto successivo', contextExcerpt(item.context_after, 'after'));
-    const citation = record(item.citation); this.line(article, 'Citazione verificata', citation.start_byte !== undefined ? `${text(citation.start_byte)}–${text(citation.end_byte)} byte · ${text(citation.snapshot_digest)}` : '');
-    host.append(article);
-  }
-  private renderRelations(host: HTMLElement): void {
-    const groups = new Map<string, JsonRecord[]>();
-    for (const raw of list(this.payload?.relations)) {
-      const relation = record(raw); const type = value(relation.class, relation.kind, relation.type).toLowerCase();
-      const relationType = value(relation.type).toLowerCase();
-      const group = type === 'attested' || type === 'attestata' ? 'Attestate'
-        : type.includes('explor') ? 'Esplorative'
-          : type.includes('struct') || ['contains', 'member_of', 'classified_in', 'in_conversation', 'co_membership'].includes(relationType) ? 'Strutturali / provenienza'
-            : 'Classe non indicata';
-      groups.set(group, [...(groups.get(group) ?? []), relation]);
+  private renderRelations(host: HTMLElement, cached: CachedSection): void {
+    const groups = list(cached.body.groups).map(record); const labels = ['Attestate', 'Esplorative', 'Strutturali · provenienza'];
+    for (const label of labels) { const section = this.host.ownerDocument.createElement('section'); section.className = 'node-drawer-relations'; const heading = this.host.ownerDocument.createElement('h3'); heading.textContent = label; section.append(heading);
+      const matches = groups.filter(group => text(group.class_label) === label || (label.startsWith('Strutturali') && text(group.class) === 'strutturale'));
+      for (const group of matches) for (const type of list(group.types).map(record)) this.renderRelationType(section, type);
+      if (!matches.length) this.note(section, `Nessuna relazione ${label.toLocaleLowerCase()} disponibile.`); host.append(section);
     }
-    for (const name of ['Attestate', 'Esplorative', 'Strutturali / provenienza', 'Classe non indicata']) {
-      const relations = groups.get(name) ?? []; const section = this.host.ownerDocument.createElement('section'); section.className = 'node-drawer-relations';
-      const heading = this.host.ownerDocument.createElement('h3'); heading.textContent = `${name} · ${relations.length}`; section.append(heading);
-      for (const relation of relations) {
-        const self = value(record(this.payload?.node).id, this.id);
-        const source = value(relation.source_id, relation.source), target = value(relation.target_id, relation.target);
-        const otherId = source === self ? target : target === self ? source : value(relation.node_id, source, target);
-        const row = this.host.ownerDocument.createElement('p');
-        const labelText = value(relation.label, relation.statement, relation.type, relation.kind, otherId);
-        const button = this.host.ownerDocument.createElement('button'); button.type = 'button'; button.dataset.action = 'select'; button.dataset.id = otherId; button.textContent = labelText;
-        if (otherId && otherId !== self) row.append(button); else row.textContent = labelText;
-        section.append(row);
-      }
-      host.append(section);
-    }
-    const count = this.host.ownerDocument.createElement('p'); const total = Number(this.payload?.relations_total);
-    count.textContent = `Relazioni: ${Number.isFinite(total) ? total : list(this.payload?.relations).length}`; host.append(count);
+    if (!groups.length) this.note(host, cached.message || 'Nessuna relazione disponibile per questo nodo.');
+  }
+  private renderRelationType(host: HTMLElement, type: JsonRecord): void {
+    const key = text(type.key); const count = Number(type.count) || 0; const label = value(type.label, relationLabel(key)); const direction = value(type.direction) === 'entrante' ? '←' : value(type.direction) === 'uscente' ? '→' : '↔';
+    const details = this.host.ownerDocument.createElement('details'); details.className = 'node-drawer-relation-type'; const summary = this.host.ownerDocument.createElement('summary'); summary.textContent = `${label} · ${count}`; details.append(summary);
+    if (!this.relationCache.has(key)) { const first = list(type.items).map(record); this.relationCache.set(key, { items: first, offset: first.length, total: count, loading: false, error: '' }); }
+    const cached = this.relationCache.get(key); const items = cached?.items.length ? cached.items : list(type.items).map(record);
+    for (const item of items) { const row = this.host.ownerDocument.createElement('article'); row.className = 'node-drawer-relation-item'; const title = this.host.ownerDocument.createElement('p'); title.textContent = `${direction} ${value(item.title, item.kind_label, 'Elemento')}${item.kind_label ? ` · ${text(item.kind_label)}` : ''}`; row.append(title); if (text(item.id)) { const open = this.button('Apri', 'select'); open.dataset.id = text(item.id); const center = this.button('Centra', 'center'); center.dataset.id = text(item.id); row.append(open, center); } details.append(row); }
+    if (cached?.error) { this.note(details, cached.error, 'drawer-error'); const retry = this.button('Riprova', 'retry'); retry.dataset.group = key; details.append(retry); }
+    if (cached?.loading) { const p = this.host.ownerDocument.createElement('p'); p.className = 'drawer-loading'; p.textContent = 'Caricamento delle relazioni…'; details.append(p); }
+    const loaded = cached?.items.length ?? items.length; const more = count > loaded || Boolean(type.has_more) || Boolean(cached && cached.offset < cached.total);
+    if (more) { const button = this.button('Carica altri', 'more-relations'); button.dataset.group = key; details.append(button); }
+    host.append(details);
   }
 }
