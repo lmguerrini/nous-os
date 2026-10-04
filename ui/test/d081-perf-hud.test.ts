@@ -56,3 +56,21 @@ test("review page keeps the optional persisted HUD wired through the surface sta
   assert.match(module, /addEventListener\("d081:status"/);
   assert.match(module, /removeEventListener\("d081:status"/);
 });
+
+test("performance HUD stays in the lower-left safe area and above reading surfaces", async () => {
+  const html = await readFile(new URL("../review/index.html", import.meta.url), "utf8");
+  const css = html.match(/#performance-overlay\s*\{([^}]+)\}/)?.[1];
+  assert.ok(css, "performance overlay placement rules are present");
+  assert.match(css, /left:calc\(var\(--toolbar-left-inset, var\(--left-inset, 0px\)\) \+ 16px\)/,
+    "the HUD honors a left-docked toolbar inset when one is supplied");
+  assert.match(css, /bottom:140px/,
+    "the HUD clears the 112px gizmo at 16px bottom inset plus a 12px gap");
+  assert.match(css, /max-height:min\(300px,calc\(100% - var\(--toolbar-height, 0px\) - 160px\)\)/,
+    "HUD height leaves room for the top toolbar and bottom gizmo");
+  assert.match(css, /width:min\(260px,/,
+    "HUD stays within the compact 260px width cap");
+  assert.match(css, /z-index:44/,
+    "HUD renders above the side panel and node drawer");
+  assert.doesNotMatch(css, /(?:^|;)\s*(?:top|right):(?:48px|12px)/,
+    "HUD no longer occupies the obstructed top-right corner");
+});
