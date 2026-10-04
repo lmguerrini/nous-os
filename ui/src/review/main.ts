@@ -32,6 +32,7 @@ import type { GraphManifest } from "./graph-v2.ts";
 import { normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
 import { GIZMO_IDLE_GRACE_MS, gizmoShouldRun } from "./gizmo-schedule.ts";
+import { formatGraphPanelCounts, formatGraphToolbarStatus, parseGraphToolbarCounts } from "./toolbar-status.ts";
 
 const get = <T extends Element>(id: string): T => {
   const item = document.getElementById(id);
@@ -287,6 +288,7 @@ function syncBrainControls(): void {
     if (!button) continue;
     button.hidden = !available;
     button.setAttribute("aria-pressed", String(available && axes.brain === true));
+    button.classList?.toggle("is-on", available && axes.brain === true);
   }
 }
 function updatePanel() {
@@ -467,15 +469,18 @@ function updateSummary() {
     : "Nessun elemento con questi filtri";
   const counts = get<HTMLElement>("graph-status-counts");
   const counterText = counter.textContent;
-  const counterMatch = counterText.match(/^(\d+)\/(\d+) nodi(?: · (\d+)\/(\d+) relazioni)?/);
-  const visibleNodes = counterMatch ? Number(counterMatch[1]) : graph.nodes.length;
-  const totalNodes = counterMatch ? Number(counterMatch[2]) : data.nodes.length;
-  const visibleEdges = counterMatch?.[3] ? Number(counterMatch[3]) : graph.edges.length;
-  const totalEdges = counterMatch?.[4] ? Number(counterMatch[4]) : data.edges.length;
-  counts.textContent = `Sono visibili ${visibleNodes.toLocaleString("it-IT")} nodi su ${totalNodes.toLocaleString("it-IT")} e ${visibleEdges.toLocaleString("it-IT")} relazioni su ${totalEdges.toLocaleString("it-IT")}.`;
+  const graphCounts = parseGraphToolbarCounts(counterText, get<HTMLElement>("v2-cap").textContent);
+  const visibleNodes = graphCounts?.visibleNodes ?? graph.nodes.length;
+  const totalNodes = graphCounts?.totalNodes ?? data.nodes.length;
+  const visibleEdges = Number(counterText.match(/ · (\d+)\//)?.[1] ?? graph.edges.length);
+  const totalEdges = Number(counterText.match(/ · \d+\/(\d+) relazioni/)?.[1] ?? data.edges.length);
+  counts.textContent = graphCounts
+    ? formatGraphPanelCounts(counterText, graphCounts)
+    : `Sono visibili ${visibleNodes.toLocaleString("it-IT")} nodi su ${totalNodes.toLocaleString("it-IT")} e ${visibleEdges.toLocaleString("it-IT")} relazioni su ${totalEdges.toLocaleString("it-IT")}.`;
   const levels = get<HTMLElement>("graph-status-levels");
-  const match = counterText.match(/livelli ([^·]+)/);
-  levels.textContent = match ? `Elementi per livello: ${match[1]!.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} elementi`; }).join("; ")}.` : "Il conteggio per livello è disponibile nei dettagli del grafo quando il dettaglio progressivo è attivo.";
+  levels.textContent = graphCounts?.levels
+    ? `Elementi per livello: ${graphCounts.levels.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} elementi`; }).join("; ")}.`
+    : "Conteggio per livello non fornito dal caricamento attivo.";
   const cap = get<HTMLElement>("graph-status-cap");
   cap.textContent = get<HTMLElement>("v2-cap").textContent || "Limite di dettaglio: nessun avviso attivo.";
   get<HTMLElement>("graph-status-identity").textContent = `Identificativo dell’esportazione: ${data.export_digest}.`;
@@ -484,6 +489,26 @@ function updateSummary() {
   updateButtons();
   updatePanel();
 }
+/** V2 owns these DOM updates; mirror them into the visible toolbar and graph status surface. */
+function syncLoadedGraphStatus(): void {
+  const counter = get<HTMLElement>("counter").textContent;
+  const counts = parseGraphToolbarCounts(counter, get<HTMLElement>("v2-cap").textContent);
+  if (!counts) return;
+  get<HTMLElement>("human-status").textContent = formatGraphToolbarStatus(counts);
+  get<HTMLElement>("graph-status-counts").textContent = formatGraphPanelCounts(counter, counts);
+  get<HTMLElement>("graph-status-levels").textContent = counts.levels
+    ? `Elementi per livello: ${counts.levels.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} elementi`; }).join("; ")}.`
+    : "Conteggio per livello non fornito dal caricamento attivo.";
+  get<HTMLElement>("graph-status-cap").textContent = counts.cap || "Limite di dettaglio: nessun avviso attivo.";
+  const identity = data?.export_digest;
+  if (identity) get<HTMLElement>("graph-status-identity").textContent = `Identificativo dell’esportazione: ${identity}.`;
+  const layoutText = get<HTMLElement>("arrangement-inspector").textContent.trim();
+  get<HTMLElement>("graph-status-layout").textContent = layoutText ? `Disposizione: ${layoutText}.` : `Disposizione attiva: ${axes.organization === "indra" ? "Indra" : "Natural"}.`;
+  updateInsets();
+}
+const graphStatusObserver = new MutationObserver(syncLoadedGraphStatus);
+for (const id of ["status", "counter", "v2-cap"])
+  graphStatusObserver.observe(get<HTMLElement>(id), { childList: true, characterData: true, subtree: true });
 function syncFocusPresentation(): void {
   if (axes.projection === "3d" && !focusMode) view?.setEmphasis(null);
   else if (stack?.current) view?.setEmphasis(new Set(stack.current.ids));
@@ -555,7 +580,7 @@ async function mount() {
       brain: axes.brain === true,
       appearance,
       customPalette,
-      insets: { top: 0, right: 0, bottom: 0, left: 0 },
+      insets: { top: get<HTMLElement>("review-toolbar").offsetHeight + 10, right: 0, bottom: 0, left: 0 },
       text: (id) => {
         const node = data.nodes.find((item) => item.id === id);
         const full = node ? humanLabel(node, data) : id;
@@ -771,9 +796,13 @@ function updateInsets(): void {
     const surface = document.getElementById(id);
     return surface && !surface.hidden ? Math.max(width, Math.min(surface.getBoundingClientRect().width, viewport.clientWidth / 3)) : width;
   }, 0);
-  (v2 ?? view)?.setInsets({ top: document.fullscreenElement ? get<HTMLElement>("fullscreen-bar").offsetHeight + 16 : 0,
+  const topInset = document.fullscreenElement ? get<HTMLElement>("fullscreen-bar").offsetHeight + 16
+    : get<HTMLElement>("review-toolbar").offsetHeight + 10;
+  document.documentElement.style.setProperty("--toolbar-height", `${topInset}px`);
+  (v2 ?? view)?.setInsets({ top: topInset,
     right: Math.max(appearanceInset, drawerInset, overlayInset), bottom: 0, left: 0 });
 }
+new ResizeObserver(() => updateInsets()).observe(get<HTMLElement>("review-toolbar"));
 function syncPanel(): void {
   const visible = fullscreen() ? fullscreenDrawer : !panelCollapsed;
   get<HTMLElement>("shell").classList.toggle("panel-collapsed", panelCollapsed);

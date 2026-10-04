@@ -29,7 +29,7 @@ test('graph status surfaces readable counts, level detail, cap, export identity,
 test('Ambiente exposes the same conditional decorative brain toggle in both bars', () => {
   assert.match(html, /id="environment-control" hidden[\s\S]*?id="brain" aria-pressed="false"/);
   assert.match(html, /id="fullscreen-environment"[^>]*hidden[\s\S]*?id="fullscreen-brain" aria-pressed="false"/);
-  assert.match(html, /Mostra il cervello di vetro attorno al grafo Neural; decorativo, non selezionabile/);
+  assert.match(html, /Mostra il cervello di vetro attorno al grafo Neural — decorativo, non selezionabile/);
   assert.match(main, /axes\.organization === "natural" && axes\.morphology === "neural" && axes\.projection === "3d"/);
   assert.match(main, /void setAxes\(\{ brain: axes\.brain !== true \}\)/);
 });
