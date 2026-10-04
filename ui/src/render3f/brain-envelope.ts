@@ -6,13 +6,14 @@ type Point = { readonly x: number; readonly y: number; readonly z: number };
 export type BrainLod = "full" | "moving";
 export type BrainWitness = {
   enabled: boolean; lod: BrainLod; triangles: number;
+  lineSegments: number;
   center: number[]; axes: number[][]; scale: number;
   extentRatios: number[];
   contained: { nodes: [number, number]; edgeSamples: [number, number] };
   minMargin: number; outside: string[];
 };
 export function emptyBrainWitness(): BrainWitness {
-  return { enabled:false,lod:"full",triangles:0,center:[0,0,0],
+  return { enabled:false,lod:"full",triangles:0,lineSegments:0,center:[0,0,0],
     axes:[[1,0,0],[0,1,0],[0,0,1]],scale:0,
     extentRatios:[0,0,0],
     contained:{nodes:[0,0],edgeSamples:[0,0]},minMargin:0,outside:[] };
@@ -31,19 +32,34 @@ export type BrainEnvelope = {
 export const BRAIN_GLASS_INTERIOR_ALPHA = Math.min(NEURAL_BRAIN_ENVELOPE_OPACITY, 0.03);
 export const BRAIN_GLASS_RIM_ALPHA = 0.12;
 export const BRAIN_TRIANGLE_BUDGET = 20_000;
+export const BRAIN_LINE_SEGMENT_BUDGET = 6_000;
 export const BRAIN_PREFERENCES_KEY = "d080.brain-by-mode";
 export type BrainViewName = "front" | "side" | "top" | "iso";
+/** Local anatomy: +Z anterior/frontal, +Y superior, +X anatomical left.
+ * The fitted basis maps these three directions to world space. A camera pose must
+ * align both its sightline and its up vector: a sightline alone leaves arbitrary roll.
+ */
+export function brainAnatomicalFrame(axes: readonly THREE.Vector3[]) {
+  return { left: axes[0]!.clone(), superior: axes[1]!.clone(), anterior: axes[2]!.clone() };
+}
+
 /** Compute a proof pose without mutating the renderer; the product camera path applies it. */
 export function brainViewCameraState<T extends { readonly angle: number; readonly bounds: {
   readonly x: readonly [number, number]; readonly y: readonly [number, number] } }>(
   name: BrainViewName, axes: readonly THREE.Vector3[], center: THREE.Vector3, state: T,
 ) {
-  const direction = name === "front" ? axes[2]!.clone()
-    : name === "side" ? axes[0]!.clone()
-    : name === "top" ? axes[1]!.clone()
-    : axes[0]!.clone().add(axes[1]!).add(axes[2]!).normalize();
+  const frame = brainAnatomicalFrame(axes);
+  const direction = name === "front" ? frame.anterior
+    : name === "side" ? frame.left
+    : name === "top" ? frame.superior
+    : frame.left.clone().add(frame.superior).add(frame.anterior).normalize();
+  const up = name === "top" ? frame.anterior : frame.superior;
   const base = new THREE.Vector3(Math.cos(state.angle), Math.sin(state.angle), 1).normalize();
-  const orbit = new THREE.Quaternion().setFromUnitVectors(base, direction);
+  const initial = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().lookAt(base,new THREE.Vector3(),new THREE.Vector3(0,0,1)));
+  const desired = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().lookAt(direction,new THREE.Vector3(),up));
+  const orbit = desired.multiply(initial.invert()).normalize();
   const bounds = state.bounds;
   return { ...state, orbit: [orbit.x, orbit.y, orbit.z, orbit.w] as [number, number, number, number],
     x: (center.x - bounds.x[0]) / (bounds.x[1] - bounds.x[0]),
@@ -130,7 +146,10 @@ const GRID: Record<BrainLod, number> = { full: 30, moving: 18 };
 const DOMAIN = { x: 1.42, y: 1.40, z: 1.48 };
 const TETS = [[0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6],
   [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6]] as const;
-let shared: { full: THREE.BufferGeometry; moving: THREE.BufferGeometry; material: THREE.ShaderMaterial; uses: number } | null = null;
+type BrainResources = { full: THREE.BufferGeometry; moving: THREE.BufferGeometry;
+  lines: Record<BrainLod, THREE.BufferGeometry>; material: THREE.ShaderMaterial;
+  lineMaterial: THREE.ShaderMaterial; depthMaterial: THREE.MeshBasicMaterial; uses: number };
+let shared: BrainResources | null = null;
 
 function meshField(resolution: number): THREE.BufferGeometry {
   const n = resolution, width = n + 1;
@@ -192,9 +211,111 @@ function meshField(resolution: number): THREE.BufferGeometry {
   return geometry;
 }
 
+/** Surface traces are sampled once per LOD in anatomical coordinates. Every
+ * vertex lies just outside the field and carries its outward surface normal.
+ * A view-facing shader removes the far-side traces without another shell pass.
+ */
+function brainLineGeometry(lod: BrainLod): THREE.BufferGeometry {
+  const positions: number[] = [], normals: number[] = [];
+  const step = lod === "full" ? 0.035 : 0.09;
+  const field = (p: THREE.Vector3) => brainField(p);
+  const trace = (origin: THREE.Vector3, direction: THREE.Vector3, distance: number): THREE.Vector3 | null => {
+    let previous = origin, previousField = field(previous);
+    for (let i=1;i<=18;i++) {
+      const current=origin.clone().addScaledVector(direction,distance*i/18);
+      const currentField=field(current);
+      if (previousField<0 && currentField>=0) {
+        let outside=previous, inside=current;
+        for(let j=0;j<9;j++) {
+          const mid=outside.clone().add(inside).multiplyScalar(0.5);
+          if(field(mid)<0) outside=mid; else inside=mid;
+        }
+        const surface=outside.clone().add(inside).multiplyScalar(0.5);
+        const h=0.002;
+        const normal=new THREE.Vector3(
+          brainField({x:surface.x-h,y:surface.y,z:surface.z})-brainField({x:surface.x+h,y:surface.y,z:surface.z}),
+          brainField({x:surface.x,y:surface.y-h,z:surface.z})-brainField({x:surface.x,y:surface.y+h,z:surface.z}),
+          brainField({x:surface.x,y:surface.y,z:surface.z-h})-brainField({x:surface.x,y:surface.y,z:surface.z+h}),
+        ).normalize();
+        const point=surface.addScaledVector(normal,0.006);
+        return point;
+      }
+      previous=current; previousField=currentField;
+    }
+    return null;
+  };
+  const top=(x:number,z:number)=>trace(new THREE.Vector3(x,1.12,z),new THREE.Vector3(0,-1,0),1.42);
+  const side=(sign:number,y:number,z:number)=>trace(new THREE.Vector3(sign*1.28,y,z),
+    new THREE.Vector3(-sign,0,0),1.28);
+  const front=(x:number,y:number)=>trace(new THREE.Vector3(x,y,1.28),new THREE.Vector3(0,0,-1),1.52);
+  const add=(points: readonly (THREE.Vector3|null)[])=>{
+    for(let i=1;i<points.length;i++) {
+      const a=points[i-1],b=points[i];
+      if(!a||!b||a.distanceTo(b)>0.16)continue;
+      for(const p of [a,b]) {
+        positions.push(p.x,p.y,p.z);
+        const h=0.003;
+        const n=new THREE.Vector3(
+          brainField({x:p.x-h,y:p.y,z:p.z})-brainField({x:p.x+h,y:p.y,z:p.z}),
+          brainField({x:p.x,y:p.y-h,z:p.z})-brainField({x:p.x,y:p.y+h,z:p.z}),
+          brainField({x:p.x,y:p.y,z:p.z-h})-brainField({x:p.x,y:p.y,z:p.z+h}),
+        ).normalize();
+        normals.push(n.x,n.y,n.z);
+      }
+    }
+  };
+  const curve=(count:number,sample:(t:number)=>THREE.Vector3|null)=>
+    add(Array.from({length:count+1},(_,i)=>sample(i/count)));
+  const count=(length:number)=>Math.ceil(length/step);
+  // Longitudinal fissure: two distinct lips run from the frontal to occipital pole.
+  for(const sign of [-1,1]) {
+    curve(count(2.10),t=>top(sign*(0.115+0.012*Math.sin(t*Math.PI)),1.04-2.08*t));
+    // Superior frontal/parietal gyri, approximately transverse to the midline.
+    for(let row=0;row<9;row++) {
+      const z=-0.88+row*0.215;
+      curve(count(0.80),t=>top(sign*(0.16+0.76*t),z+0.045*Math.sin(Math.PI*t+row*0.63)));
+    }
+    // Lateral central and Sylvian sulci; neighbouring loops wrap the insula.
+    curve(count(0.85),t=>side(sign,-0.05+0.52*t,0.08+0.18*(-0.05+0.52*t)));
+    curve(count(1.75),t=>side(sign,-0.27-0.12*(-0.86+1.72*t),-0.86+1.72*t));
+    for(let ring=0;ring<5;ring++) {
+      const radius=0.16+ring*0.115;
+      curve(count(2.3*radius),t=>{
+        const a=(-0.35+1.72*t)*Math.PI;
+        return side(sign,-0.15+radius*Math.sin(a),0.06+radius*1.55*Math.cos(a));
+      });
+    }
+    // Frontal gyri remain legible from a true frontal pose.
+    for(let row=0;row<4;row++) {
+      const y=0.05+row*0.16;
+      curve(count(0.75),t=>front(sign*(0.14+0.76*t),y+0.055*Math.sin(t*Math.PI)));
+    }
+    // Short stem strokes terminate below the cerebellum.
+    for(const z of [-0.52,-0.38])
+      curve(count(0.45),t=>side(sign,-0.80-0.43*t,z));
+  }
+  // Transverse cerebellar fissure and the finer, near-parallel folia.
+  for(let row=0;row<8;row++) {
+    const y=-0.47-row*0.045;
+    for(const sign of [-1,1])
+      curve(count(0.82),t=>side(sign,y+0.018*Math.sin(Math.PI*t),-1.18+0.78*t));
+  }
+  for(let row=0;row<5;row++) {
+    const z=-0.72-row*0.085;
+    curve(count(0.93),t=>top(-0.47+0.94*t,z));
+  }
+  const geometry=new THREE.BufferGeometry();
+  geometry.setAttribute("position",new THREE.Float32BufferAttribute(positions,3));
+  geometry.setAttribute("normal",new THREE.Float32BufferAttribute(normals,3));
+  geometry.computeBoundingSphere();
+  if(positions.length/6>BRAIN_LINE_SEGMENT_BUDGET) throw new Error("Brain line segment budget exceeded");
+  return geometry;
+}
+
 function resources() {
   if (shared === null) {
     const full = meshField(GRID.full), moving = meshField(GRID.moving);
+    const lines={full:brainLineGeometry("full"),moving:brainLineGeometry("moving")};
     full.computeBoundingBox();
     if (full.getAttribute("position").count / 3 > BRAIN_TRIANGLE_BUDGET)
       throw new Error("Brain triangle budget exceeded");
@@ -245,7 +366,24 @@ function resources() {
       blendEquationAlpha: THREE.MaxEquation,
       blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
     });
-    shared = { full, moving, material, uses: 0 };
+    const lineMaterial = new THREE.ShaderMaterial({
+      uniforms:{ lineAlpha:{value:0.26} },
+      vertexShader:`varying vec3 vNormal, vView;
+        void main() { vec4 p=modelViewMatrix*vec4(position,1.0);
+          vNormal=normalize(normalMatrix*normal); vView=-p.xyz;
+          gl_Position=projectionMatrix*p; }`,
+      fragmentShader:`uniform float lineAlpha; varying vec3 vNormal, vView;
+        void main() { float facing=dot(normalize(vNormal),normalize(vView));
+          float alpha=lineAlpha*smoothstep(0.02,0.22,facing);
+          if(alpha<0.012) discard;
+          gl_FragColor=vec4(0.74,0.80,0.86,alpha); }`,
+      transparent:true,depthTest:true,depthWrite:false,
+    });
+    // The shell writes depth once before its glass/ink layers. The ink clears
+    // that decorative depth before graph geometry, so interior nodes stay visible.
+    const depthMaterial=new THREE.MeshBasicMaterial({side:THREE.FrontSide,
+      colorWrite:false,depthTest:true,depthWrite:true,transparent:true});
+    shared = { full, moving, lines, material, lineMaterial, depthMaterial, uses: 0 };
   }
   shared.uses++;
   return shared;
@@ -352,6 +490,15 @@ export function createBrainEnvelope(nodes: readonly SceneNode[], edges: readonly
   mesh.renderOrder=-100; mesh.frustumCulled=false;
   // Decorative only: the picker never sees this mesh.
   mesh.raycast=()=>{};
+  const lines=new THREE.LineSegments(pool.lines.full,pool.lineMaterial);
+  lines.name="anatomical-brain-line-art";
+  lines.renderOrder=-99;lines.frustumCulled=false;lines.raycast=()=>{};
+  lines.onAfterRender=(renderer)=>renderer.clearDepth();
+  const depthShell=new THREE.Mesh(pool.full,pool.depthMaterial);
+  depthShell.name="brain-front-surface-depth";
+  depthShell.renderOrder=-101;depthShell.frustumCulled=false;depthShell.raycast=()=>{};
+  mesh.add(lines);
+  mesh.add(depthShell);
   group.add(mesh);
   let lod:BrainLod="full", fit=fitBrain(nodes.map(n=>n.position)), report:BrainWitness;
   let geometrySignature="";
@@ -388,6 +535,7 @@ export function createBrainEnvelope(nodes: readonly SceneNode[], edges: readonly
       return Number.isFinite(lo)&&shellSpan>0?(hi-lo)/shellSpan:0;
     });
     report={enabled:true,lod,triangles:mesh.geometry.getAttribute("position").count/3,
+      lineSegments:lines.geometry.getAttribute("position").count/2,
       center:fit.center.toArray(),axes:fit.axes.map(a=>a.toArray()),scale:fit.scale,
       extentRatios,
       contained:{nodes:[nodeMargins.filter(v=>v.margin>=0).length,nodeMargins.length],
@@ -398,7 +546,10 @@ export function createBrainEnvelope(nodes: readonly SceneNode[], edges: readonly
   update(nodes,edges);
   return {group, update, axes:()=>fit.axes, center:()=>fit.center,
     framingSphere:()=>group.visible ? new THREE.Sphere(fit.center.clone(),fit.scale*1.6) : null,
-    setLod(next){if(lod===next)return; lod=next;mesh.geometry=pool[next];report.lod=lod;report.triangles=mesh.geometry.getAttribute("position").count/3;},
+    setLod(next){if(lod===next)return; lod=next;mesh.geometry=pool[next];depthShell.geometry=pool[next];
+      lines.geometry=pool.lines[next];
+      report.lod=lod;report.triangles=mesh.geometry.getAttribute("position").count/3;
+      report.lineSegments=lines.geometry.getAttribute("position").count/2;},
     witness:()=>({...report,extentRatios:[...report.extentRatios],contained:{nodes:[...report.contained.nodes],edgeSamples:[...report.contained.edgeSamples]},outside:[...report.outside]}),
     // Keep the deterministic meshes cached across an off/on toggle; an off view creates no draw call.
     dispose(){group.remove(mesh);pool.uses--;}
