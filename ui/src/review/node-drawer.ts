@@ -219,7 +219,7 @@ export class NodeDrawer {
     const doc = this.host.ownerDocument; const root = doc.createElement('section'); root.className = 'node-drawer-card'; root.setAttribute('aria-label', 'Dettaglio del nodo');
     const close = this.button('×', 'close'); close.className = 'surface-close'; close.setAttribute('aria-label', 'Chiudi dettaglio'); root.append(close);
     const title = doc.createElement('h2'); const candidateTitle = label(this.node()) || this.displayTitle || this.id;
-    title.textContent = /^(?:asr_|ent_|source:|conversation:|domain:|passage:)/.test(candidateTitle) ? 'Dettaglio' : candidateTitle || 'Dettaglio'; root.append(title);
+    title.textContent = /\b(?:asr_|src_|ent_|source:|conversation:|domain:|passage:)|\b[\da-f]{16,64}\b|\b[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\b/i.test(candidateTitle) ? 'Dettaglio' : candidateTitle || 'Dettaglio'; root.append(title);
     const center = this.button('Centra nel grafo', 'center'); center.dataset.action = 'center'; center.setAttribute('aria-label', 'Centra nel grafo'); root.append(center);
     const tabList = doc.createElement('div'); tabList.className = 'node-drawer-tabs'; tabList.setAttribute('role', 'tablist'); tabList.setAttribute('aria-label', 'Sezioni del dettaglio');
     for (const section of tabs) { const name = section; const button = this.button(sectionName[section], 'tab'); button.dataset.tab = section; button.id = `node-drawer-tab-${section}`; button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(this.tab === name)); button.setAttribute('aria-controls', 'node-drawer-panel'); button.tabIndex = this.tab === section ? 0 : -1; tabList.append(button); }
@@ -240,6 +240,7 @@ export class NodeDrawer {
     if (sentences.length) { const prose = this.host.ownerDocument.createElement('div'); prose.className = 'node-drawer-summary'; for (const sentence of sentences) this.note(prose, sentence); host.append(prose); }
     else this.note(host, value(body.message, 'Non ci sono dati verificati sufficienti per descrivere questo nodo.'), 'drawer-message');
     for (const fact of list(body.facts).map(record)) this.line(host, text(fact.label), fact.value);
+    this.technical(host, list(body.technical).map(record));
   }
   private renderContent(host: HTMLElement, cached: CachedSection): void {
     const input = this.host.ownerDocument.createElement('input'); input.type = 'search'; input.placeholder = 'Cerca nei contenuti'; input.setAttribute('aria-label', 'Cerca nei contenuti'); input.dataset.action = 'filter'; input.value = cached.query; host.append(input);
@@ -259,6 +260,7 @@ export class NodeDrawer {
     }
     if (!items.length && cached.state !== 'loading') this.note(host, cached.message || 'Nessun contenuto corrisponde alla ricerca.');
     if (cached.offset < cached.total) { const more = this.button('Carica altri', 'more'); host.append(more); }
+    this.technical(host, list(cached.body.technical).map(record));
   }
   private technical(host: HTMLElement, entries: JsonRecord[]): void {
     if (!entries.length) return;
@@ -271,7 +273,7 @@ export class NodeDrawer {
     if (chain.length) { const ol = this.host.ownerDocument.createElement('ol'); ol.className = 'node-drawer-chain'; for (const step of chain) { const li = this.host.ownerDocument.createElement('li'); const label = this.host.ownerDocument.createElement('strong'); label.textContent = `${value(step.label, step.step)} → `; li.append(label); if (step.step === 'passaggio') { const quote = this.host.ownerDocument.createElement('blockquote'); quote.className = 'node-drawer-quote'; quote.textContent = text(step.value); li.append(quote); if (text(step.id)) { const link = this.button('Apri passaggio', 'select'); link.dataset.id = text(step.id); li.append(link); } } else if (text(step.id)) { const link = this.button(value(step.value, 'Apri'), 'select'); link.dataset.id = text(step.id); li.append(link); } else li.append(this.host.ownerDocument.createTextNode(text(step.value))); ol.append(li); } host.append(ol); }
     const aggregate = record(cached.body.aggregate);
     if (Object.keys(aggregate).length) { const counts = this.host.ownerDocument.createElement('p'); counts.textContent = `${italianCount(Number(aggregate.conversations ?? 0), 'conversazione', 'conversazioni')} · ${italianCount(Number(aggregate.sources ?? 0), 'fonte', 'fonti')} · ${italianCount(Number(aggregate.attachments ?? 0), 'allegato', 'allegati')}`; host.append(counts);
-      const items = list(aggregate.items).map(record); for (const item of items) { const row = this.host.ownerDocument.createElement('article'); row.className = 'node-drawer-item'; const h = this.host.ownerDocument.createElement('h3'); h.textContent = text(item.title); row.append(h); this.note(row, [text(item.kind_label), italianDate(item.date)].filter(Boolean).join(' · '), 'node-drawer-meta'); if (text(item.id)) { const b = this.button('Apri', 'select'); b.dataset.id = text(item.id); row.append(b); } host.append(row); }
+      const items = list(aggregate.items).map(record); for (const item of items) { const row = this.host.ownerDocument.createElement('article'); row.className = 'node-drawer-item'; const h = this.host.ownerDocument.createElement('h3'); h.textContent = text(item.title); row.append(h); this.note(row, [text(item.kind_label), italianDate(item.date)].filter(Boolean).join(' · '), 'node-drawer-meta'); this.technical(row, list(item.technical).map(record)); if (text(item.id)) { const b = this.button('Apri', 'select'); b.dataset.id = text(item.id); row.append(b); } host.append(row); }
       if (cached.offset < cached.total) host.append(this.button('Carica altre fonti', 'more'));
     }
     const technical = list(cached.body.technical); this.technical(host, technical.map(record));
@@ -285,13 +287,14 @@ export class NodeDrawer {
       if (!matches.length) this.note(section, `Nessuna relazione ${{ Attestate: 'attestata', Esplorative: 'esplorativa', 'Strutturali · provenienza': 'strutturale' }[label]} disponibile.`); host.append(section);
     }
     if (!groups.length) this.note(host, cached.message || 'Nessuna relazione disponibile per questo nodo.');
+    this.technical(host, list(cached.body.technical).map(record));
   }
   private renderRelationType(host: HTMLElement, type: JsonRecord): void {
     const key = text(type.key); const count = Number(type.count) || 0; const label = value(type.label, relationLabel(key)); const direction = value(type.direction) === 'entrante' ? '←' : value(type.direction) === 'uscente' ? '→' : '↔';
     const details = this.host.ownerDocument.createElement('details'); details.className = 'node-drawer-relation-type'; const summary = this.host.ownerDocument.createElement('summary'); summary.textContent = `${label} · ${count}`; details.append(summary);
     if (!this.relationCache.has(key)) { const first = list(type.items).map(record); this.relationCache.set(key, { items: first, offset: first.length, total: count, loading: false, error: '' }); }
     const cached = this.relationCache.get(key); const items = cached?.items.length ? cached.items : list(type.items).map(record);
-    for (const item of items) { const row = this.host.ownerDocument.createElement('article'); row.className = 'node-drawer-relation-item'; const title = this.host.ownerDocument.createElement('p'); title.textContent = `${direction} ${value(item.title, item.kind_label, 'Elemento')} · ${label} · ${text(item.kind_label)} · ${value(type.class_label, type.relation_class, 'Relazione')}`; title.setAttribute('aria-label', `${value(type.direction, 'non orientata')}: ${text(item.title)}, ${label}, ${text(item.kind_label)}, ${value(type.relation_class, 'relazione')}`); row.append(title); if (text(item.statement)) { const quote = this.host.ownerDocument.createElement('blockquote'); quote.className = 'node-drawer-quote clamped'; quote.textContent = text(item.statement); row.append(quote, this.button('Mostra tutto', 'expand')); } if (text(item.id)) { const open = this.button('Apri', 'select'); open.dataset.id = text(item.id); const center = this.button('Centra', 'center'); center.dataset.id = text(item.id); row.append(open, center); } details.append(row); }
+    for (const item of items) { const row = this.host.ownerDocument.createElement('article'); row.className = 'node-drawer-relation-item'; const title = this.host.ownerDocument.createElement('p'); title.textContent = `${direction} ${value(item.title, item.kind_label, 'Elemento')} · ${label} · ${text(item.kind_label)} · ${value(type.class_label, type.relation_class, 'Relazione')}`; title.setAttribute('aria-label', `${value(type.direction, 'non orientata')}: ${text(item.title)}, ${label}, ${text(item.kind_label)}, ${value(type.relation_class, 'relazione')}`); row.append(title); if (text(item.statement)) { const quote = this.host.ownerDocument.createElement('blockquote'); quote.className = 'node-drawer-quote clamped'; quote.textContent = text(item.statement); row.append(quote, this.button('Mostra tutto', 'expand')); } this.technical(row, list(item.technical).map(record)); if (text(item.id)) { const open = this.button('Apri', 'select'); open.dataset.id = text(item.id); const center = this.button('Centra', 'center'); center.dataset.id = text(item.id); row.append(open, center); } details.append(row); }
     if (cached?.error) { this.note(details, cached.error, 'drawer-error'); const retry = this.button('Riprova', 'retry'); retry.dataset.group = key; details.append(retry); }
     if (cached?.loading) { const p = this.host.ownerDocument.createElement('p'); p.className = 'drawer-loading'; p.textContent = 'Caricamento delle relazioni…'; details.append(p); }
     const loaded = cached?.items.length ?? items.length; const more = count > loaded || Boolean(type.has_more) || Boolean(cached && cached.offset < cached.total);

@@ -17,6 +17,52 @@ ROLE = {"user": "Fondatore", "assistant": "Assistente", "human": "Fondatore", "s
 AGGREGATES = {"domain", "project", "system", "work"}
 SOURCES = {"attachment_source", "non_conversation_source"}
 
+# The source records remain verbatim. Only values sent to reader-facing fields
+# pass through this display filter; each removed token is retained nearby.
+DISPLAY_TOKEN = re.compile(
+    r'(?<![\w])(?:[0-9a-fA-F]{16,64}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?![\w])'
+    r'|\b(?:asr|src|ent)_[A-Za-z0-9]+\b'
+    r'|\b(?:conversation|passage|source|domain|project|system|work):[A-Za-z0-9_:.-]+'
+    r'|\b(?:byte(?:s| offset)?\s*[:=]?\s*\d+|\d+\s*bytes?)\b', re.I)
+LITERAL_ESCAPE = re.compile(r'\\(?:[ntr"\\]|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2})')
+SERIALIZED = re.compile(r'(?:["\\]?[\w.-]+["\\]?\s*:\s*(?:null|true|false|["{\[]))|[{}]|\\"', re.I)
+RELATION_CODES = {'classified_in': 'classificato in', 'link_card': 'ponte esplorativo'}
+RELATION_CODE = re.compile(r'\b(?:' + '|'.join(re.escape(key) for key in RELATION_CODES) + r')\b')
+
+
+def _display_safe(value: object, technical: list[dict]) -> str:
+    raw = str(value or '')
+    shown = _display(raw)
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group()
+        is_hash = bool(re.fullmatch(r'[0-9a-fA-F]{16,64}', token))
+        technical.append({'label': 'Impronta originale' if is_hash else 'Identificativo originale', 'value': token})
+        return '‹impronta›' if is_hash else '‹identificativo›'
+
+    if SERIALIZED.search(shown) or LITERAL_ESCAPE.search(shown):
+        DISPLAY_TOKEN.sub(replace, shown)
+        technical.append({'label': 'Testo originale', 'value': raw})
+        return 'Testo strutturato non leggibile (vedi Dettagli tecnici)'
+
+    shown = DISPLAY_TOKEN.sub(replace, shown)
+
+    def relation(match: re.Match[str]) -> str:
+        technical.append({'label': 'Codice relazione originale', 'value': match.group()})
+        return RELATION_CODES[match.group()]
+
+    return RELATION_CODE.sub(relation, shown)
+
+
+def _sanitize_fields(record: dict, fields: tuple[str, ...], technical: list[dict]) -> None:
+    for key in fields:
+        if isinstance(record.get(key), str):
+            record[key] = _display_safe(record[key], technical)
+
+
+def _dedupe_technical(entries: list[dict]) -> list[dict]:
+    return list({(entry['label'], entry['value']): entry for entry in entries}.values())
+
 
 def _short(value: object, length: int = 420) -> str:
     text = _display(value)
@@ -70,7 +116,13 @@ def _message(record: dict) -> str:
 
 def _readable_context(value: object) -> str:
     text = str(value or "").strip()
-    if any(marker in text for marker in ('content_type', 'ntent_type', '"parts"', '"payload"', '{"', '"}')):
+    if not text or SERIALIZED.search(text) or LITERAL_ESCAPE.search(text):
+        return ""
+    letters = sum(character.isalpha() for character in text)
+    spaces = sum(character.isspace() for character in text)
+    # A clipped prose fragment can be short, but still has words and little
+    # punctuation. Metadata and encoded key/value runs fail this check.
+    if letters < 3 or (letters + spaces) / len(text) < .78 or len(re.findall(r'[A-Za-zÀ-ÿ]{2,}', text)) < 2:
         return ""
     return text
 
@@ -144,9 +196,9 @@ class DrawerData:
             raw_span = (detail.get("citation") or {}).get("span") or ""
             if _technical_text(raw_span):
                 item["title"] = "Impronta tecnica del file (nessun testo leggibile)"
-                item["technical"] = [{"label": TECH_LABELS["raw_text"], "value": str(raw_span)}]
+                item.setdefault("technical", []).append({"label": TECH_LABELS["raw_text"], "value": str(raw_span)})
             elif _display(raw_span) != str(raw_span):
-                item["technical"] = [{"label": TECH_LABELS["raw_text"], "value": str(raw_span)}]
+                item.setdefault("technical", []).append({"label": TECH_LABELS["raw_text"], "value": str(raw_span)})
             else:
                 # Exported passage titles can contain an empty date segment.
                 item["title"] = " · ".join(part for part in _title(node).split(" · ") if part.strip())
@@ -155,9 +207,11 @@ class DrawerData:
                 citation = detail.get("citation") or {}
                 value = citation.get("span") or ""
                 if value:
-                    context = " ".join(x for x in (_readable_context(detail.get("context_before")), value,
-                                                     _readable_context(detail.get("context_after"))) if x)
-                    item["text"] = _short(_readable(value) if _technical_text(value) else _readable(context or value), 900)
+                    before = _readable_context(detail.get("context_before"))
+                    after = _readable_context(detail.get("context_after"))
+                    context = " ".join(x for x in (f'{before} …' if before else '…', value,
+                                                     f'… {after}' if after else '…') if x)
+                    item["text"] = _short(_readable(value) if _technical_text(value) else _readable(context), 900)
                 else:
                     item["text"] = "Il testo del passaggio non è disponibile."
                 record = detail.get("record") or {}
@@ -178,7 +232,7 @@ class DrawerData:
                 raw = statement or (spans[0] if spans else "Testo della proposta non disponibile.")
                 item["text"] = _short(_readable(raw), 900)
                 if _technical_text(raw) or _display(raw) != str(raw):
-                    item["technical"] = [{"label": TECH_LABELS["raw_text"], "value": str(raw)}]
+                    item.setdefault("technical", []).append({"label": TECH_LABELS["raw_text"], "value": str(raw)})
                 if node.get("origin") == "USER_AUTHORED":
                     item["author"] = "Fondatore"
                 if node.get("date"):
@@ -225,6 +279,14 @@ class DrawerData:
                 item["children_count"] = count
         elif node.get("date"):
             item["date"] = _date(node["date"])
+        technical = item.setdefault('technical', [])
+        _sanitize_fields(item, ('title', 'text', 'author', 'date'), technical)
+        if isinstance(item.get('source'), dict):
+            _sanitize_fields(item['source'], ('title',), technical)
+        if technical:
+            item['technical'] = _dedupe_technical(technical)
+        else:
+            item.pop('technical')
         return item
 
     def _base(self, identifier: str, section: str, state: str = "ok", message: str | None = None) -> dict:
@@ -365,8 +427,15 @@ class DrawerData:
             insufficient = True
         result = self._base(identifier, "summary", "partial" if insufficient else "ok",
                             "Alcuni dettagli non sono disponibili nei dati verificati." if insufficient else None)
-        result.update({"title": self._item(identifier, with_text=False)['title'], "kind_label": KIND.get(kind, "Elemento"),
+        title_item = self._item(identifier, with_text=False)
+        result.update({"title": title_item['title'], "kind_label": KIND.get(kind, "Elemento"),
                        "sentences": sentences[:6], "facts": facts, "insufficient": insufficient})
+        technical = list(title_item.get('technical', []))
+        result['sentences'] = [_display_safe(sentence, technical) for sentence in result['sentences']]
+        for fact in facts:
+            _sanitize_fields(fact, ('label', 'value'), technical)
+        if technical:
+            result['technical'] = _dedupe_technical(technical)
         return result
 
     def content(self, identifier: str, offset: int, limit: int, query: str) -> dict:
@@ -406,6 +475,10 @@ class DrawerData:
             result['header'] = f"{_count(count, 'proposta deriva', 'proposte derivano')} da questo allegato · testo integrale non disponibile in questa proiezione" if kind == 'attachment_source' else 'Testo integrale non disponibile in questa proiezione'
         if query:
             result["query"] = query
+        technical: list[dict] = []
+        _sanitize_fields(result, ('header', 'message'), technical)
+        if technical:
+            result['technical'] = _dedupe_technical(technical)
         return result
 
     def provenance(self, identifier: str, offset: int, limit: int) -> dict:
@@ -526,6 +599,9 @@ class DrawerData:
         result.update({"chain": chain, "technical": technical})
         if aggregate is not None:
             result["aggregate"] = aggregate
+        for step in chain:
+            _sanitize_fields(step, ('label', 'value'), technical)
+        result['technical'] = _dedupe_technical(technical)
         return result
 
     @staticmethod
@@ -551,6 +627,9 @@ class DrawerData:
             item = self._item(other, with_text=False)
             if kind == 'card' and edge.get('explanation'):
                 item['statement'] = _readable(edge['explanation'])
+                technical = item.setdefault('technical', [])
+                _sanitize_fields(item, ('statement',), technical)
+                item['technical'] = _dedupe_technical(technical)
             buckets[key][other] = item
         parent = (self.node(identifier) or {}).get("parent")
         if parent in self.nodes:
@@ -585,6 +664,13 @@ class DrawerData:
         result = self._base(identifier, "relations", "ok" if total else "empty",
                             None if total else "Non risultano relazioni per questo elemento.")
         result.update({"groups": groups, "total": total})
+        technical: list[dict] = []
+        for relation_group in groups:
+            _sanitize_fields(relation_group, ('class_label',), technical)
+            for relation_type in relation_group['types']:
+                _sanitize_fields(relation_type, ('label', 'relation_class'), technical)
+        if technical:
+            result['technical'] = _dedupe_technical(technical)
         return result
 
     def section(self, identifier: str, section: str, *, offset: int = 0, limit: int = 25,

@@ -100,5 +100,9 @@ test('drawer cards, provenance quotes, and relation rows expose readable fields'
   assert.match(source, /title\.setAttribute\('aria-label',.*type\.direction/);
   assert.match(source, /text\(item\.statement\)/);
   assert.match(source, /this\.technical\(article, list\(item\.technical\)/);
+  assert.match(source, /this\.technical\(host, list\(body\.technical\)/);
+  assert.match(source, /this\.technical\(host, list\(cached\.body\.technical\)/);
+  assert.match(source, /this\.technical\(row, list\(item\.technical\)/);
+  assert.match(source, /this\.technical\(host, technical\.map\(record\)\)/);
   assert.match(html, /\.node-drawer-quote\.clamped \{[^}]*max-height:9em/);
 });
