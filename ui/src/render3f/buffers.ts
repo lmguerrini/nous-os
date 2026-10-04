@@ -126,8 +126,10 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
       // D081-P1E BEGIN: only three clustered principal trunks, with no new scene semantics.
       const trunks = (shape.trunks ?? []).slice(0, 3);
       const maximum = Math.max(1, ...trunks.map(trunk => trunk.weight));
+      // D081-P1F BEGIN: pack the same shoulder strength as the 2D and 3D canvas frame.
       const lobes = trunks.map(trunk => ({ angle: Math.atan2(trunk.direction.y, trunk.direction.x),
-        strength: 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum) }));
+        strength: shape.degree <= 3 ? 0.70 + 0.10 * Math.sqrt(trunk.weight / maximum)
+          : 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum) }));
       const axisAngle = Math.atan2(shape.axis.y, shape.axis.x);
       somaShape[index * 2 + 1] = somaLobeAreaScale(lobes,
         angle => {
@@ -137,8 +139,10 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
         });
       trunks.forEach((trunk, lobeIndex) => [somaLobe0, somaLobe1, somaLobe2][lobeIndex]!.set([
         trunk.direction.x, trunk.direction.y, trunk.direction.z,
-        0.34 + 0.10 * Math.sqrt(trunk.weight / maximum),
+        shape.degree <= 3 ? 0.70 + 0.10 * Math.sqrt(trunk.weight / maximum)
+          : 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum),
       ], index * 4));
+      // D081-P1F END
       // D081-P1E END
     } else if (neuralNodeIds.has(node.id)) somaAxisAndEccentricity.set([1, 0, 0, 1], index * 4);
     haloStopCounts[index] = node.haloAlphaStops.length;

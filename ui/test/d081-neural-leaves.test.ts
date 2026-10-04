@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
+import { buildMorphologyGeometry, somaLobeAngularWidth } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
-import { NEURAL_SOMA_MAX_VERTICES, neuralSomaFrames, somaLobeFactor,
+import { NEURAL_SOMA_MAX_VERTICES, neuralLeafRootWidthPx, neuralSomaFrames, somaLobeFactor,
   somaOutlineRadiusAtAngle, type NeuralSomaFrame, type MorphologyCanvasStyle } from "#render-common/morphology-canvas.ts";
 import { buildNodeBuffers } from "#render3f/buffers.ts";
 import { createNodeRenderResources, NODE_VERTEX_SHADER, NODE_FRAGMENT_SHADER } from "#render3f/node-material.ts";
+import { FILAMENT_FRAGMENT_SHADER, neuralLongitudinalCoverageAt } from "#render3f/filament-material.ts";
 import { buildScene } from "#scene/build.ts";
 import { sceneFixtureGraph, sceneVisualState } from "#test-scene/support.ts";
 
@@ -36,6 +37,10 @@ test("degree-one soma has a real-edge teardrop in both projections", () => {
     assert.equal(leaf.lobes?.length, 1);
     assert.ok(Math.abs(Math.abs(leaf.lobes![0]!.angle) - Math.PI) < 1e-6);
     assert.ok(somaOutlineRadiusAtAngle(leaf, Math.PI) > somaOutlineRadiusAtAngle(leaf, 0) * 1.2);
+    const plain = { ...leaf, lobes: [], lobeAreaScale: 1 };
+    const extension = (somaOutlineRadiusAtAngle(leaf, Math.PI)
+      - somaOutlineRadiusAtAngle(plain, Math.PI)) / leaf.radius;
+    assert.ok(extension >= 0.9 && extension <= 1.2, `protrusion/minor radius = ${extension}`);
   }
   assert.deepEqual(leaf2d.lobes, leaf3d.lobes);
   for (let i = 0; i < 64; i++) {
@@ -69,12 +74,29 @@ test("the low-degree protrusion holds its ribbon width without a concave neck", 
   });
   const tip = Math.min(...points.map(point => point.x));
   const ribbonWidth = Math.max(2, leaf.radius * 0.9);
+  let previous = 0;
+  for (let inset = 0.5; inset <= leaf.radius; inset += 0.5) {
+    const x = tip + inset;
+    const shoulder = points.filter(point => Math.abs(point.x - x) < 0.15);
+    const width = 2 * Math.max(...shoulder.map(point => Math.abs(point.y)));
+    assert.ok(width >= previous - 0.05, `shoulder narrows toward tip at ${inset}: ${width} < ${previous}`);
+    previous = width;
+  }
   for (const inset of [1.5, 2, 3, 4, 5]) {
     const x = tip + inset;
     const shoulder = points.filter(point => Math.abs(point.x - x) < 0.15);
     assert.ok(shoulder.length > 0);
     const width = 2 * Math.max(...shoulder.map(point => Math.abs(point.y)));
     assert.ok(width >= ribbonWidth - 0.2, `inset ${inset}: soma ${width}, ribbon ${ribbonWidth}`);
+  }
+  const root = neuralLeafRootWidthPx(0, 2, leaf.radius);
+  assert.ok(root >= 4, `root ${root} must be at least twice the shaft`);
+  assert.equal(neuralLeafRootWidthPx(leaf.radius, 2, leaf.radius), 2);
+  previous = root;
+  for (let distance = 0.25; distance <= leaf.radius; distance += 0.25) {
+    const width = neuralLeafRootWidthPx(distance, 2, leaf.radius);
+    assert.ok(width <= previous + 1e-12);
+    previous = width;
   }
 });
 
@@ -87,7 +109,8 @@ test("new directional protrusions preserve prior soma area within five percent",
       const newFactor = somaLobeFactor(soma.lobes!, angle, soma.lobeAreaScale);
       const oldExtension = Math.max(0, ...soma.lobes!.map(lobe => {
         const delta = Math.atan2(Math.sin(angle - lobe.angle), Math.cos(angle - lobe.angle));
-        return (0.12 + 1.8 * (lobe.strength - 0.34)) * Math.exp(-0.5 * (delta / 0.34) ** 2);
+        return (0.12 + 1.8 * (lobe.strength - (lobe.strength > 0.6 ? 0.70 : 0.34)))
+          * Math.exp(-0.5 * (delta / 0.34) ** 2);
       }));
       const plain = somaOutlineRadiusAtAngle(soma, angle) / newFactor;
       before += (plain * (1 + oldExtension)) ** 2;
@@ -115,13 +138,41 @@ test("GPU soma texture carries the same three bounded real trunk directions", ()
         + Math.max(1, buffers.haloStopCount) * 2 + slot * 4;
       assert.ok(Math.abs(data[offset]! - trunk.direction.x) < 1e-6);
       assert.ok(Math.abs(data[offset + 1]! - trunk.direction.y) < 1e-6);
-      assert.ok(data[offset + 3]! >= 0.34 && data[offset + 3]! <= 0.44);
+      assert.ok(data[offset + 3]! >= 0.70 - 1e-6 && data[offset + 3]! <= 0.80 + 1e-6);
     }
   }
   assert.equal(resources.geometry.attributes.a_somaLobe0, undefined, "no extra vertex attributes");
   assert.match(NODE_VERTEX_SHADER, /texelFetch\(u_haloStops/);
   assert.match(NODE_FRAGMENT_SHADER, /somaLobe\(v_somaLobe0/);
+  assert.match(NODE_VERTEX_SHADER, /3\.6 : 1\.0/, "the leaf tip must fit inside the GPU quad");
   assert.equal(resources.geometry.getAttribute("position").count, 6);
   resources.haloStops.dispose();
   resources.geometry.dispose(); resources.material.dispose();
+});
+
+test("canvas and GPU use the same shoulder function and keep hub lobes unchanged", () => {
+  assert.equal(somaLobeAngularWidth(frame("leaf", "2d").lobes![0]!.strength), 0.32);
+  assert.equal(somaLobeAngularWidth(0.44), 0.42);
+  assert.match(NODE_FRAGMENT_SHADER, /lobe\.z > 0\.6 \? 0\.32 : 0\.42/);
+});
+
+test("GPU soma joint has full edge alpha and reconstructed centreline has no dark dip", () => {
+  const alpha = 0.72;
+  const fade = 0.05;
+  for (const t of [0, 0.001, 0.01, 0.05, 0.1, 0.5])
+    assert.equal(neuralLongitudinalCoverageAt(t, fade, true, true) * alpha, alpha);
+  assert.equal(neuralLongitudinalCoverageAt(0, fade, false, true), 0);
+  assert.equal(neuralLongitudinalCoverageAt(1, fade, true, false), 0);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /v_neuralProfile\.y > 0\.0 \? 1\.0/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /v_neuralProfile\.z > 0\.0 \? 1\.0/);
+  // Source-over coverage of a filled soma and the edge along a common centreline.
+  // The outline occupies x <= 0; the hidden edge begins inside it at x = -3.
+  const coverage = Array.from({ length: 81 }, (_, i) => {
+    const x = -3 + i * 0.2;
+    const soma = x <= 0 ? 0.9 : 0;
+    const edge = alpha * neuralLongitudinalCoverageAt(i / 400, fade, true, true);
+    return 1 - (1 - soma) * (1 - edge);
+  });
+  const shaft = coverage.slice(16);
+  assert.ok(Math.min(...shaft) >= alpha * 0.9, `centreline dip ${Math.min(...shaft)} vs ${alpha}`);
 });

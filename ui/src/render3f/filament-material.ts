@@ -1,5 +1,16 @@
 import * as THREE from "three";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+
+// D081-P1F BEGIN: software reconstruction of the shader's longitudinal alpha for numeric QA.
+export function neuralLongitudinalCoverageAt(t: number, fadeFraction: number,
+  startHasSoma: boolean, endHasSoma: boolean): number {
+  const ease = (x: number) => {
+    const u = Math.min(1, Math.max(0, x / Math.max(fadeFraction, 1e-9)));
+    return u * u * (3 - 2 * u);
+  };
+  return (startHasSoma ? 1 : ease(t)) * (endHasSoma ? 1 : ease(1 - t));
+}
+// D081-P1F END
 import type { FilamentBuffers } from "#render3f/buffers.ts";
 
 const FILAMENT_RENDER_ORDER = 2;
@@ -156,6 +167,9 @@ void main() {
       min(clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
     float rootEnd = a_neuralRootRatios.y < 0.0 ? ordinary * -a_neuralRootRatios.y : max(ordinary * a_neuralRootRatios.y,
       min(clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
+    // D081-P1F: reserve width for a root at least twice its shaft, including wide sliders.
+    if (a_neuralRootRatios.x > 0.0 && a_neuralRootRatios.x <= 1.8) rootStart = max(rootStart, ordinary * 2.0);
+    if (a_neuralRootRatios.y > 0.0 && a_neuralRootRatios.y <= 1.8) rootEnd = max(rootEnd, ordinary * 2.0);
     maximumBodyHalfWidth = max(maximumBodyHalfWidth, max(rootStart, rootEnd) * 0.5);
   }
   float materialExtent = max(
@@ -304,9 +318,9 @@ void main() {
       min(endRadius * 1.1, ordinary * 6.0)) : ordinary;
     // D081-P1E BEGIN: low-degree roots fit inside the soma protrusion at the joint.
     if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8 && startRadius > 0.0)
-      startRoot = min(startRoot, max(ordinary, startRadius * 0.9));
+      startRoot = max(ordinary * 2.0, min(startRoot, startRadius * 0.9));
     if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8 && endRadius > 0.0)
-      endRoot = min(endRoot, max(ordinary, endRadius * 0.9));
+      endRoot = max(ordinary * 2.0, min(endRoot, endRadius * 0.9));
     // D081-P1E END
     float span = max(length(v_cpC - v_cpA), 1.0);
     float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
@@ -315,8 +329,15 @@ void main() {
       max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
     // The path begins at the centre under the soma. Hold the root through its visible lobe
     // boundary, then taper over the same shoulder that the canvas path uses from that boundary.
+    // D081-P1F: low-degree outlines reach about 3.2 minor radii in the trunk direction.
     float startBoundary = min(0.49, startRadius * 1.5 / span);
     float endBoundary = min(0.49, endRadius * 1.5 / span);
+    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8)
+      startBoundary = min(0.49, startRadius * 3.2 / span);
+    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
+      endBoundary = min(0.49, endRadius * 3.2 / span);
+    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8) startShoulder = min(0.28, startRadius / span);
+    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8) endShoulder = min(0.28, endRadius / span);
     float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, parameter);
     float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - parameter);
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
@@ -333,8 +354,11 @@ void main() {
     radial *= radial;
     float span = max(length(v_cpC - v_cpA), 1.0);
     float fade = min(0.08, max(bodyHalfWidth * 1.5, 2.0 * u_devicePixelRatio) / span);
-    float longitudinal = smoothstep(0.0, fade, parameter)
-      * smoothstep(0.0, fade, 1.0 - parameter);
+    // D081-P1F BEGIN: a soma covers the hidden path origin; its visible joint is full-alpha.
+    // Retain the soft fade only where a path genuinely ends without a soma.
+    float longitudinal = (v_neuralProfile.y > 0.0 ? 1.0 : smoothstep(0.0, fade, parameter))
+      * (v_neuralProfile.z > 0.0 ? 1.0 : smoothstep(0.0, fade, 1.0 - parameter));
+    // D081-P1F END
     // One compact raised-cosine pulse, 20% of the projected span (40–120 CSS px).
     // The same scalar multiplies the whole radial density: no inner stroke or bar.
     float pulseLengthPx = clamp(span / u_devicePixelRatio * 0.2, 40.0, 120.0) * u_devicePixelRatio;

@@ -75,10 +75,11 @@ void main() {
   float haloRadius = max(requestedHaloRadius, haloGapRadius);
   if (a_somaShape.x > 0.5) haloRadius = min(haloRadius, coreRadius * 1.1);
   vec2 corner = vec2((position.x * 2.0) - 1.0, position.y);
-  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 2.1 : 1.0) * 2.0 / u_resolutionDevicePx;
+  // D081-P1F: the projected teardrop pole must fit inside its instanced quad.
+  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 3.6 : 1.0) * 2.0 / u_resolutionDevicePx;
   gl_Position = clipCenter;
   gl_Position.xy += clipOffset * clipCenter.w;
-  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 2.1 : 1.0);
+  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 3.6 : 1.0);
   v_color = a_color;
   v_coreRadiusDevicePx = coreRadius;
   v_haloRadiusDevicePx = haloRadius;
@@ -135,7 +136,8 @@ float somaLobe(vec3 lobe, vec2 radial) {
   if (lobe.z <= 0.0) return 0.0;
   float delta = atan(radial.y, radial.x) - atan(lobe.y, lobe.x);
   delta = atan(sin(delta), cos(delta));
-  return lobe.z * exp(-0.5 * pow(delta / 0.42, 2.0));
+  // D081-P1F: matched to NEURAL_LOBE_ANGULAR_WIDTH in morphology-geometry.ts.
+  return lobe.z * exp(-0.5 * pow(delta / (lobe.z > 0.6 ? 0.32 : 0.42), 2.0));
 }
 void main() {
   float radialDistance = length(v_localDevicePx);

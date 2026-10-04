@@ -3,7 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
+import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralLobeStrength, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
 export { somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
@@ -497,6 +497,16 @@ export function drawStellarClusterGlow(context: CanvasRenderingContext2D, cluste
  * and the soma read as one body with no suspended-egg gap. */
 export const NEURAL_EDGE_SOMA_OVERLAP_PX = 0.5;
 
+// D081-P1F BEGIN: the visible leaf root stays wide at the outline, then eases to shaft width.
+export function neuralLeafRootWidthPx(distanceFromTipPx: number, ordinaryPx: number,
+  somaRadiusPx: number): number {
+  const root = Math.max(ordinaryPx * 2, Math.min(somaRadiusPx * 0.9, ordinaryPx * 6));
+  const t = clamp(distanceFromTipPx / Math.max(somaRadiusPx, 1), 0, 1);
+  const ease = t * t * (3 - 2 * t);
+  return ordinaryPx + (root - ordinaryPx) * (1 - ease);
+}
+// D081-P1F END
+
 /** The drawn soma of one node under the live projection: centre, rotation, clamped radius and
  * eccentricity exactly as the node pass paints them. The junction pass consumes the same values, so
  * the edge start meets the soma that is actually on screen. */
@@ -555,7 +565,8 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
         y: node.position.y + trunk.direction.y, z: node.position.z + trunk.direction.z });
       return Math.hypot(tip.x - p.x, tip.y - p.y) < 1e-6 ? []
         : [{ angle: Math.atan2(tip.y - p.y, tip.x - p.x),
-          strength: 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum) }];
+          strength: node.degree <= 3 ? neuralLobeStrength(trunk.weight, maximum)
+            : 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum) }];
     });
     const frame: NeuralSomaFrame = {
       x: p.x, y: p.y, angle, radius,
@@ -993,6 +1004,8 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     // shape with no suspended-egg gap. Screen space, so 2D and 3D share the exact grammar.
     let startRadius = 0, endRadius = 0;
     let startRootCap = Infinity, endRootCap = Infinity;
+    let startTipDistancePx = 0, endTipDistancePx = 0;
+    let lowDegreeStart = false, lowDegreeEnd = false;
     let rootRatios: readonly [number, number] = [1.8, 1.8];
     if (somaFrames && endpointSomata) {
       const [segmentStart, segmentEnd] = segmentEnds(part);
@@ -1009,18 +1022,28 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       startRadius = startFrame?.radius ?? 0;
       endRadius = endFrame?.radius ?? 0;
       // D081-P1E BEGIN: the low-degree ribbon fits inside the teardrop shoulder.
-      if (startFrame && (startSoma?.degree ?? 0) <= 3) startRootCap = startRadius * 0.9;
-      if (endFrame && (endSoma?.degree ?? 0) <= 3) endRootCap = endRadius * 0.9;
+      lowDegreeStart = !!startFrame && (startSoma?.degree ?? 0) <= 3;
+      lowDegreeEnd = !!endFrame && (endSoma?.degree ?? 0) <= 3;
+      if (lowDegreeStart) startRootCap = Math.max(startRadius * 0.9, appearance.edgeWidth * 2);
+      if (lowDegreeEnd) endRootCap = Math.max(endRadius * 0.9, appearance.edgeWidth * 2);
       // D081-P1E END
       if (startFrame || endFrame) {
         let first = points[0]!, last = points[points.length - 1]!;
         if (startFrame) {
           const adjusted = neuralRootInsideSoma(startFrame, points[1]!);
           first = { x: adjusted.x, y: adjusted.y, scale: first.scale };
+          if (lowDegreeStart) {
+            const tip = neuralEdgeEndOnSoma(startFrame, points[1]!);
+            startTipDistancePx = Math.hypot(tip.x - first.x, tip.y - first.y);
+          }
         }
         if (endFrame) {
           const adjusted = neuralRootInsideSoma(endFrame, points[points.length - 2]!);
           last = { x: adjusted.x, y: adjusted.y, scale: last.scale };
+          if (lowDegreeEnd) {
+            const tip = neuralEdgeEndOnSoma(endFrame, points[points.length - 2]!);
+            endTipDistancePx = Math.hypot(tip.x - last.x, tip.y - last.y);
+          }
         }
         points = [first, ...points.slice(1, -1), last];
       }
@@ -1054,8 +1077,14 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         // centre-line only; it cannot turn the shaft into a zoom-scaled band.
         const body = Math.max(0.3, appearance.edgeWidth * widthFactor
           * (emphasis?.radiusMultiplier ?? 1));
-        const ordinary = neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx,
+        let ordinary = neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx,
           [(part.trunkSourceCount ?? 1) <= 1, (part.trunkTargetCount ?? 1) <= 1]);
+        // D081-P1F: low-degree roots taper from the drawn tip over one minor radius.
+        if (lowDegreeStart || lowDegreeEnd) {
+          ordinary = Math.max(body,
+            lowDegreeStart ? neuralLeafRootWidthPx(t * totalPx - startTipDistancePx, body, startRadius) : body,
+            lowDegreeEnd ? neuralLeafRootWidthPx((1 - t) * totalPx - endTipDistancePx, body, endRadius) : body);
+        }
         return Math.min(Math.max(body, t < 0.5 ? startRootCap : endRootCap), Math.max(ordinary,
           neuralBranchedWidthPx(i, points.length, part.sourceBranches?.length ?? 0, body, startRadius, rootRatios[0]),
           neuralBranchedWidthPx(points.length - 1 - i, points.length, part.targetBranches?.length ?? 0,

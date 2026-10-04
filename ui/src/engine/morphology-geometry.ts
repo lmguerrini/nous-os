@@ -133,6 +133,15 @@ export const SOMA_OUTLINE_MAX_RADIAL = 0.12;
 
 // D081-P1E BEGIN: pure lobe profile shared by the canvas and GPU buffer builder.
 export type SomaLobe = { readonly angle: number; readonly strength: number };
+// D081-P1F BEGIN: a taller, narrower shoulder keeps the prior soma area while exposing its tip.
+export const NEURAL_LOBE_ANGULAR_WIDTH = 0.32;
+export function neuralLobeStrength(weight: number, maximum: number): number {
+  return 0.70 + 0.10 * Math.sqrt(weight / Math.max(1, maximum));
+}
+export function somaLobeAngularWidth(strength: number): number {
+  return strength > 0.6 ? NEURAL_LOBE_ANGULAR_WIDTH : 0.42;
+}
+// D081-P1F END
 export function somaLobeAreaScale(lobes: readonly SomaLobe[],
   baseRadiusAtAngle: (angle: number) => number = () => 1): number {
   if (!lobes.length) return 1;
@@ -141,8 +150,10 @@ export function somaLobeAreaScale(lobes: readonly SomaLobe[],
     const angle = 2 * Math.PI * i / 64;
     const extension = (old: boolean) => Math.max(0, ...lobes.map(lobe => {
       const delta = Math.atan2(Math.sin(angle - lobe.angle), Math.cos(angle - lobe.angle));
-      const strength = old ? 0.12 + 1.8 * (lobe.strength - 0.34) : lobe.strength;
-      return strength * Math.exp(-0.5 * (delta / (old ? 0.34 : 0.42)) ** 2);
+      // D081-P1F: compare area with the P1e shoulder (its packed strength was 0.36 lower).
+      const lowDegree = lobe.strength > 0.6;
+      const strength = old ? 0.12 + 1.8 * (lobe.strength - (lowDegree ? 0.70 : 0.34)) : lobe.strength;
+      return strength * Math.exp(-0.5 * (delta / (old ? 0.34 : somaLobeAngularWidth(lobe.strength))) ** 2);
     }));
     const baseArea = baseRadiusAtAngle(angle) ** 2;
     before += baseArea * (1 + extension(true)) ** 2;
@@ -155,7 +166,7 @@ export function somaLobeFactor(lobes: readonly SomaLobe[], angle: number,
   let extension = 0;
   for (const lobe of lobes) {
     const delta = Math.atan2(Math.sin(angle - lobe.angle), Math.cos(angle - lobe.angle));
-    const shoulder = Math.exp(-0.5 * (delta / 0.42) ** 2);
+    const shoulder = Math.exp(-0.5 * (delta / somaLobeAngularWidth(lobe.strength)) ** 2);
     extension = Math.max(extension, lobe.strength * shoulder);
   }
   return (1 + extension) * areaScale;
