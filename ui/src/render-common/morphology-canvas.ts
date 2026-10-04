@@ -1096,7 +1096,7 @@ export function neuralEdgeDensity(radialFraction: number): number {
 /** Two concentric premultiplied-alpha bands approximate a centre-peaked density: the outer
  * coverage is 0.6a; inside 62% width it is 1-(1-0.6a)(1-0.4a). Both bands share the exact
  * tapered outline, so no segment boundary can create a dash. Below 2 px the subpixel inner band
- * is omitted. The travelling light is one further fill, confined to that same inner outline. */
+ * is omitted. The travelling light reuses both proportions on its separate canvas layer. */
 export function neuralRibbonProfile(widthPx: number): readonly { width: number; alpha: number }[] {
   return widthPx < 2 ? [{ width: 1, alpha: 1 }]
     : [{ width: 1, alpha: 0.6 }, { width: 0.62, alpha: 0.4 }];
@@ -1124,28 +1124,43 @@ function neuralProfileWidth(paint: MorphologyEdgePaint): number {
   return width;
 }
 
-export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint): void {
+export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
+  modulation?: (distancePx: number) => number): void {
+  // Source-over saturation flattens the centre/shoulder ratio at high base opacity. Bound the
+  // inline gain so that ratio stays within ten percent of the resting nested-ribbon profile.
+  const profileSafeBoost = Math.max(0, 0.416666 / Math.max(paint.alpha, 0.001) - 0.1);
   for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
-    context.fillStyle = rgba(paint.color, clamp(paint.alpha * layer.alpha, 0, 1));
+    if (modulation) {
+      const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
+      const samples = Math.max(24, Math.min(128, Math.ceil(paint.totalPx / 8)));
+      const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
+      for (let stop = 0; stop <= samples; stop++) {
+        const fraction = stop / samples;
+        gradient.addColorStop(fraction, rgba(paint.color,
+          clamp(paint.alpha * layer.alpha * (1 + Math.min(profileSafeBoost, modulation(fraction * paint.totalPx))), 0, 1)));
+      }
+      context.fillStyle = gradient;
+    } else context.fillStyle = rgba(paint.color, clamp(paint.alpha * layer.alpha, 0, 1));
     fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
 }
 
-/** A single chord gradient gives the whole inner ribbon one smooth travelling brightness bump.
- * The wave has a two-edge-length period and at most 0.24 amplitude. Curved paths retain their
- * continuous outline; the chord is only the gradient coordinate, never a geometry substitute. */
+/** The pulse uses the same nested widths and alpha proportions as the resting edge. The chord is
+ * only the gradient coordinate; both continuous outlines still follow every projected point. */
 export function drawNeuralLight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   modulation: (distancePx: number) => number): void {
   const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
-  const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
-  for (let stop = 0; stop <= 24; stop++) {
-    const fraction = stop / 24;
-    gradient.addColorStop(fraction, rgba(paint.color,
-      clamp(paint.alpha * modulation(fraction * paint.totalPx), 0, 1)));
+  const samples = Math.max(24, Math.min(128, Math.ceil(paint.totalPx / 8)));
+  for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
+    const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
+    for (let stop = 0; stop <= samples; stop++) {
+      const fraction = stop / samples;
+      gradient.addColorStop(fraction, rgba(paint.color,
+        clamp(paint.alpha * layer.alpha * modulation(fraction * paint.totalPx), 0, 1)));
+    }
+    context.fillStyle = gradient;
+    fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
-  context.fillStyle = gradient;
-  const innerWidth = neuralRibbonProfile(neuralProfileWidth(paint)).at(-1)!.width;
-  fillRibbon(context, paint.points, i => paint.widthAt(i) * innerWidth);
 }
 
 /** Preserve the pre-existing flow treatment for non-Neural morphologies. */
@@ -1272,8 +1287,10 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
       if (typeof context.createLinearGradient === "function")
         drawNeuralLight(context, paint, distance => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity));
       else {
-        context.fillStyle = rgba(paint.color, clamp(paint.alpha * FLOW_WAVE_MAX_ALPHA * 0.5 * intensity, 0, 1));
-        fillRibbon(context, paint.points, i => paint.widthAt(i));
+        for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
+          context.fillStyle = rgba(paint.color, clamp(paint.alpha * layer.alpha * FLOW_WAVE_MAX_ALPHA * intensity, 0, 1));
+          fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
+        }
       }
     } else drawLegacyFlowProfile(context, paint,
       distance => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity));
@@ -1283,7 +1300,7 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
 /** Reduced motion keeps the entire exploratory profile continuously and uniformly lit. */
 export function drawEdgeStaticCue(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   intensity: number, gradientCapable: boolean): void {
-  const staticAlpha = FLOW_WAVE_MAX_ALPHA * 0.65 * intensity;
+  const staticAlpha = FLOW_WAVE_MAX_ALPHA * 0.35 * Math.min(1, Math.max(0, intensity / 0.6));
   if (gradientCapable) {
     if (paint.neural) drawNeuralLight(context, paint, () => staticAlpha);
     else drawLegacyFlowProfile(context, paint, () => staticAlpha);
@@ -1291,8 +1308,10 @@ export function drawEdgeStaticCue(context: CanvasRenderingContext2D, paint: Morp
   }
   const { points, color, alpha, widthAt } = paint;
   if (paint.neural) {
-    context.fillStyle = rgba(color, clamp(alpha * staticAlpha, 0, 1));
-    fillRibbon(context, points, widthAt);
+    for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
+      context.fillStyle = rgba(color, clamp(alpha * layer.alpha * staticAlpha, 0, 1));
+      fillRibbon(context, points, i => widthAt(i) * layer.width);
+    }
     return;
   }
   context.strokeStyle = rgba(color, clamp(alpha * staticAlpha, 0, 1));
@@ -1366,7 +1385,17 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const inlineFlowPaints: MorphologyEdgePaint[] = [];
     let neuralDetailStrokes = 0;
     for (const paint of paints) {
-      drawEdgeBase(context, paint, moving && geometry.morphology === "neural");
+      const animatedHere = paint.category === "exploratory" && animating && animatedEdges.has(paint.edgeId);
+      // Neural's inline and reduced-motion paths apply brightness to the two existing profile
+      // fills. The product's separate flow canvas still paints only its two overlay fills.
+      const combineNeuralLight = paint.neural && !moving && gradientCapable && (inlineHighlights || !animatedHere)
+        && paint.category === "exploratory" && intensity > 0;
+      if (combineNeuralLight) {
+        const modulation = animatedHere
+          ? (distance: number) => flowWaveAlpha(distance, paint.totalPx, now, appearance.flowSpeed, intensity)
+          : () => FLOW_WAVE_MAX_ALPHA * 0.35 * Math.min(1, Math.max(0, intensity / 0.6));
+        drawNeuralProfile(context, paint, modulation);
+      } else drawEdgeBase(context, paint, moving && geometry.morphology === "neural");
       if (!moving && !simplified && !testHook()?.hideNodes && geometry.morphology === "neural" && neuralDetailStrokes < 128
         && (paint.detailStartPx > 0 || paint.detailEndPx > 0)) {
         neuralDetailStrokes += drawNeuralDetail(context, paint, 128 - neuralDetailStrokes);
@@ -1374,13 +1403,14 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       if (paint.category === "exploratory") {
         // "separate" leaves the travelling highlight to the dedicated overlay: nothing draws here,
         // so the lighter composite (and its restore) is skipped for that edge entirely.
-        const animatedHere = animating && animatedEdges.has(paint.edgeId);
         if (!animatedHere || inlineHighlights) {
           const previousComposite = context.globalCompositeOperation;
           context.globalCompositeOperation = "lighter";
           context.lineCap = "round";
           context.lineJoin = "round";
-          if (animatedHere) {
+          if (combineNeuralLight) {
+            // The existing two fills already carry the pulse or uniform cue.
+          } else if (animatedHere) {
             inlineFlowPaints.push(paint);
           } else if (intensity > 0) {
             drawEdgeStaticCue(context, paint, intensity, gradientCapable);
@@ -1724,7 +1754,7 @@ function flowProjectionAnchors(geometry: MorphologyGeometry,
  * shared budget selected (same deterministic selection the inline pass would draw, so both layers
  * agree without coordination). Reads the shared flow clock (`setFlowNow`/`setFlowMotionAllowed`,
  * driven today by the product view's animation loop). Nothing else is drawn: no base lines, no
- * static cue, no nodes. Neural uses one continuous inner ribbon per edge; other morphologies
+ * static cue, no nodes. Neural uses the complete nested ribbon per edge; other morphologies
  * retain their established overlay cross-section.
  *
  * Signature:

@@ -65,19 +65,20 @@ function paint(widthAt: (i: number) => number, curved = false): MorphologyEdgePa
     alpha: 0.8, widthAt, detailStartPx: 0, detailEndPx: 0 };
 }
 
-test("still Neural edges are continuous, centre-peaked ribbons with at most three fills", () => {
+test("still Neural edges and the separate light layer remain continuous and centre-peaked", () => {
   for (const edge of [paint(() => 1.6), paint(i => 3 + 6 * Math.max(0, 1 - i / 5), true)]) {
     const { context, fills } = recordingCanvas();
     drawNeuralProfile(context, edge);
+    const baseFills = fills.length;
+    const baseSamples = Array.from({ length: 201 }, (_, x) =>
+      coverage(fills, x, edge.points[10]!.y === 50 ? 50 : 50 + 7 * Math.sin(Math.PI * x / 200)));
     drawNeuralLight(context, edge, d => flowWaveAlpha(d, edge.totalPx, 400, 1, 0.8));
-    assert.ok(fills.length <= 3, `one edge used ${fills.length} fills`);
+    assert.ok(baseFills <= 2 && fills.length - baseFills <= 2,
+      `one pass used ${baseFills} base and ${fills.length - baseFills} light fills`);
     assert.ok(fills.every(fill => fill.path.length === edge.points.length * 2));
-    const samples = Array.from({ length: 201 }, (_, x) => {
-      return coverage(fills, x, edge.points[10]!.y === 50 ? 50 : 50 + 7 * Math.sin(Math.PI * x / 200));
-    });
-    for (let i = 15; i < samples.length - 15; i++) {
-      const nearby = Math.max(...samples.slice(i - 15, i + 16));
-      assert.ok(samples[i]! >= nearby * 0.85, `dash at x=${i}`);
+    for (let i = 15; i < baseSamples.length - 15; i++) {
+      const nearby = Math.max(...baseSamples.slice(i - 15, i + 16));
+      assert.ok(baseSamples[i]! >= nearby * 0.85, `dash in base edge at x=${i}`);
     }
     const centre = edge.points[10]!.y;
     let previous = coverage(fills, 100, centre);
@@ -100,8 +101,43 @@ test("profile samples composite monotonically and reduced-motion cue stays unifo
   assert.ok(centre > outer && outer > 0);
   assert.ok(Math.abs(centre - (1 - (1 - 0.8 * 0.6) * (1 - 0.8 * 0.4))) < 1e-12);
   drawEdgeStaticCue(context, edge, 0.8, true);
-  assert.equal(fills.length, 3);
+  assert.equal(fills.length, 4);
   const cue = fills[2]!.style;
   assert.equal(typeof cue, "object");
   if (typeof cue !== "string") assert.ok(cue.stops.every(stop => stop.alpha === cue.stops[0]!.alpha));
+  const innerCue = fills[3]!.style;
+  if (typeof innerCue !== "string") assert.ok(innerCue.stops.every(stop => stop.alpha === innerCue.stops[0]!.alpha));
+});
+
+test("travelling light preserves the base centre-to-half-width alpha ratio", () => {
+  const edge = paint(() => 3);
+  const { context, fills } = recordingCanvas();
+  drawNeuralProfile(context, edge);
+  const sampleY = 51.125;
+  const baseRatio = coverage(fills, 100, 50) / coverage(fills, 100, sampleY);
+  drawNeuralLight(context, edge, distance => flowWaveAlpha(distance, edge.totalPx, 3125, 1, 0.6));
+  const litRatio = coverage(fills, 100, 50) / coverage(fills, 100, sampleY);
+  assert.ok(Math.abs(litRatio / baseRatio - 1) <= 0.1,
+    `light changed centre/half-width ratio ${baseRatio} → ${litRatio}`);
+  assert.ok(coverage(fills, 100, sampleY) > coverage(fills.slice(0, 2), 100, sampleY) * 1.35,
+    "the pulse must brighten the outer half-width too");
+});
+
+test("an inline pulse or static cue reuses the base profile's two fills", () => {
+  const edge = paint(() => 3);
+  const baseline = recordingCanvas();
+  drawNeuralProfile(baseline.context, edge);
+  const sampleY = 51.125;
+  const baseRatio = coverage(baseline.fills, 100, 50) / coverage(baseline.fills, 100, sampleY);
+  for (const modulation of [
+    (distance: number) => flowWaveAlpha(distance, edge.totalPx, 3125, 1, 0.6),
+    () => 0.28,
+  ]) {
+    const { context, fills } = recordingCanvas();
+    drawNeuralProfile(context, edge, modulation);
+    assert.equal(fills.length, 2);
+    assert.ok(fills.every(fill => fill.style instanceof Object));
+    const ratio = coverage(fills, 100, 50) / coverage(fills, 100, sampleY);
+    assert.ok(Math.abs(ratio / baseRatio - 1) <= 0.1);
+  }
 });

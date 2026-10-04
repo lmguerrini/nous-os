@@ -216,6 +216,7 @@ uniform float u_devicePixelRatio;
 uniform float u_sizeScale;
 uniform float u_neuralWidthPx;
 uniform float u_permilleScale;
+uniform float u_flowElapsedMs;
 out vec4 outputColor;
 ${FILAMENT_DISTANCE_GLSL}
 float alongLengthLuminance(float parameter) {
@@ -328,13 +329,20 @@ void main() {
     float fade = min(0.08, max(bodyHalfWidth * 1.5, 2.0 * u_devicePixelRatio) / span);
     float longitudinal = smoothstep(0.0, fade, parameter)
       * smoothstep(0.0, fade, 1.0 - parameter);
-    // A two-edge-length spatial period allows at most one peak on a visible edge.
-    // Reduced motion has a uniform static cue, so no travelling segment can appear.
-    float lightPosition = v_propagationPermille.x / u_permilleScale;
-    float wave = v_propagationPermille.z > 0.0
-      ? 0.5 + 0.5 * cos(3.14159265 * (parameter - 2.0 * lightPosition))
-      : 0.65;
-    float hot = min(0.24, 0.24 * v_hotAndWobble.x / u_permilleScale) * wave;
+    // One compact raised-cosine pulse, 20% of the projected span (40–120 CSS px).
+    // The same scalar multiplies the whole radial density: no inner stroke or bar.
+    float pulseLengthPx = clamp(span / u_devicePixelRatio * 0.2, 40.0, 120.0) * u_devicePixelRatio;
+    float pulseHalfParameter = pulseLengthPx / (2.0 * span);
+    float lightPosition = mod(u_flowElapsedMs * 0.032 * u_devicePixelRatio,
+      span + pulseLengthPx) / span;
+    float pulseDistance = abs(parameter - lightPosition);
+    float pulse = pulseDistance < pulseHalfParameter
+      ? 0.5 + 0.5 * cos(3.14159265 * pulseDistance / pulseHalfParameter)
+      : 0.0;
+    pulse *= smoothstep(0.0, pulseHalfParameter, lightPosition);
+    // Reduced motion is a uniform, quiet edge. The moving profile peaks 80% above base.
+    float hot = min(0.8, 0.8 * v_hotAndWobble.x / (0.95 * u_permilleScale))
+      * (v_propagationPermille.z > 0.0 ? pulse : 0.35);
     float alpha = clamp(v_opacity * radial * longitudinal
       * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
     if (alpha <= 0.0) discard;
@@ -409,6 +417,7 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
       u_devicePixelRatio: { value: scalarCount() },
       u_sizeScale: { value: scalarCount() },
       u_neuralWidthPx: { value: 1 },
+      u_flowElapsedMs: { value: 0 },
       u_isPerspective: { value: 0 },
       u_referenceViewDepth: { value: 1 },
       u_permilleScale: { value: SCENE_PERMILLE_SCALE },
@@ -422,6 +431,9 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
     blendEquation: THREE.AddEquation,
   });
   const mesh = new THREE.Mesh(geometry, material);
+  // The canvas overlay owns the product's 30 fps clock. This shader samples the same 32 CSS
+  // px/s cadence whenever the 3D renderer draws, without starting another full-scene loop.
+  mesh.onBeforeRender = () => { requiredUniform(material, "u_flowElapsedMs").value = performance.now(); };
   mesh.frustumCulled = false;
   mesh.renderOrder = FILAMENT_RENDER_ORDER;
   return { geometry, material, mesh };

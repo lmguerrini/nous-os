@@ -76,22 +76,31 @@ export function flowPulseAlpha(distanceNormalised: number, centre: number, inten
 }
 
 // ---------------------------------------------------------------- travelling flow
-// The two-edge-length cosine above is the live profile. The older head/tail helpers remain exported
-// for compatibility with historical evidence tests; no renderer draws their separate strokes.
+// The older head/tail helpers remain exported for historical evidence tests. The live light is a
+// single, compact raised-cosine envelope; its entire width modulates the same radial edge profile.
 
 /** Head travel speed at speed 1, in screen px/s. Every edge shares it: uniform speed, per-edge cycle. */
 export const FLOW_HEAD_SPEED_PX_S = 32;
-/** The spatial wave occupies two edge lengths: a visible edge can contain at most one peak. */
+/** Historical compatibility constant; the live pulse has a compact, non-repeating envelope. */
 export const FLOW_WAVE_PERIOD_LENGTHS = 2;
-/** The wave changes opacity modestly and never replaces the continuous base edge. */
-export const FLOW_WAVE_MAX_ALPHA = 0.24;
-/** One smooth, periodic travelling wave over the full edge, including its off-edge return. */
+/** Peak light relative to the edge's own alpha at the default intensity (0.6). */
+export const FLOW_WAVE_MAX_ALPHA = 0.8;
+/** Full visible length, approximately 20% of the edge and bounded in screen pixels. */
+export function flowPulseLengthPx(edgeLengthPx: number): number {
+  return Math.max(40, Math.min(120, edgeLengthPx * 0.2));
+}
+/** One pulse travels from source to target, drains beyond the end, then restarts. */
 export function flowWaveAlpha(atPx: number, edgeLengthPx: number, elapsedMilliseconds: number,
   speed: number, intensity: number): number {
   if (!(edgeLengthPx > 0) || !(speed > 0) || !(intensity > 0)) return 0;
-  const travel = elapsedMilliseconds / 1000 * speed * FLOW_HEAD_SPEED_PX_S;
-  const phase = 2 * Math.PI * (atPx - travel) / (FLOW_WAVE_PERIOD_LENGTHS * edgeLengthPx);
-  return FLOW_WAVE_MAX_ALPHA * Math.min(1, Math.max(0, intensity)) * (1 + Math.cos(phase)) * 0.5;
+  const pulseLength = flowPulseLengthPx(edgeLengthPx);
+  const centre = flowHeadPositionPx(elapsedMilliseconds, speed, edgeLengthPx + pulseLength);
+  const distance = Math.abs(atPx - centre);
+  if (distance >= pulseLength * 0.5) return 0;
+  const envelope = 0.5 + 0.5 * Math.cos(2 * Math.PI * distance / pulseLength);
+  const entering = Math.min(1, Math.max(0, centre / (pulseLength * 0.5)));
+  const restartFade = entering * entering * (3 - 2 * entering);
+  return FLOW_WAVE_MAX_ALPHA * Math.min(1, Math.max(0, intensity / 0.6)) * envelope * restartFade;
 }
 /** Reach of the bright head, in px along the path from the head backwards. */
 export const FLOW_HEAD_PX = 24;
