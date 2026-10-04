@@ -238,9 +238,293 @@ function domainCentres3d(roots: readonly LayoutNode[], edges: readonly LayoutEdg
     return new Map(points.map(point => [point.id, { x: point.x, y: point.y, z: point.z }]));
 }
 function flat(input: LayoutInput): LayoutResult {
-    if (input.morphology === 'stellar')
-        return flatStellar(input);
-    return input.projection === '3d' ? flat3d(input) : flat2d(input);
+    const laidOut = input.morphology === 'stellar' ? flatStellar(input)
+        : input.projection === '3d' ? flat3d(input) : flat2d(input);
+    return packDisconnectedComponents(input, laidOut);
+}
+
+type Bounds2 = { minX: number; maxX: number; minY: number; maxY: number };
+const boundsOf = (ids: readonly string[], positions: ReadonlyMap<string, Point3>): Bounds2 => {
+    const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+    for (const id of ids) {
+        const point = positions.get(id);
+        if (!point) continue;
+        bounds.minX = Math.min(bounds.minX, point.x); bounds.maxX = Math.max(bounds.maxX, point.x);
+        bounds.minY = Math.min(bounds.minY, point.y); bounds.maxY = Math.max(bounds.maxY, point.y);
+    }
+    return bounds;
+};
+const unionBounds = (a: Bounds2, b: Bounds2): Bounds2 => ({
+    minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX),
+    minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY),
+});
+const shiftedBounds = (bounds: Bounds2, dx: number, dy: number): Bounds2 => ({
+    minX: bounds.minX + dx, maxX: bounds.maxX + dx,
+    minY: bounds.minY + dy, maxY: bounds.maxY + dy,
+});
+const boundsClear = (a: Bounds2, b: Bounds2, gap: number): boolean =>
+    a.minX >= b.maxX + gap || a.maxX <= b.minX - gap ||
+    a.minY >= b.maxY + gap || a.maxY <= b.minY - gap;
+/** Counter-clockwise outer outline of the main component in its front-facing plane. */
+function convexHull(points: readonly Point3[]): Point3[] {
+    const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y)
+        .filter((point, index, all) => index === 0 || point.x !== all[index - 1]!.x || point.y !== all[index - 1]!.y);
+    const cross = (a: Point3, b: Point3, c: Point3) =>
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    const lower: Point3[] = [], upper: Point3[] = [];
+    for (const point of sorted) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2]!, lower[lower.length - 1]!, point) <= 0)
+            lower.pop();
+        lower.push(point);
+    }
+    for (const point of sorted.reverse()) {
+        while (upper.length >= 2 && cross(upper[upper.length - 2]!, upper[upper.length - 1]!, point) <= 0)
+            upper.pop();
+        upper.push(point);
+    }
+    lower.pop(); upper.pop();
+    return [...lower, ...upper];
+}
+
+/** Pack actual disconnected components after the morphology has laid them out. Parent links group
+ * a disclosed hierarchy; relations group the roots. These links identify components only and never
+ * enter the rendered edge set. The largest component is left byte-for-byte in place. */
+export function packDisconnectedComponents(input: LayoutInput, laidOut: LayoutResult): LayoutResult {
+    if (input.organization !== 'natural' || input.nodes.length < 2) return laidOut;
+    const positions = laidOut.positions;
+    const parent = new Map(input.nodes.map(node => [node.id, node.id]));
+    const find = (id: string): string => {
+        let root = id;
+        while (parent.get(root) !== root) root = parent.get(root)!;
+        while (id !== root) { const next = parent.get(id)!; parent.set(id, root); id = next; }
+        return root;
+    };
+    const join = (a: string, b: string) => {
+        if (!parent.has(a) || !parent.has(b)) return;
+        const left = find(a), right = find(b);
+        if (left !== right) parent.set(right, left);
+    };
+    for (const node of input.nodes) if (node.parent) join(node.id, node.parent);
+    for (const edge of input.edges) join(edge.source, edge.target);
+    const components = new Map<string, string[]>();
+    for (const node of input.nodes) {
+        const key = find(node.id);
+        const ids = components.get(key) ?? [];
+        ids.push(node.id);
+        components.set(key, ids);
+    }
+    if (components.size < 2) return laidOut;
+    const ordered = [...components.values()].map(ids => ids.sort(compare))
+        .sort((a, b) => b.length - a.length || compare(a[0]!, b[0]!));
+    // Without a dominant component there is no stable overall hull; the morphology's own
+    // multi-community packing is already the intended arrangement.
+    if (ordered[0]!.length < input.nodes.length / 2) return laidOut;
+    const main = boundsOf(ordered[0]!, positions);
+    const spacingParams = morphologyLayoutParams(input.morphology);
+    const spacing = 21 * spacingParams.spacingMultiplier / Math.sqrt(spacingParams.clusterCompactness);
+    const gap = spacing * 1.5 + 20; // node radii plus a small label/cluster gutter
+    const summaries = laidOut.communities ?? [];
+    const summaryById = new Map(summaries.map(community => [community.id, community]));
+    const meanRadius = summaries.length
+        ? summaries.reduce((sum, community) => sum + community.radius, 0) / summaries.length : 0;
+    const maxRadius = summaries.reduce((largest, community) => Math.max(largest, community.radius), 0);
+    const stellarVoid = STELLAR_VOID_RATIO * meanRadius;
+    const placedSummaries = summaries.filter(community => ordered[0]!.includes(community.id));
+    const largeField = ordered.length > 64;
+    const gridColumns = Math.ceil(Math.sqrt(ordered.length - 1));
+    let gridCell = gap + 2 * maxRadius + stellarVoid;
+    if (largeField) for (const ids of ordered.slice(1)) {
+        const box = boundsOf(ids, positions);
+        gridCell = Math.max(gridCell,
+            Math.max(box.maxX - box.minX, box.maxY - box.minY) + gap + 2 * maxRadius + stellarVoid);
+    }
+    const occupied: Bounds2[] = [main];
+    const occupiedGroups: Point3[][] = [ordered[0]!.map(id => positions.get(id)!)];
+    let enclosure = main;
+    const packed = new Map(positions);
+    const shifts = new Map<string, Point3>();
+    const mainMidX = (main.minX + main.maxX) / 2;
+    const mainMidY = (main.minY + main.maxY) / 2;
+    const mainMinZ = Math.min(...occupiedGroups[0]!.map(point => point.z));
+    const mainMaxZ = Math.max(...occupiedGroups[0]!.map(point => point.z));
+    const outline = largeField ? [] : convexHull(occupiedGroups[0]!);
+    for (const [componentIndex, ids] of ordered.slice(1).entries()) {
+        const source = boundsOf(ids, positions);
+        const ownSummaries = ids.map(id => summaryById.get(id)).filter((item): item is CommunityInfo => item !== undefined);
+        // A disclosure reuses old coordinates. Never move a component containing an old node.
+        if (ids.some(id => input.previous?.has(id))) {
+            occupied.push(source);
+            occupiedGroups.push(ids.map(id => positions.get(id)!));
+            enclosure = unionBounds(enclosure, source);
+            placedSummaries.push(...ownSummaries);
+            continue;
+        }
+        const width = source.maxX - source.minX, height = source.maxY - source.minY;
+        const midX = (source.minX + source.maxX) / 2, midY = (source.minY + source.maxY) / 2;
+        const meanZ = ids.reduce((sum, id) => sum + (positions.get(id)?.z ?? 0), 0) / ids.length;
+        const dz = input.projection === '3d'
+            ? meanZ < mainMinZ ? mainMinZ - meanZ : meanZ > mainMaxZ ? mainMaxZ - meanZ : 0 : 0;
+        const hullSides = outline.map((a, index) => {
+            const b = outline[(index + 1) % outline.length]!;
+            const length = Math.hypot(b.x - a.x, b.y - a.y);
+            if (length < 1e-9) return null;
+            const tx = (b.x - a.x) / length, ty = (b.y - a.y) / length;
+            const nx = ty, ny = -tx;
+            let minimum = Infinity;
+            for (const id of ids) {
+                const point = positions.get(id)!;
+                minimum = Math.min(minimum, point.x * nx + point.y * ny);
+            }
+            return { a, b, tx, ty, nx, ny, minimum, required: a.x * nx + a.y * ny + gap };
+        }).filter((side): side is NonNullable<typeof side> => side !== null);
+        let best: { dx: number; dy: number; box: Bounds2; score: number } | null = null;
+        if (largeField) {
+            const column = componentIndex % gridColumns;
+            const row = Math.floor(componentIndex / gridColumns);
+            const dx = main.maxX + gap + maxRadius + column * gridCell - source.minX;
+            const dy = mainMidY + (row - Math.floor(gridColumns / 2)) * gridCell - midY;
+            best = { dx, dy, box: shiftedBounds(source, dx, dy), score: 0 };
+        }
+        const outsideOutline = (dx: number, dy: number) => outline.length < 3 || hullSides.some(side =>
+            side.minimum + dx * side.nx + dy * side.ny >= side.required - 1e-7);
+        const consider = (dx: number, dy: number, rectangular: boolean) => {
+            if (!rectangular && !outsideOutline(dx, dy)) return;
+            const box = shiftedBounds(source, dx, dy);
+            if (rectangular && !occupied.every(other => boundsClear(box, other, gap - 1e-7))) return;
+            if (!rectangular && occupiedGroups.some((group, groupIndex) => {
+                if (groupIndex === 0 || boundsClear(box, occupied[groupIndex]!, gap - 1e-7)) return false;
+                return ids.some(id => {
+                    const point = positions.get(id)!;
+                    return group.some(other => Math.hypot(point.x + dx - other.x, point.y + dy - other.y) < gap - 1e-7);
+                });
+            })) return;
+            if (ownSummaries.some(community => placedSummaries.some(other => {
+                const distance = Math.hypot(
+                    community.center.x + dx - other.center.x,
+                    community.center.y + dy - other.center.y,
+                    community.center.z + dz - other.center.z,
+                );
+                return distance + 1e-7 < community.radius + other.radius + stellarVoid;
+            }))) return;
+            const combined = unionBounds(enclosure, box);
+            const area = (combined.maxX - combined.minX) * (combined.maxY - combined.minY);
+            const score = area + Math.hypot(midX + dx - mainMidX, midY + dy - mainMidY) * 1e-5;
+            if (!best || score < best.score - 1e-7) best = { dx, dy, box, score };
+        };
+        // A supporting line of the actual hull keeps every member outside it, including when a
+        // compact pocket falls inside the rectangular fit bounds. Edges and vertices offer stable
+        // candidate slots without changing any main-component coordinate.
+        if (!largeField) consider(0, 0, false); // already safe positions need no translation
+        for (const { a, b, tx, ty, nx, ny, minimum, required } of hullSides) {
+            const normalShift = required - minimum;
+            for (const fraction of [0.25, 0.5, 0.75, 1])
+                consider(nx * normalShift * fraction, ny * normalShift * fraction, false);
+            for (const fraction of [0, 0.5, 1]) {
+                const anchorX = a.x + fraction * (b.x - a.x);
+                const anchorY = a.y + fraction * (b.y - a.y);
+                const tangentShift = anchorX * tx + anchorY * ty - (midX * tx + midY * ty);
+                consider(nx * normalShift + tx * tangentShift,
+                    ny * normalShift + ty * tangentShift, false);
+            }
+        }
+        // A rectangular fallback handles one- and two-point hulls and crowded minor groups.
+        for (let slot = 0; !largeField && slot <= ordered.length; slot++) {
+            const offset = slot === 0 ? 0 : (slot % 2 ? 1 : -1) * Math.ceil(slot / 2);
+            for (let side = 0; side < 4; side++) {
+                const tangent = (side < 2 ? height : width) + gap;
+                const targetX = side === 0 ? main.maxX + gap + width / 2
+                    : side === 1 ? main.minX - gap - width / 2 : mainMidX + offset * tangent;
+                const targetY = side === 2 ? main.maxY + gap + height / 2
+                    : side === 3 ? main.minY - gap - height / 2 : mainMidY + offset * tangent;
+                const dx = targetX - midX;
+                const dy = targetY - midY;
+                consider(dx, dy, true);
+            }
+        }
+        if (!best) {
+            const dx = enclosure.maxX + gap + maxRadius + stellarVoid - source.minX;
+            const dy = mainMidY - midY;
+            best = { dx, dy, box: shiftedBounds(source, dx, dy), score: 0 };
+        }
+        let chosen = best;
+        let chosenDz = dz;
+        // A 3D community may already occupy a compact free pocket in front of the main body.
+        // Keep it when a candidate cannot improve either the fit frame or actual separation.
+        const areaOf = (box: Bounds2) => (box.maxX - box.minX) * (box.maxY - box.minY);
+        const originalArea = areaOf(unionBounds(enclosure, source));
+        const nearest = (dx: number, dy: number, offsetZ: number) => {
+            let distance = Infinity;
+            for (const id of ids) {
+                const point = positions.get(id)!;
+                for (const other of occupiedGroups[0]!)
+                    distance = Math.min(distance, Math.hypot(
+                        point.x + dx - other.x, point.y + dy - other.y, point.z + offsetZ - other.z));
+            }
+            return distance;
+        };
+        if (input.projection === '3d' && input.morphology === 'stellar'
+            && ownSummaries.length === 1 && placedSummaries.length && ids.length <= 16) {
+            const own = ownSummaries[0]!;
+            const oldZ = ids.map(id => positions.get(id)!.z);
+            const minZ = Math.min(mainMinZ, ...oldZ), maxZ = Math.max(mainMaxZ, ...oldZ);
+            let bestDistance = Math.min(nearest(0, 0, 0), nearest(chosen.dx, chosen.dy, dz));
+            for (const anchor of placedSummaries) for (const direction of SPHERE_DIRECTIONS) {
+                const tangent = own.radius + anchor.radius + stellarVoid;
+                const dx = anchor.center.x + direction.x * tangent - own.center.x;
+                const dy = anchor.center.y + direction.y * tangent - own.center.y;
+                const offsetZ = anchor.center.z + direction.z * tangent - own.center.z;
+                const box = shiftedBounds(source, dx, dy);
+                if (areaOf(unionBounds(enclosure, box)) > originalArea + 1e-7 ||
+                    oldZ.some(z => z + offsetZ < minZ - 1e-7 || z + offsetZ > maxZ + 1e-7)) continue;
+                if (placedSummaries.some(other => Math.hypot(
+                    own.center.x + dx - other.center.x,
+                    own.center.y + dy - other.center.y,
+                    own.center.z + offsetZ - other.center.z,
+                ) + 1e-7 < own.radius + other.radius + stellarVoid)) continue;
+                const distance = nearest(dx, dy, offsetZ);
+                if (distance >= bestDistance - 1e-7 || distance < gap - 1e-7) continue;
+                bestDistance = distance;
+                chosen = { dx, dy, box, score: 0 };
+                chosenDz = offsetZ;
+            }
+        }
+        const packedArea = areaOf(unionBounds(enclosure, chosen.box));
+        if (packedArea >= originalArea - 1e-7) {
+            const originalSafe = ownSummaries.every(community => placedSummaries.every(other =>
+                Math.hypot(community.center.x - other.center.x,
+                    community.center.y - other.center.y, community.center.z - other.center.z) + 1e-7
+                    >= community.radius + other.radius + stellarVoid));
+            if (originalSafe && nearest(chosen.dx, chosen.dy, chosenDz) >= nearest(0, 0, 0) - 1e-7) {
+                occupied.push(source);
+                occupiedGroups.push(ids.map(id => positions.get(id)!));
+                enclosure = unionBounds(enclosure, source);
+                placedSummaries.push(...ownSummaries);
+                continue;
+            }
+        }
+        for (const id of ids) {
+            const point = positions.get(id)!;
+            packed.set(id, { x: point.x + chosen.dx, y: point.y + chosen.dy, z: point.z + chosenDz });
+            shifts.set(id, { x: chosen.dx, y: chosen.dy, z: chosenDz });
+        }
+        occupied.push(chosen.box);
+        occupiedGroups.push(ids.map(id => packed.get(id)!));
+        enclosure = unionBounds(enclosure, chosen.box);
+        placedSummaries.push(...ownSummaries.map(community => ({ ...community, center: {
+            x: community.center.x + chosen.dx, y: community.center.y + chosen.dy,
+            z: community.center.z + chosenDz,
+        } })));
+    }
+    if (!shifts.size) return laidOut;
+    return { ...laidOut, positions: packed,
+        ...(laidOut.communities ? { communities: laidOut.communities.map(community => {
+            const shift = shifts.get(community.id);
+            return shift ? { ...community, center: {
+                x: community.center.x + shift.x, y: community.center.y + shift.y,
+                z: community.center.z + shift.z,
+            } } : community;
+        }) } : {}),
+    };
 }
 function flat2d(input: LayoutInput): LayoutResult {
     const { byId, children } = hierarchy(input.nodes);
