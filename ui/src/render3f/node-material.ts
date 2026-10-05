@@ -137,7 +137,7 @@ float somaLobe(vec3 lobe, vec2 radial) {
   float delta = atan(radial.y, radial.x) - atan(lobe.y, lobe.x);
   delta = atan(sin(delta), cos(delta));
   // D081-P1F: matched to NEURAL_LOBE_ANGULAR_WIDTH in morphology-geometry.ts.
-  return lobe.z * exp(-0.5 * pow(delta / (lobe.z > 0.6 ? 0.32 : 0.42), 2.0));
+  return lobe.z * exp(-0.5 * pow(delta / (lobe.z > 0.6 ? 0.32 : 0.62), 2.0));
 }
 void main() {
   float radialDistance = length(v_localDevicePx);

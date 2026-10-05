@@ -279,6 +279,7 @@ varying vec2 v_materialVariation;
 varying vec2 v_somaRadii;
 varying vec2 v_rootRatios;
 varying float v_neuralScale;
+varying float v_neuralWeight;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -322,6 +323,7 @@ void main() {
   v_somaRadii = clamp(a_somaRadii / u_sizeRatio, 2.0, 24.0) * u_pixelRatio;
   v_rootRatios = a_rootRatios;
   v_neuralScale = 1.0 / u_sizeRatio;
+  v_neuralWeight = max(0.0, a_thickness);
   v_cpA = viewportSource;
   v_cpB = viewportControl;
   v_cpC = viewportTarget;
@@ -385,6 +387,7 @@ varying vec2 v_materialVariation;
 varying vec2 v_somaRadii;
 varying vec2 v_rootRatios;
 varying float v_neuralScale;
+varying float v_neuralWeight;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -420,25 +423,30 @@ void main(void) {
   if (u_neuralProfile > 0.5) {
     float span = max(length(v_cpC - v_cpA), 1.0);
     // D082-A-NEURAL BEGIN: the same short rounded join as Three, ending at the D-081 trunk.
+    float weightReach = clamp(0.85 + 0.15 * sqrt(v_neuralWeight), 0.85, 1.2);
+    float startReach = (v_rootRatios.x > 2.5 ? 0.62 : v_rootRatios.x < 0.0 ? 0.9 : 1.0) * weightReach;
+    float endReach = (v_rootRatios.y > 2.5 ? 0.62 : v_rootRatios.y < 0.0 ? 0.9 : 1.0) * weightReach;
     float startShoulder = max(min(span * 0.45,
-      min(v_somaRadii.x * 3.0, max(v_somaRadii.x * 2.5, span * 0.12))) / span, 0.00001);
+      min(v_somaRadii.x * 3.0, max(v_somaRadii.x * 2.5, span * 0.12))) * startReach / span, 0.00001);
     float endShoulder = max(min(span * 0.45,
-      min(v_somaRadii.y * 3.0, max(v_somaRadii.y * 2.5, span * 0.12))) / span, 0.00001);
+      min(v_somaRadii.y * 3.0, max(v_somaRadii.y * 2.5, span * 0.12))) * endReach / span, 0.00001);
     float startBoundary = min(0.49, v_somaRadii.x * 1.5 / span);
     float endBoundary = min(0.49, v_somaRadii.y * 1.5 / span);
     if (v_rootRatios.x > 0.0 && v_rootRatios.x <= 1.8)
-      startBoundary = min(0.49, v_somaRadii.x * 3.2 / span);
+      startBoundary = min(0.49, v_somaRadii.x * 2.25 / span);
     if (v_rootRatios.y > 0.0 && v_rootRatios.y <= 1.8)
-      endBoundary = min(0.49, v_somaRadii.y * 3.2 / span);
-    float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, curveT);
-    float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - curveT);
-    if (v_somaRadii.x < 3.0 * u_pixelRatio) startEase = 0.0;
-    if (v_somaRadii.y < 3.0 * u_pixelRatio) endEase = 0.0;
+      endBoundary = min(0.49, v_somaRadii.y * 2.25 / span);
+    float startU = clamp((curveT - startBoundary) / startShoulder, 0.0, 1.0);
+    float endU = clamp((1.0 - curveT - endBoundary) / endShoulder, 0.0, 1.0);
+    float startEase = (1.0 - startU) * (1.0 - startU);
+    float endEase = (1.0 - endU) * (1.0 - endU);
+    if (v_somaRadii.x < 1.5 * u_pixelRatio) startEase = 0.0;
+    if (v_somaRadii.y < 1.5 * u_pixelRatio) endEase = 0.0;
     rootSomaMix = max(startEase, endEase);
     float oldStartRoot = v_somaRadii.x > 0.0 ? v_thickness * abs(v_rootRatios.x) : v_thickness;
     float oldEndRoot = v_somaRadii.y > 0.0 ? v_thickness * abs(v_rootRatios.y) : v_thickness;
-    if (v_somaRadii.x < 3.0 * u_pixelRatio) oldStartRoot = v_thickness;
-    if (v_somaRadii.y < 3.0 * u_pixelRatio) oldEndRoot = v_thickness;
+    if (v_somaRadii.x < 1.5 * u_pixelRatio) oldStartRoot = v_thickness;
+    if (v_somaRadii.y < 1.5 * u_pixelRatio) oldEndRoot = v_thickness;
     float oldStartShoulder = min(0.28, min(48.0 * u_pixelRatio,
       max(12.0 * u_pixelRatio, v_somaRadii.x * 2.5 + v_thickness * 3.0)) / span);
     float oldEndShoulder = min(0.28, min(48.0 * u_pixelRatio,

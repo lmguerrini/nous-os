@@ -83,14 +83,15 @@ export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 1.2 } as const;
 /** A short screen-space shoulder preserves a compact soma even on very long relations. */
 export const NEURAL_TAPER_FRACTION = 0.28;
 /** Cache key for the pure Neural silhouette and root profile. */
-export const NEURAL_GEOMETRY_VERSION = "d082-p1-rounded-trunk-3";
+export const NEURAL_GEOMETRY_VERSION = "d082-p1-organic-leaves-4";
 /** A short fillet joins the soma to the existing trunk without drawing a white radial arm. */
 export const NEURAL_ROOT_LENGTH_RADII = 2.5;
 export const NEURAL_ROOT_MAX_LENGTH_RADII = 3;
 export const NEURAL_ROOT_SPAN_FRACTION = 0.12;
 /** Degree-one bodies are compact so their single broad root reads as the tail of one cell. */
 export const NEURAL_LEAF_BODY_SCALE = 0.84;
-export const NEURAL_MIN_SHAPED_RADIUS_PX = 3;
+// The drawn node radius is clamped to 2 px. Even those smallest leaves need a root.
+export const NEURAL_MIN_SHAPED_RADIUS_PX = 1.5;
 export type NeuralRootSample = { readonly width: number; readonly alpha: number; readonly somaMix: number };
 /** The 45% span cap leaves room for the root at the opposite endpoint of short links. */
 export function neuralRootLengthPx(somaRadiusPx: number, spanPx: number): number {
@@ -98,11 +99,21 @@ export function neuralRootLengthPx(somaRadiusPx: number, spanPx: number): number
     Math.max(somaRadiusPx * NEURAL_ROOT_LENGTH_RADII, spanPx * NEURAL_ROOT_SPAN_FRACTION),
     spanPx * 0.45);
 }
-/** Radius of curvature of either side of the cubic ribbon at its soma mouth. */
+/** Real shared directions retain more of a hub root; singleton spokes recede into the soma. */
+export function neuralVisibleRootLengthPx(somaRadiusPx: number, spanPx: number,
+  degree: number, shared: boolean, edgeWeight = 1): number {
+  const base = neuralRootLengthPx(somaRadiusPx, spanPx);
+  if (degree < NEURAL_HUB_DEGREE) return base;
+  const weightFactor = Math.max(0.85, Math.min(1.2, 0.85 + 0.15 * Math.sqrt(Math.max(0, edgeWeight))));
+  return base * (shared ? 0.9 : 0.62) * weightFactor;
+}
+/** Radius of curvature of either side of the concave ribbon at its soma mouth. */
 export function neuralRootFilletRadiusPx(mouthWidthPx: number, trunkWidthPx: number,
   rootLengthPx: number): number {
   const widthDrop = Math.abs(mouthWidthPx - trunkWidthPx);
-  return widthDrop > 0 ? rootLengthPx * rootLengthPx / (3 * widthDrop) : Infinity;
+  if (widthDrop <= 0) return Infinity;
+  const slope = 2 * widthDrop / rootLengthPx;
+  return rootLengthPx * rootLengthPx * (1 + slope * slope) ** 1.5 / (2 * widthDrop);
 }
 /** A bounded response to the edge-width control keeps the mouth proportional to its soma. */
 export function neuralMouthScale(edgeWidthPx: number): number {
@@ -116,7 +127,8 @@ export function neuralRootProfileAt(distancePx: number, somaRadiusPx: number, ed
   return neuralRootProfileAtLength(distancePx, somaRadiusPx, edgeWidthPx, edgeAlpha, rootRatio,
     neuralRootLengthPx(somaRadiusPx, spanPx), trunkWidthPx);
 }
-/** The cubic has zero slope at the soma mouth and a finite-radius concave shoulder.
+/** A convex width falloff gives the neurite a curved, concave side, rather than a wedge.
+ * The mouth is hidden inside the soma; its visible silhouette comes from the union with the body.
  * `trunkWidthPx` is the D-081 ribbon at the fillet end, including shared-trunk width. */
 export function neuralRootProfileAtLength(distancePx: number, somaRadiusPx: number, edgeWidthPx: number,
   edgeAlpha: number, rootRatio: number, rootLengthPx: number,
@@ -125,8 +137,8 @@ export function neuralRootProfileAtLength(distancePx: number, somaRadiusPx: numb
   const alpha = Math.max(0, Math.min(1, edgeAlpha));
   if (somaRadiusPx < NEURAL_MIN_SHAPED_RADIUS_PX) return { width, alpha, somaMix: 0 };
   const u = Math.max(0, Math.min(1, distancePx / Math.max(rootLengthPx, 1e-6)));
-  const eased = u * u * (3 - 2 * u);
-  const somaMix = 1 - eased;
+  const remaining = 1 - u;
+  const somaMix = remaining * remaining;
   const trunk = Math.max(width, trunkWidthPx);
   const rootWidth = Math.max(trunk, width * Math.abs(rootRatio),
     somaRadiusPx * (rootRatio < 0 ? 1 : 0.9) * neuralMouthScale(width));
@@ -190,7 +202,7 @@ export function neuralLobeStrength(weight: number, maximum: number): number {
   return 0.70 + 0.10 * Math.sqrt(weight / Math.max(1, maximum));
 }
 export function somaLobeAngularWidth(strength: number): number {
-  return strength > 0.6 ? NEURAL_LOBE_ANGULAR_WIDTH : 0.42;
+  return strength > 0.6 ? NEURAL_LOBE_ANGULAR_WIDTH : 0.62;
 }
 // D081-P1F END
 export function somaLobeAreaScale(lobes: readonly SomaLobe[],

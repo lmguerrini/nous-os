@@ -319,20 +319,26 @@ void main() {
     float endRadius = v_neuralRadiiDevicePx.y;
     float span = max(length(v_cpC - v_cpA), 1.0);
     // D082-A-NEURAL BEGIN: round the soma mouth into the D-081 trunk width.
+    float startWeight = clamp(0.85 + 0.15 * sqrt(max(0.0, v_widthsAndPicking.x)), 0.85, 1.2);
+    float endWeight = clamp(0.85 + 0.15 * sqrt(max(0.0, v_widthsAndPicking.y)), 0.85, 1.2);
+    float startReach = (v_neuralRootRatios.x > 2.5 ? 0.62 : v_neuralRootRatios.x < 0.0 ? 0.9 : 1.0) * startWeight;
+    float endReach = (v_neuralRootRatios.y > 2.5 ? 0.62 : v_neuralRootRatios.y < 0.0 ? 0.9 : 1.0) * endWeight;
     float startShoulder = max(min(span * 0.45,
-      min(startRadius * 3.0, max(startRadius * 2.5, span * 0.12))) / span, 0.00001);
+      min(startRadius * 3.0, max(startRadius * 2.5, span * 0.12))) * startReach / span, 0.00001);
     float endShoulder = max(min(span * 0.45,
-      min(endRadius * 3.0, max(endRadius * 2.5, span * 0.12))) / span, 0.00001);
+      min(endRadius * 3.0, max(endRadius * 2.5, span * 0.12))) * endReach / span, 0.00001);
     float startBoundary = min(0.49, startRadius * 1.5 / span);
     float endBoundary = min(0.49, endRadius * 1.5 / span);
     if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8)
-      startBoundary = min(0.49, startRadius * 3.2 / span);
+      startBoundary = min(0.49, startRadius * 2.25 / span);
     if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
-      endBoundary = min(0.49, endRadius * 3.2 / span);
-    float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, parameter);
-    float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - parameter);
-    if (startRadius < 3.0 * u_devicePixelRatio) startEase = 0.0;
-    if (endRadius < 3.0 * u_devicePixelRatio) endEase = 0.0;
+      endBoundary = min(0.49, endRadius * 2.25 / span);
+    float startU = clamp((parameter - startBoundary) / startShoulder, 0.0, 1.0);
+    float endU = clamp((1.0 - parameter - endBoundary) / endShoulder, 0.0, 1.0);
+    float startEase = (1.0 - startU) * (1.0 - startU);
+    float endEase = (1.0 - endU) * (1.0 - endU);
+    if (startRadius < 1.5 * u_devicePixelRatio) startEase = 0.0;
+    if (endRadius < 1.5 * u_devicePixelRatio) endEase = 0.0;
     rootSomaMix = max(startEase, endEase);
     float oldStartRoot = startRadius > 0.0
       ? (v_neuralRootRatios.x < 0.0 ? ordinary * -v_neuralRootRatios.x
@@ -346,8 +352,8 @@ void main() {
       oldStartRoot = max(ordinary * 2.0, min(oldStartRoot, startRadius * 0.9));
     if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
       oldEndRoot = max(ordinary * 2.0, min(oldEndRoot, endRadius * 0.9));
-    if (startRadius < 3.0 * u_devicePixelRatio) oldStartRoot = ordinary;
-    if (endRadius < 3.0 * u_devicePixelRatio) oldEndRoot = ordinary;
+    if (startRadius < 1.5 * u_devicePixelRatio) oldStartRoot = ordinary;
+    if (endRadius < 1.5 * u_devicePixelRatio) oldEndRoot = ordinary;
     float oldStartShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
       max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
     float oldEndShoulder = min(0.28, min(48.0 * u_devicePixelRatio,

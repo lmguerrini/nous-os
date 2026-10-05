@@ -3,7 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, NEURAL_LEAF_BODY_SCALE, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralLobeStrength, neuralRootLengthPx, neuralRootProfileAtLength, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
+import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, NEURAL_LEAF_BODY_SCALE, NEURAL_MIN_SHAPED_RADIUS_PX, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralLobeStrength, neuralRootProfileAtLength, neuralRootRatio, neuralScreenWidthAt, neuralVisibleRootLengthPx, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
 export { somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
@@ -1105,8 +1105,8 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     const cumulative: number[] = [0];
     for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
     const totalPx = cumulative[cumulative.length - 1]! || 1;
-    const startRootLengthPx = neuralRootLengthPx(startRadius, totalPx);
-    const endRootLengthPx = neuralRootLengthPx(endRadius, totalPx);
+    const startRootLengthPx = neuralVisibleRootLengthPx(startRadius, totalPx, startDegree, startRatio < 0, part.widthStart);
+    const endRootLengthPx = neuralVisibleRootLengthPx(endRadius, totalPx, endDegree, endRatio < 0, part.widthEnd);
     // The Neural profile retains its full width at both soma ends, including high-degree hubs.
     const neuralTaper = geometry.morphology === "neural";
     const neuralBody = Math.max(0.3, appearance.edgeWidth * widthFactor
@@ -1114,8 +1114,8 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     // D082-A-NEURAL BEGIN: D-081 owns the grey trunk after the short soma fillet.
     const trunkWidthAt = (t: number) => {
       const index = t * (points.length - 1);
-      const shapedStartRadius = startRadius >= 3 ? startRadius : 0;
-      const shapedEndRadius = endRadius >= 3 ? endRadius : 0;
+      const shapedStartRadius = startRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? startRadius : 0;
+      const shapedEndRadius = endRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? endRadius : 0;
       let ordinary = neuralScreenWidthAt(t, neuralBody, shapedStartRadius, shapedEndRadius,
         [Math.abs(startRatio), Math.abs(endRatio)], totalPx, [startRatio >= 0, endRatio >= 0]);
       if (startDegree <= 3 && shapedStartRadius > 0 || endDegree <= 3 && shapedEndRadius > 0)
@@ -1189,10 +1189,10 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       0, 1);
     const alpha = focusArcOpacity(focus ?? null, part.edgeId, baseAlpha);
     const paint: MorphologyEdgePaint = { part, edgeId: part.edgeId, category, neural: neuralTaper, points, cumulative, totalPx, color, alpha, widthAt,
-      rootStart: startRadius >= 3 ? { outlinePx: startTipDistancePx, radiusPx: startRadius,
+      rootStart: startRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: startTipDistancePx, radiusPx: startRadius,
         lengthPx: startRootLengthPx, ratio: startRatio, degree: startDegree,
         trunkWidthPx: startTrunkWidth } : undefined,
-      rootEnd: endRadius >= 3 ? { outlinePx: totalPx - endTipDistancePx, radiusPx: endRadius,
+      rootEnd: endRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: totalPx - endTipDistancePx, radiusPx: endRadius,
         lengthPx: endRootLengthPx, ratio: endRatio, degree: endDegree,
         trunkWidthPx: endTrunkWidth } : undefined,
       // Leaves keep one continuous tail; crowded hubs use only their real shared trunks.
