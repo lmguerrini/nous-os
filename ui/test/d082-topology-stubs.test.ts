@@ -36,7 +36,9 @@ test('the law registry leaves classic routes to existing handlers', () => {
   });
 });
 
-test('Indra composition remains an explicit stub', () => {
-  assert.equal(INDRA_COMPOSE_VERSION, 'stub-0');
-  assert.throws(() => composeIndra(juliaLaw, snapshot, '2d'), { message: 'indra-compose: not implemented' });
+// D082-B6-INDRA BEGIN: P6 requires the composer to replace its placeholder.
+test('Indra composition has a version and preserves a law refusal', () => {
+  assert.notEqual(INDRA_COMPOSE_VERSION, 'stub-0');
+  assert.throws(() => composeIndra(juliaLaw, snapshot, '2d'), { message: 'In preparazione.' });
 });
+// D082-B6-INDRA END
