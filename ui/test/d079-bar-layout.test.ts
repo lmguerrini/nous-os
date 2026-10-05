@@ -12,8 +12,10 @@ test('toolbar groups follow the review workflow and expose clear group labels', 
     'data-axis="reading"', 'id="v2-relation-control"', 'id="density-control"', 'class="tools"', 'id="appearance-group"'];
   const positions = markers.map(marker => header.indexOf(marker));
   assert.ok(positions.every(position => position >= 0), `missing toolbar group: ${positions}`);
-  assert.deepEqual(positions, [...positions].sort((a, b) => a - b), 'Vista, Morfologia, Organizzazione, Lettura, Relazioni, Densità, tools, Aspetto');
-  for (const label of ['Vista', 'Morfologia', 'Organizzazione', 'Lettura', 'Relazioni', 'Densità']) assert.ok(header.includes(`<strong>${label}</strong>`), label);
+  // D082-B2 BEGIN: P6 renames Vista and splits Organizzazione into Topologia and Indra.
+  assert.deepEqual(positions, [...positions].sort((a, b) => a - b), 'Rendering, Morfologia, Topologia, Lettura, Relazioni, Densità, tools, Aspetto');
+  for (const label of ['Rendering', 'Morfologia', 'Topologia', 'Lettura', 'Relazioni', 'Densità']) assert.ok(header.includes(`<strong>${label}</strong>`), label);
+  // D082-B2 END
 });
 
 test('every selectable axis has an explicit selected state and strong visual treatment', () => {
@@ -32,13 +34,17 @@ test('whole-bar collapse is a DOM-only toggle with a live state summary', () => 
   const handler = main.slice(main.indexOf('get<HTMLButtonElement>("toolbar-toggle").addEventListener'), main.indexOf('function updatePanel()'));
   assert.match(handler, /classList\.toggle\("toolbar-collapsed"\)/);
   assert.match(handler, /aria-expanded/);
-  assert.match(main, /function syncToolbarSummary\(\): void[\s\S]*?BAR_LABELS\.reading\[axes\.reading\]/);
+  // D082-B2 BEGIN: the summary names the chosen topology law and Indra state.
+  assert.match(main, /function syncToolbarSummary\(\): void[\s\S]*?topologyLabel\(lawTopology\(geometry\.topology\), axes\.projection\)[\s\S]*?BAR_LABELS\.reading\[axes\.reading\]/);
   assert.doesNotMatch(handler, /setAxes|persistView|camera|selection|zoom/i, 'collapse never writes graph or camera state');
-  for (const label of ['BAR_LABELS.projection', 'BAR_LABELS.morphology', 'BAR_LABELS.organization', 'BAR_LABELS.reading']) assert.ok(main.includes(label));
+  for (const label of ['BAR_LABELS.projection', 'BAR_LABELS.morphology', 'topologyLabel(lawTopology(geometry.topology)', 'BAR_LABELS.reading']) assert.ok(main.includes(label));
+  // D082-B2 END
 });
 
-test('fullscreen keeps Vista, Morfologia, Organizzazione, Lettura and Colori reachable', () => {
-  for (const label of ['Vista', 'Morfologia', 'Organizzazione', 'Lettura', 'Colori']) assert.ok(fullscreen.includes(`>${label}<`), label);
+test('fullscreen keeps Rendering, Morfologia, Topologia, Lettura and Colori reachable', () => {
+  // D082-B2 BEGIN: P6 toolbar labels.
+  for (const label of ['Rendering', 'Morfologia', 'Topologia', 'Lettura', 'Colori']) assert.ok(fullscreen.includes(`>${label}<`), label);
+  // D082-B2 END
   assert.match(fullscreen, /data-full-projection="2d"[^>]*aria-pressed/);
   assert.match(fullscreen, /data-axis="reading"/);
   assert.doesNotMatch(fullscreen, /immersive-axis/, 'reading stays available in the fullscreen toolbar');

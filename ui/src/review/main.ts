@@ -4,7 +4,7 @@ import { createProductView } from "./product-view.ts";
 // D081-P7 BEGIN
 import { removeUnflaggedFractalControls } from "../fractal/flagged-control.ts";
 // D081-P7 END
-import { DEFAULT_AXES, experimentalOrganizationsEnabled, indraSwitchNeedsReload, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, resolveExperimentalOrganization, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
+import { DEFAULT_AXES, experimentalOrganizationsEnabled, indraSwitchNeedsReload, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, resolveExperimentalOrganization, savedAxesRecord, serializeAxes } from "./view-contract.ts";
 import type { Axes, AxesInput, PageAxes, ProductView, ViewWitness } from "./view-contract.ts";
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
@@ -42,6 +42,12 @@ import { formatD081GraphStatus, formatGraphPanelCounts, formatLegacyToolbarStatu
 import type { D081GraphStatus } from "./toolbar-status.ts";
 import { NodeDrawer } from "./node-drawer.ts";
 import { observeToolbarSectionVisibility } from "./toolbar-sections.ts";
+// D082-B2 BEGIN
+import { geometryToLegacyAxes, lawTopology, resolveGeometryView2, rewriteGeometryUrl, serializeGeometryView2, wireTopology } from './geometry-view2.ts';
+import type { GeometryView2, SavedGeometryView2 } from './geometry-view2.ts';
+import { TOPOLOGY_IDS, topologyLabel, topologyRowState, topologySupport } from '../topology/registry.ts';
+import type { TopologyId } from '../topology/contract.ts';
+// D082-B2 END
 
 const get = <T extends Element>(id: string): T => {
   const item = document.getElementById(id);
@@ -98,6 +104,24 @@ drawerSelectionObserver.observe(details, { childList: true, subtree: true });
 const status = get<HTMLElement>("status");
 let data: ReviewExport;
 let v2: V2Page | null = null;
+// D082-B2 BEGIN: the active drawer retains the placement witness across its own tab renders.
+const topologyDrawerObserver = new MutationObserver(() => {
+  if (!drawerSelectionId || nodeDrawerHost.hidden || nodeDrawerHost.querySelector('[data-topology-witness]')) return;
+  const result = v2?.topologyWitness(drawerSelectionId);
+  if (!result) return;
+  const section = document.createElement('section'); section.dataset.topologyWitness = drawerSelectionId;
+  const heading = document.createElement('h3'); heading.textContent = 'Perché qui'; section.append(heading);
+  const info = document.createElement('p'); info.textContent = [result.witness.law,
+    result.witness.address, result.witness.text,
+    result.path.length ? `Contenitori Indra: ${result.path.join(' › ')}` : ''].filter(Boolean).join(' · ');
+  section.append(info);
+  const values = document.createElement('p');
+  values.textContent = Object.entries(result.witness.values).map(([key, value]) => `${key}: ${value}`).join(' · ');
+  section.append(values);
+  nodeDrawerHost.append(section);
+});
+topologyDrawerObserver.observe(nodeDrawerHost, { childList: true, subtree: true });
+// D082-B2 END
 let liveGraph: LiveGraph;
 let liveActive = false;
 let liveResults: LiveFragment[] = [];
@@ -148,7 +172,7 @@ function showExperimentalSuspensionNotice(): void {
   experimentalSuspensionNoticeShown = true;
 }
 /** Whether the page draws Natural through the typed pipeline (`#projection=natural`); off, the legacy layout is drawn. */
-const typedPipelineFlag = projectionFlagEnabled(location.search, location.hash);
+let typedPipelineFlag = projectionFlagEnabled(location.search, location.hash);
 const MORPHOLOGY_LABELS = { stellar: "Stellar", neural: "Neural", mycelium: "Mycelium" } as const;
 const ARRANGEMENT_LABELS = { constellation: "Costellazione", network: "Rete", mycelium: "Micelio" } as const;
 function readViewSource(raw: string): { axes: PageAxes; explicitArrangement: boolean } | null {
@@ -180,21 +204,38 @@ export function rewriteViewHash(hash: string, serializedAxes: string): string {
   for (const { key, value } of entries) ordered.append(key, value);
   return `#${ordered.toString()}`;
 }
-const initialUrlView = readUrlView();
-const parsedInitialView = initialUrlView ?? readStoredView();
-const initialOrganization = parsedInitialView ? resolveExperimentalOrganization(parsedInitialView.axes.organization, experimentalFlags) : null;
-if (initialOrganization?.notice) {
-  experimentalSuspensionNotice = initialOrganization.notice;
+const initialUrlView = new URLSearchParams(location.search).get(VIEW_URL_PARAMETER)
+  ?? new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : location.hash).get(VIEW_URL_PARAMETER);
+// D082-B2 BEGIN: v2 URL wins over v1; an invalid explicit v2 remains untouched for repair.
+const geometryRead = resolveGeometryView2(location.search, location.hash,
+  readLocal<string>(storage, VIEW_STORAGE_KEY, '') || null,
+  readLocal<string>(storage, 'd072.density', 'balanced'));
+let geometry: SavedGeometryView2 = geometryRead.value;
+if (!('mode' in geometry) && geometry.compatibility === 'typed-natural-v1') typedPipelineFlag = true;
+let view2WriteAllowed = geometryRead.error === undefined;
+if (geometryRead.error) {
+  errors.push(`view2 rifiutata: ${geometryRead.error}`);
+  experimentalSuspensionNotice = `view2 rifiutata: ${geometryRead.error}. URL conservato per la riparazione.`;
+}
+if ('suspendedIntent' in geometry && geometry.suspendedIntent) {
+  experimentalSuspensionNotice = `${geometry.suspendedIntent === 'fractal' ? 'Fractal' : 'Holographic'} è una vista sperimentale: caricata Natural.`;
   experimentalInitialFallback = true;
 }
-const initialView = parsedInitialView && initialOrganization
-  ? { ...parsedInitialView, axes: { ...parsedInitialView.axes, organization: initialOrganization.organization } }
-  : parsedInitialView;
+if (initialUrlView !== null && (geometryRead.source === 'query-view' || geometryRead.source === 'hash-view'))
+  experimentalSuspensionNotice = [experimentalSuspensionNotice,
+    `URL v1 aggiornato: la densità ${geometry.density} proviene da questo browser; view2 la rende esplicita.`].filter(Boolean).join(' · ');
+const initialView = geometryRead.error ? null : {
+  axes: geometryToLegacyAxes(geometry),
+  explicitArrangement: 'naturalArrangement' in geometry && geometry.naturalArrangement !== undefined,
+};
+// D082-B2 END
 if (initialView) axes = initialView.axes;
 else axes = { ...DEFAULT_AXES, arrangement: resolveArrangementReadout(null, DEFAULT_AXES.morphology, typedPipelineFlag).arrangement };
 let resolvedArrangement: ResolvedNaturalArrangement | null = axes.organization === "natural"
   ? resolveArrangementReadout(null, axes.morphology, typedPipelineFlag,
-    initialView?.explicitArrangement === true ? savedExplicitArrangement(axes.arrangement, axes.morphology, typedPipelineFlag) : undefined)
+    // D082-B2 BEGIN: migration pins the once-derived Natural arrangement.
+    initialView?.explicitArrangement === true ? axes.arrangement : undefined)
+    // D082-B2 END
   : null;
 function appliedAxes(partial: Partial<PageAxes>): PageAxes {
   const next: PageAxes = { ...axes, ...partial };
@@ -218,15 +259,25 @@ function productPartial(value: Partial<PageAxes>): Partial<Axes> {
 }
 const viewLabel = (organization: "fractal" | "holographic") => organization === "fractal" ? "Fractal" : "Holographic";
 function writeViewUrl(): void {
+  // D082-B2 BEGIN
+  if (!view2WriteAllowed) return;
   try {
-    const params = new URLSearchParams(location.search);
-    params.delete(VIEW_URL_PARAMETER);
-    const search = params.toString();
-    history.replaceState(history.state, "", `${location.pathname}${search ? `?${search}` : ""}${rewriteViewHash(location.hash, serializeAxes(axes))}`);
+    const next = rewriteGeometryUrl(location.search, location.hash, geometry);
+    history.replaceState(history.state, '', `${location.pathname}${next.search}${next.hash}`);
   } catch { /* an unwritable URL never blocks the view */ }
+  // D082-B2 END
 }
 function persistView(): void {
-  writeLocal(storage, VIEW_STORAGE_KEY, serializeAxes(axes));
+  // D082-B2 BEGIN: copy only axes encoded in v1; keep legacy storage as a compatible fallback.
+  if (!('mode' in geometry)) geometry = { ...geometry, rendering: axes.projection,
+    morphology: axes.morphology, reading: axes.reading, colour: axes.colour, labels: axes.labels,
+    ...(axes.brain !== undefined ? { brain: axes.brain } : {}),
+    ...(geometry.topology === 'natural' && geometry.indra === 'off' && axes.arrangement !== undefined
+      ? { naturalArrangement: axes.arrangement } : {}) };
+  // D082-B2 END
+  // D082-B2 BEGIN: the same storage key now carries the canonical schema-2 record.
+  if (view2WriteAllowed) writeLocal(storage, VIEW_STORAGE_KEY, serializeGeometryView2(geometry));
+  // D082-B2 END
   writeViewUrl();
 }
 function syncArrangementInspector(): void {
@@ -266,6 +317,9 @@ function filterGraph() {
     && relationVisible(relationClass(edge, nodesById), axes.reading)) };
 }
 function updateButtons() {
+  // D082-B2 BEGIN
+  syncTaxonomyControls();
+  // D082-B2 END
   const selectedNode = stack.current && data.nodes.some((node) => node.id === stack.current?.id) ? stack.current.id : null;
   for (const axis of ["projection", "morphology", "organization", "reading"] as const) {
     document
@@ -318,18 +372,99 @@ function syncToolbarSummary(): void {
   summary.textContent = [
     BAR_LABELS.projection[axes.projection],
     BAR_LABELS.morphology[axes.morphology],
-    BAR_LABELS.organization[axes.organization],
+    // D082-B2 BEGIN
+    'mode' in geometry ? 'Holographic · legacy' : `${topologyLabel(lawTopology(geometry.topology), axes.projection)}${geometry.indra === 'on' ? ' · Indra ON' : ''}`,
+    // D082-B2 END
     BAR_LABELS.reading[axes.reading],
     ({ essential: "Essenziale", balanced: "Bilanciata", complete: "Completa" } as const)[density as "essential" | "balanced" | "complete"],
     detail === "all" ? "Tutte" : "Essenziali",
   ].join(" · ");
 }
 syncToolbarSummary();
+// D082-B2 BEGIN: both toolbar placements and fullscreen use the same closed law register.
+function installTaxonomyControls(): void {
+  for (const organizationAxis of document.querySelectorAll<HTMLElement>('[data-axis="organization"]')) {
+    const full = organizationAxis.classList.contains('fullscreen-axis');
+    for (const button of organizationAxis.querySelectorAll<HTMLButtonElement>('button[data-value]')) button.hidden = true;
+    const label = organizationAxis.querySelector<HTMLElement>('strong, .fullscreen-group-label');
+    if (label) label.textContent = 'Topologia';
+    organizationAxis.dataset.axis = 'topology';
+    for (const id of TOPOLOGY_IDS) {
+      const button = document.createElement('button');
+      button.dataset.topology = id;
+      button.textContent = topologyLabel(id, axes.projection);
+      button.addEventListener('click', () => { void chooseTaxonomy(id); });
+      organizationAxis.append(button);
+    }
+    const indraAxis = document.createElement(full ? 'span' : 'div');
+    indraAxis.className = full ? 'axis fullscreen-axis' : 'axis';
+    indraAxis.dataset.axis = 'indra';
+    const heading = document.createElement(full ? 'span' : 'strong');
+    if (full) heading.className = 'fullscreen-group-label';
+    heading.textContent = 'Indra'; indraAxis.append(heading);
+    for (const value of ['off','on'] as const) {
+      const button = document.createElement('button');
+      button.dataset.indra = value;
+      button.textContent = value.toUpperCase();
+      button.addEventListener('click', () => { if (!('mode' in geometry)) void chooseTaxonomy(lawTopology(geometry.topology), value === 'on'); });
+      indraAxis.append(button);
+    }
+    organizationAxis.after(indraAxis);
+  }
+  syncTaxonomyControls();
+}
+function syncTaxonomyControls(): void {
+  const id = 'mode' in geometry ? null : lawTopology(geometry.topology);
+  const indra = 'mode' in geometry ? false : geometry.indra === 'on';
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-topology]')) {
+    const topology = button.dataset.topology as TopologyId;
+    const row = topologyRowState(topology, axes.projection, indra, id);
+    const reason = !v2 && topology !== 'natural' ? 'Richiede il grafo distillato.' : row.reason;
+    button.textContent = row.label;
+    button.disabled = reason !== null;
+    button.title = reason ?? row.label;
+    button.dataset.reason = reason ?? '';
+    button.setAttribute('aria-label', reason ? `${row.label}: ${reason}` : row.label);
+    button.setAttribute('aria-pressed', String(row.pressed));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-indra]')) {
+    const on = button.dataset.indra === 'on';
+    const support = id ? topologySupport(id, axes.projection, on) : { ok: false as const, reason: 'Vista analitica legacy.' };
+    button.disabled = !support.ok;
+    button.title = support.ok ? `Indra ${on ? 'ON' : 'OFF'}` : support.reason;
+    button.dataset.reason = support.ok ? '' : support.reason;
+    button.setAttribute('aria-label', support.ok ? `Indra ${on ? 'ON' : 'OFF'}` : `Indra ${on ? 'ON' : 'OFF'}: ${support.reason}`);
+    button.setAttribute('aria-pressed', String(on === indra));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-axis="projection"] button[data-value], [data-full-projection]')) {
+    const dimension = (button.dataset.value ?? button.dataset.fullProjection) as '2d' | '3d';
+    const support = id ? topologySupport(id, dimension, indra) : { ok: true as const };
+    button.disabled = !support.ok;
+    if (!support.ok) button.title = support.reason;
+  }
+}
+async function chooseTaxonomy(topology: TopologyId, indra = 'mode' in geometry ? false : geometry.indra === 'on'): Promise<void> {
+  const support = topologySupport(topology, axes.projection, indra);
+  if (!support.ok) return;
+  const organization = topology === 'canopy-ifs' && !indra ? 'fractal' : topology === 'natural' && indra ? 'indra' : 'natural';
+  await v2?.setTaxonomy(topology, indra);
+  axes = appliedAxes({ organization });
+  geometry = { schema: 2, rendering: axes.projection, topology: wireTopology(topology), indra: indra ? 'on' : 'off',
+    morphology: axes.morphology, density, reading: axes.reading, colour: axes.colour, labels: axes.labels,
+    ...(axes.brain !== undefined ? { brain: axes.brain } : {}),
+    ...(topology === 'natural' && !indra && axes.arrangement !== undefined ? { naturalArrangement: axes.arrangement } : {}),
+    ...(topology === 'natural' ? { compatibility: indra ? 'd081-indra-recursive' as const : 'd081-natural' as const }
+      : topology === 'canopy-ifs' && !indra ? { compatibility: 'd081-canopy' as const } : {}) };
+  view2WriteAllowed = true;
+  persistView(); updateButtons(); syncToolbarSummary();
+}
+installTaxonomyControls();
+// D082-B2 END
 const toolbarSections = new Map<HTMLElement, HTMLDetailsElement>();
 function installToolbarSections(): void {
   const labels = new Map<string, string>([
-    ['projection', 'Vista'], ['view-presets', 'Orientamento'], ['morphology', 'Morfologia'],
-    ['organization', 'Organizzazione'], ['reading', 'Lettura'], ['v2-relation-control', 'Relazioni'],
+    ['projection', 'Rendering'], ['view-presets', 'Orientamento'], ['morphology', 'Morfologia'],
+    ['topology', 'Topologia'], ['indra', 'Indra'], ['reading', 'Lettura'], ['v2-relation-control', 'Relazioni'],
     ['density-control', 'Densità'], ['environment-control', 'Ambiente'], ['appearance-group', 'Aspetto'],
   ]);
   const controls = get<HTMLElement>('toolbar-controls');
@@ -855,6 +990,13 @@ function center(): Promise<void> {
 }
 function setAxes(input: AxesInput): Promise<void> {
   let partial = normalizeAxesInput(input);
+  // D082-B2 BEGIN: rendering never silently changes a law or Indra state.
+  if (partial.projection && !('mode' in geometry)) {
+    const support = topologySupport(lawTopology(geometry.topology), partial.projection, geometry.indra === 'on');
+    if (!support.ok) return Promise.reject(new Error(support.reason));
+  }
+  view2WriteAllowed = true;
+  // D082-B2 END
   if (partial.organization === "holographic" || partial.organization === "fractal") {
     const resolved = resolveExperimentalOrganization(partial.organization, experimentalFlags);
     if (resolved.notice) {
@@ -869,6 +1011,9 @@ function setAxes(input: AxesInput): Promise<void> {
   syncBrainControls();
   persistView();
   syncToolbarSummary();
+  // D082-B2 BEGIN
+  syncTaxonomyControls();
+  // D082-B2 END
   document.querySelectorAll<HTMLButtonElement>("[data-full-projection]").forEach((button) =>
     button.setAttribute("aria-pressed", String(button.dataset.fullProjection === axes.projection)));
   refreshFlowLegends();
@@ -1327,7 +1472,9 @@ get<HTMLElement>("gizmo").querySelectorAll<HTMLButtonElement>("button[data-axis-
 get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.setSemanticZoom((event.target as HTMLInputElement).checked));
 // D-072 L1: the density selector — Essenziale · Bilanciata · Completa — a small segmented control
 // in the toolbar row, default Bilanciata and remembered like the other preferences.
-let density = normalizeDensity(readLocal(storage, "d072.density", "balanced"));
+// D082-B2 BEGIN: a portable view2 carries its own density.
+let density = geometry.density;
+// D082-B2 END
 const densityButtons = [...document.querySelectorAll<HTMLButtonElement>("#density-control button[data-density]")];
 function syncDensity(): void {
   for (const button of densityButtons)
@@ -1338,6 +1485,11 @@ function applyDensity(next: unknown): void {
   const value = normalizeDensity(next);
   if (value === density) return;
   density = value;
+  // D082-B2 BEGIN
+  geometry = { ...geometry, density };
+  view2WriteAllowed = true;
+  persistView();
+  // D082-B2 END
   writeLocal(storage, "d072.density", density);
   syncDensity();
   void v2?.setDensity(density);
@@ -1463,8 +1615,11 @@ syncAppearanceControls();
 syncPresetList();
 syncPanel();
 refreshFlowLegends();
-if (initialUrlView) writeLocal(storage, "d069.palette", axes.colour);
-else axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
+// D082-B2 BEGIN
+if (geometryRead.source !== 'default') writeLocal(storage, 'd069.palette', axes.colour);
+else { axes = { ...axes, colour: paletteName(readLocal(storage, 'd069.palette', 'bw')) };
+  if (!('mode' in geometry)) geometry = { ...geometry, colour: axes.colour }; }
+// D082-B2 END
 syncBrainControls();
 persistView();
 syncArrangementInspector();
@@ -1601,7 +1756,15 @@ async function load() {
     // V2Page.load(..., { onNodePicked: showNodeDrawer }) keeps the shell's pick callback contract;
     // the same deps object now also carries the measured initial insets for its first fit.
     v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density,
-      { onNodePicked: showNodeDrawer, insets: reviewInsets() });
+      { onNodePicked: showNodeDrawer, insets: reviewInsets(),
+        // D082-B2 BEGIN
+        ...(!('mode' in geometry) ? { taxonomy: { topology: lawTopology(geometry.topology), indra: geometry.indra === 'on' } } : {}),
+        ...(!('mode' in geometry) && geometry.topology === 'natural' && geometry.indra === 'on'
+          ? { legacyIndra: geometry.compatibility !== 'indras-pearls-v1' } : {}),
+        ...(!('mode' in geometry) && geometry.compatibility === 'typed-natural-v1'
+          ? { useDefaultPipeline: true } : {}),
+        // D082-B2 END
+      });
     // D080-A3 BEGIN: the page resolves the brain default and stored choice on first entry.
     axes = { ...axes, brain: v2.brainEnabled };
     syncBrainControls();
@@ -1620,6 +1783,9 @@ async function load() {
     get<HTMLElement>("gizmo").hidden = axes.projection !== "3d";
     get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";
     syncCustomColours();
+    // D082-B2 BEGIN
+    syncTaxonomyControls();
+    // D082-B2 END
     get<HTMLElement>("notice").textContent = "Grafo distillato D-069";
     updateInsets();
     if (experimentalInitialFallback) persistView();

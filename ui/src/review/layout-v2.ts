@@ -46,7 +46,9 @@ export type LayoutContainer = {
 export type LayoutResult = {
     readonly positions: ReadonlyMap<string, Point3>;
     readonly containers: readonly LayoutContainer[];
-    readonly source: 'flat-community' | 'indra-recursive' | 'placeholder' | 'fractal-canopy';
+    // D082-B2 BEGIN: a certified topology law enters the existing classic renderer.
+    readonly source: 'flat-community' | 'indra-recursive' | 'placeholder' | 'fractal-canopy' | 'topology-law';
+    // D082-B2 END
     /** Stellar cluster summary (centre, radius, member count) for the browser check. Empty otherwise. */
     readonly communities?: readonly CommunityInfo[];
 };

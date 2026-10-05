@@ -58,7 +58,7 @@ import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labe
 import { summarizeD081Bundles } from './toolbar-status.ts';
 import { createProductView } from './product-view.ts';
 // C2 Fractal-only integration imports. Natural and Indra do not call these modules.
-import { computeCanopyLayout, type CanopyLayout } from '../fractal/canopy-layout.ts';
+import { CANOPY_RATIO, computeCanopyLayout, type CanopyLayout } from '../fractal/canopy-layout.ts';
 import { certifyCanopy } from '../fractal/canopy-certificate.ts';
 import { adaptFractalDates, fractalDateRuleCounts } from '../fractal/date-adapter.ts';
 // D081-P7b BEGIN: Fractal-only ink and status contracts.
@@ -70,6 +70,12 @@ import { canopyEvidenceArcs } from '../fractal/evidence-edges.ts';
 import { appendCanopyExplanation, canopyRenderPositions, mountCanopyRailLayer, visibleCanopyRails,
     type CanopyRailLayer, type CanopyEvidenceStroke } from '../fractal/renderer-adapter.ts';
 import type { D081GraphStatus } from './toolbar-status.ts';
+// D082-B2 BEGIN: Geometry Lab laws share the classic renderer without altering its Natural routes.
+import type { TopologyId, TopologyLayout, TopologySnapshot, TopologyWitness } from '../topology/contract.ts';
+import { TOPOLOGY_LAWS, topologySupport } from '../topology/registry.ts';
+import { computeTopologyLayout, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
+import { mountTopologyGuides } from '../topology/guide-layer.ts';
+// D082-B2 END.
 // D081-P7b END.
 import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
 import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
@@ -365,6 +371,9 @@ function afterPaint(): Promise<void> {
  * and destroys, and a seam over the LOD selection so a throwing selection is observable. The
  * page's behaviour is identical with the defaults. */
 export type V2PageDeps = {
+    // D082-B2 BEGIN
+    readonly taxonomy?: { readonly topology: TopologyId; readonly indra: boolean };
+    // D082-B2 END
     readonly createView?: CreateProductView;
     readonly safeSelect?: typeof safeSelectNodes;
     /** Notifies the review shell after a camera-neutral canvas pick updates page selection. */
@@ -538,6 +547,37 @@ export function confirmFitDue(state: {
     return state.scheduledEpoch === state.currentEpoch && !state.userMoved && state.anyOutside;
 }
 export class V2Page {
+    // D082-B2 BEGIN: fixed full snapshot; density only selects draw IDs from its law coordinates.
+    private topology: TopologyId = 'natural';
+    private topologyIndra = false;
+    private taxonomyExplicit = false;
+    private readonly lawSnapshot: TopologySnapshot;
+    private lawLayout: TopologyLayout | null = null;
+    private guideLayer: { destroy(): void } | null = null;
+    private readonly lawCache = new Map<string, TopologyLayout>();
+    private lawActive(): boolean { return this.topology !== 'natural' &&
+        (this.topology !== 'canopy-ifs' || this.topologyIndra); }
+    topologyWitness(id: string): { witness: TopologyWitness; path: readonly string[] } | null {
+        const node = this.index.nodes.find(item => item.id === id);
+        if (!node) return null;
+        const byId = new Map(this.index.nodes.map(item => [item.id, item]));
+        const path: string[] = [];
+        let cursor: V2Node | undefined = node;
+        while (cursor) { path.unshift(cursor.id); cursor = cursor.parent ? byId.get(cursor.parent) : undefined; }
+        const witness = this.lawLayout?.witnesses.get(id) ?? (() => {
+            const canopy = this.topology === 'canopy-ifs' ? this.canopy?.positions.get(id) : null;
+            if (canopy) return { law: 'Canopy IFS', address: canopy.address,
+                values: { ratio: CANOPY_RATIO, livello: node.level },
+                text: 'Indirizzo binario nella gerarchia reale; i binari guida non sono relazioni.' };
+            if (this.topology === 'natural') return { law: this.topologyIndra ? 'Natural · Indra classico' : 'Natural',
+                address: path.join(' › '), values: { livello: node.level, importanza: node.importance.value },
+                text: this.topologyIndra ? 'Contenimento classico D-081 lungo la gerarchia primaria.'
+                    : 'Disposizione Natural D-081 della gerarchia primaria.' };
+            return null;
+        })();
+        return witness ? { witness, path: this.topologyIndra ? path : [] } : null;
+    }
+    // D082-B2 END
     readonly history = new DisclosureHistory();
     readonly index: V2Index;
     readonly manifest: GraphManifest;
@@ -824,8 +864,10 @@ export class V2Page {
     // D081-P7d END.
     private canopyIngested = false;
     private canopyActive(): boolean {
-        return this.axes.organization === 'fractal' && this.index.nodes.length > V2_CAP
-            && enabledExperimentalOrganizations().has('fractal');
+        // D082-B2 BEGIN: the explicit Canopy topology is no longer a legacy experimental flag.
+        return this.axes.organization === 'fractal' && !this.topologyIndra && this.index.nodes.length > V2_CAP
+            && (this.topology === 'canopy-ifs' || enabledExperimentalOrganizations().has('fractal'));
+        // D082-B2 END
     }
     private async prepareCanopy(): Promise<CanopyLayout> {
         // D081-P7d BEGIN: build the canopy from the immutable dataset snapshot.
@@ -913,7 +955,9 @@ export class V2Page {
     /** The refresh that raised the pending state: only it, or none, lowers it, so a superseded one never hides a newer one's. */
     private projectionPendingEpoch = -1;
     /** The Indra view is served by the legacy adapter (`#indra=legacy`) instead of Indra's Pearls. */
-    private readonly legacyIndra: boolean;
+    // D082-B2 BEGIN: the explicit Natural/Indra control selects classic packing after a Pearls bookmark.
+    private legacyIndra: boolean;
+    // D082-B2 END
     /** The client the Fractal and Indra projections run through; null when a registry computes them directly. */
     private projectionClient: ProjectionWorkerClient | null | undefined;
     /** The root request behind the mounted Indra's Pearls result: a level load repeats it with a token. */
@@ -942,6 +986,14 @@ export class V2Page {
     constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
+        // D082-B2 BEGIN
+        this.lawSnapshot = topologySnapshot(manifest, index);
+        this.topology = deps.taxonomy?.topology ?? 'natural';
+        this.topologyIndra = deps.taxonomy?.indra ?? false;
+        this.taxonomyExplicit = deps.taxonomy !== undefined;
+        const initialTopologySupport = topologySupport(this.topology, axes.projection, this.topologyIndra);
+        if (!initialTopologySupport.ok) throw new Error(initialTopologySupport.reason);
+        // D082-B2 END
         // D081-P6c BEGIN.
         this.datasetNodeIds = new Set(index.nodes.filter(node => node.level !== 5).map(node => node.id));
         this.datasetNodeCount = this.datasetNodeIds.size;
@@ -979,7 +1031,9 @@ export class V2Page {
         this.typedByDefault = deps.projectionPipeline !== undefined || defaultPipelineEnabled() || deps.useDefaultPipeline === true;
         this.projectionInput = deps.projectionPipeline ?? (this.typedByDefault ? this.buildDefaultPipeline() : undefined);
         this.fractalPipeline = deps.fractalPipeline;
-        this.legacyIndra = deps.legacyIndra === true || legacyIndraFlagEnabled();
+        // D082-B2 BEGIN: schema-2 compatibility can preserve Pearls without a hash flag.
+        this.legacyIndra = deps.legacyIndra ?? legacyIndraFlagEnabled();
+        // D082-B2 END
         this.projectionClient = deps.projectionWorker ?? (deps.projectionRegistry !== undefined ? null : undefined);
         this.cacheWorkerResults = deps.projectionWorker === undefined;
         // D-080 A5b projection cache bound for the default typed registry.
@@ -1344,6 +1398,10 @@ export class V2Page {
     /** Whether the current view is drawn by the typed pipeline. C2's flagged canopy uses the
      * product renderer to preserve all three morphologies over the complete reference hierarchy. */
     private typedActive(): boolean {
+        // D082-B2 BEGIN
+        if (this.lawActive()) return false;
+        if (this.taxonomyExplicit && this.axes.organization === 'indra' && this.legacyIndraView()) return false;
+        // D082-B2 END
         return !this.canopyActive() && (this.typedByDefault ||
             (ORGANIZATION_PROJECTIONS[this.axes.organization].typed === 'always' && !this.legacyIndraView()));
     }
@@ -2095,6 +2153,9 @@ export class V2Page {
         if (!view && !host) return;
         this.canopyRailLayer?.destroy();
         this.canopyRailLayer = null;
+        // D082-B2 BEGIN
+        this.guideLayer?.destroy(); this.guideLayer = null;
+        // D082-B2 END
         // D081-P7b BEGIN: a retired Fractal view cannot keep serving stale counts.
         this.canopyStatus = null;
         const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
@@ -2890,17 +2951,32 @@ export class V2Page {
                 ...(usePrevious ? { previous: this.rawPositions } : {}),
             };
             // D081-FRACTAL-MERGE BEGIN: the canopy has its own immutable layout cache.
-            const layoutKey = canopy ? `fractal-canopy:${projection}:${this.manifest.digest}:${canopy.digest}:${[...ids].sort().join('|')}`
+            // D082-B2 BEGIN: a law sees the full immutable source snapshot and is cached independently of density.
+            const law = this.lawActive() ? TOPOLOGY_LAWS[this.topology]! : null;
+            const lawKey = law ? `${this.lawSnapshot.digest}|${law.id}|${law.version}|${projection}|${this.topologyIndra}` : null;
+            const layoutKey = lawKey ? `topology:${lawKey}` : canopy ? `fractal-canopy:${projection}:${this.manifest.digest}:${canopy.digest}:${[...ids].sort().join('|')}`
                 : pageLayoutKey(this.manifest.digest, layoutInput);
             this.recordProjectionPhase('projectionInput', performance.now() - projectionInputBegan);
             const projectionBegan = performance.now();
             const reused = this.pageResults.get(layoutKey) as LayoutResult | undefined;
             this.projectionCacheOutcome = reused ? 'hit' : 'miss';
             // D081-P3c BEGIN: large classic layouts run in the embedded worker.
-            const result: LayoutResult = reused ?? (canopy
+            const lawResult = lawKey ? this.lawCache.get(lawKey) ?? await new Promise<TopologyLayout>((resolve, reject) => {
+                // Yield one task before the pure law runs; no partial result is ever mounted.
+                setTimeout(() => {
+                    try { resolve(computeTopologyLayout(this.topology as Exclude<TopologyId, 'natural'>,
+                        this.lawSnapshot, projection, this.topologyIndra)); }
+                    catch (error) { reject(error); }
+                }, 0);
+            }) : null;
+            if (lawKey && lawResult && !this.lawCache.has(lawKey)) this.lawCache.set(lawKey, lawResult);
+            const result: LayoutResult = reused ?? (lawResult ? topologyLayoutResult(lawResult) : canopy
                 ? { positions: canopyRenderPositions(canopy, sceneNodes.map(node => node.id), projection),
                     containers: [], source: 'fractal-canopy' }
                 : await computeClassicLayout(layoutInput));
+            if (lawResult && sceneNodes.some(node => !result.positions.has(node.id)))
+                throw new Error(`${this.topology}: un dettaglio caricato non appartiene allo snapshot topologico fisso`);
+            // D082-B2 END
             // D081-P3c END
             // D081-FRACTAL-MERGE END.
             this.recordProjectionPhase('projectionCompute', reused ? 0 : performance.now() - projectionBegan);
@@ -2910,7 +2986,9 @@ export class V2Page {
             // on screen — a refresh that fails mid-way must leave the page describing the view it
             // actually displays, not the one it wanted.
             const nextRawPositions = result.positions;
-            const flat3d = !canopy && organization === 'natural' && projection === '3d';
+            // D082-B2 BEGIN: a law's own 3D coordinates must not be canonicalized as Natural.
+            const flat3d = !canopy && !this.lawActive() && organization === 'natural' && projection === '3d';
+            // D082-B2 END
             const nextCanonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
             const expanded = flat3d
                 ? applyExpansion(nextCanonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
@@ -3179,6 +3257,9 @@ export class V2Page {
             // D081-P3c END
             let mounted: ProductView;
             let nextRailLayer: CanopyRailLayer | null = null;
+            // D082-B2 BEGIN
+            let nextGuideLayer: { destroy(): void } | null = null;
+            // D082-B2 END
             try {
                 // D081-FRACTAL-MERGE BEGIN: canopy owns its edge and title layers.
                 mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const hint = (canopy || this.axes.organization === 'indra') && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
@@ -3199,6 +3280,9 @@ export class V2Page {
                         } }
                 });
                 // D081-P7b END.
+                // D082-B2 BEGIN: guide IDs are visual only, never counted as source edges.
+                if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides);
+                // D082-B2 END
                 if (canopy) {
                     // D081-P7b BEGIN: one measured viewport owns labels, evidence, and status.
                     appendCanopyExplanation(nextHost, canopy, this.axes.reading, this.insets);
@@ -3218,6 +3302,9 @@ export class V2Page {
                 }
             }
             catch (error) {
+                // D082-B2 BEGIN
+                nextGuideLayer?.destroy();
+                // D082-B2 END
                 nextHost.remove();
                 if (!this.view)
                     throw error;
@@ -3231,9 +3318,15 @@ export class V2Page {
             const previousView = this.view;
             const previousHost = this.viewHost;
             const previousRailLayer = this.canopyRailLayer;
+            // D082-B2 BEGIN
+            const previousGuideLayer = this.guideLayer;
+            // D082-B2 END
             this.view = mounted;
             this.viewHost = nextHost;
             this.canopyRailLayer = nextRailLayer;
+            // D082-B2 BEGIN
+            this.guideLayer = nextGuideLayer;
+            // D082-B2 END
             if (canopy) {
                 this.canopyMarksShown = canopyViewMarks;
                 this.canopyStatusAt = performance.now();
@@ -3246,11 +3339,14 @@ export class V2Page {
             }
             this.installProjectionPerfHook();
             try { previousView?.destroy(); }
-            finally { previousRailLayer?.destroy(); previousHost?.remove(); }
+            finally { previousRailLayer?.destroy(); previousGuideLayer?.destroy(); previousHost?.remove(); }
             // D-072 R1: the replacement is on screen — only now does the page state describe it.
             // A failed refresh above leaves every field at the last good values, matching the
             // view that is actually displayed (witness, labels, panel counts included).
             this.rawPositions = nextRawPositions;
+            // D082-B2 BEGIN
+            this.lawLayout = lawResult;
+            // D082-B2 END
             this.layoutProjection = projection;
             this.canonicalPositions = nextCanonicalPositions;
             this.positions = next;
@@ -3706,9 +3802,30 @@ export class V2Page {
         host.append(layer);
         window.setTimeout(() => layer.remove(), 1000);
     }
+    // D082-B2 BEGIN: validate the requested row before changing either taxonomy axis.
+    async setTaxonomy(topology: TopologyId, indra: boolean): Promise<void> {
+        const support = topologySupport(topology, this.axes.projection, indra);
+        if (!support.ok) throw new Error(support.reason);
+        const previous = { topology: this.topology, indra: this.topologyIndra,
+            legacyIndra: this.legacyIndra, explicit: this.taxonomyExplicit };
+        this.topology = topology;
+        this.topologyIndra = indra;
+        this.taxonomyExplicit = true;
+        if (topology === 'natural') this.legacyIndra = true;
+        const organization = topology === 'canopy-ifs' && !indra ? 'fractal'
+            : topology === 'natural' && indra ? 'indra' : 'natural';
+        try { await this.setAxes({ organization }); }
+        catch (error) { this.topology = previous.topology; this.topologyIndra = previous.indra;
+            this.legacyIndra = previous.legacyIndra; this.taxonomyExplicit = previous.explicit; throw error; }
+    }
+    // D082-B2 END
     async setAxes(value: AxesInput) {
         const changed = normalizeAxesInput(value);
         const merged: PageAxes = { ...this.axes, ...changed };
+        // D082-B2 BEGIN
+        const row = topologySupport(this.topology, merged.projection, this.topologyIndra);
+        if (!row.ok) throw new Error(row.reason);
+        // D082-B2 END
         const cameraBeforeBrainOff = changed.brain === false && this.axes.brain === true
             && brainModeKey(merged) === brainModeKey(this.axes) ? this.view?.readCamera() : null;
         if (changed.brain !== undefined) {
@@ -4339,6 +4456,20 @@ export class V2Page {
         const n = byId.get(this.selected), e = this.renderedRelations.get(this.selected) ?? this.index.edges.find(e => e.id === this.selected) ?? (this.selected.startsWith('contains:') ? (() => { const child = byId.get(this.selected.slice(9)); return child?.parent ? { id: this.selected, source: child.parent, target: child.id, class: 'structural' as const, type: 'contains', directed: true, evidence: [], count: 1, underlying: [], lifted: false, width: 0.65 } : undefined; })() : undefined);
         if (n) {
             renderSelection(host, buildNodePanel(n, this.detailCache.get(n.id), this.index.edges, byId, createEvidenceResolver(byId)), id => { void this.select(id); });
+            // D082-B2 BEGIN: keep the mathematical placement witness beside the source card.
+            const witnessInfo = this.topologyWitness(n.id);
+            if (witnessInfo) {
+                const { witness } = witnessInfo;
+                const why = document.createElement('section');
+                const heading = document.createElement('h3'); heading.textContent = 'Perché qui'; why.append(heading);
+                line(why, 'Legge', witness.law);
+                line(why, 'Indirizzo', witness.address);
+                line(why, 'Valori', witness.values);
+                const explanation = document.createElement('p'); explanation.textContent = witness.text; why.append(explanation);
+                if (witnessInfo.path.length) line(why, 'Contenitori Indra', witnessInfo.path.join(' › '));
+                host.append(why);
+            }
+            // D082-B2 END
             if (n.counts.children || n.counts.passages) {
                 const button = document.createElement('button');
                 button.textContent = this.history.state.expanded.has(n.id) ? 'Comprimi' : 'Espandi';

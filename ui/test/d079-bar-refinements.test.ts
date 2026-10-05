@@ -7,8 +7,10 @@ const main = readFileSync(new URL('../src/review/main.ts', import.meta.url), 'ut
 
 test('collapsed summary includes the live density and relation detail selections', () => {
   const summary = main.slice(main.indexOf('function syncToolbarSummary()'), main.indexOf('syncToolbarSummary();', main.indexOf('function syncToolbarSummary()')));
-  for (const token of ['BAR_LABELS.projection', 'BAR_LABELS.morphology', 'BAR_LABELS.organization', 'BAR_LABELS.reading', 'density-control', 'v2-relation-detail'])
+  // D082-B2 BEGIN: P6 replaces the organization summary with the selected topology law.
+  for (const token of ['BAR_LABELS.projection', 'BAR_LABELS.morphology', 'topologyLabel(lawTopology(geometry.topology)', 'BAR_LABELS.reading', 'density-control', 'v2-relation-detail'])
     assert.ok(summary.includes(token), `summary includes ${token}`);
+  // D082-B2 END
   assert.match(summary, /complete:\s*"Completa"/);
   assert.match(summary, /detail === "all" \? "Tutte" : "Essenziali"/);
   assert.match(main, /function syncDensity\(\): void \{[\s\S]*?syncToolbarSummary\(\);/);

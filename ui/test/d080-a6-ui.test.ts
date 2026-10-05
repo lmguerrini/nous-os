@@ -7,8 +7,10 @@ const main = readFileSync(new URL('../src/review/main.ts', import.meta.url), 'ut
 const popover = readFileSync(new URL('../src/review/popover.ts', import.meta.url), 'utf8');
 
 test('toolbar presents named groups and keeps graph diagnostics out of its visible status line', () => {
-  for (const group of ['Vista', 'Organizzazione', 'Morfologia', 'Lettura', 'Relazioni', 'Densità', 'Aspetto', 'Ambiente'])
+  // D082-B2 BEGIN: P6 replaces the old Vista and Organizzazione headings.
+  for (const group of ['Rendering', 'Topologia', 'Morfologia', 'Lettura', 'Relazioni', 'Densità', 'Aspetto', 'Ambiente'])
     assert.match(html, new RegExp(`>${group}<`), `group ${group}`);
+  // D082-B2 END
   assert.match(html, /id="graph-status-toggle"[^>]*aria-controls="graph-status-panel"/);
   assert.match(html, /id="graph-status-panel"[^>]*hidden/);
   assert.match(html, /id="counter" hidden/);
