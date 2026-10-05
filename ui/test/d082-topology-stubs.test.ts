@@ -9,11 +9,14 @@ import { TOPOLOGY_LAWS } from '../src/topology/laws.ts';
 
 const dimensions: readonly TopologyDimension[] = ['2d', '3d'];
 const snapshot: TopologySnapshot = { digest: 'stub-test', nodes: [], edges: [] };
+// D082-B4-SIERPINSKI BEGIN
+// Sierpiński is implemented as a real IFS law (ui/src/topology/sierpinski.ts); only the still-unimplemented
+// laws remain in this stub list. Own tests: ui/test/d082-sierpinski-*.test.ts.
 const stubs: readonly Readonly<{ law: TopologyLaw; label: string; error: string }>[] = [
   { law: juliaLaw, label: 'Julia · coordinate esterne', error: 'julia: not implemented' },
-  { law: sierpinskiLaw, label: 'Sierpiński', error: 'sierpinski: not implemented' },
   { law: lullLaw, label: 'Topologia circolare combinatoria', error: 'lull: not implemented' },
 ];
+// D082-B4-SIERPINSKI END
 
 test('each topology stub refuses both dimensions and keeps its placeholder label', () => {
   for (const { law, label, error } of stubs) {
