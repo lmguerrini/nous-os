@@ -45,6 +45,9 @@ import type { CanvasDisc } from "../render-common/container-canvas.ts";
 
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
 import { drawFlowLayer, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
+// D082-A-NODES BEGIN
+import { denseEdgeAlphaPermille, denseNodeScales, isReferenceCompleta } from "../render-common/dense-node-scale.ts";
+// D082-A-NODES END
 import { InteractionQualityController } from "../render-common/interaction-quality.ts";
 import type { DistinctSubsetUpdate, MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect, VisibleSubsetUpdate } from "./view-contract.ts";
@@ -601,6 +604,9 @@ export const createProductView: CreateProductView = async (input) => {
   type FullScene = ReturnType<typeof buildDrawnScene> & { geometry: NonNullable<ReturnType<typeof buildDrawnScene>["geometry"]> };
   let committedScene: FullScene | null = null;
   let initialScene: FullScene | null = null;
+  // D082-A-NODES BEGIN
+  let denseScaleById = new Map<string, import("../render-common/dense-node-scale.ts").DenseNodeScale>();
+  // D082-A-NODES END
   // D-072 R2: the marker bits (glyph, radiusPx) the renderers' style maps last saw, so an
   // in-place subset change can ship only the entries that actually flipped.
   let lastNodeMarks = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined; radiusPx: number | undefined }>();
@@ -1334,10 +1340,19 @@ export const createProductView: CreateProductView = async (input) => {
       ? applyPerceptibleEdgeFloors(axes.organization, axes.morphology,
         structural ? 'structural' : exploratory ? 'exploratory' : 'attested', opacityPermille, widthPermille, floorProjection)
       : { opacityPermille, widthPermille };
+    // D082-A-NODES BEGIN
+    const denseOpacityPermille = denseScaleById.size
+      ? denseEdgeAlphaPermille(legible.opacityPermille,
+        denseScaleById.get(edge.source)?.localDensity ?? 1, denseScaleById.get(edge.target)?.localDensity ?? 1)
+      : legible.opacityPermille;
+    // D082-A-NODES END
     const minimumScreenWidthPx = structuralSpokeScreenWidthPx(axes.organization, axes.projection, spoke);
     return { category,
       // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
       ...legible,
+      // D082-A-NODES BEGIN
+      ...(denseScaleById.size ? { opacityPermille: denseOpacityPermille } : {}),
+      // D082-A-NODES END
       // The distinct 3D canvas uses projected widths; far pearls need a fixed CSS-pixel spoke floor.
       ...(minimumScreenWidthPx === undefined ? {} : { minimumScreenWidthPx }),
       ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
@@ -1355,6 +1370,36 @@ export const createProductView: CreateProductView = async (input) => {
     const openContainers = new Set(input.v2Prepared && axes.organization === "indra"
       ? (state.containers ?? []).filter((container) => container.open !== false).map((container) => container.id) : []);
     const containers = state.containers && axes.organization === "indra" ? state.containers : undefined;
+    // D082-A-NODES BEGIN
+    // Completa's full reference dataset is the only view that receives the drawing-only radius and
+    // dense-edge policy. Position and relation collections remain byte-for-byte the same.
+    denseScaleById = new Map();
+    if (input.v2Prepared && isReferenceCompleta(input.data.nodes.length, state.visible.size)) {
+      const visibleNodes = input.data.nodes.filter(node => state.visible.has(node.id));
+      const projectForSize = (point: Coordinates) => axes.projection === '3d'
+        ? { x: point.x + point.z * 0.5, y: point.y + point.z * 0.35 } : point;
+      const projectedAnchors = visibleNodes.map(node => projectForSize(anchors.get(node.id)!));
+      const minX = Math.min(...projectedAnchors.map(point => point.x)), maxX = Math.max(...projectedAnchors.map(point => point.x));
+      const minY = Math.min(...projectedAnchors.map(point => point.y)), maxY = Math.max(...projectedAnchors.map(point => point.y));
+      const span = Math.max(1, Math.hypot(maxX - minX, maxY - minY));
+      const screenScale = Math.min(1120 / Math.max(1, maxX - minX), 720 / Math.max(1, maxY - minY));
+      const screenDistanceNorm = new Map(visibleNodes.map(node => {
+        const point = projectForSize(anchors.get(node.id)!);
+        return [node.id, Math.min(1, Math.hypot(point.x - (minX + maxX) / 2, point.y - (minY + maxY) / 2) / (span / 2))] as const;
+      }));
+      const fit = fitRatio.get(cameraKeys().key);
+      const current = handle?.readCameraState().ratio;
+      const zoomProgress = fit && current ? Math.max(0, Math.min(1, 1 - current / fit)) : 0;
+      denseScaleById = new Map(denseNodeScales(visibleNodes.map(node => {
+        const point = anchors.get(node.id)!;
+        const radius = v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale).radiusPx;
+        const screen = projectForSize(point);
+        return { id: node.id, x: point.x, y: point.y, z: point.z,
+          screenX: (screen.x - minX) * screenScale, screenY: (screen.y - minY) * screenScale,
+          importance: (node.v2 as import("./v2-core.ts").V2Node).importance.value, baseRadiusPx: radius };
+      }), { zoomProgress, screenDistanceNorm }));
+    }
+    // D082-A-NODES END
     const presentation = {
       morphologyLanguage: "distinct" as const,
       nativeLabels: false,
@@ -1369,23 +1414,30 @@ export const createProductView: CreateProductView = async (input) => {
           .map((node) => {
             const v2Encoded = input.v2Prepared ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale) : null;
             const encoding = v2Encoded ?? encodingOf(node, input.data);
+            // D082-A-NODES BEGIN
+            const denseSize = denseScaleById.get(node.id);
+            // D082-A-NODES END
             return [node.id, {
               ...encoding,
+              // D082-A-NODES BEGIN
+              ...(denseSize ? { radiusPx: denseSize.radiusPx,
+                corePermille: Math.round(denseSize.radiusPx / 8 * SCENE_PERMILLE_SCALE) } : {}),
+              // D082-A-NODES END
               glyph: v2Encoded ? v2Encoded.glyph : (node.type === "domain" || node.type === "conversation" ? "ring"
                 : node.type === "canon" ? "double-ring"
                 : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
               ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
               ...(input.v2Prepared && state.visible.size > 400 ? { haloPermille: Math.round(encoding.haloPermille * 0.28) } : {}),
-              ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: v2Encoded.radiusPx * (
+              ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: (denseSize?.radiusPx ?? v2Encoded.radiusPx) * (
                 (node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
                   : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1) } : {}),
               // In Indra a node whose children are visible is drawn by its container ring; its own disc
               // shrinks to a small hollow marker. A closed `+N` container keeps its own pearl, because
               // below the sphere LOD the pearl is all that carries it.
-              ...(openContainers.has(node.id) ? { radiusPx: INDRA_CONTAINER_MARKER_PX, haloPermille: 0, glyph: "hollow" as const } : {}),
+              ...(openContainers.has(node.id) ? { radiusPx: INDRA_CONTAINER_MARKER_PX * (denseSize?.scale ?? 1), haloPermille: 0, glyph: "hollow" as const } : {}),
               ...(axes.morphology === "stellar" && axes.organization === "indra" && axes.projection === "3d"
                 ? { radiusPx: stellarIndra3dNodeRadiusPx(openContainers.has(node.id) ? INDRA_CONTAINER_MARKER_PX
-                  : v2Encoded?.radiusPx ?? encoding.corePermille * 8 / SCENE_PERMILLE_SCALE,
+                  : denseSize?.radiusPx ?? v2Encoded?.radiusPx ?? encoding.corePermille * 8 / SCENE_PERMILLE_SCALE,
                   axes.morphology, axes.organization, axes.projection) } : {}),
               ...(input.v2Prepared && axes.colour === "bw" ? { tintSrgb: (() => { const level = (node.v2 as import("./v2-core.ts").V2Node).level; const gray = level <= 2 ? 0.88 : level <= 4 ? 0.7 : 0.56; return [gray, gray, gray] as const; })() }
                 : input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
