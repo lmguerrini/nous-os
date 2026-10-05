@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { LULL_NAME_AUTHORISED } from '../src/topology/lull.ts';
 import { test } from 'node:test';
 import { computeLayout } from '../src/review/layout-v2.ts';
 import type { LayoutInput } from '../src/review/layout-v2.ts';
@@ -70,12 +71,14 @@ test('wire taxonomy and label gating follow law support', () => {
   assert.equal(wireTopology('lull'), 'circular-combinatorial');
   assert.equal(lawTopology('circular-combinatorial'), 'lull');
   assert.equal(topologyLabel('julia', '2d'), 'Julia · coordinate esterne');
-  assert.equal(topologyLabel('lull', '2d'), 'Topologia circolare combinatoria');
+  // D082-B5 integration: the label follows the verified name gate of the implemented law.
+  assert.equal(topologyLabel('lull', '2d'), LULL_NAME_AUTHORISED ? 'Combinatoria lulliana' : 'Topologia circolare combinatoria');
   assert.deepEqual(topologySupport('natural', '3d', true), { ok: true });
   const forbidden = topologySupport('lull', '3d', false);
   assert.equal(forbidden.ok, false);
   if (!forbidden.ok) assert.ok(forbidden.reason);
-  assert.equal(topologySupport('canopy-ifs', '2d', true).ok, false);
+  // D082-B6 integration: Indra composition is implemented, so Canopy IFS + Indra ON is supported (matrix: declared limits).
+  assert.equal(topologySupport('canopy-ifs', '2d', true).ok, true);
   assert.throws(() => parseGeometryView2(JSON.stringify({ ...defaultGeometryView2(), topology: 'lull' })), /topology/);
 });
 
