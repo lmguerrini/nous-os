@@ -13,6 +13,9 @@ import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { APPEARANCE_RANGES, CUSTOM_STORAGE_KEY, applyColour, normalizeAppearance, normalizePalette, readColourPresets, readLocal, saveColourPreset, validHex, writeLocal } from "./appearance.ts";
 import type { AppearancePresets } from "./appearance.ts";
 import { PALETTES, PALETTE_ROLES, contrast, paletteName } from "./palette.ts";
+// D082-A-THEME BEGIN
+import { resolveUIAccent } from "./ui-accent.ts";
+// D082-A-THEME END
 import type { V2Category } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { harmonize } from "./color-harmony.ts";
@@ -1060,7 +1063,17 @@ function refreshFlowLegends(): void {
   for (const host of document.querySelectorAll<HTMLElement>(".flow-legend"))
     if (host !== fullscreen) renderFlowLegend(host, palette, organization);
 }
+// D082-A-THEME BEGIN
+function syncUIAccent(name: typeof axes.colour = axes.colour): void {
+  const accentKind = name === "custom" || name === "stellar-cold" || name === "stellar-warm"
+    ? name
+    : name === "bw" ? "bw" : "preset";
+  const palette = name === "custom" ? customPalette : PALETTES[name];
+  document.documentElement.style.setProperty("--ui-accent", resolveUIAccent(palette, accentKind));
+}
+// D082-A-THEME END
 function syncCustomColours(): void {
+  syncUIAccent();
   refreshFlowLegends();
   const host = get<HTMLElement>("custom-colours");
   host.hidden = axes.colour !== "custom";
@@ -1178,6 +1191,9 @@ function changePalette(value: string): void {
     writeLocal(storage, "d070.customOrigin", { name: customOriginName, palette: customOrigin });
     writeLocal(storage, "d069.customPalette", customPalette);
   }
+  // D082-A-THEME BEGIN
+  syncUIAccent(next);
+  // D082-A-THEME END
   surfaceStack?.set("appearance", true);
   void setAxes({ colour: next }).then(async () => { if (next === "custom") await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); }); updateInsets();
 }

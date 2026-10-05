@@ -22,7 +22,10 @@ test('every selectable axis has an explicit selected state and strong visual tre
     assert.match(group, /<button[^>]*aria-pressed="true"/, `${axis} starts with a marked selection`);
     assert.match(main, new RegExp(`querySelectorAll<HTMLButtonElement>\\(\\x60\\[data-axis="\\$\\{axis\\}"\\] button\\[data-value\\]`), `${axis} selection is synchronized`);
   }
-  assert.match(html, /\.axis button\[aria-pressed="true"\][^{]*\{background:#70573d;border-color:#e0b97a/);
+  // D082-A-THEME BEGIN
+  assert.match(html, /\.axis button\[aria-pressed="true"\][^{]*\{background:color-mix\(in srgb,var\(--ui-accent\)/);
+  assert.match(html, /\.axis button\[aria-pressed="true"\][^{]*\{[^}]*box-shadow:inset 0 0 0 2px/);
+  // D082-A-THEME END
 });
 
 test('whole-bar collapse is a DOM-only toggle with a live state summary', () => {
