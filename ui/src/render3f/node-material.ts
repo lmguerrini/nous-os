@@ -152,8 +152,10 @@ void main() {
     float rootLobe = max(somaLobe(v_somaLobe0, v_localDevicePx),
       max(somaLobe(v_somaLobe1, v_localDevicePx), somaLobe(v_somaLobe2, v_localDevicePx)));
     float spindle = 1.0 + 0.16 * cos(theta) - 0.045 * cos(2.0 * theta);
+    float leafScale = v_somaLobe0.z > 0.6 && v_somaLobe1.z <= 0.0 && v_somaLobe2.z <= 0.0
+      ? 0.84 : 1.0;
     float bulge = (1.0 + clamp(irregularity * 1.6, -0.12, 0.12))
-      * spindle * (1.0 + rootLobe) * v_somaShape.y;
+      * spindle * (1.0 + rootLobe) * v_somaShape.y * leafScale;
     // D081-P1E END
     somaDistance = length(vec2(local.x / eccentricity, local.y)) / bulge;
   }
@@ -167,7 +169,8 @@ void main() {
   float haloOffset = clamp((radialDistance - v_coreRadiusDevicePx) / haloSpan, 0.0, 1.0);
   // Sample the tight halo linearly.
   float haloAlpha = sampledHaloAlpha(haloOffset) * (1.0 - coreAlpha);
-  float alpha = (coreAlpha + haloAlpha) * v_opacity;
+  // D082-A-NEURAL: the visible soma outline and the root begin at the same 0.9 alpha.
+  float alpha = (coreAlpha + haloAlpha) * (v_somaShape.x > 0.5 ? min(v_opacity, 0.9) : v_opacity);
   if (alpha <= 0.0 || somaDistance > v_haloRadiusDevicePx) {
     discard;
   }

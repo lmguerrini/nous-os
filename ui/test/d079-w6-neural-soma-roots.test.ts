@@ -35,12 +35,19 @@ test("fit and hub zoom keep hub and secondary roots above the screen-space ratio
       }
     }
   }
-  assert.match(FILAMENT_FRAGMENT_SHADER, /ordinary \* v_neuralRootRatios\.x/);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /ordinary \* v_neuralRootRatios\.y/);
+  // D082-A-NEURAL BEGIN: P1 requires broad shared roots, including negative shared-trunk factors.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /ordinary \* abs\(v_neuralRootRatios\.x\)/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /ordinary \* abs\(v_neuralRootRatios\.y\)/);
+  // D082 P1 lines 69–76: a short rounded join must reach the existing trunk before it forms a star arm.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /startRadius \* 2\.5/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /mix\(startTrunk, startMouth, startEase\)/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /min\(0\.49, startRadius \* 1\.5 \/ span\)/);
   const shader2d = await readFile(new URL("../src/render2d/filament-program.ts", import.meta.url), "utf8");
-  assert.match(shader2d, /v_thickness \* v_rootRatios\.x/);
-  assert.match(shader2d, /v_thickness \* v_rootRatios\.y/);
+  assert.match(shader2d, /v_thickness \* abs\(v_rootRatios\.x\)/);
+  assert.match(shader2d, /v_thickness \* abs\(v_rootRatios\.y\)/);
+  assert.match(shader2d, /v_somaRadii\.x \* 2\.5/);
+  assert.match(shader2d, /mix\(startTrunk, rootStart, startEase\)/);
+  // D082-A-NEURAL END
   assert.match(shader2d, /min\(0\.49, v_somaRadii\.x \* 1\.5 \/ span\)/);
   assert.match(NODE_FRAGMENT_SHADER, /smoothstep\(v_coreRadiusDevicePx - fwidth\(somaDistance\)/);
 });

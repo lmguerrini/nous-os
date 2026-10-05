@@ -30,7 +30,8 @@ test("Neural root reaches the actual soma outline and tapers monotonically over 
   assert.match(FILAMENT_FRAGMENT_SHADER, /startShoulder.*endShoulder/s);
 });
 
-test("cosmetic Neural sprouts appear only in close-up and never enter graph or GPU instance counts", () => {
+// D082-A-NEURAL BEGIN: a leaf's single neurite must be its only tail.
+test("degree-one Neural cells retain one tail even in close-up and never add graph instances", () => {
   assert.equal(neuralDetailVisible(1, 7, 180), false);
   assert.equal(neuralDetailVisible(2, 7, 180), true);
   assert.equal(neuralDetailVisible(2, 4, 180), false);
@@ -59,7 +60,7 @@ test("cosmetic Neural sprouts appear only in close-up and never enter graph or G
   assert.equal(strokes(1, "2d"), 0);
   assert.equal(strokes(1, "3d"), 0);
   assert.equal(strokes(2, "2d"), strokes(2, "3d"));
-  assert.ok(strokes(2, "2d") > 0);
+  assert.equal(strokes(2, "2d"), 0, "a leaf has no cosmetic offshoot");
   assert.equal(strokes(2, "2d", true), 1, "moving frame uses only its one inexpensive base stroke");
   assert.equal(geometry.edges.length, 1);
   assert.equal(geometry.drawnSegments.length, 1);
@@ -88,6 +89,7 @@ test("cosmetic Neural sprouts appear only in close-up and never enter graph or G
   filaments.geometry.dispose(); filaments.material.dispose();
   somata.geometry.dispose(); somata.material.dispose(); somata.haloStops.dispose();
 });
+// D082-A-NEURAL END
 
 test("Neural halo stays tight and monochrome reference colours carry zero chroma", () => {
   assert.ok(MORPHOLOGY_CONTRACT.neural.glow.maximumCoreRatio <= 1.1);

@@ -163,13 +163,17 @@ void main() {
   );
   if (a_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio;
-    float rootStart = a_neuralRootRatios.x < 0.0 ? ordinary * -a_neuralRootRatios.x : max(ordinary * a_neuralRootRatios.x,
-      min(clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
-    float rootEnd = a_neuralRootRatios.y < 0.0 ? ordinary * -a_neuralRootRatios.y : max(ordinary * a_neuralRootRatios.y,
-      min(clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
-    // D081-P1F: reserve width for a root at least twice its shaft, including wide sliders.
-    if (a_neuralRootRatios.x > 0.0 && a_neuralRootRatios.x <= 1.8) rootStart = max(rootStart, ordinary * 2.0);
-    if (a_neuralRootRatios.y > 0.0 && a_neuralRootRatios.y <= 1.8) rootEnd = max(rootEnd, ordinary * 2.0);
+    float mouthScale = clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2);
+    float rootStart = max(ordinary * abs(a_neuralRootRatios.x),
+      clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio
+        * (a_neuralRootRatios.x < 0.0 ? 1.0 : 0.9) * mouthScale);
+    float rootEnd = max(ordinary * abs(a_neuralRootRatios.y),
+      clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio
+        * (a_neuralRootRatios.y < 0.0 ? 1.0 : 0.9) * mouthScale);
+    rootStart = max(rootStart, min(clamp(a_neuralProfile.y * startScale, 2.0, 24.0)
+      * u_devicePixelRatio * 1.1, ordinary * 6.0));
+    rootEnd = max(rootEnd, min(clamp(a_neuralProfile.z * endScale, 2.0, 24.0)
+      * u_devicePixelRatio * 1.1, ordinary * 6.0));
     maximumBodyHalfWidth = max(maximumBodyHalfWidth, max(rootStart, rootEnd) * 0.5);
   }
   float materialExtent = max(
@@ -308,41 +312,64 @@ void main() {
     v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     baseWidth * widthFactor * 0.5
   );
+  float rootSomaMix = 0.0;
   if (v_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = v_neuralRootRatios.x < 0.0 ? ordinary * -v_neuralRootRatios.x : startRadius > 0.0 ? max(ordinary * v_neuralRootRatios.x,
-      min(startRadius * 1.1, ordinary * 6.0)) : ordinary;
-    float endRoot = v_neuralRootRatios.y < 0.0 ? ordinary * -v_neuralRootRatios.y : endRadius > 0.0 ? max(ordinary * v_neuralRootRatios.y,
-      min(endRadius * 1.1, ordinary * 6.0)) : ordinary;
-    // D081-P1E BEGIN: low-degree roots fit inside the soma protrusion at the joint.
-    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8 && startRadius > 0.0)
-      startRoot = max(ordinary * 2.0, min(startRoot, startRadius * 0.9));
-    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8 && endRadius > 0.0)
-      endRoot = max(ordinary * 2.0, min(endRoot, endRadius * 0.9));
-    // D081-P1E END
     float span = max(length(v_cpC - v_cpA), 1.0);
-    float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
-      max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
-    float endShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
-      max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
-    // The path begins at the centre under the soma. Hold the root through its visible lobe
-    // boundary, then taper over the same shoulder that the canvas path uses from that boundary.
-    // D081-P1F: low-degree outlines reach about 3.2 minor radii in the trunk direction.
+    // D082-A-NEURAL BEGIN: round the soma mouth into the D-081 trunk width.
+    float startShoulder = max(min(span * 0.45,
+      min(startRadius * 3.0, max(startRadius * 2.5, span * 0.12))) / span, 0.00001);
+    float endShoulder = max(min(span * 0.45,
+      min(endRadius * 3.0, max(endRadius * 2.5, span * 0.12))) / span, 0.00001);
     float startBoundary = min(0.49, startRadius * 1.5 / span);
     float endBoundary = min(0.49, endRadius * 1.5 / span);
     if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8)
       startBoundary = min(0.49, startRadius * 3.2 / span);
     if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
       endBoundary = min(0.49, endRadius * 3.2 / span);
-    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8) startShoulder = min(0.28, startRadius / span);
-    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8) endShoulder = min(0.28, endRadius / span);
     float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, parameter);
     float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - parameter);
+    if (startRadius < 3.0 * u_devicePixelRatio) startEase = 0.0;
+    if (endRadius < 3.0 * u_devicePixelRatio) endEase = 0.0;
+    rootSomaMix = max(startEase, endEase);
+    float oldStartRoot = startRadius > 0.0
+      ? (v_neuralRootRatios.x < 0.0 ? ordinary * -v_neuralRootRatios.x
+        : max(ordinary * v_neuralRootRatios.x, min(startRadius * 1.1, ordinary * 6.0)))
+      : ordinary;
+    float oldEndRoot = endRadius > 0.0
+      ? (v_neuralRootRatios.y < 0.0 ? ordinary * -v_neuralRootRatios.y
+        : max(ordinary * v_neuralRootRatios.y, min(endRadius * 1.1, ordinary * 6.0)))
+      : ordinary;
+    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8)
+      oldStartRoot = max(ordinary * 2.0, min(oldStartRoot, startRadius * 0.9));
+    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
+      oldEndRoot = max(ordinary * 2.0, min(oldEndRoot, endRadius * 0.9));
+    if (startRadius < 3.0 * u_devicePixelRatio) oldStartRoot = ordinary;
+    if (endRadius < 3.0 * u_devicePixelRatio) oldEndRoot = ordinary;
+    float oldStartShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
+      max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
+    float oldEndShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
+      max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
+    float startTrunk = ordinary + (oldStartRoot - ordinary)
+      * (1.0 - smoothstep(0.0, oldStartShoulder, parameter));
+    float endTrunk = ordinary + (oldEndRoot - ordinary)
+      * (1.0 - smoothstep(0.0, oldEndShoulder, 1.0 - parameter));
+    float startAtJoin = ordinary + (oldStartRoot - ordinary)
+      * (1.0 - smoothstep(0.0, oldStartShoulder, startBoundary + startShoulder));
+    float endAtJoin = ordinary + (oldEndRoot - ordinary)
+      * (1.0 - smoothstep(0.0, oldEndShoulder, endBoundary + endShoulder));
+    float startMouth = max(max(startAtJoin, ordinary * abs(v_neuralRootRatios.x)),
+      startRadius * (v_neuralRootRatios.x < 0.0 ? 1.0 : 0.9)
+        * clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2));
+    float endMouth = max(max(endAtJoin, ordinary * abs(v_neuralRootRatios.y)),
+      endRadius * (v_neuralRootRatios.y < 0.0 ? 1.0 : 0.9)
+        * clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2));
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
-      0.5 * (ordinary + (startRoot - ordinary) * startEase
-      + (endRoot - ordinary) * endEase));
+      0.5 * max(mix(startTrunk, startMouth, startEase),
+        mix(endTrunk, endMouth, endEase)));
+    // D082-A-NEURAL END
   }
   float medialOffset = filamentMedialOffsetPx(parameter, length(v_cpC - v_cpA));
   float distance = abs(distanceSample.x - medialOffset);
@@ -375,8 +402,11 @@ void main() {
       * (v_propagationPermille.z > 0.0 ? pulse : 0.35);
     float alpha = clamp(v_opacity * radial * longitudinal
       * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
+    // D082-A-NEURAL: match the pure root profile, including opacity and white-to-edge colour.
+    alpha = mix(alpha, max(0.9, v_opacity * longitudinal) * radial, rootSomaMix);
     if (alpha <= 0.0) discard;
     vec3 color = mix(v_color, v_hotColor, clamp(hot * 0.35, 0.0, 0.35));
+    color = mix(color, vec3(1.0), rootSomaMix);
     outputColor = vec4(color * alpha, alpha);
     return;
     // D081-P1 END

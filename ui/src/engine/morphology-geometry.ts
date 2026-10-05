@@ -82,6 +82,57 @@ function myceliumParts(edge: MorphologyEdgeInput, a: Coordinates, b: Coordinates
 export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 1.2 } as const;
 /** A short screen-space shoulder preserves a compact soma even on very long relations. */
 export const NEURAL_TAPER_FRACTION = 0.28;
+/** Cache key for the pure Neural silhouette and root profile. */
+export const NEURAL_GEOMETRY_VERSION = "d082-p1-rounded-trunk-3";
+/** A short fillet joins the soma to the existing trunk without drawing a white radial arm. */
+export const NEURAL_ROOT_LENGTH_RADII = 2.5;
+export const NEURAL_ROOT_MAX_LENGTH_RADII = 3;
+export const NEURAL_ROOT_SPAN_FRACTION = 0.12;
+/** Degree-one bodies are compact so their single broad root reads as the tail of one cell. */
+export const NEURAL_LEAF_BODY_SCALE = 0.84;
+export const NEURAL_MIN_SHAPED_RADIUS_PX = 3;
+export type NeuralRootSample = { readonly width: number; readonly alpha: number; readonly somaMix: number };
+/** The 45% span cap leaves room for the root at the opposite endpoint of short links. */
+export function neuralRootLengthPx(somaRadiusPx: number, spanPx: number): number {
+  return Math.min(somaRadiusPx * NEURAL_ROOT_MAX_LENGTH_RADII,
+    Math.max(somaRadiusPx * NEURAL_ROOT_LENGTH_RADII, spanPx * NEURAL_ROOT_SPAN_FRACTION),
+    spanPx * 0.45);
+}
+/** Radius of curvature of either side of the cubic ribbon at its soma mouth. */
+export function neuralRootFilletRadiusPx(mouthWidthPx: number, trunkWidthPx: number,
+  rootLengthPx: number): number {
+  const widthDrop = Math.abs(mouthWidthPx - trunkWidthPx);
+  return widthDrop > 0 ? rootLengthPx * rootLengthPx / (3 * widthDrop) : Infinity;
+}
+/** A bounded response to the edge-width control keeps the mouth proportional to its soma. */
+export function neuralMouthScale(edgeWidthPx: number): number {
+  return Math.max(0.8, Math.min(1.2, 0.8 + Math.max(0, edgeWidthPx) / 1.2 * 0.2));
+}
+/** `distancePx=0` is the visible outline; negative positions are hidden in the soma.
+ * `spanPx` is the projected full edge length, not a world-space distance. */
+export function neuralRootProfileAt(distancePx: number, somaRadiusPx: number, edgeWidthPx: number,
+  edgeAlpha: number, rootRatio = NEURAL_ROOT_RATIO, spanPx = somaRadiusPx * 20,
+  trunkWidthPx = edgeWidthPx): NeuralRootSample {
+  return neuralRootProfileAtLength(distancePx, somaRadiusPx, edgeWidthPx, edgeAlpha, rootRatio,
+    neuralRootLengthPx(somaRadiusPx, spanPx), trunkWidthPx);
+}
+/** The cubic has zero slope at the soma mouth and a finite-radius concave shoulder.
+ * `trunkWidthPx` is the D-081 ribbon at the fillet end, including shared-trunk width. */
+export function neuralRootProfileAtLength(distancePx: number, somaRadiusPx: number, edgeWidthPx: number,
+  edgeAlpha: number, rootRatio: number, rootLengthPx: number,
+  trunkWidthPx = edgeWidthPx): NeuralRootSample {
+  const width = Math.max(0, edgeWidthPx);
+  const alpha = Math.max(0, Math.min(1, edgeAlpha));
+  if (somaRadiusPx < NEURAL_MIN_SHAPED_RADIUS_PX) return { width, alpha, somaMix: 0 };
+  const u = Math.max(0, Math.min(1, distancePx / Math.max(rootLengthPx, 1e-6)));
+  const eased = u * u * (3 - 2 * u);
+  const somaMix = 1 - eased;
+  const trunk = Math.max(width, trunkWidthPx);
+  const rootWidth = Math.max(trunk, width * Math.abs(rootRatio),
+    somaRadiusPx * (rootRatio < 0 ? 1 : 0.9) * neuralMouthScale(width));
+  return { width: trunk + (rootWidth - trunk) * somaMix,
+    alpha: alpha + (Math.max(0.9, alpha) - alpha) * somaMix, somaMix };
+}
 /** Historical test bound; live roots use their ratios across the full width slider. */
 export const NEURAL_ROOT_CAP_PX = 32;
 /** Both projections preserve these widths at the visible soma boundary. */
