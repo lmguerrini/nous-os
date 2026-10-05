@@ -9,22 +9,27 @@ import { TOPOLOGY_LAWS } from '../src/topology/laws.ts';
 
 const dimensions: readonly TopologyDimension[] = ['2d', '3d'];
 const snapshot: TopologySnapshot = { digest: 'stub-test', nodes: [], edges: [] };
-// D082-B4-SIERPINSKI BEGIN
-// Sierpiński is implemented as a real IFS law (ui/src/topology/sierpinski.ts); only the still-unimplemented
-// laws remain in this stub list. Own tests: ui/test/d082-sierpinski-*.test.ts.
-const stubs: readonly Readonly<{ law: TopologyLaw; label: string; error: string }>[] = [
-  { law: juliaLaw, label: 'Julia · coordinate esterne', error: 'julia: not implemented' },
-  { law: lullLaw, label: 'Topologia circolare combinatoria', error: 'lull: not implemented' },
-];
-// D082-B4-SIERPINSKI END
+// Discover placeholders from the registry so implemented laws automatically leave this
+// test. In particular, implementing the current lull placeholder must not require edits here.
+const stubs: readonly TopologyLaw[] = Object.values(TOPOLOGY_LAWS)
+  .filter((law): law is TopologyLaw => law !== null && law.version === 'stub-0');
+
+const refusingLaw: TopologyLaw = {
+  id: 'canopy-ifs', version: 'dummy-refusal-1',
+  label: () => 'Test refusal',
+  supports: () => ({ ok: false, reason: 'Test law refusal.' }),
+  layoutFull: () => { throw new Error('dummy refusal: layout must not run'); },
+};
 
 test('each topology stub refuses both dimensions and keeps its placeholder label', () => {
-  for (const { law, label, error } of stubs) {
+  for (const law of stubs) {
     assert.equal(law.version, 'stub-0');
+    const label = law.label('2d');
+    assert(label.length > 0);
     for (const dimension of dimensions) {
       assert.equal(law.label(dimension), label);
       assert.deepEqual(law.supports(dimension), { ok: false, reason: 'In preparazione.' });
-      assert.throws(() => law.layoutFull(snapshot, dimension), { message: error });
+      assert.throws(() => law.layoutFull(snapshot, dimension), { message: `${law.id}: not implemented` });
     }
   }
 });
@@ -42,6 +47,6 @@ test('the law registry leaves classic routes to existing handlers', () => {
 // D082-B6-INDRA BEGIN: P6 requires the composer to replace its placeholder.
 test('Indra composition has a version and preserves a law refusal', () => {
   assert.notEqual(INDRA_COMPOSE_VERSION, 'stub-0');
-  assert.throws(() => composeIndra(juliaLaw, snapshot, '2d'), { message: 'In preparazione.' });
+  assert.throws(() => composeIndra(refusingLaw, snapshot, '2d'), { message: 'Test law refusal.' });
 });
 // D082-B6-INDRA END
