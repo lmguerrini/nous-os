@@ -60,7 +60,7 @@ export const FRACTAL_EQUIPOTENTIAL_CURVE_COUNT = 3;
 export const FRACTAL_EQUIPOTENTIAL_SAMPLE_COUNT = 49;
 /** Abort checkpoints: at request entry, after each assembly phase and every 64 node inversions. */
 const ABORT_CHECK_INTERVAL = 64;
-const FRACTAL_DOMAIN_NODE_CAP = 850;
+// D082-B3 BEGIN: 850 bounds internal jobs, never the full analytical domain.
 
 /** Typed refusal of the fractal projection: carries a machine-readable code and a deterministic detail. */
 export class FractalProjectionRefusal extends Error {
@@ -207,8 +207,9 @@ function assertFractalRequest(snapshot: SemanticGraphSnapshot, request: Projecti
     throw new FractalProjectionRefusal('invalid-request', 'snapshot digest mismatch');
   if (request.requestedLevelId !== undefined)
     throw new FractalProjectionRefusal('invalid-request', 'fractal loads its whole analytical domain; no level request is accepted');
-  if (domain.nodeIds.length === 0 || domain.nodeIds.length > domain.maxNodes || domain.nodeIds.length > FRACTAL_DOMAIN_NODE_CAP)
-    throw new FractalProjectionRefusal('invalid-request', `domain size ${domain.nodeIds.length} outside 1..${FRACTAL_DOMAIN_NODE_CAP}`);
+  if (domain.nodeIds.length === 0 || domain.nodeIds.length > domain.maxNodes)
+    throw new FractalProjectionRefusal('invalid-request', `domain size ${domain.nodeIds.length} outside 1..${domain.maxNodes}`);
+  // D082-B3 END
   if (parameters.sectorPolicyVersion !== 'sector-locality-v2')
     throw new FractalProjectionRefusal('invalid-request', `unsupported sector policy ${parameters.sectorPolicyVersion}`);
   if (parameters.dimension !== '2d' && parameters.dimension !== '3d')
