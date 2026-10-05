@@ -278,7 +278,9 @@ test("twenty manual expansions pin one page and prioritize earlier children", ()
       assert.ok(arcs.includes(id), `earlier arc ${id} leads the fill`);
   }
   assert.ok(sizes[0]! < sizes[1]! && sizes[1]! < sizes[2]!, `strict density sizes: ${sizes}`);
-  assert.deepEqual(sizes, [150, 400, 850]);
+  // D082-A-DENSITY BEGIN: P3 requires a genuinely sparse Essenziale overview.
+  assert.deepEqual(sizes, [80, 400, 850]);
+  // D082-A-DENSITY END
   history.undo();
   assert.equal(history.state.manualOrder.at(-1), parents.at(-2));
   history.redo();

@@ -22,7 +22,9 @@ import { relationVisible } from './reading.ts';
 import { buildVisibilityWitness, countAggregateRepresentation, countExcludedRelations } from './visibility-witness.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, projectionPick, projectionVisibility, semanticZoom, typedV2Path, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
-import type { V2Index, V2Node } from './v2-core.ts';
+// D082-A-DENSITY BEGIN
+import type { V2Index, V2Node, V2Visible } from './v2-core.ts';
+// D082-A-DENSITY END
 import type { TypedPathStep } from './v2-relations.ts';
 import type { AnalyticalDomain, Dimension, NaturalArrangement, PickResult, ProjectionRequest, ProjectionResult, ProjectionRenderer, RawJson, RecursiveLevel, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec3, VisualRelation } from '../projection/contract-types.ts';
 import { selectAnalyticalDomain } from '../projection/domain.ts';
@@ -49,7 +51,7 @@ import type { Render3fRendererHandle } from '../render3f/mount.tsx';
 import { resolvedNodeBounds } from '../render3f/camera.tsx';
 import type { VisualGraph } from '../engine/contract.ts';
 import { structuralVisualPresentation } from '../engine/presentation-options.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, recentDisclosedPage, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, densityDisclosure, densitySourceRelations, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, recentDisclosedPage, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { anyPointOutsideInsets, initialViewInsets } from './insets.ts';
@@ -758,6 +760,24 @@ export class V2Page {
                     : `La densità ${this.density === 'essential' ? 'Essenziale' : 'Bilanciata'} mostra una selezione dei nodi. Zooma o apri un contenitore per rivelarne altri, oppure scegli «Completa» per rappresentarli tutti.`,
             // D081-P3b END
         };
+        // D082-A-DENSITY BEGIN: expose exact exclusion classes for the mounted lower
+        // density. The full eligible denominator continues to follow the reading.
+        if (this.density !== 'complete' && this.index.nodes.length > V2_CAP &&
+            (this.axes.organization === 'natural' || this.axes.organization === 'indra')) {
+            const pool = this.visible().nodes.length;
+            const eligible = completeRelations(this.index, reading).edges;
+            const possible = eligible.filter(edge => this.rendered.has(edge.source) && this.rendered.has(edge.target)).length;
+            const label = this.density === 'essential' ? 'Essenziale' : 'Bilanciata';
+            this.d081Metrics.hint = `Densità ${label}: ${formatCount(visible)} nodi visibili su ${formatCount(pool)} candidati; `
+                + `${formatCount(this.datasetNodeCount - pool)} esclusi dalla selezione semantica, `
+                + `${formatCount(pool - visible)} oltre il budget di densità. `
+                + `Archi: ${formatCount(route.drawn.length)} disegnati, `
+                + `${formatCount(eligible.length - possible)} con estremità non visibili, `
+                + `${formatCount(Math.max(0, possible - route.drawn.length))} oltre il budget di linee.`;
+            this.d081Metrics.limit = { kind: 'densità', value: DENSITY_BUDGETS[this.density].nodes,
+                reason: `${label}: selezione semantica e budget per leggibilità.` };
+        }
+        // D082-A-DENSITY END
         const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
         if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.datasetNodeCount)} rappresentati · ${formatCount(route.drawn.length)} archi`;
         if (this.d081Quality !== 'movimento' && this.d081LastInteraction) this.d081FinishIfReady();
@@ -1106,9 +1126,35 @@ export class V2Page {
         const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
         for (const [id, count] of this.autoPageCounts) pages.set(id, count);
         for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
-        return v2Visible(this.index, this.history.state, pages, V2_CAP,
+        const base = v2Visible(this.index, this.history.state, pages, V2_CAP,
             this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId);
+        // D082-A-DENSITY BEGIN: the two lower levels share one semantic disclosure.
+        // D082 A-DENSITYc: the pool base is the explicit disclosure only — manual
+        // expansions over the overview, never the reveal controller's zoom admissions
+        // or disclosure a previous density left behind — so the Essenziale and
+        // Bilanciata candidate sets are pure in (dataset, explicit state, selection).
+        return this.density === 'complete' || this.index.nodes.length <= V2_CAP ||
+            (this.axes.organization !== 'natural' && this.axes.organization !== 'indra')
+            ? base : densityDisclosure(this.index, this.densityManualVisible(), this.selected);
+        // D082-A-DENSITY END
     }
+    // D082-A-DENSITY BEGIN: use the unchanged D-081 disclosure as the overview
+    // scaffold before placing any extra lower-density candidates. D082 A-DENSITYc:
+    // explicit only — the reveal controller's auto pages stay out of both the anchor
+    // overview and the candidate pool.
+    private densityManualVisible(): V2Visible {
+        const pages = new Map<string, number>();
+        for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
+        return v2Visible(this.index, this.history.state, pages, V2_CAP,
+            this.history.state.manualOrder.at(-1));
+    }
+    private densityOverview(): V2Visible {
+        return this.densityManualVisible();
+    }
+    private densitySwitchPending = false;
+    private densityStableKey = '';
+    private densityStablePositions = new Map<string, Point3>();
+    // D082-A-DENSITY END
     private disclosureKey() {
         const state = this.history.state;
         return JSON.stringify({ expanded: [...state.expanded].sort(),
@@ -1118,6 +1164,9 @@ export class V2Page {
         return this.index.nodes.map(node => ({ id: node.id, parent: node.parent, level: node.level,
             ...(node.level === 4 ? { passageCount: node.counts.passages } : {}) }));
     }
+    // D082-A-DENSITY BEGIN: D072 reveal priority for the paths that still follow the
+    // camera (Completa and the small capped graphs). D082 A-DENSITYc: the lower
+    // densities no longer call this — their sets are pure in explicit state only.
     private focusedRenderPriority(disclosed: readonly V2Node[]): string[] {
         const cluster = this.revealState.focusClusterId;
         if (!cluster) return [];
@@ -1130,6 +1179,7 @@ export class V2Page {
             [...eligible].filter(id => !this.rendered.has(id)).sort((a, b) =>
                 (byId.get(a)?.level ?? 0) - (byId.get(b)?.level ?? 0) || a.localeCompare(b)));
     }
+    // D082-A-DENSITY END
     private publishReveal(route: RouteResult, rendered: ReadonlySet<string>,
         exclusions?: RevealWitnessInput['exclusions']): void {
         this.revealRoute = route;
@@ -1410,7 +1460,32 @@ export class V2Page {
             // re-seeds from the last flat result's coordinates, D-072's `previous` parity.
             const anchorKey = [snapshot.digest, domain.domainDigest, dimension, arrangement,
                 layoutRelationPolicy, this.appearance.expandX, this.appearance.expandY, this.appearance.expandZ].join('\u00B7');
+            // D082-A-DENSITY BEGIN
+            const stableKey = [organization, dimension, arrangement, layoutRelationPolicy,
+                this.appearance.expandX, this.appearance.expandY, this.appearance.expandZ].join('|');
+            if (stableKey !== this.densityStableKey) {
+                this.densityStableKey = stableKey;
+                this.densityStablePositions.clear();
+            }
+            // D082-A-DENSITY END
             let continuityAnchors: Readonly<Record<string, Vec3>> | null = null;
+            // D082-A-DENSITY BEGIN: project the D-081 disclosure once so the
+            // 850-candidate layout grows around its approved overview.
+            if (!this.naturalPreviousFlat && this.density !== 'complete' && this.index.nodes.length > V2_CAP) {
+                const overview = this.densityOverview();
+                const overviewDomain = selectAnalyticalDomain(snapshot, overview.nodes.map(node => node.id));
+                const original = await registry.project<ProjectionResult>('natural', snapshot, {
+                    id: 'natural', snapshotDigest: snapshot.digest, domain: overviewDomain,
+                    parameters: { dimension, arrangement, layoutVersion: NATURAL_LAYOUT_VERSION,
+                        layoutRelationPolicy, volumeExpansion: { x: this.appearance.expandX,
+                            y: this.appearance.expandY, z: this.appearance.expandZ } },
+                });
+                this.naturalPreviousFlat = original.result;
+                const points = dimension === '2d' ? original.result.positions2 : original.result.positions3;
+                for (const [id, point] of Object.entries(points ?? {})) if (point)
+                    this.densityStablePositions.set(id, { x: point.x, y: point.y, z: (point as Vec3).z ?? 0 });
+            }
+            // D082-A-DENSITY END
             if (this.naturalAnchorState?.key === anchorKey)
                 continuityAnchors = this.naturalAnchorState.anchors;
             else {
@@ -1429,6 +1504,17 @@ export class V2Page {
                     if (Object.keys(anchors).length) continuityAnchors = anchors;
                 }
             }
+            // D082-A-DENSITY BEGIN: switching through Completa must not replace
+            // the larger lower-density layout with its smaller typed disclosure.
+            if (this.index.nodes.length > V2_CAP && this.densityStablePositions.size) {
+                const anchors = { ...continuityAnchors } as Record<string, Vec3>;
+                for (const id of domain.nodeIds) {
+                    const point = this.densityStablePositions.get(id);
+                    if (point) anchors[id] = point;
+                }
+                continuityAnchors = Object.keys(anchors).length ? anchors : null;
+            }
+            // D082-A-DENSITY END
             const request = { id: 'natural' as const, snapshotDigest: snapshot.digest, domain,
                 parameters: { dimension, arrangement,
                     layoutVersion: NATURAL_LAYOUT_VERSION,
@@ -1460,6 +1546,29 @@ export class V2Page {
             styled = input.style(outcome.result, snapshot);
             if (styled.projection !== outcome.result) throw new Error('Morphology replaced the projection result');
         } else if (pearls) {
+            // D082-A-DENSITY BEGIN: seed the display continuity from the
+            // approved small overview before the larger Indra domain is projected.
+            if (this.index.nodes.length > V2_CAP) {
+                const stableKey = [organization, dimension, this.axes.reading,
+                    this.appearance.expandZ].join('|');
+                if (stableKey !== this.densityStableKey) {
+                    this.densityStableKey = stableKey;
+                    this.densityStablePositions.clear();
+                }
+                if (this.density !== 'complete' && !this.densityStablePositions.size) {
+                    const overview = this.densityOverview();
+                    const overviewDomain = selectAnalyticalDomain(snapshot, overview.nodes.map(node => node.id));
+                    const original = await this.runProjection<'indras-pearls'>(snapshot,
+                        this.indraRequestFor(snapshot, overviewDomain, dimension));
+                    const points = dimension === '2d' ? original.positions2 : original.positions3;
+                    for (const node of overview.nodes) if (node.level <= 2) {
+                        const point = points?.[node.id];
+                        if (point) this.densityStablePositions.set(node.id,
+                            { x: point.x, y: point.y, z: (point as Vec3).z ?? 0 });
+                    }
+                }
+            }
+            // D082-A-DENSITY END
             const outcome = await this.projectIndra(epoch, snapshot, domain, dimension);
             if (outcome === null) return;
             styled = input.style(outcome.result, snapshot);
@@ -1502,6 +1611,10 @@ export class V2Page {
         this.recordProjectionPhase('preView', performance.now() - preViewBegan);
         const result = styled.projection;
         assertPageProjection(result, domain, dimension);
+        // D082-A-DENSITY BEGIN: the source projection and digest stay untouched;
+        // continuity offsets apply to the scene sent to the renderer.
+        if (organization === 'natural') styled = { ...styled, projection: this.naturalDisplayAnchored(result) };
+        // D082-A-DENSITY END
         styled = this.withSelectionEmphasis(styled);
         if (result.fullLedger.snapshotDigest !== snapshot.digest ||
             result.fullLedger.canonicalBytesDigest !== snapshot.rawLedger.canonicalBytesDigest)
@@ -1555,6 +1668,15 @@ export class V2Page {
         if (anchorKeyToCommit !== null) {
             this.naturalAnchorState = { key: anchorKeyToCommit, anchors: anchorsToCommit };
             this.naturalPreviousFlat = result;
+            // D082-A-DENSITY BEGIN
+            if (this.index.nodes.length > V2_CAP) {
+                const points = dimension === '2d' ? lod.displayStyled.projection.positions2
+                    : lod.displayStyled.projection.positions3;
+                for (const [id, point] of Object.entries(points ?? {}))
+                    if (point && !this.densityStablePositions.has(id)) this.densityStablePositions.set(id,
+                        { x: point.x, y: point.y, z: (point as Vec3).z ?? 0 });
+            }
+            // D082-A-DENSITY END
         }
         // The mounted projection camera is the zoom-LOD tick's overview baseline, exactly as the
         // legacy view's first fit is (a null overview would freeze the level at the mount ratio).
@@ -1577,6 +1699,9 @@ export class V2Page {
         this.renderPanel();
         element('status').textContent = this.typedStatusLine();
         this.openTypedLevels();
+        // D082-A-DENSITY BEGIN
+        this.densitySwitchPending = false;
+        // D082-A-DENSITY END
     }
     /** A selection that did not come from a canvas pick (a search result, a list, a programmatic call)
      * reaches the typed explanation the way a pick does: a selected node the result draws becomes the
@@ -2122,6 +2247,66 @@ export class V2Page {
      * for the visual relations and the semantic edges — and only ever narrows the result: the
      * coordinates, the digest and the source graph are untouched. Curves follow their relation;
      * containers and fields are kept whole. */
+    // D082-A-DENSITY BEGIN: keep Natural's projected proof unchanged while
+    // retaining the reference overview and every common rendered coordinate.
+    private naturalDisplayAnchored(result: ProjectionResult): ProjectionResult {
+        if (this.index.nodes.length <= V2_CAP || !this.densityStablePositions.size) return result;
+        const positions2 = result.positions2 && Object.fromEntries(Object.entries(result.positions2).map(([id, point]) => {
+            const anchor = this.densityStablePositions.get(id);
+            return [id, anchor ? { x: anchor.x, y: anchor.y } : point];
+        }));
+        const positions3 = result.positions3 && Object.fromEntries(Object.entries(result.positions3).map(([id, point]) => {
+            const anchor = this.densityStablePositions.get(id);
+            return [id, anchor ?? point];
+        }));
+        return { ...result, ...(positions2 ? { positions2 } : {}), ...(positions3 ? { positions3 } : {}) };
+    }
+    // Indra's source projection remains auditable. Only its
+    // displayed coordinates are translated with the fixed domain/project pearls.
+    private indraDisplayAnchored(result: ProjectionResult): ProjectionResult {
+        if (!this.indraPearlsView() || !this.densityStablePositions.size || this.index.nodes.length <= V2_CAP)
+            return result;
+        const byId = new Map(this.index.nodes.map(node => [node.id, node]));
+        const anchorOf = (id: string): string | null => {
+            let node = byId.get(id);
+            while (node && node.level > 2) node = node.parent ? byId.get(node.parent) : undefined;
+            return node?.id ?? null;
+        };
+        const source = result.positions2 ?? result.positions3 ?? {};
+        const shifts = new Map<string, Point3>();
+        for (const [id, target] of this.densityStablePositions) {
+            const point = source[id];
+            if (point) shifts.set(id, { x: target.x - point.x, y: target.y - point.y,
+                z: target.z - ((point as Vec3).z ?? 0) });
+        }
+        if (!shifts.size) return result;
+        const shiftOf = (id: string) => shifts.get(anchorOf(id) ?? '');
+        const positions2 = result.positions2 && Object.fromEntries(Object.entries(result.positions2).map(([id, point]) => {
+            const fixed = this.densityStablePositions.get(id);
+            if (fixed && (byId.get(id)?.level ?? 5) <= 2) return [id, { x: fixed.x, y: fixed.y }];
+            const shift = shiftOf(id);
+            return [id, shift && point ? { x: point.x + shift.x, y: point.y + shift.y } : point];
+        }));
+        const positions3 = result.positions3 && Object.fromEntries(Object.entries(result.positions3).map(([id, point]) => {
+            const fixed = this.densityStablePositions.get(id);
+            if (fixed && (byId.get(id)?.level ?? 5) <= 2) return [id, fixed];
+            const shift = shiftOf(id);
+            return [id, shift && point ? { x: point.x + shift.x, y: point.y + shift.y, z: point.z + shift.z } : point];
+        }));
+        const containers = result.containers.map(container => {
+            const members = container.sourceCommunityId ? [container.sourceCommunityId] : container.memberNodeIds ?? [];
+            const anchors = new Set(members.map(anchorOf).filter((id): id is string => id !== null));
+            const shift = anchors.size === 1 ? shifts.get([...anchors][0]!) : undefined;
+            return !shift ? container : { ...container,
+                ...(container.center2 ? { center2: { x: container.center2.x + shift.x,
+                    y: container.center2.y + shift.y } } : {}),
+                ...(container.center3 ? { center3: { x: container.center3.x + shift.x,
+                    y: container.center3.y + shift.y, z: container.center3.z + shift.z } } : {}),
+            };
+        });
+        return { ...result, ...(positions2 ? { positions2 } : {}), ...(positions3 ? { positions3 } : {}), containers };
+    }
+    // D082-A-DENSITY END
     private typedLodVisibility(styled: StyledProjection, snapshot: SemanticGraphSnapshot,
         allDisclosed: readonly V2Node[], active: string | null, revision: number) {
         const result = styled.projection;
@@ -2132,7 +2317,8 @@ export class V2Page {
             const { rendered, relations, route, visuals: synthetic, displayResult } =
                 completeIndraOverlay(this.index, this.axes.reading, result, this.lod === 'near');
             const extraStyle = this.styleTypedProjection(displayResult, snapshot).visualStyle;
-            const displayStyled: StyledProjection = { ...styled, projection: displayResult,
+            const anchoredDisplay = this.indraDisplayAnchored(displayResult);
+            const displayStyled: StyledProjection = { ...styled, projection: anchoredDisplay,
                 visualStyle: { ...styled.visualStyle, ...Object.fromEntries(synthetic.map(item =>
                     [item.visualId, item.underlyingEdgeIds.length
                         ? styled.edgeStyle[item.underlyingEdgeIds[0]!] ?? extraStyle[item.visualId] ?? {}
@@ -2140,7 +2326,7 @@ export class V2Page {
             const base = projectionVisibility(result, snapshot, revision, 1, rendered);
             const visibility: RenderVisibility = { ...base, semanticEdgeIds: new Set(),
                 visualRelationIds: new Set(synthetic.map(item => item.visualId)), density: 1 };
-            validateRenderVisibility(displayResult, visibility, snapshot);
+            validateRenderVisibility(anchoredDisplay, visibility, snapshot);
             const pickMap = new Map<string, PickResult>();
             for (let index = 0; index < route.drawn.length; index++) {
                 const edge = route.drawn[index]!, visual = synthetic[index]!;
@@ -2156,6 +2342,73 @@ export class V2Page {
                 route, displayStyled, pickMap };
         }
         // D081-P3b END
+        // D082-A-DENSITY BEGIN: typed Natural and Indra use the same source-relation
+        // prefix as the classic renderer. Projection coordinates are reused verbatim.
+        if (this.density !== 'complete' && this.index.nodes.length > V2_CAP &&
+            (this.axes.organization === 'natural' || this.axes.organization === 'indra')) {
+            const budget = DENSITY_BUDGETS[this.density];
+            const communityOf = communityResolver(this.index.nodes);
+            const infos = allDisclosed.map(node => ({ id: node.id, level: node.level, parent: node.parent,
+                importance: node.importance.value }));
+            const tiers = manualExpansionTiers(infos, this.history.state.manualOrder, V2_PAGE);
+            const pinned = this.pinnedNodeIds(tiers);
+            const focusPriority = this.selected ? this.focusMembers(this.selected, allDisclosed as V2Node[]) : null;
+            const byImportance = new Map(infos.map(node => [node.id, node.importance]));
+            // D082 A-DENSITYc: explicit state only — the reveal focus cluster never
+            // enters the lower-density priority, so a round trip through Completa
+            // returns the identical Essenziale/Bilanciata sets.
+            const priority = [...tiers.priorityChildren,
+                ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
+            const adjacency = adjacencyOf(allDisclosed as V2Node[], this.index.edges);
+            const input = { nodes: infos, level: this.lod, pinned, focus: active, priority, adjacency, communityOf,
+                reserveStructure: true };
+            const selection = this.selectLod({ ...input, budget: budget.nodes }, this.lastNodeSelection);
+            const rendered = new Set(selection.rendered);
+            const essential = this.density === 'essential' ? rendered
+                : new Set(this.selectLod({ ...input, budget: DENSITY_BUDGETS.essential.nodes }, null).rendered);
+            const relations = completeRelations(this.index, this.axes.reading);
+            const importance = new Map(this.index.nodes.map(node => [node.id, node.importance.value]));
+            const essentialEdges = densitySourceRelations(relations.edges, essential,
+                DENSITY_BUDGETS.essential.arcs, importance);
+            const edges = this.density === 'essential' ? essentialEdges : densitySourceRelations(
+                relations.edges, rendered, budget.arcs, importance, essentialEdges);
+            const route = completeRoute(edges, rendered, true);
+            const visuals: VisualRelation[] = route.drawn.map(edge => ({
+                visualId: `visual:d082:${edge.id}`, semantic: false,
+                source: edge.from.id, target: edge.to.id,
+                kind: edge.id.startsWith('contains:') ? 'synthetic-containment' : 'lifted-route',
+                underlyingEdgeIds: edge.sourceRelationIds.filter(id => !id.startsWith('contains:')),
+                count: edge.count, explanationId: `explanation:visual:d082:${edge.id}`,
+            }));
+            const displayResult: ProjectionResult = { ...result,
+                visualRelations: [...result.visualRelations, ...visuals],
+                explanations: { ...result.explanations, ...Object.fromEntries(visuals.map(item =>
+                    [item.explanationId, { elementId: item.visualId, elementKind: 'visual-relation' as const,
+                        summary: 'Relazione sorgente o contenimento', sourceIds: item.underlyingEdgeIds,
+                        parameterIds: ['layoutRelationPolicy'] }])) },
+                lod: { ...result.lod, maxVisibleVisualRelations: result.visualRelations.length + visuals.length },
+            };
+            const extraStyle = this.styleTypedProjection(displayResult, snapshot).visualStyle;
+            const anchoredDisplay = this.indraDisplayAnchored(displayResult);
+            const displayStyled: StyledProjection = { ...styled, projection: anchoredDisplay,
+                visualStyle: { ...styled.visualStyle, ...Object.fromEntries(visuals.map(item =>
+                    [item.visualId, extraStyle[item.visualId] ?? {}])) } };
+            const base = projectionVisibility(result, snapshot, revision, 1, rendered);
+            const visibility: RenderVisibility = { ...base, semanticEdgeIds: new Set(),
+                visualRelationIds: new Set(visuals.map(item => item.visualId)),
+                density: rendered.size / Math.max(1, result.loadedNodeIds.length) };
+            validateRenderVisibility(anchoredDisplay, visibility, snapshot);
+            const pickMap = new Map<string, PickResult>(visuals.map(item => [item.visualId,
+                item.underlyingEdgeIds.length ? { kind: 'semantic-edge', id: item.underlyingEdgeIds[0]! }
+                    : { kind: 'node', id: item.target }]));
+            const counts = { nodes: { rendered: rendered.size, available: allDisclosed.length,
+                pinned: [...pinned].filter(id => rendered.has(id)).length,
+                pinnedIds: [...pinned].filter(id => rendered.has(id)).sort() },
+                arcs: { rendered: visuals.length, available: relations.total,
+                    pinned: 0, pinnedIds: [] as string[] } };
+            return { visibility, counts, selection, route, displayStyled, pickMap };
+        }
+        // D082-A-DENSITY END
         const budget = DENSITY_BUDGETS[this.density];
         const communityOf = communityResolver(this.index.nodes);
         // A Holographic focus on a region discloses only that region's members to the level of detail.
@@ -2810,7 +3063,8 @@ export class V2Page {
                 && this.layoutProjection === projection && this.axes.morphology === this.lastMorphology;
             // D-080 A5b projection/result-adaptation region. Serialize the actual layout
             // inputs, including continuity seeds, so a returning mode gets the same object.
-            const layoutInput: LayoutInput = {
+            // D082-A-DENSITY BEGIN: the overview seed can extend this input.
+            let layoutInput: LayoutInput = {
                 nodes: disclosed.nodes.map(n => ({
                     id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
                     hiddenDescendants: hiddenCount(n),
@@ -2823,6 +3077,39 @@ export class V2Page {
                 ...(organization === 'indra' ? { expandZ: this.appearance.expandZ } : {}),
                 ...(usePrevious ? { previous: this.rawPositions } : {}),
             };
+            // D082-A-DENSITY END
+            // D082-A-DENSITY BEGIN: establish D-081's 41-node overview first.
+            // The larger semantic pool is then an incremental placement around those
+            // exact anchors. Cache the first output positions for later E/B/C switches.
+            const stableKey = [organization, projection, this.axes.morphology, this.axes.reading,
+                this.appearance.expandX, this.appearance.expandY, this.appearance.expandZ].join('|');
+            if (stableKey !== this.densityStableKey) {
+                this.densityStableKey = stableKey;
+                this.densityStablePositions.clear();
+            }
+            const densityLayout = this.index.nodes.length > V2_CAP &&
+                (organization === 'natural' || organization === 'indra');
+            let overviewPositions: Map<string, Point3> | null = null;
+            if (densityLayout && this.density !== 'complete' && !this.densityStablePositions.size) {
+                const overview = this.densityOverview();
+                const overviewIds = new Set(overview.nodes.map(node => node.id));
+                const overviewParents = new Set(overview.nodes.map(node => node.parent).filter((id): id is string => id !== null));
+                const overviewEdges = projectLayoutRelations(this.index.nodes, this.index.edges,
+                    overviewIds, this.axes.reading, 'natural', 'essential').edges;
+                const overviewInput: LayoutInput = { ...layoutInput,
+                    nodes: overview.nodes.map(node => ({ id: node.id, level: node.level, parent: node.parent,
+                        size: node.size, domains: node.domains,
+                        hiddenDescendants: (overview.hidden.get(node.id) ?? 0) && !overviewParents.has(node.id)
+                            ? Math.max(overview.hidden.get(node.id) ?? 0, node.counts.descendants)
+                            : overview.hidden.get(node.id) ?? 0 })),
+                    edges: overviewEdges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+                        class: edge.class === 'exploratory' ? 'exploratory' as const : 'attested' as const })),
+                };
+                delete (overviewInput as { previous?: ReadonlyMap<string, Point3> }).previous;
+                overviewPositions = new Map((await computeClassicLayout(overviewInput)).positions);
+                if (organization === 'natural') layoutInput = { ...layoutInput, previous: overviewPositions };
+            }
+            // D082-A-DENSITY END
             const layoutKey = pageLayoutKey(this.manifest.digest, layoutInput);
             this.recordProjectionPhase('projectionInput', performance.now() - projectionInputBegan);
             const projectionBegan = performance.now();
@@ -2840,9 +3127,52 @@ export class V2Page {
             const nextRawPositions = result.positions;
             const flat3d = organization === 'natural' && projection === '3d';
             const nextCanonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
-            const expanded = flat3d
+            // D082-A-DENSITY BEGIN: display coordinates can receive fixed anchors.
+            const expanded = new Map(flat3d
                 ? applyExpansion(nextCanonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
-                : result.positions;
+                : result.positions);
+            // D082-A-DENSITY END
+            // D082-A-DENSITY BEGIN: canonicalization depends on the number of
+            // points. Its frame must not rotate existing marks on density changes.
+            if (densityLayout && organization === 'natural') {
+                if (overviewPositions) {
+                    const original = flat3d ? applyExpansion(canonicalize(overviewPositions), {
+                        expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ }) : overviewPositions;
+                    for (const [id, point] of original) expanded.set(id, point);
+                }
+                for (const [id, point] of this.densityStablePositions) if (expanded.has(id)) expanded.set(id, point);
+            }
+            // Indra may repack children inside each pearl. Translate each domain
+            // and project subtree to keep its approved pearl centre fixed.
+            const indraTargets = organization === 'indra' && densityLayout
+                ? new Map([...this.densityStablePositions, ...(overviewPositions ?? new Map())]) : null;
+            const indraById = indraTargets ? new Map(this.index.nodes.map(node => [node.id, node])) : null;
+            const indraAnchorOf = (id: string): string | null => {
+                if (!indraById) return null;
+                let node = indraById.get(id);
+                while (node && node.level > 2) node = node.parent ? indraById.get(node.parent) : undefined;
+                return node?.id ?? null;
+            };
+            const indraShifts = new Map<string, Point3>();
+            if (indraTargets) for (const [id, point] of indraTargets) {
+                const current = result.positions.get(id);
+                if (current) indraShifts.set(id, { x: point.x - current.x,
+                    y: point.y - current.y, z: point.z - current.z });
+            }
+            if (indraShifts.size) for (const [id, point] of expanded) {
+                const fixed = indraTargets?.get(id);
+                if (fixed && (indraById?.get(id)?.level ?? 5) <= 2) { expanded.set(id, fixed); continue; }
+                const shift = indraShifts.get(indraAnchorOf(id) ?? '');
+                if (shift) expanded.set(id, { x: point.x + shift.x, y: point.y + shift.y, z: point.z + shift.z });
+            }
+            const positionedContainers = indraShifts.size ? result.containers.map(container => {
+                const fixed = indraTargets?.get(container.id);
+                if (fixed && container.level <= 2) return { ...container, center: fixed };
+                const shift = indraShifts.get(indraAnchorOf(container.id) ?? '');
+                return shift ? { ...container, center: { x: container.center.x + shift.x,
+                    y: container.center.y + shift.y, z: container.center.z + shift.z } } : container;
+            }) : result.containers;
+            // D082-A-DENSITY END
             const next = new Map<string, Point3>();
             for (const n of disclosed.nodes)
                 next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
@@ -2856,10 +3186,15 @@ export class V2Page {
             // incremental stability — existing positions are seeds, only fresh nodes are placed).
             const budget = DENSITY_BUDGETS[this.density];
             const routingBegan = performance.now();
-            const availableArcs = this.density === 'complete'
+            // D082-A-DENSITY BEGIN: rank original eligible source relations once for both
+            // lower levels. Direct endpoints give every retained relation a stable identity.
+            const densityPolicy = this.density !== 'complete' && this.index.nodes.length > V2_CAP &&
+                (organization === 'natural' || organization === 'indra');
+            const availableArcs = this.density === 'complete' || densityPolicy
                 ? completeRelations(this.index, this.axes.reading)
                 : projectRelations(this.index.nodes, this.index.edges, ids, this.axes.reading,
                     organization, this.relationDetail, active);
+            // D082-A-DENSITY END
             const communityOf = communityResolver(this.index.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
             const tiers = manualExpansionTiers(
@@ -2871,14 +3206,23 @@ export class V2Page {
             // (`safeSelectNodes`), so the drawing never loses its node set — or its labels.
             const focusPriority = this.selected ? this.focusMembers(this.selected, disclosed.nodes) : null;
             const byImportance = new Map(disclosed.nodes.map(node => [node.id, node.importance.value]));
-            const priority = [...tiers.priorityChildren, ...this.focusedRenderPriority(disclosed.nodes),
+            // D082-A-DENSITY BEGIN: at the lower densities the priority may carry
+            // explicit state only (manual expansion tiers, the selection's members).
+            // The reveal focus cluster and the previously rendered ids are
+            // camera/disclosure state — a density switch must not inherit them, or
+            // E → B → C → E cannot return the same set. Completa and the small capped
+            // graphs keep the D-072 behaviour.
+            const priority = [...tiers.priorityChildren,
+                ...(densityPolicy ? [] : this.focusedRenderPriority(disclosed.nodes)),
                 ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
+            // D082-A-DENSITY END
             const selection = this.density === 'complete'
                 ? { rendered: disclosed.nodes.map(node => node.id), dropped: [] }
                 : this.selectLod({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
                 level: this.lod,
                 budget: budget.nodes,
+                reserveStructure: densityPolicy,
                 pinned,
                 focus: active,
                 priority,
@@ -2902,13 +3246,27 @@ export class V2Page {
                 if (!relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading))
                     routedInput.push({ id: edge.id, channel: 'semantic', source: edge.source,
                         target: edge.target, class: edge.class, type: edge.type, count: 1 });
+            // D082-A-DENSITY BEGIN: Bilanciata retains the exact source relations of
+            // Essenziale before admitting its own. Completa keeps its existing route.
+            const importance = new Map(this.index.nodes.map(node => [node.id, node.importance.value]));
+            const essentialIds = densityPolicy && this.density === 'balanced' ? new Set(this.selectLod({
+                nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
+                level: this.lod, budget: DENSITY_BUDGETS.essential.nodes, pinned, focus: active,
+                priority, adjacency, communityOf, reserveStructure: true,
+            }, null).rendered) : renderedIds;
+            const essentialEdges = !densityPolicy ? [] : densitySourceRelations(
+                availableArcs.edges, essentialIds, DENSITY_BUDGETS.essential.arcs, importance);
+            const densityEdges = this.density === 'essential' ? essentialEdges : densityPolicy && this.density === 'balanced'
+                ? densitySourceRelations(availableArcs.edges, renderedIds, budget.arcs, importance, essentialEdges) : [];
             const route = this.density === 'complete'
                 ? completeRoute(availableArcs.edges, renderedIds)
-                : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
-                renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
-                budget: organization === 'indra' && this.relationDetail === 'essential'
-                    ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
-                focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
+                : densityPolicy ? completeRoute(densityEdges, renderedIds, true)
+                    : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
+                        renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
+                        budget: organization === 'indra' && this.relationDetail === 'essential'
+                            ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
+                        focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
+            // D082-A-DENSITY END
             this.recordProjectionPhase('relationRouting', performance.now() - routingBegan);
             const relationById = new Map(availableArcs.edges.map(edge => [edge.id, edge]));
             let shown: LiftedRelation[] = route.drawn.map(edge => {
@@ -2937,7 +3295,8 @@ export class V2Page {
             }
             // This is the view's container snapshot. The geometry memo uses its array identity,
             // so freeze the array, each record and each centre before either renderer sees it.
-            const nextContainers = Object.freeze(result.containers.map(c => {
+            // D082-A-DENSITY BEGIN
+            const nextContainers = Object.freeze(positionedContainers.map(c => {
                 const node = visibleById.get(c.id);
                 const title = node && displayLabel(node);
                 const hidden = node ? hiddenCount(node) : 0;
@@ -2945,6 +3304,7 @@ export class V2Page {
                 return Object.freeze({ ...c, center: Object.freeze({ ...c.center }), open,
                     ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) });
             }));
+            // D082-A-DENSITY END
             const declaredAggregateCounts = nextContainers.reduce((counts, container) => {
                 const match = container.title?.match(/ · \+(\d+)$/);
                 if (match) { counts.members += Number(match[1]); counts.groups++; }
@@ -3010,6 +3370,9 @@ export class V2Page {
                     // A subset revision kept the live camera. Do not quarantine the next
                     // wheel step as if a programmatic fit had moved it.
                     this.suppressZoomUntil = 0;
+                    // D082-A-DENSITY BEGIN
+                    this.densitySwitchPending = false;
+                    // D082-A-DENSITY END
                     return;
                 }
                 // The view could not take the update in place: fall through and remount as before.
@@ -3031,7 +3394,9 @@ export class V2Page {
             // depth volume; Indra repacks recursively). Capture one screen point before replacing
             // the layout, then compensate only if that node actually moved on screen.
             let anchor: { id: string; point: { x: number; y: number } } | null = null;
-            if (disclosureChanged && old && keep && this.view) {
+            // D082-A-DENSITY BEGIN
+            if (disclosureChanged && !this.densitySwitchPending && old && keep && this.view) {
+            // D082-A-DENSITY END
                 const witness = this.view.witness();
                 const rootRect = element('render-root').getBoundingClientRect();
                 const cursor = this.cursor && { x: this.cursor.x + rootRect.left, y: this.cursor.y + rootRect.top };
@@ -3053,7 +3418,10 @@ export class V2Page {
             }
             // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
             const userMoved = !!old && this.userMovedSinceFit;
-            const cameraAction = refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
+            // D082-A-DENSITY BEGIN
+            const cameraAction = this.densitySwitchPending && old && keep ? 'restore'
+                : refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
+            // D082-A-DENSITY END
             // D-072 R1: never destroy the working view before its replacement exists. The new view
             // mounts first; only a mount that succeeds swaps it in, destroys the old one exactly
             // once and commits the page state. A mount that throws keeps the old view with its
@@ -3113,6 +3481,13 @@ export class V2Page {
             this.layoutProjection = projection;
             this.canonicalPositions = nextCanonicalPositions;
             this.positions = next;
+            // D082-A-DENSITY BEGIN
+            if (densityLayout && this.density !== 'complete') {
+                for (const [id, point] of next) if (organization === 'natural' ||
+                    (visibleById.get(id)?.level ?? 5) <= 2) this.densityStablePositions.set(id, point);
+            }
+            this.densitySwitchPending = false;
+            // D082-A-DENSITY END
             this.lastDisclosureKey = this.disclosureKey();
             this.communities = nextCommunities;
             this.rendered = renderedIds;
@@ -3210,7 +3585,12 @@ export class V2Page {
             (element('v2-undo') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
             (element('v2-redo') as HTMLButtonElement).disabled = this.history.redoDepth === 0;
             this.capMessage = disclosed.capped;
-            element('v2-cap').textContent = this.density === 'complete' ? '' : disclosed.capped ? `Finestra di ${V2_CAP} nodi visibili: continua a ingrandire o usa Mostra altri.` : '';
+            // D082-A-DENSITY BEGIN
+            element('v2-cap').textContent = this.density === 'complete' ? '' : disclosed.capped
+                ? this.index.nodes.length > V2_CAP && (organization === 'natural' || organization === 'indra')
+                    ? `Selezione semantica di ${V2_CAP} candidati; scegli «Completa» per l'intero grafo.`
+                    : `Finestra di ${V2_CAP} nodi visibili: continua a ingrandire o usa Mostra altri.` : '';
+            // D082-A-DENSITY END
             this.renderPanel();
         }).finally(() => {
             this.refreshPending--;
@@ -3403,6 +3783,9 @@ export class V2Page {
         const next = normalizeDensity(value);
         if (next === this.density)
             return;
+        // D082-A-DENSITY BEGIN: a density switch is a filter change, never a fit intent.
+        this.densitySwitchPending = true;
+        // D082-A-DENSITY END
         this.density = next;
         // D081-P3b BEGIN: the resident lower-density view remains visible while
         // the worker prepares the full Indra domain; disclose that recovery state.

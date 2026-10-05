@@ -14,7 +14,7 @@
 /** Semantic level of detail driven by the camera, with hysteresis. */
 export type LodLevel = "far" | "intermediate" | "near";
 
-/** How many nodes, arcs and labels each density admits. «Completa» is never all arcs at once. */
+/** How many nodes, arcs and labels each density admits in the lower-density LOD. */
 export type Density = "essential" | "balanced" | "complete";
 
 export const DENSITIES: readonly Density[] = ["essential", "balanced", "complete"];
@@ -25,13 +25,122 @@ export type LodBudget = {
   readonly labels: number;
 };
 
-/** Adaptive budgets per density: Essenziale ≈ 150/150/20, Bilanciata (default) ≈ 400/450/40,
- * Completa up to the 850-node cap with at most ≈ 1 200 arcs and 60 labels. */
+/** Lower-density render budgets. The Complete entry is retained for projection paths that
+ * still use a bounded domain; Natural and Indra Complete use their full-scene contracts. */
 export const DENSITY_BUDGETS: Readonly<Record<Density, LodBudget>> = {
-  essential: { nodes: 150, arcs: 150, labels: 20 },
+  essential: { nodes: 80, arcs: 100, labels: 20 },
   balanced: { nodes: 400, arcs: 450, labels: 40 },
   complete: { nodes: 850, arcs: 1200, labels: 60 },
 };
+
+// D082-A-DENSITY BEGIN: both lower densities draw from one semantic, camera-independent
+// disclosure. Keeping this pool identical is necessary for stable coordinates on a switch.
+// D082 A-DENSITYc: the pool is a pure function of (index, explicit disclosure, selection).
+// `base` must therefore be the EXPLICIT disclosure only — manual expansions over the overview,
+// never the reveal controller's zoom admissions or any disclosure a previous density left
+// behind. The cache is keyed by that base's contents, so two equal explicit disclosures share
+// one pool and no other page state can reach it.
+import type { V2Index, V2Visible, V2Node } from './v2-core.ts';
+const DENSITY_POOL_LIMIT = 850;
+const densityPoolCache = new WeakMap<V2Index, Map<string, V2Visible>>();
+export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: string | null = null): V2Visible {
+  const baseKey = base.nodes.map(node => node.id).sort().join(',');
+  const key = `${baseKey}|${selectedId ?? ''}`;
+  const retained = densityPoolCache.get(index);
+  const cached = retained?.get(key) ?? (selectedId && retained?.get(`${baseKey}|`)?.nodes.some(node => node.id === selectedId)
+    ? retained.get(`${baseKey}|`) : undefined);
+  if (cached) return cached;
+  const byId = new Map(index.nodes.map(node => [node.id, node]));
+  const degree = new Map<string, number>();
+  for (const edge of index.edges) if (edge.class === 'attested') {
+    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+  }
+  const score = (node: V2Node) => node.importance.value
+    + Math.log1p(degree.get(node.id) ?? 0) * 0.6
+    + Math.log1p(node.counts.passages ?? 0) * 0.15
+    + Math.log1p(node.counts.live_proposals ?? 0) * 0.15;
+  const rank = (a: V2Node, b: V2Node) => score(b) - score(a) || compare(a.id, b.id);
+  const chosen = new Map<string, V2Node>();
+  const add = (node: V2Node) => { if (chosen.size < DENSITY_POOL_LIMIT) chosen.set(node.id, node); };
+  // Domains, projects and conversations are the complete structural scaffold. It also
+  // guarantees that every community has a visible representative.
+  for (const node of index.nodes.filter(node => node.level <= 3).sort((a, b) => a.level - b.level || rank(a, b))) add(node);
+  // A selection made in Completa remains representable after switching down.
+  // Reserve its real ancestor path before ordinary proposal candidates.
+  if (selectedId) {
+    const path: V2Node[] = [];
+    const seen = new Set<string>();
+    let cursor = byId.get(selectedId);
+    while (cursor && !seen.has(cursor.id)) {
+      path.unshift(cursor);
+      seen.add(cursor.id);
+      cursor = cursor.parent ? byId.get(cursor.parent) : undefined;
+    }
+    for (const node of path) add(node);
+  }
+  // Explicit disclosure takes precedence over ordinary proposal ranking.
+  for (const node of base.nodes.filter(node => node.level > 3).sort(rank)) add(node);
+  const communityOf = communityResolver(index.nodes);
+  const groups = new Map<string, V2Node[]>();
+  for (const node of index.nodes) if (node.level === 4 && !chosen.has(node.id)) {
+    const community = communityOf(node.id);
+    (groups.get(community) ?? groups.set(community, []).get(community)!).push(node);
+  }
+  for (const group of groups.values()) group.sort(rank);
+  const keys = [...groups.keys()].sort(compare);
+  for (let round = 0; chosen.size < DENSITY_POOL_LIMIT && keys.some(key => round < groups.get(key)!.length); round++)
+    for (const key of keys) {
+      const node = groups.get(key)![round];
+      if (node) add(node);
+    }
+  const nodes = [...chosen.values()];
+  const ids = new Set(chosen.keys());
+  const counts: Record<number, number> = {};
+  for (const node of nodes) counts[node.level] = (counts[node.level] ?? 0) + 1;
+  const children = new Map<string, number>();
+  const shownChildren = new Map<string, number>();
+  for (const node of index.nodes) if (node.parent) {
+    children.set(node.parent, (children.get(node.parent) ?? 0) + 1);
+    if (ids.has(node.id)) shownChildren.set(node.parent, (shownChildren.get(node.parent) ?? 0) + 1);
+  }
+  const hidden = new Map<string, number>();
+  for (const node of nodes) {
+    const omitted = Math.max(0, (children.get(node.id) ?? 0) - (shownChildren.get(node.id) ?? 0));
+    const unindexedPassages = node.level === 4 ? Math.max(0, (node.counts.passages ?? 0) - (children.get(node.id) ?? 0)) : 0;
+    if (omitted + unindexedPassages > 0) hidden.set(node.id, omitted + unindexedPassages);
+  }
+  const result: V2Visible = { nodes, edges: index.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)),
+    hidden, capped: nodes.length < index.nodes.length, counts };
+  const entries = retained ?? new Map<string, V2Visible>();
+  if (entries.size >= 8) entries.delete(entries.keys().next().value!);
+  entries.set(key, result);
+  densityPoolCache.set(index, entries);
+  return result;
+}
+/** Source-relation prefix for the lower levels. The balanced pass seeds itself with every
+ * essential relation, then admits more relations whose two glyphs are present. */
+export function densitySourceRelations<T extends { id: string; source: string; target: string; class: string; type: string }>(
+  relations: readonly T[], rendered: ReadonlySet<string>, budget: number,
+  importance: ReadonlyMap<string, number>, prior: readonly T[] = [],
+): T[] {
+  const eligible = relations.filter(edge => rendered.has(edge.source) && rendered.has(edge.target));
+  const byId = new Map(eligible.map(edge => [edge.id, edge]));
+  const score = (edge: T) => (edge.class === 'attested' ? 3 : edge.class === 'exploratory' ? 2 : 1)
+    + ((importance.get(edge.source) ?? 0) + (importance.get(edge.target) ?? 0)) / 100;
+  const ranked = eligible.sort((a, b) => score(b) - score(a) || compare(a.id, b.id));
+  const chosen = new Map<string, T>();
+  for (const edge of prior) {
+    const current = byId.get(edge.id);
+    if (current) chosen.set(current.id, current);
+  }
+  for (const edge of ranked) {
+    if (chosen.size >= budget) break;
+    chosen.set(edge.id, edge);
+  }
+  return [...chosen.values()];
+}
+// D082-A-DENSITY END
 
 export function normalizeDensity(value: unknown, fallback: Density = "balanced"): Density {
   return typeof value === "string" && (DENSITIES as readonly string[]).includes(value)
@@ -177,6 +286,8 @@ export type SelectNodesInput = {
   readonly priority?: ReadonlySet<string> | readonly string[];
   readonly adjacency: ReadonlyMap<string, readonly string[]>;
   readonly communityOf: (id: string) => string;
+  /** D082 lower densities keep the structural scaffold even under a large focus priority. */
+  readonly reserveStructure?: boolean;
 };
 
 export type LodNodeSelection = {
@@ -211,11 +322,21 @@ export function selectNodes(input: SelectNodesInput): LodNodeSelection {
     rendered.push(id);
   };
   for (const id of [...input.pinned].sort(compare)) add(id, true);
+  const byImportance = (a: LodNodeInfo, b: LodNodeInfo) => b.importance - a.importance || compare(a.id, b.id);
+  // D082-A-DENSITY BEGIN: reserve every community before a focused priority can fill
+  // the lower-density budget. Other callers retain their manual-expansion precedence.
+  if (input.reserveStructure) {
+    for (const node of [...input.nodes].filter(node => node.level === 1).sort((a, b) => compare(a.id, b.id))) add(node.id);
+    for (const node of [...input.nodes].filter(node => node.level === 2).sort(byImportance)) add(node.id);
+  }
+  // D082-A-DENSITY END
   const priority = input.priority instanceof Set
     ? [...input.priority].sort((a, b) => (byId.get(b)?.importance ?? 0) - (byId.get(a)?.importance ?? 0) || compare(a, b))
     : input.priority ?? [];
   for (const id of priority) add(id);
-  for (const node of [...input.nodes].filter(node => node.level === 1).sort((a, b) => compare(a.id, b.id))) add(node.id);
+  if (!input.reserveStructure) {
+    for (const node of [...input.nodes].filter(node => node.level === 1).sort((a, b) => compare(a.id, b.id))) add(node.id);
+  }
   if (input.level === "near" && input.focus && byId.has(input.focus)) {
     add(input.focus);
     const seen = new Set([input.focus]);
@@ -233,35 +354,39 @@ export function selectNodes(input: SelectNodesInput): LodNodeSelection {
       frontier = next;
     }
   }
-  const byImportance = (a: LodNodeInfo, b: LodNodeInfo) => b.importance - a.importance || compare(a.id, b.id);
-  for (const node of [...input.nodes].filter(node => node.level === 2).sort(byImportance)) add(node.id);
-  if (input.level === "far") {
-    const hubs = [...input.nodes]
-      .filter(node => node.level >= 3)
-      .sort((a, b) => (input.adjacency.get(b.id)?.length ?? 0) - (input.adjacency.get(a.id)?.length ?? 0)
-        || byImportance(a, b));
-    for (const hub of hubs) add(hub.id);
-  } else {
-    const communities = new Map<string, LodNodeInfo[]>();
-    for (const node of input.nodes)
-      if (node.level === 3 || node.level === 4) {
-        const key = input.communityOf(node.id);
-        communities.set(key, [...(communities.get(key) ?? []), node]);
-      }
-    for (const list of communities.values()) list.sort(byImportance);
-    const keys = [...communities.keys()].sort(compare);
-    // D-072 FixC (X7): the round-robin walks to the longest community's length, so a community
-    // shorter than the current round simply has no principal to offer that round — skip it
-    // instead of reading past its end (`communities.get(key)[round]` of a short community was
-    // the crash that emptied the labels when the zoom crossed into the intermediate level).
-    const rounds = keys.reduce((most, key) => Math.max(most, communities.get(key)!.length), 0);
-    for (let round = 0; round < rounds && room(); round++)
-      for (const key of keys) {
-        if (!room()) break;
-        const principal = communities.get(key)![round];
-        if (principal !== undefined) add(principal.id);
-      }
+  if (!input.reserveStructure)
+    for (const node of [...input.nodes].filter(node => node.level === 2).sort(byImportance)) add(node.id);
+  // D082-A-DENSITY BEGIN: the first 80 marks are the 40 domain/project
+  // anchors and 40 principal conversations spread across communities. Proposals
+  // enter with Bilanciata, in a shared ordered suffix so E is a strict B prefix.
+  const communities = new Map<string, { conversations: LodNodeInfo[]; proposals: LodNodeInfo[] }>();
+  for (const node of input.nodes) if (node.level === 3 || node.level === 4) {
+    const key = input.communityOf(node.id);
+    const group = communities.get(key) ?? { conversations: [], proposals: [] };
+    (node.level === 3 ? group.conversations : group.proposals).push(node);
+    communities.set(key, group);
   }
+  for (const group of communities.values()) {
+    group.conversations.sort(byImportance);
+    group.proposals.sort(byImportance);
+  }
+  const keys = [...communities.keys()].sort(compare);
+  for (let round = 0; round < 5 && room(); round++) for (const key of keys) {
+    const conversation = communities.get(key)!.conversations[round];
+    if (conversation) add(conversation.id);
+  }
+  const rounds = keys.reduce((most, key) => {
+    const group = communities.get(key)!;
+    return Math.max(most, group.conversations.length - 5, group.proposals.length);
+  }, 0);
+  for (let round = 0; round < rounds && room(); round++) for (const key of keys) {
+    const group = communities.get(key)!;
+    const conversation = group.conversations[round + 5];
+    if (conversation) add(conversation.id);
+    const proposal = group.proposals[round];
+    if (proposal) add(proposal.id);
+  }
+  // D082-A-DENSITY END
   return { rendered, dropped: [...byId.keys()].filter(id => !kept.has(id)).sort(compare) };
 }
 
