@@ -39,6 +39,9 @@ import { normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
 import { GIZMO_IDLE_GRACE_MS, gizmoShouldRun } from "./gizmo-schedule.ts";
 import { formatD081GraphStatus, formatGraphPanelCounts, formatLegacyToolbarStatus, parseGraphToolbarCounts } from "./toolbar-status.ts";
+// D082-A-HUD BEGIN: retain the readiness suffix across graph-status refreshes.
+import { preserveRenderProgress } from "./toolbar-status.ts";
+// D082-A-HUD END
 import type { D081GraphStatus } from "./toolbar-status.ts";
 import { NodeDrawer } from "./node-drawer.ts";
 import { observeToolbarSectionVisibility } from "./toolbar-sections.ts";
@@ -607,8 +610,12 @@ function syncContractGraphStatus(): void {
   const contract = readD081Status();
   if (!contract) return;
   const formatted = formatD081GraphStatus(contract);
-  get<HTMLElement>('human-status').textContent = formatted.line;
-  get<HTMLElement>('human-status').title = formatted.line;
+  // D082-A-HUD BEGIN: avoid identical human-status mutations that can retrigger observers.
+  const statusLine = get<HTMLElement>('human-status');
+  const line = preserveRenderProgress(formatted.line, statusLine.textContent ?? '');
+  if (statusLine.textContent !== line) statusLine.textContent = line;
+  if (statusLine.title !== line) statusLine.title = line;
+  // D082-A-HUD END
   get<HTMLElement>('graph-status-counts').textContent = formatted.details[0];
   get<HTMLElement>('graph-status-levels').textContent = `${formatted.details[1]} ${formatted.details[2]} ${formatted.details[3]}`;
   get<HTMLElement>('graph-status-cap').textContent = `${formatted.details[4]} ${formatted.details[5]}`;

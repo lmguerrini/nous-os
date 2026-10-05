@@ -16,6 +16,19 @@ export type D081GraphStatus = {
 
 const count = (value: number): string => new Intl.NumberFormat("it-IT", { useGrouping: true }).format(Math.max(0, Math.trunc(value)));
 
+/** Compact progress shown in the main status line only while requested quality is incomplete. */
+export function withRenderProgress(line: string, percent: number): string {
+  const base = line.replace(/ · Render \d+%$/, "");
+  const bounded = Math.max(0, Math.min(100, Math.trunc(percent)));
+  return bounded < 100 ? `${base} · Render ${bounded}%` : base;
+}
+
+/** Preserve the live readiness suffix when the graph status refreshes its base text. */
+export function preserveRenderProgress(line: string, current: string): string {
+  const match = current.match(/ · Render (\d+)%$/);
+  return match ? withRenderProgress(line, Number(match[1])) : line;
+}
+
 /** Contract-backed status used by the toolbar and its expanded explanation panel. */
 export function formatD081GraphStatus(status: D081GraphStatus): { line: string; details: [string, string, string, string, string, string, string] } {
   const { nodes, edges, depth, quality, limit, hint } = status;

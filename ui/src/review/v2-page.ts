@@ -58,6 +58,11 @@ import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labe
 import { summarizeD081Bundles } from './toolbar-status.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
+// D082-A-HUD BEGIN: page-owned readiness until renderers publish presented-frame counts.
+import { reportRenderReadiness, renderPercent } from './render-readiness.ts';
+import type { RenderReadiness, StageCounts } from './render-readiness.ts';
+import { withRenderProgress } from './toolbar-status.ts';
+// D082-A-HUD END
 import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import { centeringNodeId } from './panel.ts';
 import type { V2Category } from './palette.ts';
@@ -601,6 +606,11 @@ export class V2Page {
     private d081LastFullMs = 0;
     private d081Quality: 'movimento' | 'recupero' | 'completa' = 'completa';
     private d081QualityTimer: ReturnType<typeof setTimeout> | null = null;
+    // D082-A-HUD BEGIN: monotone page state id, advanced only on actual status transitions.
+    private d082Frame = 0;
+    private d082ReadinessKey = '';
+    private d082StatusPercent: number | null = null;
+    // D082-A-HUD END
     // D081-P3g BEGIN: a 3D status cannot become full before its settled label pass.
     private d081LabelsReady = true;
     private d081PointerMoved = false;
@@ -632,7 +642,67 @@ export class V2Page {
     private d081Emit() {
         if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function')
             window.dispatchEvent(new CustomEvent('d081:status', { detail: this.d081Status() }));
+        // D082-A-HUD BEGIN: interim counts are the real page-visible sets; renderer producers replace this.
+        this.d082PublishReadiness();
+        // D082-A-HUD END
     }
+    // D082-A-HUD BEGIN: temporary real-count producer; no time-based progress is synthesized.
+    private d082PublishReadiness() {
+        // d081Publish already maintains these counts while it builds the requested scene.
+        // Keep this hot path O(1); in particular, do not enumerate `rendered` here.
+        const visible = this.d081Metrics.nodes.visible;
+        const edgesDrawn = this.d081Quality === 'movimento' && this.density === 'complete'
+            && this.indraPearlsView() ? 0 : this.d081Metrics.edges.drawn;
+        const nodeRequired = Math.max(visible, this.density === 'complete'
+            ? this.datasetNodeCount : this.lodCounts.nodes.available);
+        const edgeRequired = Math.max(edgesDrawn, this.renderedRelations.size);
+        const reducedMotion = typeof window.matchMedia === 'function'
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const counts = (required: number, loaded: number, drawn: number): StageCounts => ({
+            required: Math.max(0, Math.trunc(required)),
+            loaded: Math.min(Math.max(0, Math.trunc(required)), Math.max(0, Math.trunc(loaded))),
+            drawn: Math.min(Math.max(0, Math.trunc(loaded)), Math.max(0, Math.trunc(drawn))),
+        });
+        const quality = this.refreshPending > 0 ? 'recupero' : this.d081Quality;
+        const full = quality === 'completa';
+        const decor = {
+            labels: this.d081LabelsReady,
+            background: full,
+            glow: full,
+            animation: full && this.flowMotion && !reducedMotion,
+        };
+        const next: RenderReadiness = {
+            frame: this.d082Frame + 1,
+            view: `${this.axes.organization}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`,
+            quality,
+            ladder: visible === 0 ? 0 : full ? 4 : quality === 'recupero' ? 2 : 1,
+            nodes: counts(nodeRequired, visible, visible),
+            // Until the renderer's main-edge predicate lands, current scene edges form the available main set.
+            mainEdges: counts(edgeRequired, edgesDrawn, edgesDrawn),
+            allEdges: counts(edgeRequired, edgesDrawn, edgesDrawn),
+            decor,
+            decorApplicable: { animation: this.flowMotion && !reducedMotion },
+            depthLabel: this.d081Metrics.depth.label,
+        };
+        const key = JSON.stringify({ view: next.view, quality: next.quality, ladder: next.ladder,
+            nodes: next.nodes, mainEdges: next.mainEdges, allEdges: next.allEdges,
+            decor: next.decor, decorApplicable: next.decorApplicable, depthLabel: next.depthLabel });
+        // d081Emit also serves UI paths that do not change render readiness. Publish only
+        // meaningful state transitions; never turn an idle frame or repeated event into work.
+        if (key === this.d082ReadinessKey) return;
+        this.d082ReadinessKey = key;
+        this.d082Frame++;
+        reportRenderReadiness(next);
+        const percent = renderPercent(next);
+        if (percent !== this.d082StatusPercent) {
+            this.d082StatusPercent = percent;
+            const statusLine = typeof document !== 'undefined' ? document.getElementById('human-status') : null;
+            if (!statusLine) return;
+            statusLine.textContent = withRenderProgress(statusLine.textContent ?? '', renderPercent(next));
+            statusLine.title = statusLine.textContent;
+        }
+    }
+    // D082-A-HUD END
     private d081Interaction() {
         this.d081LastInteraction = performance.now();
         this.d081Quality = 'movimento';
@@ -2710,6 +2780,9 @@ export class V2Page {
     refresh(): Promise<void> {
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
         this.refreshPending++;
+        // D082-A-HUD BEGIN: publish the requested scene as in recovery while its new view is pending.
+        this.d081Emit();
+        // D082-A-HUD END
         const projectionEpoch = ++this.projectionEpoch;
         this.cancelProjectionWork();
         return this.run(async () => {
@@ -3144,6 +3217,9 @@ export class V2Page {
             if (this.d081Quality === 'recupero' && this.refreshPending === 0) {
                 this.d081FinishIfReady();
             }
+            // D082-A-HUD BEGIN: publish after the pending scene count changes, including refusal paths.
+            this.d081Emit();
+            // D082-A-HUD END
         });
     }
     async expand(id: string) {
