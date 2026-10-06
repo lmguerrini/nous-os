@@ -1,5 +1,8 @@
 import * as THREE from "three";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+// D084-W2-NEURAL-R3 BEGIN: the native soma uses the engine's Neural-only bound.
+import { NEURAL_SOMA_OUTLINE_MAX_RADIAL } from "#engine/morphology-geometry.ts";
+// D084-W2-NEURAL-R3 END
 import type { NodeBuffers } from "#render3f/buffers.ts";
 
 const NODE_RENDER_ORDER = 3;
@@ -184,11 +187,12 @@ void main() {
     // D081-P1E BEGIN: the canvas and GPU use the same bounded radial lobe function.
     float rootLobe = max(somaLobe(v_somaLobe0, v_localDevicePx),
       max(somaLobe(v_somaLobe1, v_localDevicePx), somaLobe(v_somaLobe2, v_localDevicePx)));
-    float spindle = 1.0 + 0.16 * cos(theta) - 0.045 * cos(2.0 * theta);
-    float leafScale = v_somaLobe0.z > 0.6 && v_somaLobe1.z <= 0.0 && v_somaLobe2.z <= 0.0
-      ? 0.84 : 1.0;
-    float bulge = (1.0 + clamp(irregularity * 1.6, -0.12, 0.12))
-      * spindle * (1.0 + rootLobe) * v_somaShape.y * leafScale;
+    // D084-W2-NEURAL BEGIN: the soma is a compact irregular body. The pointed spindle pole
+    // factor is gone and the degree-one body scale is folded into v_somaShape.y by the
+    // buffer builder, so the GPU paints exactly the canvas frame's outline.
+    float bulge = (1.0 + clamp(irregularity * 1.6, -${NEURAL_SOMA_OUTLINE_MAX_RADIAL}, ${NEURAL_SOMA_OUTLINE_MAX_RADIAL}))
+      * (1.0 + rootLobe) * v_somaShape.y;
+    // D084-W2-NEURAL END
     // D081-P1E END
     somaDistance = length(vec2(local.x / eccentricity, local.y)) / bulge;
   }

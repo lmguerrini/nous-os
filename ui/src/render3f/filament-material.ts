@@ -1,5 +1,8 @@
 import * as THREE from "three";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+// D084-W2-NEURAL-R3 BEGIN: both GPU shaders use the engine's junction geometry.
+import { NEURAL_PROFILE_GLSL, NEURAL_PROFILE_TABLE, NEURAL_ROOT_ANCHOR_RADII } from "#engine/morphology-geometry.ts";
+// D084-W2-NEURAL-R3 END
 
 // D081-P1F BEGIN: software reconstruction of the shader's longitudinal alpha for numeric QA.
 export function neuralLongitudinalCoverageAt(t: number, fadeFraction: number,
@@ -11,9 +14,16 @@ export function neuralLongitudinalCoverageAt(t: number, fadeFraction: number,
   return (startHasSoma ? 1 : ease(t)) * (endHasSoma ? 1 : ease(1 - t));
 }
 // D081-P1F END
+// D084-W2-NEURAL-R3 BEGIN: the small-radius root no longer contracts.
+export function neuralRootCompactScaleQA(somaRadiusPx: number, ordinaryPx: number): number {
+  return 1;
+}
+// D084-W2-NEURAL-R3 END
 import type { FilamentBuffers } from "#render3f/buffers.ts";
 
 const FILAMENT_RENDER_ORDER = 2;
+// D084-W2-NEURAL-R4: the exact array bound in the native Three material.
+export const FILAMENT_NEURAL_PROFILE_TABLE_3D = NEURAL_PROFILE_TABLE;
 const RADIANS_PER_TURN = Math.PI * 2;
 
 /** This names the filament shader's live viewport inputs and does not choose their values. */
@@ -168,25 +178,21 @@ void main() {
   // D082-A-N3D END
   if (a_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio;
-    float mouthScale = clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2);
+    float mouthScale = clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.0);
+    // D084-W2-NEURAL BEGIN: the root continues the soma body — full width 2R at the
+    // boundary, half-width equal to the local soma extension. The quad must cover that
+    // mouth (half of 2R, plus the same bounded response to the edge-width control).
     float rootStart = max(ordinary * abs(a_neuralRootRatios.x),
-      clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio
-        * (a_neuralRootRatios.x < 0.0 ? 1.0 : 0.9) * mouthScale);
+      ${2 * NEURAL_PROFILE_TABLE[1]!} * clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio);
     float rootEnd = max(ordinary * abs(a_neuralRootRatios.y),
-      clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio
-        * (a_neuralRootRatios.y < 0.0 ? 1.0 : 0.9) * mouthScale);
-    rootStart = max(rootStart, min(clamp(a_neuralProfile.y * startScale, 2.0, 24.0)
-      * u_devicePixelRatio * 1.1, ordinary * 6.0));
-    rootEnd = max(rootEnd, min(clamp(a_neuralProfile.z * endScale, 2.0, 24.0)
-      * u_devicePixelRatio * 1.1, ordinary * 6.0));
+      ${2 * NEURAL_PROFILE_TABLE[1]!} * clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio);
     maximumBodyHalfWidth = max(maximumBodyHalfWidth, max(rootStart, rootEnd) * 0.5);
+    // D084-W2-NEURAL END
   }
   float materialExtent = max(
     maximumBodyHalfWidth * a_sheathAndCorePermille.x / u_permilleScale,
     maximumBodyHalfWidth + (a_widthsAndPicking.w * u_devicePixelRatio)
   );
-  if (a_neuralProfile.w > 0.5 && max(startScale, endScale) >= 1.75)
-    materialExtent = max(materialExtent, 16.0 * u_devicePixelRatio);
   float medialExtent = chordLength * abs(a_hotAndWobble.z / u_permilleScale);
   if (a_neuralProfile.w > 0.5) medialExtent = min(medialExtent,
     max(u_neuralWidthPx, 0.3) * u_devicePixelRatio * 5.0);
@@ -242,6 +248,7 @@ uniform float u_permilleScale;
 uniform float u_flowElapsedMs;
 out vec4 outputColor;
 ${FILAMENT_DISTANCE_GLSL}
+${NEURAL_PROFILE_GLSL}
 float alongLengthLuminance(float parameter) {
   float startValue = v_phaseAndLuminancePermille.y / u_permilleScale;
   float middleValue = v_phaseAndLuminancePermille.z / u_permilleScale;
@@ -288,25 +295,8 @@ float filamentMedialOffsetPx(float parameter, float span) {
   );
   return excursionPx * endpointEnvelope * wave;
 }
-float neuralBranchCoverage(float radius, float scale, bool atStart, float span) {
-  if (scale < 1.75 || radius < 5.0 * u_devicePixelRatio || span < radius * 6.0) return 0.0;
-  float t = radius * 1.8 / span;
-  if (!atStart) t = 1.0 - t;
-  vec2 anchor = mix(mix(v_cpA, v_cpB, t), mix(v_cpB, v_cpC, t), t);
-  vec2 tangent = normalize(mix(v_cpB - v_cpA, v_cpC - v_cpB, t));
-  vec2 normal = vec2(-tangent.y, tangent.x);
-  anchor += normal * filamentMedialOffsetPx(t, span);
-  if (!atStart) tangent = -tangent;
-  float side = atStart ? 1.0 : -1.0;
-  vec2 tip = anchor + tangent * radius * 0.65 + normal * side * radius * 0.8;
-  vec2 arm = tip - anchor;
-  float along = clamp(dot(gl_FragCoord.xy - anchor, arm) / max(dot(arm, arm), 0.001), 0.0, 1.0);
-  float distance = length(gl_FragCoord.xy - (anchor + arm * along));
-  float halfWidth = min(clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio * 0.175,
-    0.6 * u_devicePixelRatio);
-  float feather = 0.75 * u_devicePixelRatio;
-  return 1.0 - smoothstep(halfWidth - feather, halfWidth + feather, distance);
-}
+// D084-W2-NEURAL: the former cosmetic close-up branch arm is removed — no decorative
+// filament may fake a relation the graph does not draw.
 void main() {
   vec2 distanceSample = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
   float parameter = distanceSample.y;
@@ -326,63 +316,20 @@ void main() {
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
     float span = max(length(v_cpC - v_cpA), 1.0);
-    // D082-A-NEURAL BEGIN: round the soma mouth into the D-081 trunk width.
-    float startWeight = clamp(0.85 + 0.15 * sqrt(max(0.0, v_widthsAndPicking.x)), 0.85, 1.2);
-    float endWeight = clamp(0.85 + 0.15 * sqrt(max(0.0, v_widthsAndPicking.y)), 0.85, 1.2);
-    float startReach = (v_neuralRootRatios.x > 2.5 ? 0.62 : v_neuralRootRatios.x < 0.0 ? 0.9 : 1.0) * startWeight;
-    float endReach = (v_neuralRootRatios.y > 2.5 ? 0.62 : v_neuralRootRatios.y < 0.0 ? 0.9 : 1.0) * endWeight;
-    float startShoulder = max(min(span * 0.45,
-      min(startRadius * 3.0, max(startRadius * 2.5, span * 0.12))) * startReach / span, 0.00001);
-    float endShoulder = max(min(span * 0.45,
-      min(endRadius * 3.0, max(endRadius * 2.5, span * 0.12))) * endReach / span, 0.00001);
-    float startBoundary = min(0.49, startRadius * 1.5 / span);
-    float endBoundary = min(0.49, endRadius * 1.5 / span);
-    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8)
-      startBoundary = min(0.49, startRadius * 2.25 / span);
-    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
-      endBoundary = min(0.49, endRadius * 2.25 / span);
-    float startU = clamp((parameter - startBoundary) / startShoulder, 0.0, 1.0);
-    float endU = clamp((1.0 - parameter - endBoundary) / endShoulder, 0.0, 1.0);
-    float startEase = (1.0 - startU) * (1.0 - startU);
-    float endEase = (1.0 - endU) * (1.0 - endU);
-    if (startRadius < 1.5 * u_devicePixelRatio) startEase = 0.0;
-    if (endRadius < 1.5 * u_devicePixelRatio) endEase = 0.0;
-    rootSomaMix = max(startEase, endEase);
-    float oldStartRoot = startRadius > 0.0
-      ? (v_neuralRootRatios.x < 0.0 ? ordinary * -v_neuralRootRatios.x
-        : max(ordinary * v_neuralRootRatios.x, min(startRadius * 1.1, ordinary * 6.0)))
-      : ordinary;
-    float oldEndRoot = endRadius > 0.0
-      ? (v_neuralRootRatios.y < 0.0 ? ordinary * -v_neuralRootRatios.y
-        : max(ordinary * v_neuralRootRatios.y, min(endRadius * 1.1, ordinary * 6.0)))
-      : ordinary;
-    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8)
-      oldStartRoot = max(ordinary * 2.0, min(oldStartRoot, startRadius * 0.9));
-    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
-      oldEndRoot = max(ordinary * 2.0, min(oldEndRoot, endRadius * 0.9));
-    if (startRadius < 1.5 * u_devicePixelRatio) oldStartRoot = ordinary;
-    if (endRadius < 1.5 * u_devicePixelRatio) oldEndRoot = ordinary;
-    float oldStartShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
-      max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
-    float oldEndShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
-      max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
-    float startTrunk = ordinary + (oldStartRoot - ordinary)
-      * (1.0 - smoothstep(0.0, oldStartShoulder, parameter));
-    float endTrunk = ordinary + (oldEndRoot - ordinary)
-      * (1.0 - smoothstep(0.0, oldEndShoulder, 1.0 - parameter));
-    float startAtJoin = ordinary + (oldStartRoot - ordinary)
-      * (1.0 - smoothstep(0.0, oldStartShoulder, startBoundary + startShoulder));
-    float endAtJoin = ordinary + (oldEndRoot - ordinary)
-      * (1.0 - smoothstep(0.0, oldEndShoulder, endBoundary + endShoulder));
-    float startMouth = max(max(startAtJoin, ordinary * abs(v_neuralRootRatios.x)),
-      startRadius * (v_neuralRootRatios.x < 0.0 ? 1.0 : 0.9)
-        * clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2));
-    float endMouth = max(max(endAtJoin, ordinary * abs(v_neuralRootRatios.y)),
-      endRadius * (v_neuralRootRatios.y < 0.0 ? 1.0 : 0.9)
-        * clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2));
+    // D084-W2-NEURAL-R4 BEGIN: geometry and fade come from the engine table.
+    float startLength = neuralProcessLength(startRadius, span, u_devicePixelRatio);
+    float endLength = neuralProcessLength(endRadius, span, u_devicePixelRatio);
+    float startDistance = parameter * span - startRadius * ${NEURAL_ROOT_ANCHOR_RADII};
+    float endDistance = (1.0 - parameter) * span - endRadius * ${NEURAL_ROOT_ANCHOR_RADII};
+    vec2 startProfile = neuralProfileSample(neuralProfileDistance(startDistance, startRadius, startLength));
+    vec2 endProfile = neuralProfileSample(neuralProfileDistance(endDistance, endRadius, endLength));
+    if (startRadius < 1.5 * u_devicePixelRatio) startProfile = vec2(0.0);
+    if (endRadius < 1.5 * u_devicePixelRatio) endProfile = vec2(0.0);
+    rootSomaMix = max(startProfile.y, endProfile.y);
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
-      0.5 * max(mix(startTrunk, startMouth, startEase),
-        mix(endTrunk, endMouth, endEase)));
+      0.5 * max(mix(ordinary, 2.0 * startRadius * startProfile.x, startProfile.y),
+        mix(ordinary, 2.0 * endRadius * endProfile.x, endProfile.y)));
+    // D084-W2-NEURAL-R4 END
     // D082-A-NCOMPLETA BEGIN: the native pass receives the calibrated screen-cell
     // coverage in the Neural flag's spare range. A-INT12 uses exactly the identity.
     // D082-A-N3D BEGIN: 3 + factor identifies only Neural 3D Completa; old values retain identity.
@@ -455,13 +402,7 @@ void main() {
   float sheathHalfWidth = bodyHalfWidth * v_sheathAndCorePermille.x / u_permilleScale;
   float sheathCoverage = 1.0 - smoothstep(sheathHalfWidth - feather, sheathHalfWidth + feather, distance);
   float bodyCoverage = 1.0 - smoothstep(bodyHalfWidth - feather, bodyHalfWidth + feather, distance);
-  float branchCoverage = 0.0;
-  if (v_neuralProfile.w > 0.5) {
-    float span = length(v_cpC - v_cpA);
-    branchCoverage = max(v_neuralRootRatios.x < 0.0 ? 0.0 : neuralBranchCoverage(v_neuralRadiiDevicePx.x, v_neuralScale.x, true, span),
-      v_neuralRootRatios.y < 0.0 ? 0.0 : neuralBranchCoverage(v_neuralRadiiDevicePx.y, v_neuralScale.y, false, span));
-    bodyCoverage = max(bodyCoverage, branchCoverage * 0.55);
-  }
+  // D084-W2-NEURAL: the cosmetic branch-coverage arm is gone (see above).
   float coreHalfWidth = bodyHalfWidth * v_sheathAndCorePermille.z / u_permilleScale;
   float coreCoverage = 1.0 - smoothstep(coreHalfWidth - feather, coreHalfWidth + feather, distance);
   float propagationPosition = v_propagationPermille.x / u_permilleScale;
@@ -484,7 +425,7 @@ void main() {
   vec4 hot = vec4(hotColor * hotAlpha, hotAlpha);
   vec4 composed = body + sheath * (1.0 - body.a);
   composed = hot + composed * (1.0 - hot.a);
-  if (composed.a <= 0.0 || (distance > sheathHalfWidth + feather && branchCoverage <= 0.0)) {
+  if (composed.a <= 0.0 || distance > sheathHalfWidth + feather) {
     discard;
   }
   outputColor = composed;
@@ -518,6 +459,7 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
       u_devicePixelRatio: { value: scalarCount() },
       u_sizeScale: { value: scalarCount() },
       u_neuralWidthPx: { value: 1 },
+      u_neuralProfileTable: { value: FILAMENT_NEURAL_PROFILE_TABLE_3D },
       u_flowElapsedMs: { value: 0 },
       u_isPerspective: { value: 0 },
       u_referenceViewDepth: { value: 1 },

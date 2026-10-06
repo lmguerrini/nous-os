@@ -5,13 +5,12 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
-import { buildMorphologyGeometry, NEURAL_GEOMETRY_VERSION, NEURAL_LEAF_BODY_SCALE, NEURAL_ROOT_LENGTH_RADII,
+import { buildMorphologyGeometry, NEURAL_GEOMETRY_VERSION, NEURAL_LEAF_BODY_SCALE, NEURAL_ROOT_FILLET_LENGTH_RADII, NEURAL_ROOT_LENGTH_RADII, NEURAL_ROOT_MIN_LENGTH_PX, NEURAL_ROOT_MOUTH_RADII, NEURAL_ROOT_RATIO,
   neuralRootFilletRadiusPx, neuralRootLengthPx, neuralRootProfileAt, neuralRootProfileAtLength,
   neuralScreenWidthAt, neuralVisibleRootLengthPx, somaLobeAngularWidth } from "#engine/morphology-geometry.ts";
-import { neuralRootInsideSoma, neuralSomaFrames, somaOutlineRadiusAtAngle,
-  type MorphologyCanvasStyle } from "#render-common/morphology-canvas.ts";
+import { NEURAL_EDGE_SOMA_OVERLAP_PX, neuralRootInsideSoma, neuralSomaFrames,
+  somaOutlineRadiusAtAngle, type MorphologyCanvasStyle } from "#render-common/morphology-canvas.ts";
 import { FILAMENT_FRAGMENT_SHADER } from "#render3f/filament-material.ts";
-import { NODE_FRAGMENT_SHADER } from "#render3f/node-material.ts";
 const filament2dSource = readFileSync(new URL("../src/render2d/filament-program.ts", import.meta.url), "utf8");
 
 const position = (x: number, y: number) => ({ x, y, z: 0 });
@@ -22,7 +21,9 @@ const edges = [{ id: "ab", source: "a", target: "b", width: 2 },
   { id: "ac", source: "a", target: "c", width: 1 }];
 
 test("P1 rounded fillet ends at the D-081 shared trunk in both projections and readings", () => {
-  assert.match(NEURAL_GEOMETRY_VERSION, /^d082-p1-/);
+  // D084-W2-NEURAL: the geometry model changed (organic soma body, soma-anchored root),
+  // so every WeakMap/SceneCache entry keyed on the version must rebuild once.
+  assert.match(NEURAL_GEOMETRY_VERSION, /^d084-r4-concave-/);
   for (const renderer of ["2D", "3D"]) for (const degree of [1, 3, 12])
     for (const [reading, edgeAlpha] of [["Esplorativa", 0.28], ["Attestata", 0.72]] as const) {
       const requestedRadius = degree === 12 ? 20 : degree === 3 ? 14 : 10;
@@ -45,8 +46,8 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
       const span = 100;
       const length = neuralRootLengthPx(radius, span);
       const trunkWidth = degree === 12 ? width * 3.2 : width * 1.8;
-      const samples = Array.from({ length: 201 }, (_, index) =>
-        neuralRootProfileAt(length * index / 200, radius, width, edgeAlpha, 2.4, span, trunkWidth));
+      const samples = Array.from({ length: 401 }, (_, index) =>
+        neuralRootProfileAt((length + NEURAL_ROOT_FILLET_LENGTH_RADII * radius) * index / 400, radius, width, edgeAlpha, 2.4, span, trunkWidth));
       const centre = neuralRootProfileAt(-radius, radius, width, edgeAlpha, 2.4, span, trunkWidth);
       assert.equal(centre.alpha, samples[0]!.alpha, `${renderer}/${reading}: soma-to-root alpha`);
       assert.equal(centre.somaMix, 1, `${renderer}/${reading}: soma-to-root luminance`);
@@ -55,7 +56,7 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
       assert.ok(samples[0]!.width / radius >= 0.9 - 1e-9,
         `${renderer}/${degree}: mouth at least 90% of local soma half-width`);
       assert.ok(length >= Math.min(radius * NEURAL_ROOT_LENGTH_RADII, span * 0.45));
-      assert.ok(length <= Math.min(radius * 3, span * 0.45));
+      assert.ok(length <= span && length >= Math.min(NEURAL_ROOT_MIN_LENGTH_PX, span));
       assert.equal(samples[0]!.somaMix, 1);
       assert.equal(samples.at(-1)!.width, trunkWidth, `${renderer}/${degree}: D-081 trunk width`);
       assert.equal(samples.at(-1)!.alpha, edgeAlpha, `${renderer}/${degree}: shaft alpha`);
@@ -69,7 +70,10 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
       for (let index = 1; index < samples.length; index++) {
         const before = samples[index - 1]!, after = samples[index]!;
         // The concave curve is steepest under the soma and tends to zero slope at the shaft.
-        assert.ok(Math.abs(after.width - before.width) <= 0.2, `${renderer}/${degree}: width step ${index}`);
+        // D084-W2-NEURAL: the mouth now spans the full local soma extension (2·R·mouthScale
+        // instead of ~0.9·R), so the same smoothness class allows a proportionally larger
+        // first step — still under 1.1% of the mouth width per sample.
+        assert.ok(Math.abs(after.width - before.width) <= 0.45, `${renderer}/${degree}: width step ${index}`);
         assert.ok(Math.abs(after.alpha - before.alpha) <= 0.01, `${renderer}/${degree}: alpha step ${index}`);
         assert.ok(Math.abs(after.somaMix - before.somaMix) <= 0.01, `${renderer}/${degree}: colour step ${index}`);
         const luminance = (sample: typeof before) => 0.4 + 0.6 * sample.somaMix;
@@ -83,12 +87,12 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
     }
   // Shaders use the same 2.5–3-radius fillet and retain the D-081 trunk after it.
   for (const shader of [filament2dSource, FILAMENT_FRAGMENT_SHADER]) {
-    assert.ok(/rootSomaMix = max\(startEase, endEase\)/.test(shader), "root mix");
-    assert.ok(/\(1\.0 - startU\) \* \(1\.0 - startU\)/.test(shader), "concave organic taper");
-    assert.ok(/startRadius \* 2\.5|v_somaRadii\.x \* 2\.5/.test(shader), "short rounded fillet");
-    assert.ok(/span \* 0\.12/.test(shader), "span fraction");
-    assert.ok(/span \* 0\.45/.test(shader), "short-link cap");
-    assert.ok(/oldStartShoulder/.test(shader) && /startTrunk/.test(shader), "D-081 trunk after fillet");
+    assert.ok(/rootSomaMix = max\(startProfile.y, endProfile.y\)/.test(shader), "root mix");
+    assert.ok(/neuralProfileSample/.test(shader), "engine profile table");
+    assert.ok(/neuralProcessLength/.test(shader), "engine process length");
+    assert.ok(/NEURAL_PROFILE_GLSL|span \* 0\.45/.test(shader), "engine span fraction");
+    assert.ok(/NEURAL_PROFILE_GLSL|span \* 0\.45/.test(shader), "short-link cap");
+    assert.ok(/mix\(ordinary, 2\.0 \* startRadius \* startProfile.x/.test(shader) || /mix\(v_thickness, 2\.0 \* v_somaRadii.x \* startProfile.x/.test(shader), "D-081 trunk after fillet");
     assert.ok(/mix\([^;]*vec3\(1\.0\), rootSomaMix\)/.test(shader), "white-to-edge colour");
     assert.ok(/mix\([^;]*max\(0\.9, [^;]*rootSomaMix\)/.test(shader), "soma-to-edge alpha");
   }
@@ -103,11 +107,11 @@ test("reference overview roots are broad and rounded while leaves keep one attac
     const length = neuralRootLengthPx(radius, span);
     const join = neuralRootProfileAt(0, radius, width, 0.3, 1.8, span);
     assert.ok(length >= radius * 2.5, `root length ${length} at r=${radius}`);
-    assert.ok(length <= Math.min(radius * 3, span * 0.45));
+    assert.ok(length <= span && length >= Math.min(NEURAL_ROOT_MIN_LENGTH_PX, span));
     assert.ok(join.width >= radius * 0.9, `join width ${join.width} at r=${radius}`);
     assert.ok(join.alpha >= 0.9, "the edge at the soma is as opaque as the root");
     assert.equal(join.somaMix, 1);
-    assert.equal(neuralRootProfileAt(length, radius, width, 0.3, 1.8, span).width, width);
+    assert.equal(neuralRootProfileAt(length + NEURAL_ROOT_FILLET_LENGTH_RADII * radius, radius, width, 0.3, 1.8, span).width, width);
   }
   assert.ok(neuralRootProfileAt(0, 24, 1.4, 0.3, 2.6, 160).width >= 24 * 0.9,
     "large hubs retain a soma-width mouth rather than a capped narrow arm");
@@ -117,7 +121,15 @@ test("reference overview roots are broad and rounded while leaves keep one attac
   [{ id: "leaf-edge", source: "leaf", target: "next", width: 1.5 }]);
   const leaf = leafGeometry.nodes[0]!;
   assert.equal(leaf.trunks?.length, 1, "a leaf has only one real direction");
-  const tail = neuralRootProfileAt(0, 8, 1.5, 0.4, leaf.rootRatio, 120);
+  // D084-W2-NEURAL BEGIN: a degree-one body draws at NEURAL_LEAF_BODY_SCALE, so its single
+  // tail anchors at that same local extension (canvas buildEdgePaints and the 3D neuralProfile
+  // buffers both do this). The mouth is exactly the body's local extension — never a wider
+  // cap glued onto a narrower cell.
+  const anchor = 8 * NEURAL_LEAF_BODY_SCALE;
+  const tail = neuralRootProfileAt(0, anchor, 1.5, 0.4, leaf.rootRatio, 120);
+  assert.ok(Math.abs(tail.width - 2 * anchor * Math.sqrt(1 - 0.8055023396641312 ** 2)) < 1e-6,
+    "the leaf mouth meets the body's shoulder chord");
+  // D084-W2-NEURAL END
   const leafStyle: MorphologyCanvasStyle = { fieldColor: "rgb(0, 0, 0)",
     nodes: new Map([["leaf", { color: "rgb(255, 255, 255)", radiusPx: 8 }],
       ["next", { color: "rgb(255, 255, 255)", radiusPx: 8 }]]),
@@ -147,31 +159,48 @@ test("reference overview roots are broad and rounded while leaves keep one attac
       }
       return halfWidth * 2;
     };
-    let low = 0, high = somaOutlineRadiusAtAngle(frame, 0);
-    assert.ok(crossSectionWidth(low) > tail.width, "body must surround the mouth");
-    for (let index = 0; index < 32; index++) {
-      const middle = (low + high) / 2;
-      if (crossSectionWidth(middle) > tail.width) low = middle; else high = middle;
+    // D084-W2-NEURAL BEGIN: the join property is union monotonicity. Along the exit axis
+    // the combined cross-section of the body contour and the root ribbon never steps up
+    // (no glued-on segment) and never dips below its running minimum by more than the
+    // organic ±12% irregularity (no neck) before settling at the shaft width.
+    const exitOutline = somaOutlineRadiusAtAngle(frame, 0);
+    const rootLength = neuralRootLengthPx(anchor, 120);
+    let settled = Infinity;
+    for (let index = 0; index <= 240; index++) {
+      const x = inside.x + (exitOutline + rootLength * 1.3 - inside.x) * index / 240;
+      const distance = Math.max(0, x - (exitOutline - NEURAL_EDGE_SOMA_OVERLAP_PX));
+      const ribbon = neuralRootProfileAtLength(distance, anchor, 1.5, 0.4,
+        leaf.rootRatio ?? NEURAL_ROOT_RATIO, rootLength).width;
+      const union = Math.max(crossSectionWidth(x), ribbon);
+      assert.ok(union <= settled + 0.15,
+        `${projection}: no step-up or neck in the union cross-section at x=${x.toFixed(2)}`);
+      settled = Math.min(settled, union);
     }
-    assert.ok(inside.x < high, "the ribbon enters before the visible join");
-    assert.ok(Math.abs(crossSectionWidth(high) - tail.width) < 0.02,
-      `${projection}: leaf body and tail are the same width at their visible join`);
+    assert.ok(Math.abs(settled - 1.5) < 1e-9,
+      `${projection}: the union settles at the shaft width`);
+    // D084-W2-NEURAL END
   }
   // The edge enters the soma and its mouth keeps the same width at the overlap.
-  assert.equal(tail.width, neuralRootProfileAt(-2, 8, 1.5, 0.4, leaf.rootRatio, 120).width);
+  assert.equal(tail.width, neuralRootProfileAt(-2, anchor, 1.5, 0.4, leaf.rootRatio, 120).width);
   assert.match(filament2dSource, /max\(0\.9, v_color\.a \* propagationAlpha\) \* bodyCoverage/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /max\(0\.9, v_opacity \* longitudinal\) \* radial/);
-  assert.match(NODE_FRAGMENT_SHADER, /\? 0\.84 : 1\.0/);
+  // D084-W2-NEURAL: the leaf body scale moved from the shader's lobe test into the buffers
+  // (somaShape areaScale and neuralProfile radii); the GPU mouth itself spans the local
+  // soma extension exactly like the canvas profile.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /neuralProfileSample/);
 });
 
 test("edge-width control changes the rounded mouth without a neck", () => {
   const low = neuralRootProfileAt(0, 12, 0.3, 0.35, 1.8, 120, 1.2);
   const normal = neuralRootProfileAt(0, 12, 1.2, 0.35, 1.8, 120, 1.2);
   const high = neuralRootProfileAt(0, 12, 3, 0.35, 1.8, 120, 1.2);
-  assert.ok(low.width < normal.width && normal.width < high.width);
+  // D084-W2-NEURAL: the response is capped at the soma's own extension (neuralMouthScale
+  // ≤ 1.0) — an unbounded mouth wider than the cell it leaves was the defect.
+  assert.ok(low.width === normal.width && normal.width === high.width,
+    "the root width is anchored to the soma shoulder across the control range");
   assert.ok(low.width / 12 >= 0.765 - 1e-9, "minimum low-degree mouth/local half-width");
   for (const width of [0.3, 1.2, 3]) {
-    const end = neuralRootProfileAt(neuralRootLengthPx(12, 120), 12, width, 0.35, -3.2, 120, 4);
+    const end = neuralRootProfileAt(neuralRootLengthPx(12, 120) + 12 * NEURAL_ROOT_FILLET_LENGTH_RADII, 12, width, 0.35, -3.2, 120, 4);
     const mouth = neuralRootProfileAt(0, 12, width, 0.35, -3.2, 120, 4);
     assert.ok(mouth.width >= end.width, "shared trunk never narrows into a pointed arm");
   }
@@ -181,7 +210,7 @@ test("tiny leaves have one continuous, concave body-to-tail profile", () => {
   for (const radius of [2, 3, 5, 8]) {
     const length = neuralRootLengthPx(radius, 80);
     const samples = Array.from({ length: 101 }, (_, i) =>
-      neuralRootProfileAtLength(length * i / 100, radius, 1.1, 0.34, 1.8, length));
+      neuralRootProfileAtLength((length + radius * NEURAL_ROOT_FILLET_LENGTH_RADII) * i / 100, radius, 1.1, 0.34, 1.8, length));
     assert.equal(samples[0]!.somaMix, 1);
     assert.ok(Math.abs(samples[0]!.alpha - 0.9) < 1e-12);
     assert.equal(samples.at(-1)!.width, 1.1);
@@ -194,15 +223,26 @@ test("tiny leaves have one continuous, concave body-to-tail profile", () => {
     }
     const slopes = samples.slice(1).map((sample, i) => sample.width - samples[i]!.width);
     assert.ok(slopes[0]! < -1e-5 && slopes.at(-1)! < 0, "root tapers from the body into the shaft");
-    assert.ok(slopes[0]! < slopes[Math.floor(slopes.length / 2)]!
-      && slopes[Math.floor(slopes.length / 2)]! < slopes.at(-1)!, "concave sides flatten towards the shaft");
+    assert.ok(neuralRootProfileAtLength((NEURAL_ROOT_FILLET_LENGTH_RADII + 2.5) * radius,
+      radius, 1.1, 0.34, 1.8, length).width >= NEURAL_ROOT_MOUTH_RADII * radius,
+      "the process stays broad through 2.5 radii beyond the fillet");
     assert.ok(samples[0]!.width >= 0.8 * radius, "leaf body and tail meet at a broad mouth");
   }
   for (const shader of [filament2dSource, FILAMENT_FRAGMENT_SHADER]) {
     assert.match(shader, /1\.5 \* u_(?:pixelRatio|devicePixelRatio)/,
       "the 2 px drawn leaf must retain its root in both GPU projections");
-    assert.match(shader, /startRadius \* 2\.25|v_somaRadii\.x \* 2\.25/,
-      "the leaf transition starts beneath the leading body pole");
+  }
+  // D084-W2-NEURAL: the teardrop-specific overlong leaf boundary is gone — every soma is
+  // a compact body whose outline reaches roughly 1.3 radii at a trunk lobe, so one
+  // boundary under the sprite serves leaves and hubs alike.
+  // D084-W2-NEURAL-R2: the dense 2D program entered this worker's ceiling and now carries
+  // the same compact-body boundary and soma-continuation mouth as the 3D program.
+  for (const shader of [filament2dSource, FILAMENT_FRAGMENT_SHADER]) {
+    assert.match(shader, /NEURAL_ROOT_ANCHOR_RADII|startRadius \* 0\.8055023396641312/,
+      "one compact-body boundary under the sprite serves leaves and hubs alike");
+    assert.doesNotMatch(shader, /2\.25/, "no teardrop leaf boundary remains");
+    assert.match(shader, /NEURAL_PROFILE_TABLE|neuralProfileSample/,
+      "the mouth meets the local shoulder chord");
   }
 });
 
@@ -231,12 +271,11 @@ test("dense hubs favour a few broad real directions over equal bright spokes", (
   assert.ok(Math.max(...separations) >= Math.PI * 0.75,
     "real principal directions cover a broad sector of the hub");
   const ordinary = neuralRootLengthPx(12, 120);
-  assert.ok(neuralVisibleRootLengthPx(12, 120, 12, false) < ordinary * 0.7,
-    "single spokes retreat towards the soma");
-  assert.ok(neuralVisibleRootLengthPx(12, 120, 12, true)
-    > neuralVisibleRootLengthPx(12, 120, 12, false), "shared directions retain longer roots");
-  assert.ok(neuralVisibleRootLengthPx(12, 120, 12, true, 4)
-    > neuralVisibleRootLengthPx(12, 120, 12, true, 1), "real edge weight varies a principal root's reach");
+  // D084-W2-NEURAL-R3: every drawn relation stays thick to the same R-scaled
+  // distance, matching the native and dense shaders regardless of hub degree.
+  assert.equal(neuralVisibleRootLengthPx(12, 120, 12, false), ordinary);
+  assert.equal(neuralVisibleRootLengthPx(12, 120, 12, true), ordinary);
+  assert.equal(neuralVisibleRootLengthPx(12, 120, 12, true, 4), ordinary);
   assert.equal(neuralVisibleRootLengthPx(2, 80, 1, false), neuralRootLengthPx(2, 80),
     "a leaf keeps its full continuous tail");
 });

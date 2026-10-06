@@ -62,7 +62,7 @@ function paint(widthAt: (i: number) => number, curved = false): MorphologyEdgePa
     Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
   return { part: {} as MorphologyEdgePaint["part"], edgeId: "e", category: "exploratory",
     neural: true, points, cumulative, totalPx: cumulative.at(-1)!, color: "rgb(220, 220, 220)",
-    alpha: 0.8, widthAt, detailStartPx: 0, detailEndPx: 0 };
+    alpha: 0.8, widthAt };
 }
 
 test("still Neural edges and the separate light layer remain continuous and centre-peaked", () => {

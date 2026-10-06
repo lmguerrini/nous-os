@@ -30,7 +30,7 @@ function recordProfile(factor?: number) {
     widthAt: () => 4 * neuralDenseRibbonWidthFactor(factor ?? 1),
     rootStart: { outlinePx: 0, radiusPx: 8, lengthPx: 24, ratio: 1.8, degree: 2,
       trunkWidthPx: 4, somaColor: "rgb(230, 230, 230)" },
-    neuralDenseFactor: factor, detailStartPx: 0, detailEndPx: 0,
+    neuralDenseFactor: factor,
   };
   drawNeuralProfile(context, paint);
   return fills;

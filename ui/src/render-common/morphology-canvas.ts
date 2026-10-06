@@ -3,7 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, NEURAL_LEAF_BODY_SCALE, NEURAL_MIN_SHAPED_RADIUS_PX, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralPrincipalTrunks, neuralRootProfileAtLength, neuralRootRatio, neuralScreenWidthAt, neuralTrunkLobeStrength, neuralVisibleRootLengthPx, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
+import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, NEURAL_LEAF_BODY_SCALE, NEURAL_MIN_SHAPED_RADIUS_PX, NEURAL_ROOT_ANCHOR_RADII, NEURAL_ROOT_FILLET_LENGTH_RADII, NEURAL_SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralEndpointBodyScale, neuralJoinedRootWidthPx, neuralPrincipalTrunks, neuralRootCompactnessScale, neuralRootProfileAtLength, neuralRootRatio, neuralScreenWidthAt, neuralTrunkLobeStrength, neuralVisibleRootLengthPx, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
 // D082-A-PERF BEGIN: cache keys follow the geometry producer's version without owning its functions.
 import * as neuralGeometryModule from "#engine/morphology-geometry.ts";
 // D082-A-PERF END
@@ -503,9 +503,12 @@ export function drawStellarClusterGlow(context: CanvasRenderingContext2D, cluste
 export const NEURAL_EDGE_SOMA_OVERLAP_PX = 0.5;
 
 // D081-P1F BEGIN: the visible leaf root stays wide at the outline, then eases to shaft width.
+// D084-W2-NEURAL-R2: the soma-relative cap is 0.4 radii, not 0.9 — the ordinary-width
+// term binds at the approved close-up radii (the value there is unchanged), while a small
+// drawn soma keeps the same root-to-body ratio instead of a tail as thick as its body.
 export function neuralLeafRootWidthPx(distanceFromTipPx: number, ordinaryPx: number,
   somaRadiusPx: number): number {
-  const root = Math.max(ordinaryPx * 2, Math.min(somaRadiusPx * 0.9, ordinaryPx * 6));
+  const root = Math.max(ordinaryPx * 2, Math.min(somaRadiusPx * 0.4, ordinaryPx * 6));
   const t = clamp(distanceFromTipPx / Math.max(somaRadiusPx, 1), 0, 1);
   const ease = t * t * (3 - 2 * t);
   return ordinaryPx + (root - ordinaryPx) * (1 - ease);
@@ -683,7 +686,7 @@ function cachedSomaSilhouette(node: MorphologyNodeShape, frame: NeuralSomaFrame,
     const theta = (i / steps) * Math.PI * 2;
     const bulge = 1 + clamp(
       somaOutlineIrregularity(node.outline ?? [], theta) * irregularityScale * SOMA_IRREGULARITY_BOOST,
-      -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
+      -NEURAL_SOMA_OUTLINE_MAX_RADIAL, NEURAL_SOMA_OUTLINE_MAX_RADIAL);
     const polarAngle = Math.atan2(minor * Math.sin(theta), major * Math.cos(theta)) + frame.angle;
     return bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1)
       * somaLobeFactor(frame.lobes ?? [], polarAngle, frame.lobeAreaScale);
@@ -782,10 +785,10 @@ export function somaOutlineRadiusAtAngle(frame: NeuralSomaFrame, polarAngle: num
   const parameter = Math.atan2(major * Math.sin(local), minor * Math.cos(local));
   const bulge = 1 + clamp(
     somaOutlineIrregularity(frame.harmonics, parameter) * somaIrregularityScale(frame.radius) * SOMA_IRREGULARITY_BOOST,
-    -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
+    -NEURAL_SOMA_OUTLINE_MAX_RADIAL, NEURAL_SOMA_OUTLINE_MAX_RADIAL);
   const lobes = somaLobeFactor(frame.lobes ?? [], polarAngle, frame.lobeAreaScale);
   return bulge * (frame.spindle ? somaSpindleFactor(parameter) : 1) * lobes
-    * (frame.leaf ? NEURAL_LEAF_BODY_SCALE : 1)
+    * neuralEndpointBodyScale(frame.leaf ? 1 : 0)
     * Math.hypot(major * Math.cos(parameter), minor * Math.sin(parameter));
 }
 
@@ -1089,8 +1092,7 @@ export type MorphologyEdgePaint = {
   /** Constant base alpha of the line: presentation-derived only, never time-dependent (V13). */
   readonly alpha: number;
   readonly widthAt: (i: number) => number;
-  readonly detailStartPx: number;
-  readonly detailEndPx: number;
+  // D084-W2-NEURAL: detailStartPx/detailEndPx (cosmetic offshoot markers) are removed.
   /** Visible outline distance and final radius; the root profile is evaluated in screen space. */
   readonly rootStart?: { readonly outlinePx: number; readonly radiusPx: number; readonly lengthPx: number; readonly ratio: number; readonly degree: number; readonly trunkWidthPx: number; readonly somaColor: string } | undefined;
   readonly rootEnd?: { readonly outlinePx: number; readonly radiusPx: number; readonly lengthPx: number; readonly ratio: number; readonly degree: number; readonly trunkWidthPx: number; readonly somaColor: string } | undefined;
@@ -1193,8 +1195,7 @@ export function clipEdgePaint(paint: MorphologyEdgePaint, width: number, height:
         const low = Math.min(bounded.length - 1, Math.max(0, Math.floor(i)));
         const next = Math.min(low + 1, bounded.length - 1);
         return paint.widthAt(bounded[low]!.index + (bounded[next]!.index - bounded[low]!.index) * (i - low));
-      }, detailStartPx: bounded[0]!.index === 0 ? paint.detailStartPx : 0,
-      detailEndPx: bounded.at(-1)!.index === paint.points.length - 1 ? paint.detailEndPx : 0 };
+      } };
   });
 }
 // D081-P1G END
@@ -1385,14 +1386,18 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         if (startFrame) {
           const adjusted = neuralRootInsideSoma(startFrame, points[1]!);
           first = { x: adjusted.x, y: adjusted.y, scale: first.scale };
-          const tip = neuralEdgeEndOnSoma(startFrame, points[1]!);
-          startTipDistancePx = Math.hypot(tip.x - first.x, tip.y - first.y);
+          // D084-W2-NEURAL-R3: measure the anchor from the soma centre, matching
+          // the 0.7R boundary in both GPU paths even when the outline has a lobe.
+          const rootRadius = startFrame.radius * neuralEndpointBodyScale(startSoma?.degree ?? 0);
+          startTipDistancePx = NEURAL_ROOT_ANCHOR_RADII * rootRadius
+            - Math.hypot(first.x - startFrame.x, first.y - startFrame.y);
         }
         if (endFrame) {
           const adjusted = neuralRootInsideSoma(endFrame, points[points.length - 2]!);
           last = { x: adjusted.x, y: adjusted.y, scale: last.scale };
-          const tip = neuralEdgeEndOnSoma(endFrame, points[points.length - 2]!);
-          endTipDistancePx = Math.hypot(tip.x - last.x, tip.y - last.y);
+          const rootRadius = endFrame.radius * neuralEndpointBodyScale(endSoma?.degree ?? 0);
+          endTipDistancePx = NEURAL_ROOT_ANCHOR_RADII * rootRadius
+            - Math.hypot(last.x - endFrame.x, last.y - endFrame.y);
         }
         points = [first, ...points.slice(1, -1), last];
       }
@@ -1401,12 +1406,26 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     const cumulative: number[] = [0];
     for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
     const totalPx = cumulative[cumulative.length - 1]! || 1;
-    const startRootLengthPx = neuralVisibleRootLengthPx(startRadius, totalPx, startDegree, startRatio < 0, part.widthStart);
-    const endRootLengthPx = neuralVisibleRootLengthPx(endRadius, totalPx, endDegree, endRatio < 0, part.widthEnd);
+    // D084-W2-NEURAL BEGIN: the root continues the body it leaves. A degree-one body is
+    // drawn at NEURAL_LEAF_BODY_SCALE, so its single tail anchors at that same local
+    // extension — the process base is exactly as wide as the cell, never wider.
+    const startRootRadius = startRadius * neuralEndpointBodyScale(startDegree);
+    const endRootRadius = endRadius * neuralEndpointBodyScale(endDegree);
+    // D084-W2-NEURAL-R3 BEGIN: start the root inside the shoulder at the chord where
+    // the round body is already about 0.7R wide. A full-width root at the pole makes
+    // an egg; the chord anchor lets the union keep a smooth, broad process.
+    // D084-W2-NEURAL-R3 END
+    // D084-W2-NEURAL END
     // The Neural profile retains its full width at both soma ends, including high-degree hubs.
     const neuralTaper = geometry.morphology === "neural";
     const neuralBody = Math.max(0.3, appearance.edgeWidth * widthFactor
       * (emphasis?.radiusMultiplier ?? 1));
+    // D084-W2-NEURAL-R3 BEGIN: every drawn radius keeps the same proportional root.
+    const startRootLengthPx = neuralVisibleRootLengthPx(startRootRadius, totalPx, startDegree, startRatio < 0, part.widthStart)
+      * neuralRootCompactnessScale(startRootRadius, neuralBody);
+    const endRootLengthPx = neuralVisibleRootLengthPx(endRootRadius, totalPx, endDegree, endRatio < 0, part.widthEnd)
+      * neuralRootCompactnessScale(endRootRadius, neuralBody);
+    // D084-W2-NEURAL-R3 END
     // D082-A-NEURAL BEGIN: D-081 owns the grey trunk after the short soma fillet.
     const trunkWidthAt = (t: number) => {
       const index = t * (points.length - 1);
@@ -1418,11 +1437,12 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         ordinary = Math.max(neuralBody,
           startDegree <= 3 ? neuralLeafRootWidthPx(t * totalPx - startTipDistancePx, neuralBody, shapedStartRadius) : neuralBody,
           endDegree <= 3 ? neuralLeafRootWidthPx((1 - t) * totalPx - endTipDistancePx, neuralBody, shapedEndRadius) : neuralBody);
+      // D084-W2-NEURAL-R2: 0.4 radii, matching neuralLeafRootWidthPx's soma-relative cap.
       const cap = t < 0.5
         ? startDegree <= 3 && shapedStartRadius > 0
-          ? Math.max(shapedStartRadius * 0.9, neuralBody * 2) : Infinity
+          ? Math.max(shapedStartRadius * 0.4, neuralBody * 2) : Infinity
         : endDegree <= 3 && shapedEndRadius > 0
-          ? Math.max(shapedEndRadius * 0.9, neuralBody * 2) : Infinity;
+          ? Math.max(shapedEndRadius * 0.4, neuralBody * 2) : Infinity;
       return Math.min(Math.max(neuralBody, cap), Math.max(ordinary,
         neuralBranchedWidthPx(index, points.length, part.sourceBranches?.length ?? 0,
           neuralBody, shapedStartRadius, Math.abs(startRatio)),
@@ -1430,9 +1450,9 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
           part.targetBranches?.length ?? 0, neuralBody, shapedEndRadius, Math.abs(endRatio))));
     };
     const startTrunkWidth = neuralTaper && startRadius > 0
-      ? trunkWidthAt(Math.min(1, (startTipDistancePx + startRootLengthPx) / totalPx)) : 0;
+      ? trunkWidthAt(Math.min(1, (startTipDistancePx + startRootLengthPx + startRootRadius * NEURAL_ROOT_FILLET_LENGTH_RADII) / totalPx)) : 0;
     const endTrunkWidth = neuralTaper && endRadius > 0
-      ? trunkWidthAt(Math.max(0, 1 - (endTipDistancePx + endRootLengthPx) / totalPx)) : 0;
+      ? trunkWidthAt(Math.max(0, 1 - (endTipDistancePx + endRootLengthPx + endRootRadius * NEURAL_ROOT_FILLET_LENGTH_RADII) / totalPx)) : 0;
     // D082-A-NEURAL END
     const projectedWidthAt = (i: number) => {
       const index = Math.min(points.length - 1, Math.max(0, Math.floor(i)));
@@ -1459,11 +1479,11 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         // The fillet begins under the rounded soma and ends at the unmodified D-081 trunk.
         const startDistance = t * totalPx - startTipDistancePx;
         const endDistance = (1 - t) * totalPx - endTipDistancePx;
-        if (startRadius > 0 && startDistance < startRootLengthPx)
-          return neuralRootProfileAtLength(startDistance, startRadius, body, 1, startRatio,
+        if (startRadius > 0 && startDistance < startRootLengthPx + startRootRadius * NEURAL_ROOT_FILLET_LENGTH_RADII)
+          return neuralRootProfileAtLength(startDistance, startRootRadius, body, 1, startRatio,
             startRootLengthPx, startTrunkWidth).width;
-        if (endRadius > 0 && endDistance < endRootLengthPx)
-          return neuralRootProfileAtLength(endDistance, endRadius, body, 1, endRatio,
+        if (endRadius > 0 && endDistance < endRootLengthPx + endRootRadius * NEURAL_ROOT_FILLET_LENGTH_RADII)
+          return neuralRootProfileAtLength(endDistance, endRootRadius, body, 1, endRatio,
             endRootLengthPx, endTrunkWidth).width;
         return trunkWidthAt(t);
       }
@@ -1514,17 +1534,15 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       // D082-A-NCOMPLETA BEGIN
       neuralDenseFactor: neuralTaper ? presentation?.neuralDenseFactor : undefined,
       // D082-A-NCOMPLETA END
-      rootStart: startRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: startTipDistancePx, radiusPx: startRadius,
+      rootStart: startRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: startTipDistancePx, radiusPx: startRootRadius,
         lengthPx: startRootLengthPx, ratio: startRatio, degree: startDegree,
         trunkWidthPx: startTrunkWidth, somaColor: startSomaColor } : undefined,
-      rootEnd: endRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: totalPx - endTipDistancePx, radiusPx: endRadius,
+      rootEnd: endRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: totalPx - endTipDistancePx, radiusPx: endRootRadius,
         lengthPx: endRootLengthPx, ratio: endRatio, degree: endDegree,
         trunkWidthPx: endTrunkWidth, somaColor: endSomaColor } : undefined,
-      // Leaves keep one continuous tail; crowded hubs use only their real shared trunks.
-      detailStartPx: neuralTaper && startDegree >= 2 && startDegree <= 3
-        && neuralDetailVisible(points[0]!.scale, startRadius, totalPx) ? startRadius : 0,
-      detailEndPx: neuralTaper && endDegree >= 2 && endDegree <= 3
-        && neuralDetailVisible(points[points.length - 1]!.scale, endRadius, totalPx) ? endRadius : 0 };
+      // D084-W2-NEURAL: the cosmetic close-up sprouts (detailStart/detailEnd) are gone —
+      // no decorative filament may fake a relation the graph does not draw.
+    };
     paints.push(...clipEdgePaint(paint, bounds.width, bounds.height));
   }
   return paints;
@@ -1590,7 +1608,7 @@ function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyE
   // D082-A-NEURAL BEGIN: the same width/alpha/white ramp used by the GPU Neural path.
   for (const root of [paint.rootStart, paint.rootEnd]) if (root)
     for (let j = 0; j <= 8; j++) {
-      const displacement = root.lengthPx * j / 8;
+      const displacement = (root.lengthPx + root.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) * j / 8;
       distances.push(clamp(root === paint.rootStart ? root.outlinePx + displacement : root.outlinePx - displacement, first, last));
     }
   if (modulation.centre !== undefined && modulation.radius !== undefined) {
@@ -1606,11 +1624,11 @@ function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyE
     previous = distance;
     let ramp = { alpha, somaMix: 0 };
     let somaChannels: readonly [number, number, number] = [255, 255, 255];
-    if (paint.rootStart && distance < paint.rootStart.outlinePx + paint.rootStart.lengthPx) {
+    if (paint.rootStart && distance < paint.rootStart.outlinePx + paint.rootStart.lengthPx + paint.rootStart.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) {
       somaChannels = colourChannels(paint.rootStart.somaColor);
       ramp = neuralRootProfileAtLength(distance - paint.rootStart.outlinePx, paint.rootStart.radiusPx, 1, alpha,
         paint.rootStart.ratio, paint.rootStart.lengthPx);
-    } else if (paint.rootEnd && distance > paint.rootEnd.outlinePx - paint.rootEnd.lengthPx) {
+    } else if (paint.rootEnd && distance > paint.rootEnd.outlinePx - paint.rootEnd.lengthPx - paint.rootEnd.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) {
       somaChannels = colourChannels(paint.rootEnd.somaColor);
       ramp = neuralRootProfileAtLength(paint.rootEnd.outlinePx - distance, paint.rootEnd.radiusPx, 1, alpha,
         paint.rootEnd.ratio, paint.rootEnd.lengthPx);
@@ -1718,47 +1736,8 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
   fillRibbon(context, points, paint.widthAt);
 }
 
-/** One cosmetic offshoot per visible endpoint, rooted on a real relation. No geometry, ID or hit
- * area is added to the graph; the close-up pass is bounded to a fixed stroke budget. */
-function drawNeuralDetail(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint, budget: number): number {
-  let drawn = 0;
-  for (let endpoint = 0; endpoint < 2; endpoint++) {
-    if (drawn >= budget) break;
-    const atStart = endpoint === 0;
-    const radius = atStart ? paint.detailStartPx : paint.detailEndPx;
-    if (radius <= 0) continue;
-    const distance = radius * 1.8;
-    let index = atStart ? 1 : paint.points.length - 2;
-    if (atStart) {
-      while (index < paint.points.length - 2 && paint.cumulative[index]! < distance) index++;
-    } else {
-      while (index > 1 && paint.totalPx - paint.cumulative[index]! < distance) index--;
-    }
-    const anchor = paint.points[index]!;
-    const before = paint.points[index - 1]!, after = paint.points[index + 1]!;
-    const length = Math.hypot(after.x - before.x, after.y - before.y) || 1;
-    const sign = (morphologyHash(paint.edgeId) & 1 ? 1 : -1) * (atStart ? 1 : -1);
-    const tx = (after.x - before.x) / length * (atStart ? 1 : -1);
-    const ty = (after.y - before.y) / length * (atStart ? 1 : -1);
-    const nx = -ty * sign, ny = tx * sign;
-    const previousAlpha = context.globalAlpha;
-    context.globalAlpha = previousAlpha * paint.alpha * 0.55;
-    context.strokeStyle = paint.color;
-    context.lineWidth = Math.min(paint.widthAt(index) * 0.35, 1.2);
-    context.lineCap = "round";
-    context.beginPath(); context.moveTo(anchor.x, anchor.y);
-    const tipX = anchor.x + tx * radius * 0.65 + nx * radius * 0.8;
-    const tipY = anchor.y + ty * radius * 0.65 + ny * radius * 0.8;
-    if (typeof context.quadraticCurveTo === "function") context.quadraticCurveTo(
-      anchor.x + tx * radius * 0.4 + nx * radius * 0.25,
-      anchor.y + ty * radius * 0.4 + ny * radius * 0.25, tipX, tipY);
-    else context.lineTo(tipX, tipY);
-    context.stroke();
-    context.globalAlpha = previousAlpha;
-    drawn++;
-  }
-  return drawn;
-}
+// D084-W2-NEURAL: the former close-up pass (one cosmetic offshoot per visible endpoint)
+// is removed — a decorative filament may not fake a relation the graph does not draw.
 
 function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: readonly MorphologyEdgePaint[],
   now: number, speed: number, intensity: number): void {
@@ -1924,7 +1903,6 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const inlineHighlights = (style.interaction?.flowLayer ?? "inline") === "inline";
     const now = flowNow();
     const inlineFlowPaints: MorphologyEdgePaint[] = [];
-    let neuralDetailStrokes = 0;
     for (const paint of paints) {
       const animatedHere = paint.category === "exploratory" && animating && animatedEdges.has(paint.edgeId);
       // Neural's inline and reduced-motion paths apply brightness to the two existing profile
@@ -1937,10 +1915,6 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           : () => FLOW_WAVE_MAX_ALPHA * 0.35 * Math.min(1, Math.max(0, intensity / 0.6));
         drawNeuralProfile(context, paint, modulation);
       } else drawEdgeBase(context, paint, moving && geometry.morphology === "neural");
-      if (!moving && !simplified && !testHook()?.hideNodes && geometry.morphology === "neural" && neuralDetailStrokes < 128
-        && (paint.detailStartPx > 0 || paint.detailEndPx > 0)) {
-        neuralDetailStrokes += drawNeuralDetail(context, paint, 128 - neuralDetailStrokes);
-      }
       if (paint.category === "exploratory") {
         // "separate" leaves the travelling highlight to the dedicated overlay: nothing draws here,
         // so the lighter composite (and its restore) is skipped for that edge entirely.
@@ -2153,11 +2127,11 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           const theta = (i / steps) * Math.PI * 2;
           const bulge = moving ? 1 : cachedSilhouette ? 1 : 1 + clamp(
             somaOutlineIrregularity(harmonics, theta) * irregularityScale * SOMA_IRREGULARITY_BOOST,
-            -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
+            -NEURAL_SOMA_OUTLINE_MAX_RADIAL, NEURAL_SOMA_OUTLINE_MAX_RADIAL);
           const polarAngle = cachedSilhouette ? 0 : Math.atan2(minor * Math.sin(theta), major * Math.cos(theta)) + angle;
           const silhouette = (cachedSilhouette?.[i] ?? (bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1)
             * somaLobeFactor(frame?.lobes ?? [], polarAngle, frame?.lobeAreaScale)))
-            * (node.degree === 1 ? NEURAL_LEAF_BODY_SCALE : 1);
+            * neuralEndpointBodyScale(node.degree);
           const ex = major * Math.cos(theta) * silhouette;
           const ey = minor * Math.sin(theta) * silhouette;
           const x = p.x + cosA * ex - sinA * ey;

@@ -6,6 +6,13 @@ import { SceneCache, preparedSceneKey } from "#render-common/scene-cache.ts";
 // D081-P1E BEGIN: share the area normalization with canvas without another renderer import.
 import { buildMorphologyGeometry, neuralPrincipalTrunks, neuralTrunkLobeStrength, somaLobeAreaScale, type MorphologyNodeShape } from "#engine/morphology-geometry.ts";
 // D081-P1E END
+// D084-W2-NEURAL BEGIN: the degree-one body scale crosses into the GPU buffers through the
+// already-registered namespace import (exactly how NEURAL_GEOMETRY_VERSION arrives), keeping
+// the engine as its single source without widening the named-symbol allow-list.
+// D084-W2-NEURAL-R3 BEGIN
+const neuralEndpointBodyScale = neuralGeometryModule.neuralEndpointBodyScale;
+// D084-W2-NEURAL-R3 END
+// D084-W2-NEURAL END
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneAggregate, SceneEdge, SceneNode, SceneTokenEncoding } from "#scene/contract.ts";
 type NeuralRoute = ReturnType<typeof buildMorphologyGeometry>["drawnSegments"][number];
@@ -171,6 +178,10 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
           const eccentricity = shape.eccentricity;
           return eccentricity / Math.hypot(Math.cos(local), eccentricity * Math.sin(local));
         });
+      // D084-W2-NEURAL: the degree-one body scale is folded here (the shader's own
+      // lobe-strength leaf test can no longer see it — every strength is now moderate).
+      if (shape.degree === 1)
+        somaShape[index * 2 + 1] = somaShape[index * 2 + 1]! * neuralEndpointBodyScale(shape?.degree ?? 0);
       trunks.forEach((trunk, lobeIndex) => [somaLobe0, somaLobe1, somaLobe2][lobeIndex]!.set([
         trunk.direction.x, trunk.direction.y, trunk.direction.z,
         neuralTrunkLobeStrength(trunk, maximum, shape.degree),
@@ -281,11 +292,15 @@ export function buildFilamentBuffers(
     ]);
     // The governed Neural material alone has a nonzero hot-mix channel in the default grammar.
     // Carry its flag once per scene revision; shaders do no per-frame relation lookup.
+    // D084-W2-NEURAL: the root anchors at the body it leaves — a degree-one body draws at
+    // NEURAL_LEAF_BODY_SCALE, so its tail radius carries the same scale (canvas parity).
     writePacked(neuralProfile, edgeIndex, [edge.bodyWidthPx,
-      nodeRadii.get(edge.source) ?? 0, nodeRadii.get(edge.target) ?? 0,
+      (nodeRadii.get(edge.source) ?? 0) * neuralEndpointBodyScale(sourceNode?.degree ?? 0),
+      (nodeRadii.get(edge.target) ?? 0) * neuralEndpointBodyScale(targetNode?.degree ?? 0),
       edge.filament.hotMixPermille > 0 ? 1 : 0]);
-    // Negative ratios flag a shared root to the shader: it uses bounded trunk width
-    // and suppresses the per-edge cosmetic sprouts that made dense hubs starburst.
+    // Negative ratios flag a shared root to the shader: it uses bounded trunk width and
+    // the shared-root reach. (D084-W2-NEURAL: the cosmetic sprouts they once suppressed
+    // are gone entirely.)
     neuralRootRatios.set([
       sourceTrunk && sourceTrunk.edgeIds.length > 1 ? -sourceTrunk.rootWidthFactor : sourceNode?.rootRatio ?? 1,
       targetTrunk && targetTrunk.edgeIds.length > 1 ? -targetTrunk.rootWidthFactor : targetNode?.rootRatio ?? 1,

@@ -52,7 +52,9 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#scene/contract.ts",
     "#render3f/camera-framing.ts",
   ])],
-  ["filament-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
+  // D084-W2-NEURAL-R3 BEGIN: shader geometry constants originate in the engine.
+  ["filament-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts", "#engine/morphology-geometry.ts"])],
+  // D084-W2-NEURAL-R3 END
   ["distinct-overlay.ts", new Set([
     "#engine/contract.ts", "#engine/morphology-geometry.ts", "#render-common/morphology-canvas.ts",
     "#engine/presentation-options.ts", "#engine/morphology.ts", "#render3f/buffers.ts", "#scene/contract.ts",
@@ -116,7 +118,9 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
   // applies; the type-only Morphology is erased at compile time and the floor value originates in
   // the engine (#engine/presentation-options.ts), never in this renderer module.
   ["neural-point-floor.ts", new Set(["#engine/morphology.ts", "#engine/presentation-options.ts"])],
-  ["node-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
+  // D084-W2-NEURAL-R3 BEGIN
+  ["node-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts", "#engine/morphology-geometry.ts"])],
+  // D084-W2-NEURAL-R3 END
   ["picking.ts", new Set(["#engine/contract.ts", "#scene/contract.ts", "../projection/contract-types.ts"])],
   ["resources.ts", new Set(["three", "#engine/renderer-handle.ts"])],
   ["shader-contract.ts", new Set()],
@@ -206,6 +210,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["three", new Set(["*"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
     ["#render3f/buffers.ts", new Set(["FilamentBuffers"])],
+    // D084-W2-NEURAL-R3 BEGIN
+    ["#engine/morphology-geometry.ts", new Set(["NEURAL_PROFILE_GLSL", "NEURAL_PROFILE_TABLE", "NEURAL_ROOT_ANCHOR_RADII"])],
+    // D084-W2-NEURAL-R3 END
   ])],
   ["label-collision.ts", new Map([
     ["#render-common/labels.ts", new Set(["LabelCandidate", "LabelDisc", "LabelRim", "PlacedLabel", "ViewportRect", "placeLabels"])],
@@ -335,6 +342,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["three", new Set(["*"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
     ["#render3f/buffers.ts", new Set(["NodeBuffers"])],
+    // D084-W2-NEURAL-R3 BEGIN
+    ["#engine/morphology-geometry.ts", new Set(["NEURAL_SOMA_OUTLINE_MAX_RADIAL"])],
+    // D084-W2-NEURAL-R3 END
   ])],
   ["picking.ts", new Map([
     ["#engine/contract.ts", new Set(["Coordinates"])],

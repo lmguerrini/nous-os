@@ -24,11 +24,17 @@ test("3D Neural keeps a spindle along the projected strongest real trunk at node
   const frames = neuralSomaFrames(geometry, foreshortened3d, style, MORPHOLOGY_CONTRACT.neural, appearance, "3d");
   const hub = frames.get("hub");
   assert.ok(hub);
-  assert.ok(hub.eccentricity >= 1.6 && hub.eccentricity <= 2.2, `soma ratio ${hub.eccentricity}`);
+  // D084-W2-NEURAL: the body is round — no spindle elongation survives the fix.
+  // The strongest real trunk still orients the frame and its broad lobe; only the free
+  // axis elongation (which no drawn relation supports) is gone.
+  assert.ok(hub.eccentricity >= 1 && hub.eccentricity <= 1.32, `compact soma ratio ${hub.eccentricity}`);
   assert.ok(Math.abs(hub.angle) < 1e-9, "the mostly depth-directed trunk projects horizontally");
   assert.equal(hub.radius, 8 * 0.55 * MORPHOLOGY_CONTRACT.neural.node.scale,
-    "the spindle uses the existing projected node size");
-  assert.equal(hub.spindle, true, "the soma outline and junction use the same spindle frame");
+    "the body uses the existing projected node size");
+  assert.equal(hub.spindle, false, "the soma outline and junction use the same round frame");
+  assert.ok((hub.lobes ?? []).length === 1
+    && Math.abs(Math.atan2(Math.sin((hub.lobes ?? [])[0]!.angle), Math.cos((hub.lobes ?? [])[0]!.angle))) < 1e-9,
+    "the single real trunk carries the one broad lobe");
 });
 
 function operations(projection?: "2d" | "3d"): string {

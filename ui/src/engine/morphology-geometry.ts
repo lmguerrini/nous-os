@@ -83,30 +83,155 @@ export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 1.2 } as const;
 /** A short screen-space shoulder preserves a compact soma even on very long relations. */
 export const NEURAL_TAPER_FRACTION = 0.28;
 /** Cache key for the pure Neural silhouette and root profile. */
-export const NEURAL_GEOMETRY_VERSION = "d082-p1-broad-real-roots-7";
+// D084-W2-NEURAL BEGIN: the soma no longer spindle-elongates and the root continues the
+// soma body (half-width = local soma extension at the boundary), so every cached
+// silhouette, lobe area and scene buffer keyed on this version is rebuilt once.
+export const NEURAL_GEOMETRY_VERSION = "d084-r4-concave-profile-4";
+// D084-W2-NEURAL END
 /** A short fillet joins the soma to the existing trunk without drawing a white radial arm. */
-export const NEURAL_ROOT_LENGTH_RADII = 2.5;
-export const NEURAL_ROOT_MAX_LENGTH_RADII = 3;
-export const NEURAL_ROOT_SPAN_FRACTION = 0.12;
+// D084-W2-NEURAL-R3 BEGIN: one screen-space junction policy for every renderer.
+export const NEURAL_ROOT_LENGTH_RADII = 6;
+export const NEURAL_ROOT_MAX_LENGTH_RADII = 6;
+// D084-W2-NEURAL-R4 BEGIN: a circle of radius 0.35R is externally tangent to
+// the unit soma and to the horizontal 0.45R process edge. The circle contact
+// is the root anchor; the process begins at the second tangency.
+export const NEURAL_ROOT_FILLET_RADII = 0.35;
+export const NEURAL_ROOT_MOUTH_RADII = 0.45;
+const filletCenterY = NEURAL_ROOT_MOUTH_RADII + NEURAL_ROOT_FILLET_RADII;
+const filletCenterX = Math.sqrt((1 + NEURAL_ROOT_FILLET_RADII) ** 2 - filletCenterY ** 2);
+export const NEURAL_ROOT_ANCHOR_RADII = filletCenterX / (1 + NEURAL_ROOT_FILLET_RADII);
+export const NEURAL_ROOT_FILLET_LENGTH_RADII = filletCenterX - NEURAL_ROOT_ANCHOR_RADII;
+export const NEURAL_ROOT_SPAN_FRACTION = 0.45;
+export const NEURAL_ROOT_MIN_LENGTH_PX = 18;
+export const NEURAL_PROFILE_FILLET_SAMPLES = 24;
+export const NEURAL_PROFILE_SAMPLES = 64;
+/** Packed (distance/R, half-width/R, soma colour mix, half-width slope), shared by every path. */
+export const NEURAL_PROFILE_TABLE = (() => {
+  const samples = new Float32Array(NEURAL_PROFILE_SAMPLES * 4);
+  const smooth = (u: number) => u * u * (3 - 2 * u);
+  for (let i = 0; i < NEURAL_PROFILE_SAMPLES; i++) {
+    const fillet = i < NEURAL_PROFILE_FILLET_SAMPLES;
+    const s = fillet
+      ? NEURAL_ROOT_FILLET_LENGTH_RADII * i / (NEURAL_PROFILE_FILLET_SAMPLES - 1)
+      : NEURAL_ROOT_FILLET_LENGTH_RADII + NEURAL_ROOT_LENGTH_RADII
+        * (i - NEURAL_PROFILE_FILLET_SAMPLES + 1) / (NEURAL_PROFILE_SAMPLES - NEURAL_PROFILE_FILLET_SAMPLES);
+    const x = NEURAL_ROOT_ANCHOR_RADII + s;
+    const half = fillet
+      ? filletCenterY - Math.sqrt(Math.max(0, NEURAL_ROOT_FILLET_RADII ** 2 - (x - filletCenterX) ** 2))
+      : NEURAL_ROOT_MOUTH_RADII;
+    const slope = fillet ? -(x - filletCenterX) / (half - filletCenterY) : 0;
+    const process = Math.max(0, s - NEURAL_ROOT_FILLET_LENGTH_RADII);
+    const mix = fillet ? 1 : process <= 1 ? 1 - 0.1 * smooth(process)
+      : process <= 2.5 ? 0.9 - 0.35 * smooth((process - 1) / 1.5)
+      : 0.55 * (1 - smooth((process - 2.5) / 3.5));
+    samples.set([s, half, mix, slope], i * 4);
+  }
+  return samples;
+})();
+function neuralProfileMixSlope(i: number): number {
+  return i === 0 || i === NEURAL_PROFILE_SAMPLES - 1 ? 0
+    : (NEURAL_PROFILE_TABLE[(i + 1) * 4 + 2]! - NEURAL_PROFILE_TABLE[(i - 1) * 4 + 2]!) /
+      (NEURAL_PROFILE_TABLE[(i + 1) * 4]! - NEURAL_PROFILE_TABLE[(i - 1) * 4]!);
+}
+function neuralProfileHermite(a: number, b: number, ma: number, mb: number, t: number, span: number): number {
+  const t2 = t * t, t3 = t2 * t;
+  return (2 * t3 - 3 * t2 + 1) * a + (t3 - 2 * t2 + t) * ma * span
+    + (-2 * t3 + 3 * t2) * b + (t3 - t2) * mb * span;
+}
+export function neuralProfileTableAt(sRadii: number): { halfWidthRadii: number; somaMix: number } {
+  const s = Math.max(0, Math.min(NEURAL_ROOT_FILLET_LENGTH_RADII + NEURAL_ROOT_LENGTH_RADII, sRadii));
+  let low = 0, high = NEURAL_PROFILE_SAMPLES - 1;
+  while (high - low > 1) {
+    const middle = (low + high) >> 1;
+    if (s <= NEURAL_PROFILE_TABLE[middle * 4]!) high = middle;
+    else low = middle;
+  }
+  const before = low * 4, offset = high * 4;
+  const span = Math.max(1e-9, NEURAL_PROFILE_TABLE[offset]! - NEURAL_PROFILE_TABLE[before]!);
+  const t = Math.max(0, Math.min(1, (s - NEURAL_PROFILE_TABLE[before]!) / span));
+  return { halfWidthRadii: neuralProfileHermite(NEURAL_PROFILE_TABLE[before + 1]!, NEURAL_PROFILE_TABLE[offset + 1]!,
+    NEURAL_PROFILE_TABLE[before + 3]!, NEURAL_PROFILE_TABLE[offset + 3]!, t, span),
+    somaMix: Math.max(0, Math.min(1, neuralProfileHermite(NEURAL_PROFILE_TABLE[before + 2]!, NEURAL_PROFILE_TABLE[offset + 2]!,
+      neuralProfileMixSlope(low), neuralProfileMixSlope(high), t, span))) };
+}
+// WebGL1 requires constant uniform-array indexes. Build a balanced lookup tree
+// from the same engine table so both GPU languages interpolate identical entries.
+function neuralProfileGlslMixSlope(i: number): string {
+  return i === 0 || i === NEURAL_PROFILE_SAMPLES - 1 ? "0.0"
+    : `(u_neuralProfileTable[${i + 1}].z - u_neuralProfileTable[${i - 1}].z)
+      / (u_neuralProfileTable[${i + 1}].x - u_neuralProfileTable[${i - 1}].x)`;
+}
+function neuralProfileGlslBranch(first: number, last: number): string {
+  if (first === last) return `{
+    vec4 a = u_neuralProfileTable[${first - 1}];
+    vec4 b = u_neuralProfileTable[${first}];
+    float span = max(b.x - a.x, 0.000001);
+    float t = clamp((s - a.x) / span, 0.0, 1.0);
+    return vec2(neuralHermite(a.y, b.y, a.w, b.w, t, span),
+      clamp(neuralHermite(a.z, b.z, ${neuralProfileGlslMixSlope(first - 1)},
+        ${neuralProfileGlslMixSlope(first)}, t, span), 0.0, 1.0));
+  }`;
+  const middle = (first + last) >> 1;
+  return `if (s <= u_neuralProfileTable[${middle}].x) {
+    ${neuralProfileGlslBranch(first, middle)}
+  } else {
+    ${neuralProfileGlslBranch(middle + 1, last)}
+  }`;
+}
+export const NEURAL_PROFILE_GLSL = `
+uniform vec4 u_neuralProfileTable[${NEURAL_PROFILE_SAMPLES}];
+float neuralHermite(float a, float b, float ma, float mb, float t, float span) {
+  float t2 = t * t;
+  float t3 = t2 * t;
+  return (2.0 * t3 - 3.0 * t2 + 1.0) * a + (t3 - 2.0 * t2 + t) * ma * span
+    + (-2.0 * t3 + 3.0 * t2) * b + (t3 - t2) * mb * span;
+}
+float neuralProcessLength(float radius, float span, float pixelRatio) {
+  return min(span, max(${NEURAL_ROOT_MIN_LENGTH_PX}.0 * pixelRatio,
+    min(radius * ${NEURAL_ROOT_LENGTH_RADII}.0, span * ${NEURAL_ROOT_SPAN_FRACTION})));
+}
+float neuralProfileDistance(float distance, float radius, float processLength) {
+  float fillet = radius * ${NEURAL_ROOT_FILLET_LENGTH_RADII};
+  float process = max(0.0, distance - fillet);
+  float twoAndHalf = 2.5 * radius;
+  if (distance <= fillet) return max(0.0, distance / max(radius, 0.000001));
+  if (processLength <= twoAndHalf) return ${NEURAL_ROOT_FILLET_LENGTH_RADII}
+    + process / max(processLength, 0.000001) * ${NEURAL_ROOT_LENGTH_RADII}.0;
+  return ${NEURAL_ROOT_FILLET_LENGTH_RADII} + (process <= twoAndHalf
+    ? process / max(radius, 0.000001)
+    : 2.5 + (process - twoAndHalf) / max(processLength - twoAndHalf, 0.000001) * 3.5);
+}
+vec2 neuralProfileSample(float s) {
+  ${neuralProfileGlslBranch(1, NEURAL_PROFILE_SAMPLES - 1)}
+}`;
+// D084-W2-NEURAL-R4 END
 /** Degree-one bodies are compact so their single broad root reads as the tail of one cell. */
 export const NEURAL_LEAF_BODY_SCALE = 0.84;
+// D084-W2-NEURAL-R3: one endpoint policy feeds canvas, native 3D and dense 2D.
+export function neuralEndpointBodyScale(degree: number): number {
+  return degree === 1 ? NEURAL_LEAF_BODY_SCALE : 1;
+}
 // The drawn node radius is clamped to 2 px. Even those smallest leaves need a root.
 export const NEURAL_MIN_SHAPED_RADIUS_PX = 1.5;
 export type NeuralRootSample = { readonly width: number; readonly alpha: number; readonly somaMix: number };
 /** The 45% span cap leaves room for the root at the opposite endpoint of short links. */
 export function neuralRootLengthPx(somaRadiusPx: number, spanPx: number): number {
-  return Math.min(somaRadiusPx * NEURAL_ROOT_MAX_LENGTH_RADII,
-    Math.max(somaRadiusPx * NEURAL_ROOT_LENGTH_RADII, spanPx * NEURAL_ROOT_SPAN_FRACTION),
-    spanPx * 0.45);
+  return Math.min(spanPx, Math.max(NEURAL_ROOT_MIN_LENGTH_PX,
+    Math.min(somaRadiusPx * NEURAL_ROOT_LENGTH_RADII, spanPx * NEURAL_ROOT_SPAN_FRACTION)));
 }
-/** Real shared directions retain more of a hub root; singleton spokes recede into the soma. */
+/** Each drawn relation retains the same root reach at a given screen-space radius. */
 export function neuralVisibleRootLengthPx(somaRadiusPx: number, spanPx: number,
   degree: number, shared: boolean, edgeWeight = 1): number {
-  const base = neuralRootLengthPx(somaRadiusPx, spanPx);
-  if (degree < NEURAL_HUB_DEGREE) return base;
-  const weightFactor = Math.max(0.85, Math.min(1.2, 0.85 + 0.15 * Math.sqrt(Math.max(0, edgeWeight))));
-  return base * (shared ? 0.9 : 0.62) * weightFactor;
+  // D084-W2-NEURAL-R3: a hub's individual drawn processes use the same local
+  // taper as a leaf. The old degree reduction disagreed with both GPU paths.
+  return neuralRootLengthPx(somaRadiusPx, spanPx);
 }
+// D084-W2-NEURAL-R3 BEGIN: keep the old call site for cache compatibility, but remove
+// the earlier short-root rule. Its small-soma compression caused the rejected thin tail.
+export function neuralRootCompactnessScale(somaRadiusPx: number, ordinaryPx: number): number {
+  return 1;
+}
+// D084-W2-NEURAL-R3 END
 /** Radius of curvature of either side of the concave ribbon at its soma mouth. */
 export function neuralRootFilletRadiusPx(mouthWidthPx: number, trunkWidthPx: number,
   rootLengthPx: number): number {
@@ -115,9 +240,10 @@ export function neuralRootFilletRadiusPx(mouthWidthPx: number, trunkWidthPx: num
   const slope = 2 * widthDrop / rootLengthPx;
   return rootLengthPx * rootLengthPx * (1 + slope * slope) ** 1.5 / (2 * widthDrop);
 }
-/** A bounded response to the edge-width control keeps the mouth proportional to its soma. */
+/** A bounded response to the edge-width control keeps the mouth proportional to its soma.
+ * D084-W2-NEURAL: capped at 1.0 — the root never exceeds the soma's local extension. */
 export function neuralMouthScale(edgeWidthPx: number): number {
-  return Math.max(0.8, Math.min(1.2, 0.8 + Math.max(0, edgeWidthPx) / 1.2 * 0.2));
+  return Math.max(0.8, Math.min(1, 0.8 + Math.max(0, edgeWidthPx) / 1.2 * 0.2));
 }
 /** `distancePx=0` is the visible outline; negative positions are hidden in the soma.
  * `spanPx` is the projected full edge length, not a world-space distance. */
@@ -130,21 +256,34 @@ export function neuralRootProfileAt(distancePx: number, somaRadiusPx: number, ed
 /** A convex width falloff gives the neurite a curved, concave side, rather than a wedge.
  * The mouth is hidden inside the soma; its visible silhouette comes from the union with the body.
  * `trunkWidthPx` is the D-081 ribbon at the fillet end, including shared-trunk width. */
+// D084-W2-NEURAL BEGIN: the root is a continuation of the soma body, not a ribbon glued to
+// its rim. At the visible boundary (`distancePx = 0`) its full width is twice the local soma
+// extension — the half-width equals the soma radius — and under the soma it keeps that base,
+// so the union silhouette flows from the body into the process with no neck. The width then
+// decreases monotonically (concave sides, no local minimum) to the trunk width.
 export function neuralRootProfileAtLength(distancePx: number, somaRadiusPx: number, edgeWidthPx: number,
   edgeAlpha: number, rootRatio: number, rootLengthPx: number,
   trunkWidthPx = edgeWidthPx): NeuralRootSample {
   const width = Math.max(0, edgeWidthPx);
   const alpha = Math.max(0, Math.min(1, edgeAlpha));
   if (somaRadiusPx < NEURAL_MIN_SHAPED_RADIUS_PX) return { width, alpha, somaMix: 0 };
-  const u = Math.max(0, Math.min(1, distancePx / Math.max(rootLengthPx, 1e-6)));
-  const remaining = 1 - u;
-  const somaMix = remaining * remaining;
+  // D084-W2-NEURAL-R4: distance is measured from the circle tangency. Only
+  // the process stretch is rescaled by the visible span; the fillet stays 0.35R.
+  const filletPx = NEURAL_ROOT_FILLET_LENGTH_RADII * somaRadiusPx;
+  const process = Math.max(0, distancePx - filletPx);
+  const s = distancePx <= filletPx ? distancePx / somaRadiusPx
+    : NEURAL_ROOT_FILLET_LENGTH_RADII + (rootLengthPx <= 2.5 * somaRadiusPx
+      ? process / Math.max(rootLengthPx, 1e-6) * NEURAL_ROOT_LENGTH_RADII
+      : process <= 2.5 * somaRadiusPx ? process / somaRadiusPx
+        : 2.5 + (process - 2.5 * somaRadiusPx) / Math.max(rootLengthPx - 2.5 * somaRadiusPx, 1e-6) * 3.5);
+  const profile = neuralProfileTableAt(s);
+  const somaMix = profile.somaMix;
   const trunk = Math.max(width, trunkWidthPx);
-  const rootWidth = Math.max(trunk, width * Math.abs(rootRatio),
-    somaRadiusPx * (rootRatio < 0 ? 1 : 0.9) * neuralMouthScale(width));
+  const rootWidth = 2 * somaRadiusPx * profile.halfWidthRadii;
   return { width: trunk + (rootWidth - trunk) * somaMix,
     alpha: alpha + (Math.max(0.9, alpha) - alpha) * somaMix, somaMix };
 }
+// D084-W2-NEURAL-R3 END
 /** Historical test bound; live roots use their ratios across the full width slider. */
 export const NEURAL_ROOT_CAP_PX = 32;
 /** Both projections preserve these widths at the visible soma boundary. */
@@ -163,10 +302,8 @@ export function neuralJoinedRootWidthPx(ordinaryPx: number, somaRadiusPx: number
   return Math.max(neuralRootWidthPx(ordinary, somaRadiusPx, ratio),
     Math.min(somaRadiusPx * 1.1, ordinary * 6));
 }
-/** Cosmetic sprouts only resolve in a true close-up; they are never graph segments. */
-export function neuralDetailVisible(projectedScale: number, somaRadiusPx: number, spanPx: number): boolean {
-  return projectedScale >= 1.75 && somaRadiusPx >= 5 && spanPx >= somaRadiusPx * 6;
-}
+// D084-W2-NEURAL: the former cosmetic close-up sprout flag is removed — no decorative
+// filament may fake a relation that the graph does not draw.
 export function neuralShoulderFraction(spanPx: number, somaRadiusPx: number, ordinaryPx: number): number {
   const shoulderPx = Math.min(48, Math.max(12, somaRadiusPx * 2.5 + ordinaryPx * 3));
   return Math.min(NEURAL_TAPER_FRACTION, shoulderPx / Math.max(spanPx, 1));
@@ -193,19 +330,27 @@ export const MYCELIUM_AMPLITUDE_CAP_PX = 48;
  * Large somata reach the full bound; small somata are drawn with a scaled-down irregularity so the
  * organic shape stays visible at overview without deforming tiny cells. */
 export const SOMA_OUTLINE_MAX_RADIAL = 0.12;
+// D084-W2-NEURAL-R3: only Neural tightens its body harmonics; Canopy keeps its outline.
+export const NEURAL_SOMA_OUTLINE_MAX_RADIAL = 0.06;
 
 // D081-P1E BEGIN: pure lobe profile shared by the canvas and GPU buffer builder.
 export type SomaLobe = { readonly angle: number; readonly strength: number };
 // D081-P1F BEGIN: a taller, narrower shoulder keeps the prior soma area while exposing its tip.
 export const NEURAL_LOBE_ANGULAR_WIDTH = 0.32;
+// D084-W2-NEURAL BEGIN: the soma stays a compact, irregular body — never an egg, drop or
+// spike. The visible process is the thick root; the lobe only rounds the shoulder where the
+// root leaves the body, so every strength stays below the narrow-lobe threshold and each
+// shoulder stays broad (somaLobeAngularWidth 0.62).
 export function neuralLobeStrength(weight: number, maximum: number): number {
-  return 0.70 + 0.10 * Math.sqrt(weight / Math.max(1, maximum));
+  return 0.04 + 0.04 * Math.sqrt(weight / Math.max(1, maximum));
 }
 /** Shared paint strength: a bundled root has one broad shoulder rather than several tips. */
 export function neuralTrunkLobeStrength(trunk: NeuralTrunk, maximum: number, degree: number): number {
-  return degree <= 3 ? neuralLobeStrength(trunk.weight, maximum)
-    : trunk.edgeIds.length > 1 ? 0.55 : 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum);
+  const dominant = Math.sqrt(trunk.weight / Math.max(1, maximum));
+  const base = trunk.edgeIds.length > 1 ? 0.06 + 0.03 * dominant : neuralLobeStrength(trunk.weight, maximum);
+  return degree >= NEURAL_HUB_DEGREE ? Math.max(0.04, base - 0.015) : base;
 }
+// D084-W2-NEURAL END
 export function somaLobeAngularWidth(strength: number): number {
   return strength > 0.6 ? NEURAL_LOBE_ANGULAR_WIDTH : 0.62;
 }
@@ -450,13 +595,16 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
       id: item.id, direction: sub(item.point, node.position), weight: item.weight,
     }))) : [];
     const covarianceShape = somaAxis(node, connections);
+    // D084-W2-NEURAL BEGIN: the neural soma is a compact, irregular body. It never
+    // elongates on its own (eccentricity stays 1; the retired spindle and the hub floor
+    // made every connected soma a long pointed ellipse). Elongation exists only where a
+    // real edge leaves: the moderate lobes and the thick root in the trunk directions.
+    // The axis still follows the strongest real trunk so the outline harmonics stay stable.
     const axisShape = morphology === "neural" && trunks.length
-      ? { ...covarianceShape, axis: trunks[0]!.direction,
-        eccentricity: connections.length >= NEURAL_HUB_DEGREE
-          ? Math.max(1.24, covarianceShape.eccentricity) : covarianceShape.eccentricity } : covarianceShape;
+      ? { ...covarianceShape, axis: trunks[0]!.direction, eccentricity: 1 } : covarianceShape;
     return { ...node, degree: connections.length, ...axisShape,
       bundles, trunks, arbors,
-      spindleRatio: morphology === "neural" && trunks.length ? Math.min(1.86, 1.65 + 0.035 * Math.log2(connections.length + 1)) : undefined,
+      spindleRatio: undefined,
       rootRatio: neuralRootRatio(connections.length),
       haloRadiusRatio: NEURAL_HALO_MAX_RADIUS_RATIO, haloAlphaLimit: NEURAL_HALO_MAX_ALPHA,
       outline: morphology === "neural" ? incidentSomaHarmonics(axisShape.axis, trunks) : somaOutlineHarmonics(node.id) };
