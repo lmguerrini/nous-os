@@ -1,4 +1,7 @@
 import type { VisualGraph } from "#engine/contract.ts";
+// D082-A-PERF BEGIN
+import { renderDebugAssertionsEnabled } from "#engine/contract.ts";
+// D082-A-PERF END
 import { CAMERA_KINDS } from "#engine/camera-kind.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import { MACRO, MESO, MICRO } from "#engine/lod.ts";
@@ -131,8 +134,11 @@ export function arrangementForMorphology(morphology: Morphology): NaturalArrange
 }
 
 /** This constructs validated view state and does not retain a VisualGraph reference. */
-export function createVisualState(graph: VisualGraph, value: unknown): VisualState {
-  assertVisualState(graph, value);
+export function createVisualState(graph: VisualGraph, value: unknown, fast = false): VisualState {
+  // D082-A-PERF BEGIN: direct callers keep the full contract. Renderers opt into
+  // the fast path for each camera frame; explicit browser debug mode restores it.
+  if (!fast || renderDebugAssertionsEnabled()) assertVisualState(graph, value);
+  // D082-A-PERF END
   const state = value as VisualState;
   const base: VisualState = {
     selectedId: state.selectedId,
@@ -167,6 +173,12 @@ export function createVisualState(graph: VisualGraph, value: unknown): VisualSta
   const withMotionGrammar = state.motionGrammar === undefined ? withScaleTopology : { ...withScaleTopology, motionGrammar: state.motionGrammar };
   return state.arrangement === undefined ? withMotionGrammar : { ...withMotionGrammar, arrangement: state.arrangement };
 }
+
+// D082-A-PERF BEGIN
+export function createRenderVisualState(graph: VisualGraph, value: unknown): VisualState {
+  return createVisualState(graph, value, true);
+}
+// D082-A-PERF END
 
 /** This serialises validated view state and does not include graph contents. */
 export function serializeVisualState(state: VisualState | SavedVisualState): string {

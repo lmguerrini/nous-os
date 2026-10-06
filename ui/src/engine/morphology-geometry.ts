@@ -4,7 +4,7 @@ import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { buildContainerGeometry } from "#engine/container-geometry.ts";
 import type { MorphologyContainerInput, MorphologyContainerPath } from "#engine/container-geometry.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
-import { arborizeNeuralTrunk, clusterNeuralTrunks, neuralBranchRoute, type NeuralBranch, type NeuralTrunk } from "#engine/neural-trunks.ts";
+import { arborizeNeuralTrunk, neuralBranchRoute, type NeuralBranch, type NeuralTrunk, type TrunkMember } from "#engine/neural-trunks.ts";
 
 export { buildContainerGeometry, morphologyHash };
 export type { MorphologyContainerInput, MorphologyContainerPath };
@@ -83,7 +83,7 @@ export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 1.2 } as const;
 /** A short screen-space shoulder preserves a compact soma even on very long relations. */
 export const NEURAL_TAPER_FRACTION = 0.28;
 /** Cache key for the pure Neural silhouette and root profile. */
-export const NEURAL_GEOMETRY_VERSION = "d082-p1-organic-leaves-4";
+export const NEURAL_GEOMETRY_VERSION = "d082-p1-broad-real-roots-7";
 /** A short fillet joins the soma to the existing trunk without drawing a white radial arm. */
 export const NEURAL_ROOT_LENGTH_RADII = 2.5;
 export const NEURAL_ROOT_MAX_LENGTH_RADII = 3;
@@ -201,6 +201,11 @@ export const NEURAL_LOBE_ANGULAR_WIDTH = 0.32;
 export function neuralLobeStrength(weight: number, maximum: number): number {
   return 0.70 + 0.10 * Math.sqrt(weight / Math.max(1, maximum));
 }
+/** Shared paint strength: a bundled root has one broad shoulder rather than several tips. */
+export function neuralTrunkLobeStrength(trunk: NeuralTrunk, maximum: number, degree: number): number {
+  return degree <= 3 ? neuralLobeStrength(trunk.weight, maximum)
+    : trunk.edgeIds.length > 1 ? 0.55 : 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum);
+}
 export function somaLobeAngularWidth(strength: number): number {
   return strength > 0.6 ? NEURAL_LOBE_ANGULAR_WIDTH : 0.62;
 }
@@ -269,6 +274,52 @@ export function neuralAngularBundles(incident: readonly { id: string; direction:
   return groups.map(group => ({ direction: unit(group.sum), weight: group.weight,
     edgeIds: group.members.map(item => item.id).sort() }))
     .sort((a, b) => b.weight - a.weight || a.edgeIds[0]!.localeCompare(b.edgeIds[0]!));
+}
+/** One root per real angular bundle. The five-root budget is also the previous trunk budget;
+ * extra directions attach to their nearest principal root without adding a graph relation. */
+export function neuralBroadTrunks(members: readonly TrunkMember[]): readonly NeuralTrunk[] {
+  const sorted = members.filter(member => member.length > 1e-6)
+    .map(member => ({ ...member, direction: unit(member.direction),
+      weight: Math.max(0.01, member.weight) }))
+    .sort((a, b) => b.weight - a.weight || a.id.localeCompare(b.id));
+  const groups: { sum: Coordinates; edgeIds: string[]; weight: number; shortest: number }[] = [];
+  for (const member of sorted) {
+    let nearest = -1, alignment = -Infinity;
+    for (let index = 0; index < groups.length; index++) {
+      const score = dot(member.direction, unit(groups[index]!.sum));
+      if (score > alignment) { nearest = index; alignment = score; }
+    }
+    if (alignment <= Math.cos(Math.PI / 6) && groups.length < 5) {
+      groups.push({ sum: mul(member.direction, member.weight), edgeIds: [member.id],
+        weight: member.weight, shortest: member.length });
+    } else {
+      const group = groups[nearest]!;
+      group.sum = add(group.sum, mul(member.direction, member.weight));
+      group.edgeIds.push(member.id);
+      group.weight += member.weight;
+      group.shortest = Math.min(group.shortest, member.length);
+    }
+  }
+  return groups.map(group => {
+    const edgeIds = group.edgeIds.sort();
+    return { direction: unit(group.sum), edgeIds, weight: group.weight,
+      branchDistance: Math.min(48, Math.max(2, group.shortest * 0.22), group.shortest * 0.4),
+      rootWidthFactor: edgeIds.length === 1 ? 1 : Math.min(4, 2.4 + 0.4 * Math.log2(edgeIds.length)) };
+  }).sort((a, b) => b.weight - a.weight || a.edgeIds[0]!.localeCompare(b.edgeIds[0]!));
+}
+/** Select three spatially spread lobes for the fixed GPU slots, then the canvas uses the same set. */
+export function neuralPrincipalTrunks(trunks: readonly NeuralTrunk[]): readonly NeuralTrunk[] {
+  if (trunks.length <= 3) return trunks;
+  const chosen = [trunks[0]!];
+  while (chosen.length < 3) {
+    const next = trunks.filter(trunk => !chosen.includes(trunk)).sort((a, b) =>
+      Math.max(...chosen.map(other => dot(a.direction, other.direction)))
+      - Math.max(...chosen.map(other => dot(b.direction, other.direction)))
+      || b.weight - a.weight || a.edgeIds[0]!.localeCompare(b.edgeIds[0]!))[0];
+    if (!next) break;
+    chosen.push(next);
+  }
+  return chosen;
 }
 /** Low order, bounded lobes from the actual incident directions, in the soma axis frame.
  * Width weights make a dominant bundle pull the outline toward itself. */
@@ -382,13 +433,19 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
   }
   const shaped = nodes.map((node): MorphologyNodeShape => {
     const connections = incident.get(node.id)!.sort((a, b) => a.id.localeCompare(b.id));
-    const trunks = morphology === "neural" ? clusterNeuralTrunks(connections.map(item => ({
+    const trunks = morphology === "neural" ? neuralBroadTrunks(connections.map(item => ({
       id: item.id, direction: sub(item.point, node.position),
       length: norm(sub(item.point, node.position)), weight: item.weight,
     }))) : [];
-    const arbors = morphology === "neural" ? trunks.map(trunk => arborizeNeuralTrunk(trunk,
-      connections.map(item => ({ id: item.id, direction: sub(item.point, node.position),
-        length: norm(sub(item.point, node.position)), weight: item.weight })))) : [];
+    // Small bundles share one broad proximal stem and split once beyond it. Recursive
+    // subdivision here created the short comb seen in the reference close-up and cost more.
+    const arbors: readonly NeuralBranch[] = morphology === "neural" ? trunks.map(trunk =>
+      connections.length < 8
+        ? { edgeIds: trunk.edgeIds, direction: trunk.direction, distance: trunk.branchDistance,
+          depth: 0, widthFactor: trunk.rootWidthFactor, children: [] }
+        : arborizeNeuralTrunk(trunk, connections.map(item => ({ id: item.id,
+          direction: sub(item.point, node.position),
+          length: norm(sub(item.point, node.position)), weight: item.weight })))) : [];
     const bundles = morphology === "neural" ? neuralAngularBundles(connections.map(item => ({
       id: item.id, direction: sub(item.point, node.position), weight: item.weight,
     }))) : [];
@@ -416,8 +473,8 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     if (morphology === "stellar") return { id: edge.id, source: edge.source, target: edge.target, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width, edge.width, morphology, 0)] };
     if (morphology === "neural") {
       const proximal = a.degree >= b.degree;
-      const startTrunk = a.degree >= 8 ? a.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
-      const endTrunk = b.degree >= 8 ? b.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
+      const startTrunk = a.trunks?.find(trunk => trunk.edgeIds.length > 1 && trunk.edgeIds.includes(edge.id));
+      const endTrunk = b.trunks?.find(trunk => trunk.edgeIds.length > 1 && trunk.edgeIds.includes(edge.id));
       const original = segment(edge.id, edge.id, a.position, b.position,
         edge.width * (proximal ? NEURAL_TAPER.proximal : NEURAL_TAPER.distal),
         edge.width * (proximal ? NEURAL_TAPER.distal : NEURAL_TAPER.proximal),
@@ -448,7 +505,10 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
         const sway = terminal ? Math.min(8, span * 0.075) * curvature : 0;
         const phase = (morphologyHash(edge.id) % 6283) / 1000;
         const sideways = normal(p0, p1);
-        const steps = terminal ? 15 : 10;
+        // One low-degree shared stem and one terminal curve use the same 17-sample
+        // budget as the former single edge; dense recursive arbors keep their detail.
+        const compactRoot = (startTrunk && a.degree < 8) || (endTrunk && b.degree < 8);
+        const steps = compactRoot ? 8 : terminal ? 15 : 10;
         for (let j = section === 0 ? 0 : 1; j <= steps; j++) {
           const t = j / steps;
           const point = cubic(p0, c1, c2, p1, t);

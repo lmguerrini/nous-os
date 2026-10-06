@@ -9,7 +9,7 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 
 const FILAMENT_VERTEX_DATA = [[0, 1], [0, -1], [1, 1], [0, -1], [1, 1], [1, -1]];
 const FILAMENT_VERTEX_COUNT = FILAMENT_VERTEX_DATA.length;
-const MATERIAL_VARIATION_COMPONENT_COUNT = ["phase", "hotCore"].length;
+const MATERIAL_VARIATION_COMPONENT_COUNT = ["phase", "hotCore", "neuralDenseFactor"].length;
 const FILAMENT_UNIFORMS = [
   "u_matrix",
   "u_sizeRatio",
@@ -156,6 +156,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
       readonly wobblePhase?: number;
       readonly hotCore?: number;
       readonly neuralRootRatios?: readonly [number, number];
+      readonly neuralDenseFactor?: number;
     };
     const array = this.array;
     array[startIndex++] = sourceData.x;
@@ -181,6 +182,9 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = edgeData.junctionEnd ?? 0;
     array[startIndex++] = edgeData.wobblePhase ?? 0;
     array[startIndex++] = edgeData.hotCore ?? 0;
+    // "D082-A-NCOMPLETA3 BEGIN": use the existing variation attribute slot.
+    array[startIndex++] = edgeData.neuralDenseFactor ?? 1;
+    // "D082-A-NCOMPLETA3 END"
     array[startIndex++] = sourceData.size;
     array[startIndex++] = targetData.size;
     array[startIndex++] = edgeData.neuralRootRatios?.[0] ?? neuralRootRatio(1);
@@ -252,7 +256,7 @@ attribute float a_afterglowDecayPermille;
 attribute vec2 a_somaRadii;
 attribute vec2 a_rootRatios;
 attribute vec4 a_materialWidths;
-attribute vec2 a_materialVariation;
+attribute vec3 a_materialVariation;
 uniform mat3 u_matrix;
 uniform float u_sizeRatio;
 uniform float u_pixelRatio;
@@ -275,7 +279,7 @@ varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
 varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
-varying vec2 v_materialVariation;
+varying vec3 v_materialVariation;
 varying vec2 v_somaRadii;
 varying vec2 v_rootRatios;
 varying float v_neuralScale;
@@ -383,7 +387,7 @@ varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
 varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
-varying vec2 v_materialVariation;
+varying vec3 v_materialVariation;
 varying vec2 v_somaRadii;
 varying vec2 v_rootRatios;
 varying float v_neuralScale;
@@ -497,8 +501,13 @@ void main(void) {
     if (u_neuralProfile > 0.5) {
       gradientColor.rgb = mix(v_color.rgb, vec3(1.0), rootSomaMix);
       // Keep the white root inside the same radial body coverage as the ordinary edge.
+      // "D082-A-NCOMPLETA3 BEGIN": the old fixed 0.9 mouth ignored the local
+      // Completa veil and accumulated into bright radial rings at far zoom.
       gradientColor.a = mix(gradientColor.a,
-        max(0.9, v_color.a * propagationAlpha) * bodyCoverage, rootSomaMix);
+        v_materialVariation.z < 1.0
+          ? max(0.9 * v_materialVariation.z, v_color.a * propagationAlpha) * bodyCoverage
+          : max(0.9, v_color.a * propagationAlpha) * bodyCoverage, rootSomaMix);
+      // "D082-A-NCOMPLETA3 END"
     }
     // D082-A-NEURAL END
     // Sigma's blend operator expects every material band to be premultiplied before source-over composition.

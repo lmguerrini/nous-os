@@ -30,7 +30,7 @@ class SvgElement {
 }
 
 test("the product DOM pass puts one palette-ink leader under each displaced label", () => {
-  assert.match(sourceText, /productLabelLeaders\(next, bounds, palette\.text\)/);
+  assert.match(sourceText, /productLabelLeaders\(next, bounds, palette\.text, layer\.clientWidth, layer\.clientHeight\)/);
   (globalThis as { document?: unknown }).document = {
     createElementNS: (_namespace: string, tag: string) => new SvgElement(tag),
   };

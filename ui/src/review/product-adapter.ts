@@ -1,6 +1,7 @@
 import {
   assertVisualGraphFieldRegister,
   createEngineGraphView,
+  renderDebugAssertionsEnabled,
   createRenderedStateCarrier,
   createSemantic,
 } from "../engine/contract.ts";
@@ -150,13 +151,17 @@ export function adaptReviewExport(data: ReviewExport): AdaptedReview {
       nodes: nodesFor(clusterConversations),
       edges: edgesFor(clusterConversations),
     };
-    assertVisualGraphFieldRegister(graph);
+    // D082-A-PERF BEGIN
+    if (renderDebugAssertionsEnabled()) assertVisualGraphFieldRegister(graph);
+    // D082-A-PERF END
     return graph;
   };
   const flatGraph = graphFor(false);
   const indraGraph = graphFor(true);
-  const flatAnchors = layoutAnchors(createEngineGraphView(flatGraph).graph, DEFAULT_CALIBRATION);
-  const indraAnchors = indraLayout(createEngineGraphView(indraGraph).graph, DEFAULT_CALIBRATION).nodeAnchors;
+  // D082-A-PERF BEGIN
+  const flatAnchors = layoutAnchors(createEngineGraphView(flatGraph, { fast: true }).graph, DEFAULT_CALIBRATION);
+  const indraAnchors = indraLayout(createEngineGraphView(indraGraph, { fast: true }).graph, DEFAULT_CALIBRATION).nodeAnchors;
+  // D082-A-PERF END
   return { graph: indraGraph, flatGraph, indraGraph, originals, flatAnchors, indraAnchors };
 }
 /** Restrict the product graph to the current filter without changing its original ids. */

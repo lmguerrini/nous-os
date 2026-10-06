@@ -67,6 +67,11 @@ export function mountDistinctOverlay(
   updateStyles();
   const draw = (): void => {
     if (!context) return;
+    // D082-A-PERF BEGIN: isolate the retained 3D canvas overlay from the GPU
+    // frame in performance profiles without paying for marks on normal visits.
+    const marked = typeof location !== "undefined" && new URLSearchParams(location.search).has("perfmarks");
+    if (marked) performance.mark("d082:distinct3d:start");
+    // D082-A-PERF END
     const box = canvas.getBoundingClientRect();
     const width = Math.max(1, Math.round(box.width * devicePixelRatio));
     const height = Math.max(1, Math.round(box.height * devicePixelRatio));
@@ -83,6 +88,12 @@ export function mountDistinctOverlay(
       nodes: nodeStyles,
       edges: edgeStyles,
     }, appearance, undefined, "3d", nativeTier);
+    // D082-A-PERF BEGIN
+    if (marked) {
+      performance.mark("d082:distinct3d:end");
+      performance.measure("d082:distinct3d", "d082:distinct3d:start", "d082:distinct3d:end");
+    }
+    // D082-A-PERF END
   };
   (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw = draw;
   return {

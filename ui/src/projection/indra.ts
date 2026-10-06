@@ -298,6 +298,33 @@ export function pearlSlotOffset(index: number, count: number, radius: number): R
   return { dx: distance * Math.cos(angle), dy: distance * Math.sin(angle) };
 }
 
+// D082-A-DENSITY BEGIN: rank prefixes cover the whole pearl disc. Bit-reversal
+// visits every radial band before filling gaps; the same member retains its slot
+// when Essenziale grows into Bilanciata and Completa share the full domain.
+const progressiveSlots = new Map<number, readonly number[]>();
+export function progressivePearlSlot(rank: number, count: number): number {
+  if (count <= 1) return 0;
+  let order = progressiveSlots.get(count);
+  if (!order) {
+    const width = Math.ceil(Math.log2(count));
+    const slots: number[] = [];
+    for (let candidate = 0; candidate < 2 ** width; candidate += 1) {
+      let bits = candidate, reversed = 0;
+      for (let bit = 0; bit < width; bit += 1) {
+        reversed = reversed * 2 + (bits % 2);
+        bits = Math.floor(bits / 2);
+      }
+      if (reversed < count) slots.push(reversed);
+    }
+    order = slots;
+    progressiveSlots.set(count, order);
+    if (progressiveSlots.size > 64)
+      progressiveSlots.delete(progressiveSlots.keys().next().value!);
+  }
+  return order[rank]!;
+}
+// D082-A-DENSITY END
+
 function assertIndraRequest(snapshot: SemanticGraphSnapshot, request: ProjectionRequest<'indras-pearls'>): void {
   const { domain, parameters } = request;
   if (request.id !== 'indras-pearls' || request.snapshotDigest !== snapshot.digest || domain.snapshotDigest !== snapshot.digest)
@@ -702,7 +729,11 @@ export const indrasPearlsProjection: MathematicalProjection<'indras-pearls'> = {
         const id = ranked[rank]!;
         pearlOfNode.set(id, entry.key);
         priorityByNodeId[id] = normalizedImportance(memberOf(id).importance);
-        const { dx, dy } = pearlSlotOffset(rank, ranked.length, fillRadius);
+        // D082-A-DENSITY BEGIN
+        const slot = domain.selectionPolicy === 'd081-indra-complete'
+          ? progressivePearlSlot(rank, ranked.length) : rank;
+        const { dx, dy } = pearlSlotOffset(slot, ranked.length, fillRadius);
+        // D082-A-DENSITY END
         const x = entry.disc.center.re + dx;
         const y = entry.disc.center.im + dy;
         const offsetRatio = Math.hypot(dx, dy) / entry.disc.radius;

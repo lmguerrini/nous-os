@@ -556,6 +556,10 @@ export type ProductView = {
   frameFocus?(ids: readonly string[]): Promise<void>;
   /** Frames every visible node. */
   fit(): Promise<void>;
+  // D082-A-PERF BEGIN: camera gestures need positions, not a full visibility proof.
+  gestureWitness?(): Pick<ViewWitness, 'nodeViewport' | 'positions' | 'visibleRect'>;
+  readPlacedCounts?(): { readonly labels: number; readonly titles: number };
+  // D082-A-PERF END
   witness(): ViewWitness;
   destroy(): void;
 };

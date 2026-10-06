@@ -1,4 +1,4 @@
-import { assertVisualGraphFieldRegister, createRenderedStateCarrier, createSemantic } from '../engine/contract.ts';
+import { assertVisualGraphFieldRegister, createRenderedStateCarrier, createSemantic, renderDebugAssertionsEnabled } from '../engine/contract.ts';
 import type { Coordinates, VisualGraph } from '../engine/contract.ts';
 import type { GraphEdge } from './graph-v2.ts';
 import type { LiftedRelation } from './v2-relations.ts';
@@ -115,7 +115,9 @@ function adaptLegacyV2(
         visual: visual('about', 0),
       })),
     };
-    assertVisualGraphFieldRegister(graph);
+    // D082-A-PERF BEGIN
+    if (renderDebugAssertionsEnabled()) assertVisualGraphFieldRegister(graph);
+    // D082-A-PERF END
     return graph;
   };
   const flat = graphFor(false);

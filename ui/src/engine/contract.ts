@@ -1,6 +1,13 @@
 import { digestPayload } from "#engine/canonical.ts";
 import { INSPECTED, RENDERED } from "#engine/partition.ts";
 
+// D082-A-PERF BEGIN: opt in to costly render assertions in browser debug sessions.
+export function renderDebugAssertionsEnabled(): boolean {
+  return typeof window === "undefined" || (typeof location !== "undefined"
+    && new URLSearchParams(location.search).get("debugContracts") === "1");
+}
+// D082-A-PERF END
+
 const semanticBrand: unique symbol = Symbol("semantic");
 const semanticContents = new WeakMap<object, unknown>();
 
@@ -193,7 +200,19 @@ const EDGE_KIND_VOCABULARY: readonly VisualRole[] = Object.freeze(
 ) as readonly VisualRole[];
 
 /** This creates a traced structural engine view and does not expose semantic or derived values beyond the closed governed RENDERED carrier. */
-export function createEngineGraphView(graph: VisualGraph): { readonly graph: EngineGraph; readonly trace: EngineAccessTrace } {
+export function createEngineGraphView(graph: VisualGraph,
+  options: { readonly fast?: boolean } = {}): { readonly graph: EngineGraph; readonly trace: EngineAccessTrace } {
+  // D082-A-PERF BEGIN: production render paths use the already verified structural projection.
+  // Explicit contract calls and debug sessions still execute the full validation/proxy trace.
+  if (options.fast && !renderDebugAssertionsEnabled()) {
+    const visual = (value: VisualMetadata) => ({ role: value.role, label_priority: value.label_priority });
+    const node = (value: VisualNode): EngineNode => ({ id: value.id, kind: value.kind,
+      rendered: value.rendered, visual: visual(value.visual) });
+    const edge = (value: VisualEdge): EngineEdge => ({ id: value.id, kind: value.kind,
+      source: value.source, target: value.target, rendered: value.rendered, visual: visual(value.visual) });
+    return { graph: { nodes: graph.nodes.map(node), edges: graph.edges.map(edge) }, trace: { reads: [] } };
+  }
+  // D082-A-PERF END
   assertVisualGraphFieldRegister(graph);
   const reads: string[] = [];
   const trace: EngineAccessTrace = { reads };

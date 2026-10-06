@@ -14,6 +14,9 @@ export type NodeProjectionUniforms = {
   // A1b outside-ownership bridge: cap only the close-range node projection.
   readonly nodeScaleCap?: number;
   // End A1b outside-ownership bridge.
+  // D082-A-N3D BEGIN
+  readonly denseNeuralPointFloorCssPx?: number;
+  // D082-A-N3D END
 };
 
 /** This owns one instanced luminous-node pass and does not retain scene objects. */
@@ -38,6 +41,9 @@ uniform vec2 u_resolutionDevicePx;
 uniform float u_devicePixelRatio, u_orthographicSizeScale, u_isPerspective, u_referenceViewDepth, u_permilleScale;
 // A1b outside-ownership bridge: the camera supplies 6 at close range, 1000 otherwise.
 uniform float u_nodeScaleCap;
+// D082-A-N3D BEGIN: zero outside Neural 3D Completa.
+uniform float u_denseNeuralPointFloorCssPx;
+// D082-A-N3D END
 uniform sampler2D u_haloStops;
 uniform int u_somaLobeOffset;
 // End A1b outside-ownership bridge.
@@ -46,6 +52,9 @@ flat out vec3 v_color;
 flat out float v_coreRadiusDevicePx, v_haloRadiusDevicePx, v_opacity, v_haloIntensityPermille, v_coreSharpnessPermille;
 flat out int v_haloStopCount, v_instanceIndex;
 flat out vec2 v_somaShape;
+// D082-A-N3D BEGIN
+flat out float v_denseNeuralPoint;
+// D082-A-N3D END
 flat out vec2 v_somaAxisScreen, v_somaHarmonic3; flat out float v_somaEccentricity; flat out vec4 v_somaHarmonics12;
 flat out vec3 v_somaLobe0, v_somaLobe1, v_somaLobe2;
 vec3 projectedLobe(vec4 lobe, vec3 center, vec4 clipCenter) {
@@ -68,18 +77,26 @@ void main() {
   float sizeScale = mix(u_orthographicSizeScale, min(perspectiveScale, u_nodeScaleCap), u_isPerspective);
   // End A1b outside-ownership bridge.
   // Floor the projected core in device pixels, matching the filament visibility floor.
+  // D082-A-NODES BEGIN: Completa supplies a zero floor and can emit a true 0.5 CSS px point.
   float coreRadius = max(a_coreRadiusPx * sizeScale * u_devicePixelRatio, a_minimumCoreDeviceRadiusPx * u_devicePixelRatio);
+  vec2 visibleShape = coreRadius <= 0.75 * u_devicePixelRatio ? vec2(0.0) : a_somaShape;
+  // D082-A-NODES END
+  // D082-A-N3D BEGIN: preserve hidden coincident members while flooring represented somata.
+  float pointFloor = u_denseNeuralPointFloorCssPx * u_devicePixelRatio;
+  float densePoint = a_coreRadiusPx > 0.0 && pointFloor > 0.0 && coreRadius < pointFloor ? 1.0 : 0.0;
+  if (densePoint > 0.5) { coreRadius = pointFloor; visibleShape = vec2(0.0); }
+  // D082-A-N3D END
   float requestedHaloRadius = a_haloRadiusPx * sizeScale * u_devicePixelRatio;
   // Keep the halo outside the floored core.
   float haloGapRadius = coreRadius + (a_haloCoreGapPx * sizeScale * u_devicePixelRatio);
   float haloRadius = max(requestedHaloRadius, haloGapRadius);
-  if (a_somaShape.x > 0.5) haloRadius = min(haloRadius, coreRadius * 1.1);
+  if (visibleShape.x > 0.5) haloRadius = min(haloRadius, coreRadius * 1.1);
   vec2 corner = vec2((position.x * 2.0) - 1.0, position.y);
   // D081-P1F: the projected teardrop pole must fit inside its instanced quad.
-  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 3.6 : 1.0) * 2.0 / u_resolutionDevicePx;
+  vec2 clipOffset = corner * haloRadius * (visibleShape.x > 0.5 ? 3.6 : 1.0) * 2.0 / u_resolutionDevicePx;
   gl_Position = clipCenter;
   gl_Position.xy += clipOffset * clipCenter.w;
-  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 3.6 : 1.0);
+  v_localDevicePx = corner * haloRadius * (visibleShape.x > 0.5 ? 3.6 : 1.0);
   v_color = a_color;
   v_coreRadiusDevicePx = coreRadius;
   v_haloRadiusDevicePx = haloRadius;
@@ -88,7 +105,10 @@ void main() {
   v_coreSharpnessPermille = a_coreSharpnessPermille;
   v_haloStopCount = int(a_haloStopCount);
   v_instanceIndex = int(a_instanceIndex);
-  v_somaShape = a_somaShape;
+  v_somaShape = visibleShape;
+  // D082-A-N3D BEGIN
+  v_denseNeuralPoint = densePoint;
+  // D082-A-N3D END
   vec4 axisClip = projectionMatrix * (modelViewMatrix * vec4(a_worldPosition + a_somaAxisAndEccentricity.xyz, 1.0));
   vec2 projectedAxis = axisClip.xy / axisClip.w - clipCenter.xy / clipCenter.w;
   vec4 basisX = projectionMatrix * (modelViewMatrix * vec4(a_worldPosition + vec3(1.0, 0.0, 0.0), 1.0));
@@ -111,6 +131,9 @@ flat in vec3 v_color;
 flat in float v_coreRadiusDevicePx, v_haloRadiusDevicePx, v_opacity, v_haloIntensityPermille, v_coreSharpnessPermille;
 flat in int v_haloStopCount, v_instanceIndex;
 flat in vec2 v_somaShape;
+// D082-A-N3D BEGIN
+flat in float v_denseNeuralPoint;
+// D082-A-N3D END
 flat in vec2 v_somaAxisScreen, v_somaHarmonic3; flat in float v_somaEccentricity; flat in vec4 v_somaHarmonics12;
 flat in vec3 v_somaLobe0, v_somaLobe1, v_somaLobe2;
 uniform sampler2D u_haloStops;
@@ -141,6 +164,16 @@ float somaLobe(vec3 lobe, vec2 radial) {
 }
 void main() {
   float radialDistance = length(v_localDevicePx);
+  // D082-A-NODES BEGIN: a one-CSS-pixel Completa point needs full contrast above the edge veil.
+  // Its zero-radius coincident members have degenerate quads and never enter this branch.
+  // D082-A-N3D BEGIN: the fitted 3D soma uses the same crisp point pass as other dense nodes.
+  if (v_denseNeuralPoint > 0.5 || (v_coreRadiusDevicePx > 0.0 && v_coreRadiusDevicePx <= 0.75 * u_devicePixelRatio)) {
+  // D082-A-N3D END
+    if (radialDistance > v_coreRadiusDevicePx) discard;
+    outputColor = vec4(mix(v_color, vec3(1.0), 0.28), 1.0);
+    return;
+  }
+  // D082-A-NODES END
   float somaDistance = radialDistance;
   if (v_somaShape.x > 0.5) {
     vec2 local = vec2(dot(v_localDevicePx, v_somaAxisScreen), dot(v_localDevicePx, vec2(-v_somaAxisScreen.y, v_somaAxisScreen.x)));
@@ -208,6 +241,9 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
       u_referenceViewDepth: { value: scalarCount() },
       // A1b outside-ownership bridge: the legacy shader already saturates at permilleScale.
       u_nodeScaleCap: { value: SCENE_PERMILLE_SCALE },
+      // D082-A-N3D BEGIN
+      u_denseNeuralPointFloorCssPx: { value: 0 },
+      // D082-A-N3D END
       // End A1b outside-ownership bridge.
       u_permilleScale: { value: SCENE_PERMILLE_SCALE },
       u_haloStops: { value: haloStops },
@@ -221,6 +257,14 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
     blendDst: THREE.OneMinusSrcAlphaFactor,
     blendEquation: THREE.AddEquation,
   });
+  // D082-A-NEURALe BEGIN: max of premultiplied coverage makes the soma and
+  // its root a single paint layer where their analytic outlines overlap.
+  if (buffers.somaShape.some((value, index) => index % 2 === 0 && value > 0.5)) {
+    material.blendEquation = THREE.MaxEquation;
+    material.blendEquationAlpha = THREE.MaxEquation;
+    material.blendDst = THREE.OneFactor;
+  }
+  // D082-A-NEURALe END
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   mesh.renderOrder = NODE_RENDER_ORDER;
@@ -229,6 +273,13 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
 
 /** This updates node material attributes in place and does not move a mounted world anchor. */
 export function updateNodeRenderResources(resources: NodeRenderResources, buffers: NodeBuffers): void {
+  // D082-A-NEURALe BEGIN
+  resources.material.blendEquation = buffers.somaShape.some((value, index) => index % 2 === 0 && value > 0.5)
+    ? THREE.MaxEquation : THREE.AddEquation;
+  resources.material.blendEquationAlpha = resources.material.blendEquation;
+  resources.material.blendDst = resources.material.blendEquation === THREE.MaxEquation
+    ? THREE.OneFactor : THREE.OneMinusSrcAlphaFactor;
+  // D082-A-NEURALe END
   copyAttribute(resources.geometry, "a_color", buffers.colorsSrgb);
   copyAttribute(resources.geometry, "a_coreRadiusPx", buffers.coreRadiiPx);
   copyAttribute(resources.geometry, "a_somaShape", buffers.somaShape);
@@ -262,6 +313,9 @@ export function updateNodeProjectionUniforms(material: THREE.RawShaderMaterial, 
   // A1b outside-ownership bridge: default preserves existing direct callers.
   requiredUniform(material, "u_nodeScaleCap").value = values.nodeScaleCap ?? SCENE_PERMILLE_SCALE;
   // End A1b outside-ownership bridge.
+  // D082-A-N3D BEGIN
+  requiredUniform(material, "u_denseNeuralPointFloorCssPx").value = values.denseNeuralPointFloorCssPx ?? 0;
+  // D082-A-N3D END
 }
 
 function haloStopTexture(buffers: NodeBuffers): THREE.DataTexture {

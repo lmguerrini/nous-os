@@ -161,6 +161,11 @@ void main() {
     a_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     maximumBaseWidth * maximumWidthFactor * 0.5
   );
+  // D082-A-N3D BEGIN: the dense 3D Neural pass is tagged in the profile's spare range.
+  // Its quad must cover the minimum continuous ribbon even when the encoded width is tiny.
+  if (a_neuralProfile.w >= 3.0)
+    maximumBodyHalfWidth = max(maximumBodyHalfWidth, 0.75);
+  // D082-A-N3D END
   if (a_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio;
     float mouthScale = clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2);
@@ -312,6 +317,9 @@ void main() {
     v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     baseWidth * widthFactor * 0.5
   );
+  // D082-A-N3D BEGIN
+  float denseWidthFloorActive = 0.0;
+  // D082-A-N3D END
   float rootSomaMix = 0.0;
   if (v_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
@@ -375,6 +383,21 @@ void main() {
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
       0.5 * max(mix(startTrunk, startMouth, startEase),
         mix(endTrunk, endMouth, endEase)));
+    // D082-A-NCOMPLETA BEGIN: the native pass receives the calibrated screen-cell
+    // coverage in the Neural flag's spare range. A-INT12 uses exactly the identity.
+    // D082-A-N3D BEGIN: 3 + factor identifies only Neural 3D Completa; old values retain identity.
+    float denseFactor = v_neuralProfile.w >= 3.0
+      ? clamp(v_neuralProfile.w - 3.0, 0.0, 1.0)
+      : v_neuralProfile.w > 1.0001 ? clamp(v_neuralProfile.w - 1.0, 0.0, 1.0) : 1.0;
+    // D082-A-N3D END
+    bodyHalfWidth *= max(0.22, sqrt(denseFactor));
+    // D082-A-N3D BEGIN: opacity still carries the screen-cell veil; width never breaks into dots.
+    if (v_neuralProfile.w >= 3.0 && bodyHalfWidth < 0.75) {
+      denseWidthFloorActive = 1.0;
+      bodyHalfWidth = 0.75;
+    }
+    // D082-A-N3D END
+    // D082-A-NCOMPLETA END
     // D082-A-NEURAL END
   }
   float medialOffset = filamentMedialOffsetPx(parameter, length(v_cpC - v_cpA));
@@ -383,8 +406,13 @@ void main() {
   if (v_neuralProfile.w > 0.5) {
     // D081-P1 BEGIN: one radial density for body, sheath and exploratory light.
     // The moving light varies luminance along the path; it never adds an inner bar.
+    // D082-A-N3D BEGIN: integrate a pixel-wide analytic edge at grazing pixel centres.
+    // The original peaked profile remains exact outside Neural 3D Completa.
     float radial = 1.0 - smoothstep(0.0, 1.0, distance / max(bodyHalfWidth, feather));
-    radial *= radial;
+    if (denseWidthFloorActive > 0.5)
+      radial = 1.0 - smoothstep(bodyHalfWidth - 0.5, bodyHalfWidth + 0.5, distance);
+    if (denseWidthFloorActive < 0.5) radial *= radial;
+    // D082-A-N3D END
     float span = max(length(v_cpC - v_cpA), 1.0);
     float fade = min(0.08, max(bodyHalfWidth * 1.5, 2.0 * u_devicePixelRatio) / span);
     // D081-P1F BEGIN: a soma covers the hidden path origin; its visible joint is full-alpha.
@@ -409,7 +437,14 @@ void main() {
     float alpha = clamp(v_opacity * radial * longitudinal
       * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
     // D082-A-NEURAL: match the pure root profile, including opacity and white-to-edge colour.
-    alpha = mix(alpha, max(0.9, v_opacity * longitudinal) * radial, rootSomaMix);
+    // D082-A-NCOMPLETA BEGIN: the old 0.9 root floor bypassed the native veil.
+    // D082-A-N3D BEGIN
+    float denseRootFactor = v_neuralProfile.w >= 3.0
+      ? clamp(v_neuralProfile.w - 3.0, 0.0, 1.0)
+      : v_neuralProfile.w > 1.0001 ? clamp(v_neuralProfile.w - 1.0, 0.0, 1.0) : 1.0;
+    // D082-A-N3D END
+    alpha = mix(alpha, max(0.9, v_opacity * longitudinal) * radial * denseRootFactor, rootSomaMix);
+    // D082-A-NCOMPLETA END
     if (alpha <= 0.0) discard;
     vec3 color = mix(v_color, v_hotColor, clamp(hot * 0.35, 0.0, 0.35));
     color = mix(color, vec3(1.0), rootSomaMix);
@@ -496,6 +531,14 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
     blendDst: THREE.OneMinusSrcAlphaFactor,
     blendEquation: THREE.AddEquation,
   });
+  // D082-A-NEURALe BEGIN: adjacent real roots also use maximum coverage,
+  // so a hub cannot brighten into a star of overlapping translucent wedges.
+  if (buffers.neuralProfile.some((value, index) => index % 4 === 3 && value > 0.5)) {
+    material.blendEquation = THREE.MaxEquation;
+    material.blendEquationAlpha = THREE.MaxEquation;
+    material.blendDst = THREE.OneFactor;
+  }
+  // D082-A-NEURALe END
   const mesh = new THREE.Mesh(geometry, material);
   // The canvas overlay owns the product's 30 fps clock. This shader samples the same 32 CSS
   // px/s cadence whenever the 3D renderer draws, without starting another full-scene loop.
@@ -507,6 +550,13 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
 
 /** This updates filament material attributes in place and does not move a mounted relation path. */
 export function updateFilamentRenderResources(resources: FilamentRenderResources, buffers: FilamentBuffers): void {
+  // D082-A-NEURALe BEGIN
+  resources.material.blendEquation = buffers.neuralProfile.some((value, index) => index % 4 === 3 && value > 0.5)
+    ? THREE.MaxEquation : THREE.AddEquation;
+  resources.material.blendEquationAlpha = resources.material.blendEquation;
+  resources.material.blendDst = resources.material.blendEquation === THREE.MaxEquation
+    ? THREE.OneFactor : THREE.OneMinusSrcAlphaFactor;
+  // D082-A-NEURALe END
   copyAttribute(resources.geometry, "a_color", buffers.colorsSrgb);
   copyAttribute(resources.geometry, "a_hotColor", buffers.hotColorsSrgb);
   copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);

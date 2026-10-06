@@ -121,8 +121,17 @@ test("3D filament ratios match the shared canvas profile at both endpoints", () 
     if (buffers.filaments.neuralProfile[i * 4 + 3] !== 1) continue;
     const sourceRatio = neuralRootRatio(shapes.get(buffers.filaments.sourceIds[i]!)!.degree);
     const targetRatio = neuralRootRatio(shapes.get(buffers.filaments.targetIds[i]!)!.degree);
-    assert.ok(Math.abs(buffers.filaments.neuralRootRatios[i * 2]! - sourceRatio) < 1e-5);
-    assert.ok(Math.abs(buffers.filaments.neuralRootRatios[i * 2 + 1]! - targetRatio) < 1e-5);
+    // D082-A-NEURAL BEGIN: P1 merges close real directions even below degree eight.
+    const edgeId = buffers.filaments.edgeIds[i]!;
+    const sourceTrunk = shapes.get(buffers.filaments.sourceIds[i]!)!.trunks
+      ?.find(trunk => trunk.edgeIds.length > 1 && trunk.edgeIds.includes(edgeId));
+    const targetTrunk = shapes.get(buffers.filaments.targetIds[i]!)!.trunks
+      ?.find(trunk => trunk.edgeIds.length > 1 && trunk.edgeIds.includes(edgeId));
+    const expectedSource = sourceTrunk ? -sourceTrunk.rootWidthFactor : sourceRatio;
+    const expectedTarget = targetTrunk ? -targetTrunk.rootWidthFactor : targetRatio;
+    assert.ok(Math.abs(buffers.filaments.neuralRootRatios[i * 2]! - expectedSource) < 1e-5);
+    assert.ok(Math.abs(buffers.filaments.neuralRootRatios[i * 2 + 1]! - expectedTarget) < 1e-5);
+    // D082-A-NEURAL END
     const ordinary = 1.5, radius = 10;
     assert.equal(neuralScreenWidthAt(0, ordinary, radius, radius, [sourceRatio, targetRatio], 200), ordinary * sourceRatio);
   }

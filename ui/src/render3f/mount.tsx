@@ -20,7 +20,7 @@ import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
 import type { ScaleNavigationPath } from "#engine/scale-topology.ts";
 import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
-import { createVisualState } from "#engine/visual-state.ts";
+import { createRenderVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { EMPTY_LABEL_BOUNDS, SHIPPING_RENDER_DEFAULTS, mountProjectionLabelOverlay } from "#render2d/model.ts";
 import { readProjectionStyle, typedLabelKind, typedLabelTexts, TYPED_LABEL_CAMERA, TYPED_COMPLETE_BUNDLE_LABEL } from "#render-common/projection-style.ts";
@@ -64,6 +64,7 @@ import { ScenePicker } from "#render3f/picking.ts";
 import { TypedProjectionPicker } from "#render3f/picking.ts";
 import type { Render3fTypedInput, TypedProjectionGeometry } from "#render3f/picking.ts";
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
+import { QualityLadder, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
 
 /** How long the camera must be still before the derived geometry returns to full quality. */
 const DERIVED_STILL_MS = 200;
@@ -83,6 +84,10 @@ export type Render3fOptions = {
   readonly theme: Theme;
   readonly lodBand: LodBand;
   readonly reducedMotion: boolean;
+  // D082-A-PERF BEGIN: a product 3D mount starts in its requested camera so
+  // the initial canvas, labels and buffers are not drawn twice.
+  readonly initialCameraKind?: CameraKind;
+  // D082-A-PERF END
   /** Optional Natural Neural shell. False and absent share the baseline path. */
   readonly brain?: boolean;
   readonly elapsedMilliseconds: number;
@@ -192,7 +197,7 @@ export function mount(
   let layoutPassCount = 0;
   let currentState: VisualState;
   if (initialVisualState !== undefined) {
-    currentState = createVisualState(visualGraph, initialVisualState);
+    currentState = createRenderVisualState(visualGraph, initialVisualState);
   } else {
     const provisionalBounds = framingBox ?? bootstrapBounds();
     const provisionalState = stateFromOptions(visualGraph, options, cameraStateForBounds(provisionalBounds));
@@ -211,7 +216,7 @@ export function mount(
       const bounds = provisionalScene.nodes.length === 0
         ? provisionalBounds
         : resolvedNodeBounds(provisionalScene.nodes.map((node) => node.position));
-      currentState = createVisualState(visualGraph, {
+      currentState = createRenderVisualState(visualGraph, {
         ...provisionalState,
         camera: cameraStateForBounds(bounds),
       });
@@ -245,6 +250,10 @@ export function mount(
   const filamentResources = createFilamentRenderResources(live.buffers.filaments);
   setFilamentNeuralWidthPx(filamentResources.material, options.presentation?.appearance?.edgeWidth ?? 1);
   const nodeResources = createNodeRenderResources(live.buffers.nodes);
+  // D082-A-N3D BEGIN: only the full Natural/Indra Neural 3D scene receives the point floor.
+  const denseNeuralCompleta = options.morphology === "neural"
+    && options.presentation?.morphologyLanguage === "distinct" && live.scene.nodes.length === 11_199;
+  // D082-A-N3D END
   registry.registerGeometry(aggregateResources.geometry);
   registry.registerGeometry(filamentResources.geometry);
   registry.registerGeometry(nodeResources.geometry);
@@ -281,6 +290,39 @@ export function mount(
       ...rig.graphToViewport(point), scale: rig.sizeScaleAt(point),
     }))
     : null;
+  // D082-A-NODES BEGIN
+  // The native filament is visible at Completa size beneath the structure canvas. Its alpha
+  // attribute must receive the same per-edge factor as the canvas, including after LOD updates.
+  const nativeEdgeVeilById = new Map<string, number>([...(options.presentation?.edges ?? [])]
+    .filter(([, edge]) => edge.denseVeilBaseOpacityPermille !== undefined)
+    .map(([id, edge]) => [id, edge.denseVeilFactor ?? 1]));
+  const applyNativeEdgeVeil = () => {
+    if (!distinct || live.scene.nodes.length < DENSE_SCENE_THRESHOLD || !nativeEdgeVeilById.size) return;
+    const attribute = filamentResources.geometry.getAttribute("a_opacityPermille");
+    if (!(attribute instanceof THREE.InstancedBufferAttribute)) return;
+    // D082-A-NCOMPLETA BEGIN: the Neural profile's spare flag range carries the same
+    // measured veil to its root alpha and width in the fragment material.
+    const neuralProfile = filamentResources.geometry.getAttribute("a_neuralProfile");
+    // D082-A-NCOMPLETA END
+    const baseAlpha = new Map(live.scene.edges.map(edge => [edge.id, edge.opacityPermille]));
+    for (const [index, id] of live.buffers.filaments.edgeIds.entries()) {
+      const factor = currentState.selectedId === id || currentState.focusedId === id ? 1 : nativeEdgeVeilById.get(id) ?? 1;
+      attribute.setX(index, Math.round((baseAlpha.get(id) ?? 0) * factor));
+      // D082-A-NCOMPLETA BEGIN
+      if (neuralProfile instanceof THREE.InstancedBufferAttribute && live.buffers.filaments.neuralProfile[index * 4 + 3]! > 0.5)
+        // D082-A-N3D BEGIN: reserve 3 + factor for the 3D full Neural ribbon floor.
+        neuralProfile.setW(index, (denseNeuralCompleta ? 3 : 1) + factor);
+        // D082-A-N3D END
+      // D082-A-NCOMPLETA END
+    }
+    attribute.needsUpdate = true;
+    // D082-A-NCOMPLETA BEGIN
+    if (neuralProfile instanceof THREE.InstancedBufferAttribute) neuralProfile.needsUpdate = true;
+    // D082-A-NCOMPLETA END
+  };
+  applyNativeEdgeVeil();
+  const denseNodeRadii = new Map<string, { radius: number; halo: number }>();
+  // D082-A-NODES END
   if (distinct) {
     // The GPU draws dense nodes and edges; the overlay keeps Indra's container structure.
     filamentResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
@@ -294,10 +336,16 @@ export function mount(
       return rig.projectToViewportInto(point, out);
     },
     nodeRadiusPx(node: SceneNode): number {
-      return node.radiusPx * rig.sizeScaleAt(node.position);
+      // D082-A-NODES BEGIN
+      return (denseNodeRadii.get(node.id)?.radius ?? node.radiusPx) * rig.sizeScaleAt(node.position);
+      // D082-A-NODES END
     },
     nodeFootprintRadiusPx(node: SceneNode): number {
       const scale = rig.wheelNodeSizeScaleAt(node.position);
+      // D082-A-NODES BEGIN
+      const dense = denseNodeRadii.get(node.id);
+      if (dense) return Math.max(dense.radius, dense.halo) * scale;
+      // D082-A-NODES END
       return Math.max(node.haloRadiusPx * scale,
         Math.max(node.radiusPx * scale, node.minimumCoreDeviceRadiusPx) + node.haloCoreGapPx * scale);
     },
@@ -336,7 +384,6 @@ export function mount(
   let typedLabelBudget: number | undefined = initialScope?.labelBudget;
   let typedLabelOverlay: ProjectionLabelOverlay | null = null;
   let typedFittedCameraDistance: number | null = null;
-  let visualsStillTimer: ReturnType<typeof setTimeout> | undefined;
   const acceptVisuals = (input: Render3fTypedInput): void => {
     if (visuals === null) {
       visuals = createProjectionVisualsLayer(container, "3d",
@@ -352,7 +399,48 @@ export function mount(
     acceptVisuals(typedInput!);
   }
   let emphasisIds = options.presentation?.emphasisIds ?? null;
+  // D082-A-PERF BEGIN: count the prepared scene once per revision, never in a camera frame.
+  let requestedNodes = live.buffers.nodes.ids.length;
+  let requestedMainEdges = live.buffers.filaments.edgeIds.length;
+  let requestedSemanticEdges = live.buffers.filaments.edgeIds.length;
+  let requestedVisualEdges = 0;
+  const refreshPresentedCounts = (): void => {
+    if (typedPicker) {
+      const styled = currentStyled;
+      requestedNodes = typedPicker.geometry.nodes.filter(point => point.pick.kind === 'node'
+        && (styled?.nodeStyle[point.pick.id]?.alpha ?? 1) !== 0).length;
+      requestedSemanticEdges = typedPicker.geometry.semanticEdges.filter(part => part.pick.kind === 'semantic-edge'
+        && (styled?.edgeStyle[part.pick.id]?.alpha ?? 1) !== 0).length;
+      requestedVisualEdges = typedPicker.geometry.visualRelations.filter(part => part.pick.kind === 'visual-relation'
+        && (styled?.visualStyle[part.pick.visualId]?.opacityPermille ?? 1000) !== 0).length;
+      requestedMainEdges = typedPicker.semanticIncidence.filter(edge => {
+        if ((styled?.edgeStyle[edge.id]?.alpha ?? 1) === 0) return false;
+        const sourceMark = styled?.nodeStyle[edge.source], targetMark = styled?.nodeStyle[edge.target];
+        const level = styled?.edgeStyle[edge.id]?.hierarchyLevel;
+        return mainRelation({ attested: true,
+          selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
+          sourceHub: sourceMark?.type === 'hub', targetHub: targetMark?.type === 'hub',
+          sourceDomain: sourceMark?.type === 'domain', targetDomain: targetMark?.type === 'domain',
+          ...(typeof level === 'number' ? { hierarchyLevel: level } : {}) });
+      }).length;
+    } else {
+      requestedNodes = live.buffers.nodes.ids.length;
+      requestedSemanticEdges = live.buffers.filaments.edgeIds.length;
+      requestedVisualEdges = 0;
+      const byId = new Map(live.scene.nodes.map(node => [node.id, node]));
+      requestedMainEdges = live.scene.edges.filter(edge => {
+        const sourceMark = byId.get(edge.source), targetMark = byId.get(edge.target);
+        return mainRelation({ attested: true,
+          selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
+          sourceHub: sourceMark?.kind === 'hub', targetHub: targetMark?.kind === 'hub',
+          sourceDomain: sourceMark?.kind === 'domain', targetDomain: targetMark?.kind === 'domain' });
+      }).length;
+    }
+  };
+  refreshPresentedCounts();
+  // D082-A-PERF END
   let destroyed = false;
+  const perfMarksEnabled = new URLSearchParams(location.search).has('perfmarks');
   let labelTimer: ReturnType<typeof setTimeout> | undefined;
   let fiberStore: ReturnType<ReturnType<typeof createFiberRoot>["render"]> | undefined;
   const fiberRoot = createFiberRoot(canvas);
@@ -381,9 +469,22 @@ export function mount(
       referenceViewDepth: projection.nodeReferenceViewDepth,
       nodeScaleCap: projection.nodeScaleCap,
       // End A1b outside-ownership bridge.
+      // D082-A-N3D BEGIN
+      denseNeuralPointFloorCssPx: denseNeuralCompleta ? 0.9 : 0,
+      // D082-A-N3D END
     });
   };
   const updateLabels = (): void => {
+    // D082-A-PERF BEGIN: attribute dense 3D recovery between labels, canvas,
+    // and GPU submission in the opt-in performance trace.
+    if (perfMarksEnabled) performance.mark('d082:labels3d:start');
+    const finishLabels = () => {
+      if (perfMarksEnabled) {
+        performance.mark('d082:labels3d:end');
+        performance.measure('d082:labels3d', 'd082:labels3d:start', 'd082:labels3d:end');
+      }
+    };
+    // D082-A-PERF END
     if (typedPicker) {
       // The product controller stays idle on the typed path; the D-072 policy places names through
       // the shared DOM overlay over the baked metadata (type, level, tier 1, focus eligibility).
@@ -396,6 +497,7 @@ export function mount(
       const box = container.getBoundingClientRect();
       if (box.width <= 0 || box.height <= 0) {
         typedLabelOverlay.update({ candidates: [], bounds: EMPTY_LABEL_BOUNDS });
+        finishLabels();
         return;
       }
       const distance = rig.camera.position.length();
@@ -437,6 +539,7 @@ export function mount(
         ...(ink ? { textColor: ink } : {}),
         bounds: { left: 0, top: 0, width: box.width, height: box.height },
         ...(typedLabelBudget !== undefined ? { budget: typedLabelBudget } : {}) });
+      finishLabels();
       return;
     }
     labels.update(live.scene, {
@@ -451,25 +554,31 @@ export function mount(
         return rig.sizeScaleAt(node.position);
       },
     });
+    finishLabels();
   };
   const renderFrame = (): void => {
     if (destroyed) {
       return;
     }
+    if (perfMarksEnabled) performance.mark('d082:render3d:start');
     updateProjection();
     if (typedPicker && typedLayer.group.parent !== threeScene) threeScene.add(typedLayer.group);
     if (labelTimer !== undefined) clearTimeout(labelTimer);
-    labelTimer = setTimeout(() => {
+    if (ladder.state.stage === 4) labelTimer = setTimeout(() => {
+      labelTimer = undefined;
       if (!destroyed) {
         updateLabels();
-        // D081-P3g BEGIN: typed 3D placement is synchronous; report its completed pass.
         window.dispatchEvent(new CustomEvent("d081:labels-settled"));
-        // D081-P3g END
+        publishPresentedFrame();
       }
     }, 160);
     renderer.render(threeScene, rig.camera);
-    if (!typedPicker) distinct?.draw();
-    visuals?.draw();
+    if (!typedPicker && (ladder.state.stage === 4 || live.scene.nodes.length < DENSE_SCENE_THRESHOLD)) distinct?.draw();
+    // D082-A-PERF BEGIN: the GPU layer owns the structural moving frame.
+    // Dense projection visuals are decorative and their canvas projection is
+    // too costly to repeat for every wheel event; restore it at stage four.
+    if (!typedPicker || requestedNodes < DENSE_SCENE_THRESHOLD || ladder.state.stage === 4) visuals?.draw();
+    // D082-A-PERF END
     // D081-P3b BEGIN: labels live on the typed overlay and follow the camera.
     if (!typedMoving && typedBundleLabels.length && visuals?.canvas) {
       const overlay = visuals.canvas, context = overlay.getContext('2d');
@@ -487,38 +596,83 @@ export function mount(
       }
     }
     // D081-P3b END
+    publishPresentedFrame();
+    if (perfMarksEnabled) { performance.mark('d082:render3d:end'); performance.measure('d082:render3d', 'd082:render3d:start', 'd082:render3d:end'); }
   };
+  let presentationRevision = 0;
+  // D082-A-STALE BEGIN
+  const readinessSnapshot = () => {
+    const stage = ladder.state.stage;
+    const submitted = typedPicker ? typedLayer.submittedCounts() : null;
+    const prepared = typedPicker ? typedLayer.preparedCounts() : null;
+    const drawnNodes = submitted ? submitted.nodes
+      : world.visible && (nodeResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
+        ? Math.min(requestedNodes, nodeResources.mesh.visible ? nodeResources.geometry.instanceCount : requestedNodes) : 0;
+    const drawnSemantic = submitted ? submitted.semanticEdges
+      : world.visible && (filamentResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
+        ? Math.min(requestedSemanticEdges, filamentResources.mesh.visible ? filamentResources.geometry.instanceCount : requestedSemanticEdges) : 0;
+    const drawnVisual = submitted?.visualEdges ?? 0;
+    const scope = currentStyled ? readProjectionStyle(currentStyled) : null;
+    return {
+      view: `${options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
+      quality: ladder.state.moving ? 'movimento' : stage === 4 ? 'completa' : 'recupero',
+      ladder: stage,
+      nodes: { required: requestedNodes, loaded: prepared?.nodes ?? requestedNodes, drawn: drawnNodes },
+      mainEdges: { required: requestedMainEdges, loaded: Math.min(requestedMainEdges, prepared?.semanticEdges ?? requestedMainEdges),
+        drawn: Math.min(requestedMainEdges, drawnSemantic) },
+      allEdges: { required: requestedSemanticEdges + requestedVisualEdges,
+        loaded: prepared ? prepared.semanticEdges + prepared.visualEdges : requestedSemanticEdges + requestedVisualEdges,
+        drawn: drawnSemantic + drawnVisual },
+      decor: { labels: stage === 4 && labelTimer === undefined,
+        background: stage === 4, glow: stage === 4, animation: true },
+      decorApplicable: { animation: false },
+    } as const;
+  };
+  const publishPresentedFrame = (): void => {
+    const snapshot = readinessSnapshot();
+    // The draw boundary supplies counts. Two frames allow the submitted frame
+    // to pass the browser presentation boundary before the HUD can claim it.
+    const revision = ++presentationRevision;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!destroyed && revision === presentationRevision) presentRenderReadiness(snapshot);
+    }));
+  };
+  // D082-A-STALE END
+  typedLayer.setOnReady(renderFrame);
+  // D082-A-PERF BEGIN: three scheduled restores; no frame loop or scene rebuild at rest.
+  const ladder = new QualityLadder(({ stage, moving }) => {
+    typedMoving = stage < 4;
+    typedLayer.setQuality(stage >= 3 ? "full" : stage >= 2 ? "main" : "moving");
+    visuals?.setQuality(stage >= 4 ? "full" : "moving", false);
+    if (visuals?.canvas && typedPicker && requestedNodes >= DENSE_SCENE_THRESHOLD)
+      visuals.canvas.style.visibility = stage >= 4 ? "" : "hidden";
+    brainEnvelope?.setLod(stage >= 4 ? "full" : "moving");
+    const suspendedLayers = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD
+      ? ["[data-render3f-labels]", "[data-projection-labels]", "[data-morphology-canvas='distinct-3d']"]
+      : ["[data-render3f-labels]", "[data-projection-labels]"];
+    for (const selector of suspendedLayers) {
+      const layer = container.querySelector<HTMLElement>(selector);
+      if (layer) layer.style.visibility = stage >= 4 ? "" : "hidden";
+    }
+    if (!moving) {
+      renderFrame();
+      if (stage === 4) {
+        if (labelTimer !== undefined) clearTimeout(labelTimer);
+        labelTimer = undefined;
+        updateLabels();
+        window.dispatchEvent(new CustomEvent("d081:labels-settled"));
+        publishPresentedFrame();
+      }
+    }
+  });
+  // D082-A-PERF END
   brainEnvelope?.setRefitCallback(renderFrame);
   const syncCameraState = (): void => {
-    // D081-P3b BEGIN
-    typedMoving = true;
-    // D081-P3b END
-    if (brainEnvelope) brainEnvelope.setLod("moving");
+    // D082-A-PERF BEGIN: keep the shared derived layer in its documented moving tier.
     if (visuals) visuals.setQuality("moving", false);
-    if (visuals || brainEnvelope) {
-      typedLayer.setQuality("moving");
-      if (visualsStillTimer !== undefined) clearTimeout(visualsStillTimer);
-      // D081-P3b BEGIN
-      // D081-P3g BEGIN: restore every dense typed scene early enough for its label pass.
-      const denseComplete = currentStyled !== null && readProjectionStyle(currentStyled)?.density === "complete";
-      visualsStillTimer = setTimeout(() => {
-        visualsStillTimer = undefined;
-        if (!destroyed) {
-          typedMoving = false; visuals?.setQuality("full"); typedLayer.setQuality("full"); brainEnvelope?.setLod("full"); renderFrame();
-          if (denseComplete) {
-            // renderFrame's ordinary 160 ms debounce would postpone labels past the
-            // 400 ms contract. Complete this one placement with the restored scene.
-            if (labelTimer !== undefined) clearTimeout(labelTimer);
-            labelTimer = undefined;
-            updateLabels();
-            window.dispatchEvent(new CustomEvent("d081:labels-settled"));
-          }
-        }
-      }, denseComplete ? TYPED_COMPLETE_BUNDLE_LABEL.idleMs : DERIVED_STILL_MS);
-      // D081-P3g END
-      // D081-P3b END
-    }
-    currentState = createVisualState(visualGraph, {
+    // D082-A-PERF END
+    ladder.touch();
+    currentState = createRenderVisualState(visualGraph, {
       ...currentState,
       camera: engineCamera(rig.readCameraState()),
       cameraKind: rig.kind,
@@ -598,7 +752,7 @@ export function mount(
   resizeObserver.observe(container);
 
   const applyMaterialState = (selectedId: string | null, focusedId: string | null): void => {
-    currentState = createVisualState(visualGraph, {
+    currentState = createRenderVisualState(visualGraph, {
       ...currentState,
       camera: engineCamera(rig.readCameraState()),
       cameraKind: rig.kind,
@@ -611,6 +765,7 @@ export function mount(
     );
     live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
     brainEnvelope?.update(live.scene.nodes, live.scene.edges);
+    refreshPresentedCounts();
     const nextRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
     if (nextRenderDpr !== currentRenderDpr) {
       const nextDimensions = containerDimensions(container);
@@ -629,6 +784,9 @@ export function mount(
     if (!typedPicker) {
       updateNodeRenderResources(nodeResources, live.buffers.nodes);
       updateFilamentRenderResources(filamentResources, live.buffers.filaments);
+      // D082-A-NODES BEGIN
+      applyNativeEdgeVeil();
+      // D082-A-NODES END
     }
     if (!typedPicker) distinct?.setScene(live.scene);
     rig.setWorldFramingSubjects(sceneCameraFramingSubjects(live.scene));
@@ -659,11 +817,45 @@ export function mount(
     setDerivedMorphology(morphology: ProjectionVisualsMorphology): void {
       derivedMorphology = morphology;
       visuals?.setMorphology(morphology);
+      // D082-A-STALE BEGIN
+      // A morphology mutation invalidates the previously complete visual state immediately.
+      // This remains a renderer-side estimate, not compositor presentation evidence.
+      const snapshot = readinessSnapshot();
+      presentRenderReadiness({ ...snapshot, quality: 'recupero', ladder: snapshot.ladder === 4 ? 3 : snapshot.ladder,
+        decor: { ...snapshot.decor, background: false } });
+      renderFrame();
+      // D082-A-STALE END
     },
     updateVisibleSubset(update: DistinctSubsetUpdate | Render3fTypedInput): void {
       if (!("styled" in update)) {
         if (typedPicker) throw new TypeError("Legacy subset cannot replace typed 3D visibility");
         distinct?.updateVisibleSubset(update);
+        // D082-A-NODES BEGIN
+        if (live.scene.nodes.length === 11_199 && update.nodeEntries.size) {
+          const indexById = new Map(live.buffers.nodes.ids.map((id, nodeIndex) => [id, nodeIndex] as const));
+          const core = nodeResources.geometry.getAttribute("a_coreRadiusPx") as THREE.InstancedBufferAttribute;
+          const halo = nodeResources.geometry.getAttribute("a_haloRadiusPx") as THREE.InstancedBufferAttribute;
+          const gap = nodeResources.geometry.getAttribute("a_haloCoreGapPx") as THREE.InstancedBufferAttribute;
+          const floor = nodeResources.geometry.getAttribute("a_minimumCoreDeviceRadiusPx") as THREE.InstancedBufferAttribute;
+          for (const [id, entry] of update.nodeEntries) {
+            const nodeIndex = indexById.get(id);
+            if (nodeIndex === undefined || entry.radiusPx === undefined) continue;
+            core.setX(nodeIndex, entry.radiusPx);
+            halo.setX(nodeIndex, entry.haloRadiusPx ?? entry.radiusPx);
+            gap.setX(nodeIndex, 0);
+            floor.setX(nodeIndex, 0);
+            denseNodeRadii.set(id, { radius: entry.radiusPx, halo: entry.haloRadiusPx ?? entry.radiusPx });
+          }
+          core.needsUpdate = halo.needsUpdate = gap.needsUpdate = floor.needsUpdate = true;
+          renderFrame();
+        }
+        if (nativeEdgeVeilById.size) {
+          for (const [id, entry] of update.edgeEntries) if (entry.presentation)
+            nativeEdgeVeilById.set(id, entry.presentation.denseVeilFactor ?? 1);
+          applyNativeEdgeVeil();
+          renderFrame();
+        }
+        // D082-A-NODES END
         return;
       }
       if (typedPicker === null) {
@@ -680,6 +872,7 @@ export function mount(
           derivedMorphology = nextScope.morphology;
         }
         typedLayer.update(next.geometry, update.styled);
+        refreshPresentedCounts();
         // D081-P3b BEGIN
         updateBundleLabels(update);
         // D081-P3b END
@@ -698,6 +891,7 @@ export function mount(
           visuals?.setMorphology(nextScope.morphology);
         }
         typedLayer.update(typedPicker.geometry, update.styled);
+        refreshPresentedCounts();
         // D081-P3b BEGIN
         updateBundleLabels(update);
         // D081-P3b END
@@ -749,12 +943,12 @@ export function mount(
     },
     restoreCameraState(state: VisualStateCamera): void {
       detachInteractions.resetWheelAnchor();
-      currentState = createVisualState(visualGraph, { ...currentState, camera: engineCamera(state) });
+      currentState = createRenderVisualState(visualGraph, { ...currentState, camera: engineCamera(state) });
       rig.restoreCameraState(state);
       syncCameraState();
     },
     readVisualState(): VisualState {
-      currentState = createVisualState(visualGraph, {
+      currentState = createRenderVisualState(visualGraph, {
         ...currentState,
         camera: engineCamera(rig.readCameraState()),
         cameraKind: rig.kind,
@@ -765,7 +959,7 @@ export function mount(
       detachInteractions.resetWheelAnchor();
       live.setCameraKind(kind);
       rig.setCameraKind(kind, live.scene.camera);
-      currentState = createVisualState(visualGraph, {
+      currentState = createRenderVisualState(visualGraph, {
         ...currentState,
         camera: engineCamera(rig.readCameraState()),
         cameraKind: kind,
@@ -811,7 +1005,9 @@ export function mount(
         return [{ id: node.pick.id, viewportCenter: rig.graphToViewport(node.position),
           coreRadiusPx: 4.5, haloRadiusPx: 4.5 }];
       });
-      return readNodeFootprints(live, rig, ids);
+      // D082-A-NODES BEGIN
+      return readNodeFootprints(live, rig, ids, nodeResources.geometry);
+      // D082-A-NODES END
     },
     readRelationGeometryWitnesses(): readonly RelationGeometryWitness[] {
       if (typedPicker) return typedPicker.geometry.semanticEdges.map(segment => ({
@@ -864,7 +1060,7 @@ export function mount(
     },
     destroy(): void {
       if (labelTimer !== undefined) clearTimeout(labelTimer);
-      if (visualsStillTimer !== undefined) clearTimeout(visualsStillTimer);
+      ladder.destroy();
       if (destroyed) {
         return;
       }
@@ -892,7 +1088,11 @@ function WorldLayer({ world }: { readonly world: THREE.Group }): ReactElement {
   return <primitive object={world} />;
 }
 
-function scenesForState(
+// D082-A-SWITCH BEGIN: learn the default perspective navigation from the
+// authoritative scene builder once; the renderer does not own calibration.
+let defaultPerspectiveNavigation: Extract<Scene["camera"], { kind: "perspective" }>["navigation"] | null = null;
+// D082-A-SWITCH END
+export function scenesForState(
   graph: VisualGraph,
   state: VisualState,
   calibration: CalibrationProfile | undefined,
@@ -902,9 +1102,24 @@ function scenesForState(
   suppliedAnchors: ReadonlyMap<string, Coordinates> | undefined,
   presentation?: PresentationOptions,
 ): CameraScenes {
-  const orthographicState = createVisualState(graph, { ...state, cameraKind: ORTHOGRAPHIC });
-  const perspectiveState = createVisualState(graph, { ...state, cameraKind: PERSPECTIVE });
-  return {
+  const orthographicState = createRenderVisualState(graph, { ...state, cameraKind: ORTHOGRAPHIC });
+  // D082-A-SWITCH BEGIN: a supplied layout resolves the same scene for both camera
+  // requests. Keep its arrays resident and change only the projection request.
+  // This avoids repeating the full product scene derivation on every 3D entry.
+  const perspectiveNavigation = calibration?.camera.perspective ?? defaultPerspectiveNavigation;
+  if (suppliedAnchors !== undefined && perspectiveNavigation !== null) {
+    const orthographic = buildSceneWithCalibration(
+      graph, orthographicState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors, presentation,
+    );
+    const perspective: Scene = { ...orthographic, camera: {
+      ...orthographic.camera, kind: "perspective" as const,
+      navigation: { ...perspectiveNavigation },
+    } };
+    return { orthographic, perspective };
+  }
+  // D082-A-SWITCH END
+  const perspectiveState = createRenderVisualState(graph, { ...state, cameraKind: PERSPECTIVE });
+  const scenes = {
     orthographic: buildSceneWithCalibration(
       graph, orthographicState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors, presentation,
     ),
@@ -912,6 +1127,11 @@ function scenesForState(
       graph, perspectiveState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors, presentation,
     ),
   };
+  // D082-A-SWITCH BEGIN: only the scene layer supplies the default calibration.
+  if (calibration === undefined && scenes.perspective.camera.kind === "perspective")
+    defaultPerspectiveNavigation = { ...scenes.perspective.camera.navigation };
+  // D082-A-SWITCH END
+  return scenes;
 }
 
 /**
@@ -947,11 +1167,13 @@ function stateFromOptions(
   options: Render3fOptions,
   camera: VisualStateCamera,
 ): VisualState {
-  return createVisualState(graph, {
+  return createRenderVisualState(graph, {
     selectedId: null,
     focusedId: null,
     camera,
-    cameraKind: ORTHOGRAPHIC,
+    // D082-A-PERF BEGIN
+    cameraKind: options.initialCameraKind ?? ORTHOGRAPHIC,
+    // D082-A-PERF END
     morphology: options.morphology,
     organization: options.organization,
     palette: options.palette ?? SHIPPING_RENDER_DEFAULTS.palette,
@@ -962,18 +1184,23 @@ function stateFromOptions(
   });
 }
 
-function readNodeFootprints(live: LiveSceneState, rig: CameraRig, ids?: ReadonlySet<string>): readonly NodeFootprintWitness[] {
+// D082-A-NODES BEGIN
+function readNodeFootprints(live: LiveSceneState, rig: CameraRig, ids?: ReadonlySet<string>,
+  geometry?: THREE.InstancedBufferGeometry): readonly NodeFootprintWitness[] {
   const buffers = live.buffers.nodes;
+  const coreAttribute = geometry?.getAttribute("a_coreRadiusPx") as THREE.InstancedBufferAttribute | undefined;
+  const haloAttribute = geometry?.getAttribute("a_haloRadiusPx") as THREE.InstancedBufferAttribute | undefined;
+  const gapAttribute = geometry?.getAttribute("a_haloCoreGapPx") as THREE.InstancedBufferAttribute | undefined;
   const result: NodeFootprintWitness[] = [];
   buffers.ids.forEach((id, index) => {
     if (ids && !ids.has(id)) return;
     const position = coordinatesAt(buffers.positions, index);
     const sizeScale = rig.sizeScaleAt(position);
-    const coreRadiusPx = requiredNumber(buffers.coreRadiiPx[index], `mounted node ${id} core radius`) * sizeScale;
-    const requestedHaloRadius = requiredNumber(buffers.haloRadiiPx[index], `mounted node ${id} halo radius`) * sizeScale;
+    const coreRadiusPx = requiredNumber(coreAttribute?.getX(index) ?? buffers.coreRadiiPx[index], `mounted node ${id} core radius`) * sizeScale;
+    const requestedHaloRadius = requiredNumber(haloAttribute?.getX(index) ?? buffers.haloRadiiPx[index], `mounted node ${id} halo radius`) * sizeScale;
     const gapHaloRadius = (
-      requiredNumber(buffers.coreRadiiPx[index], `mounted node ${id} core radius`)
-      + requiredNumber(buffers.haloCoreGapsPx[index], `mounted node ${id} halo core gap`)
+      requiredNumber(coreAttribute?.getX(index) ?? buffers.coreRadiiPx[index], `mounted node ${id} core radius`)
+      + requiredNumber(gapAttribute?.getX(index) ?? buffers.haloCoreGapsPx[index], `mounted node ${id} halo core gap`)
     ) * sizeScale;
     result.push({
       id,
@@ -984,6 +1211,7 @@ function readNodeFootprints(live: LiveSceneState, rig: CameraRig, ids?: Readonly
   });
   return result;
 }
+// D082-A-NODES END
 
 /** This reads ScenePicker's actual retained scene object and does not substitute a mount-time scene reference. */
 function readSceneHeldByPicker(picker: ScenePicker): Scene {

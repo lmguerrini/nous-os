@@ -41,6 +41,9 @@ export const DENSITY_BUDGETS: Readonly<Record<Density, LodBudget>> = {
 // behind. The cache is keyed by that base's contents, so two equal explicit disclosures share
 // one pool and no other page state can reach it.
 import type { V2Index, V2Visible, V2Node } from './v2-core.ts';
+// D082-A-READINGS BEGIN
+import type { Reading } from './view-contract.ts';
+// D082-A-READINGS END
 const DENSITY_POOL_LIMIT = 850;
 const densityPoolCache = new WeakMap<V2Index, Map<string, V2Visible>>();
 export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: string | null = null): V2Visible {
@@ -122,7 +125,8 @@ export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: s
  * essential relation, then admits more relations whose two glyphs are present. */
 export function densitySourceRelations<T extends { id: string; source: string; target: string; class: string; type: string }>(
   relations: readonly T[], rendered: ReadonlySet<string>, budget: number,
-  importance: ReadonlyMap<string, number>, prior: readonly T[] = [],
+  importance: ReadonlyMap<string, number>, prior: readonly T[] = [], coveredNodes: ReadonlySet<string> = new Set(),
+  fillRemaining = true,
 ): T[] {
   const eligible = relations.filter(edge => rendered.has(edge.source) && rendered.has(edge.target));
   const byId = new Map(eligible.map(edge => [edge.id, edge]));
@@ -131,14 +135,124 @@ export function densitySourceRelations<T extends { id: string; source: string; t
   const ranked = eligible.sort((a, b) => score(b) - score(a) || compare(a.id, b.id));
   const chosen = new Map<string, T>();
   for (const edge of prior) {
+    if (chosen.size >= budget) break;
     const current = byId.get(edge.id);
     if (current) chosen.set(current.id, current);
   }
+  // D082-A-DENSITYg: cover selected glyphs before spending the remaining relation
+  // budget on global priority. A relation can cover both endpoints; processing the
+  // most important uncovered node first makes that choice deterministic and semantic.
+  const incident = new Map<string, T[]>();
   for (const edge of ranked) {
+    (incident.get(edge.source) ?? incident.set(edge.source, []).get(edge.source)!).push(edge);
+    if (edge.target !== edge.source)
+      (incident.get(edge.target) ?? incident.set(edge.target, []).get(edge.target)!).push(edge);
+  }
+  const degree = new Set(coveredNodes);
+  for (const edge of chosen.values()) { degree.add(edge.source); degree.add(edge.target); }
+  const nodes = [...rendered].sort((a, b) => (importance.get(b) ?? 0) - (importance.get(a) ?? 0) || compare(a, b));
+  for (const id of nodes) {
+    if (chosen.size >= budget) break;
+    if (degree.has(id)) continue;
+    const edge = incident.get(id)?.find(candidate => !chosen.has(candidate.id));
+    if (!edge) continue;
+    chosen.set(edge.id, edge);
+    degree.add(edge.source);
+    degree.add(edge.target);
+  }
+  if (fillRemaining) for (const edge of ranked) {
     if (chosen.size >= budget) break;
     chosen.set(edge.id, edge);
   }
   return [...chosen.values()];
+}
+
+/** Choose one shared edge budget across all relation classes, then expose its subsets by reading. */
+// D082-A-READINGS BEGIN
+export function densityRelationsByReading<T extends { id: string; source: string; target: string; class: string; type: string }>(
+  relations: readonly T[], reading: Reading, rendered: ReadonlySet<string>, budget: number,
+  importance: ReadonlyMap<string, number>, prior?: Readonly<{
+    attested: readonly T[]; exploratory: readonly T[]; structural?: readonly T[];
+  }>,
+): { attested: T[]; exploratory: T[]; structural: T[]; drawn: T[] } {
+  // Coverage and priority compete in one shared budget. This prevents structural
+  // provenance from consuming the slots before semantic relations get a chance to
+  // cover the selected nodes. The prior preserves Essenziale ⊂ Bilanciata.
+  const selectedRelations = densitySourceRelations(relations, rendered, budget, importance,
+    [...(prior?.attested ?? []), ...(prior?.exploratory ?? []), ...(prior?.structural ?? [])]);
+  const attested = selectedRelations.filter(edge => edge.class === 'attested');
+  const exploratory = selectedRelations.filter(edge => edge.class === 'exploratory');
+  const structural = selectedRelations.filter(edge => edge.class === 'structural');
+  const visibleRelations = reading === 'attested' ? attested
+    : reading === 'exploratory' ? exploratory : [...attested, ...exploratory];
+  const byId = new Map([...visibleRelations, ...structural].map(edge => [edge.id, edge]));
+  return { attested, exploratory, structural, drawn: [...byId.values()] };
+}
+
+/** Nodes whose only selected semantic witness is hidden by the current reading. */
+export function readingIsolatedNodeIds<D extends { source: string; target: string; class?: string },
+  A extends { source: string; target: string; class: string; type?: string }>(
+  rendered: ReadonlySet<string>, drawn: readonly D[], allRelations: readonly A[], reading: Reading,
+): string[] {
+  if (reading === 'combined') return [];
+  // Structural provenance is present in every reading, but does not make a node
+  // semantically connected to the active reading.
+  const visibleClass = reading === 'attested' ? 'attested' : 'exploratory';
+  const degree = new Set(drawn.filter(edge => edge.class === visibleClass)
+    .flatMap(edge => [edge.source, edge.target]));
+  const opposite = reading === 'attested' ? 'exploratory' : 'attested';
+  return [...rendered].filter(id => !degree.has(id) && allRelations.some(edge => edge.class === opposite &&
+    edge.type !== 'classified_in' && (edge.source === id && rendered.has(edge.target) || edge.target === id && rendered.has(edge.source)))).sort(compare);
+}
+// D082-A-READINGS END
+
+/** Replace selected nodes that have no eligible relation to another selected node
+ * with the highest-ranked connected candidate of the same hierarchy level. The
+ * required prefix is retained verbatim, so Bilanciata can repair its own suffix
+ * without ever dropping an Essenziale node. */
+export function densityConnectedNodes<T extends { source: string; target: string }>(
+  seed: readonly string[], candidates: readonly LodNodeInfo[], relations: readonly T[], budget: number,
+  required: readonly string[] = [],
+): string[] {
+  const byId = new Map(candidates.map(node => [node.id, node]));
+  // Explicit user state (reveal/search/selection/expansion/pin/focus) survives even
+  // when it exceeds the nominal density budget. Only the planner's automatic picks
+  // are eligible for the isolated-node repair below.
+  const mandatory = new Set(required.filter(id => byId.has(id)));
+  const chosen = [...new Set([...mandatory, ...seed.filter(id => !mandatory.has(id))])];
+  const selected = new Set(chosen);
+  const target = Math.max(budget, chosen.length);
+  const rankedCandidates = [...candidates].sort((a, b) => b.importance - a.importance || compare(a.id, b.id));
+  for (const candidate of rankedCandidates) {
+    if (chosen.length >= target) break;
+    if (!selected.has(candidate.id)) { selected.add(candidate.id); chosen.push(candidate.id); }
+  }
+  const neighbours = new Map<string, Set<string>>();
+  for (const edge of relations) if (edge.source !== edge.target) {
+    (neighbours.get(edge.source) ?? neighbours.set(edge.source, new Set()).get(edge.source)!).add(edge.target);
+    (neighbours.get(edge.target) ?? neighbours.set(edge.target, new Set()).get(edge.target)!).add(edge.source);
+  }
+  while (true) {
+    const degree = new Set<string>();
+    for (const id of selected) for (const neighbour of neighbours.get(id) ?? [])
+      if (selected.has(neighbour)) { degree.add(id); degree.add(neighbour); break; }
+    const isolated = chosen.map((id, index) => ({ id, index, node: byId.get(id)! }))
+      .filter(item => !mandatory.has(item.id) && !degree.has(item.id))
+      .sort((a, b) => a.node.importance - b.node.importance || compare(b.id, a.id));
+    let replaced = false;
+    for (const item of isolated) {
+      const replacement = rankedCandidates.find(candidate => candidate.level === item.node.level
+        && !selected.has(candidate.id) && [...(neighbours.get(candidate.id) ?? [])]
+          .some(neighbour => neighbour !== item.id && selected.has(neighbour)));
+      if (!replacement) continue;
+      selected.delete(item.id);
+      selected.add(replacement.id);
+      chosen[item.index] = replacement.id;
+      replaced = true;
+      break;
+    }
+    if (!replaced) return chosen;
+  }
 }
 // D082-A-DENSITY END
 

@@ -1,5 +1,5 @@
 import type { EngineGraph, VisualGraph } from "#engine/contract.ts";
-import { assertEngineAccessTrace, createEngineGraphView } from "#engine/contract.ts";
+import { assertEngineAccessTrace, createEngineGraphView, renderDebugAssertionsEnabled } from "#engine/contract.ts";
 import { aggregateMemberships } from "#engine/layout.ts";
 
 type EngineNode = EngineGraph["nodes"][number];
@@ -342,12 +342,16 @@ function hasIncidentEdge(graph: EngineGraph, nodeId: string): boolean {
  * semantic payload any more than the renderer can.
  */
 function engineView(graph: VisualGraph): EngineGraph {
-  const { graph: tracedGraph, trace } = createEngineGraphView(graph);
+  // D082-A-PERF BEGIN
+  const { graph: tracedGraph, trace } = createEngineGraphView(graph, { fast: true });
+  // D082-A-PERF END
   const ordered: EngineGraph = {
     nodes: [...tracedGraph.nodes].sort(compareIds),
     edges: [...tracedGraph.edges].sort(compareIds),
   };
-  assertEngineAccessTrace(trace);
+  // D082-A-PERF BEGIN
+  if (renderDebugAssertionsEnabled()) assertEngineAccessTrace(trace);
+  // D082-A-PERF END
   return ordered;
 }
 

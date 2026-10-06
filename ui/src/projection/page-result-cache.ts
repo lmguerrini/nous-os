@@ -16,7 +16,9 @@ export class PageResultCache<T> {
   private hits = 0;
   private misses = 0;
 
-  constructor(capacity = 8, byteLimit = 64 * 1024 * 1024) {
+  // D082-A-PERF BEGIN: a 50-mode tour must settle at a fixed, modest heap cap.
+  constructor(capacity = 2, byteLimit = 8 * 1024 * 1024) {
+  // D082-A-PERF END
     if (!Number.isSafeInteger(capacity) || capacity < 1 || !Number.isSafeInteger(byteLimit) || byteLimit < 1)
       throw new RangeError('Invalid page projection cache bounds');
     this.capacity = capacity;

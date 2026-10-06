@@ -1,8 +1,10 @@
 import type { Coordinates } from "#engine/contract.ts";
 import type { OklchToken } from "#engine/tokens.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
+import * as neuralGeometryModule from "#engine/morphology-geometry.ts";
+import { SceneCache, preparedSceneKey } from "#render-common/scene-cache.ts";
 // D081-P1E BEGIN: share the area normalization with canvas without another renderer import.
-import { buildMorphologyGeometry, somaLobeAreaScale, type MorphologyNodeShape } from "#engine/morphology-geometry.ts";
+import { buildMorphologyGeometry, neuralPrincipalTrunks, neuralTrunkLobeStrength, somaLobeAreaScale, type MorphologyNodeShape } from "#engine/morphology-geometry.ts";
 // D081-P1E END
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneAggregate, SceneEdge, SceneNode, SceneTokenEncoding } from "#scene/contract.ts";
@@ -65,6 +67,28 @@ export type SrgbColor = {
 
 /** This converts the complete scene into deterministic typed arrays and does not allocate renderer resources. */
 export function buildSceneBuffers(scene: Scene): SceneBuffers {
+  // The version is supplied by the Neural geometry owner. The fallback covers the D-081 module
+  // until that export is integrated; a version change invalidates every previous cache entry.
+  const declaredVersion: unknown = Reflect.get(neuralGeometryModule, "NEURAL_GEOMETRY_VERSION");
+  const version = typeof declaredVersion === "string" ? declaredVersion : "d081";
+  const key = preparedSceneKey(version, scene);
+  return sceneBuffersCache.getOrBuild(key, () => {
+    const marked = typeof location !== "undefined" && new URLSearchParams(location.search).has("perfmarks");
+    if (marked) performance.mark("d082:buffers:start");
+    const value = buildSceneBuffersUncached(scene);
+    if (marked) { performance.mark("d082:buffers:end"); performance.measure("d082:buffers", "d082:buffers:start", "d082:buffers:end"); }
+    return value;
+  });
+}
+
+const sceneBuffersCache = new SceneCache<SceneBuffers>(2);
+
+export function sceneBufferCacheStats(): Readonly<{ hits: number; misses: number; size: number;
+  estimatedBytes: number; byteLimit: number }> {
+  return sceneBuffersCache.stats;
+}
+
+function buildSceneBuffersUncached(scene: Scene): SceneBuffers {
   const neuralEdges = scene.edges.filter(edge => edge.filament.hotMixPermille > 0);
   const neuralGeometry = neuralEdges.length ? buildMorphologyGeometry("neural",
     scene.nodes.map(node => ({ id: node.id, position: node.position, radius: node.radiusPx })),
@@ -124,12 +148,12 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
       somaAxisAndEccentricity.set([shape.axis.x, shape.axis.y, shape.axis.z, shape.eccentricity], index * 4);
       somaHarmonics12.set([shape.outline[0]?.amplitude ?? 0, shape.outline[0]?.phase ?? 0, shape.outline[1]?.amplitude ?? 0, shape.outline[1]?.phase ?? 0], index * 4); somaHarmonic3.set([shape.outline[2]?.amplitude ?? 0, shape.outline[2]?.phase ?? 0], index * 2);
       // D081-P1E BEGIN: only three clustered principal trunks, with no new scene semantics.
-      const trunks = (shape.trunks ?? []).slice(0, 3);
+      // D082-A-NEURAL BEGIN: the fixed three GPU slots span the real root directions.
+      const trunks = neuralPrincipalTrunks(shape.trunks ?? []);
       const maximum = Math.max(1, ...trunks.map(trunk => trunk.weight));
       // D081-P1F BEGIN: pack the same shoulder strength as the 2D and 3D canvas frame.
       const lobes = trunks.map(trunk => ({ angle: Math.atan2(trunk.direction.y, trunk.direction.x),
-        strength: shape.degree <= 3 ? 0.70 + 0.10 * Math.sqrt(trunk.weight / maximum)
-          : 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum) }));
+        strength: neuralTrunkLobeStrength(trunk, maximum, shape.degree) }));
       const axisAngle = Math.atan2(shape.axis.y, shape.axis.x);
       somaShape[index * 2 + 1] = somaLobeAreaScale(lobes,
         angle => {
@@ -139,9 +163,9 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
         });
       trunks.forEach((trunk, lobeIndex) => [somaLobe0, somaLobe1, somaLobe2][lobeIndex]!.set([
         trunk.direction.x, trunk.direction.y, trunk.direction.z,
-        shape.degree <= 3 ? 0.70 + 0.10 * Math.sqrt(trunk.weight / maximum)
-          : 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum),
+        neuralTrunkLobeStrength(trunk, maximum, shape.degree),
       ], index * 4));
+      // D082-A-NEURAL END
       // D081-P1F END
       // D081-P1E END
     } else if (neuralNodeIds.has(node.id)) somaAxisAndEccentricity.set([1, 0, 0, 1], index * 4);
@@ -216,8 +240,10 @@ export function buildFilamentBuffers(
     // A shared incident trunk supplies the initial tangent of each real
     // relation. This changes visual routing only; the instance, ID and endpoint stay real.
     const sourceNode = neuralShapes.get(edge.source), targetNode = neuralShapes.get(edge.target);
-    const sourceTrunk = neural && (sourceNode?.degree ?? 0) >= 8 ? sourceNode?.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
-    const targetTrunk = neural && (targetNode?.degree ?? 0) >= 8 ? targetNode?.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
+    // D082-A-NEURAL BEGIN: use the same genuine shared root at every degree as canvas routing.
+    const sourceTrunk = neural ? sourceNode?.trunks?.find(trunk => trunk.edgeIds.length > 1 && trunk.edgeIds.includes(edge.id)) : undefined;
+    const targetTrunk = neural ? targetNode?.trunks?.find(trunk => trunk.edgeIds.length > 1 && trunk.edgeIds.includes(edge.id)) : undefined;
+    // D082-A-NEURAL END
     const route = neuralRoutes.get(edge.id);
     const sourceRoot = route?.sourceBranches?.[0], targetRoot = route?.targetBranches?.[0];
     const sourceBranch = sourceRoot && sourceNode ? {

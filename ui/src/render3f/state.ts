@@ -3,6 +3,9 @@ import type { SurfaceWitness, WorldAnchorWitness } from "#engine/renderer-handle
 import type { Scene } from "#scene/contract.ts";
 import { buildSceneBuffers } from "#render3f/buffers.ts";
 import type { SceneBuffers } from "#render3f/buffers.ts";
+// D082-A-PERF BEGIN: the complete scene diff is a debug contract, not mount work.
+import { renderDebugAssertionsEnabled } from "#engine/contract.ts";
+// D082-A-PERF END
 
 type RelationGeometryPoint = {
   readonly x: number;
@@ -33,7 +36,9 @@ export class LiveSceneState {
 
   /** This copies mounted scene data into live arrays and does not allocate graphics resources. */
   constructor(scenes: CameraScenes, activeKind: CameraKind, layoutPassCount: number) {
-    assertProjectionOnlyDifference(scenes);
+    // D082-A-PERF BEGIN
+    if (renderDebugAssertionsEnabled()) assertProjectionOnlyDifference(scenes);
+    // D082-A-PERF END
     this.scenes = scenes;
     this.activeKind = activeKind;
     this.buffersValue = buildSceneBuffers(scenes[activeKind]);
@@ -62,10 +67,16 @@ export class LiveSceneState {
 
   /** This replaces material-state scenes after declared layout work and does not conceal that work from the count. */
   replaceScenes(scenes: CameraScenes, layoutPassesRun: number): void {
-    assertProjectionOnlyDifference(scenes);
+    // D082-A-PERF BEGIN
+    if (renderDebugAssertionsEnabled()) assertProjectionOnlyDifference(scenes);
+    // D082-A-PERF END
     const next = buildSceneBuffers(scenes[this.activeKind]);
-    assertSameSurface(this.buffersValue, next);
-    assertSameAnchors(this.buffersValue, next);
+    // D082-A-PERF BEGIN
+    if (renderDebugAssertionsEnabled()) {
+      assertSameSurface(this.buffersValue, next);
+      assertSameAnchors(this.buffersValue, next);
+    }
+    // D082-A-PERF END
     this.scenes = scenes;
     this.buffersValue = next;
     this.layoutPassCountValue += layoutPassesRun;
