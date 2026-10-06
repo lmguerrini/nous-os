@@ -296,7 +296,10 @@ function productPartial(value: Partial<PageAxes>): Partial<Axes> {
   if (organization === "fractal" || organization === "holographic") throw new Error(`La vista ${viewLabel(organization)} richiede il grafo distillato`);
   return organization === undefined ? rest : { ...rest, organization };
 }
-const viewLabel = (organization: "fractal" | "holographic") => organization === "fractal" ? "Fractal" : "Holographic";
+// D084-W3-LABELS BEGIN: public errors and refusals name the view as the
+// selector does; `fractal` stays the internal compatibility key only.
+const viewLabel = (organization: "fractal" | "holographic") => organization === "fractal" ? "Canopy" : "Holographic";
+// D084-W3-LABELS END
 function writeViewUrl(): void {
   // D082-B2 BEGIN
   if (!view2WriteAllowed) return;

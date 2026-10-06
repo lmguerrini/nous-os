@@ -1730,7 +1730,7 @@ export class V2Page {
         const { organization } = this.axes;
         if (this.canopyActive()) return 'natural';
         if (organization === 'fractal' || organization === 'holographic')
-            throw new Error(`${organization === 'fractal' ? 'Fractal' : 'Holographic'} is only served by the typed projection pipeline`);
+            throw new Error(`${organization === 'fractal' ? 'Canopy' : 'Holographic'} is only served by the typed projection pipeline`); // D084-W3-LABELS
         return organization;
     }
     /** The camera of a typed renderer belongs to one dimension and one view; another view's camera is never reused. */
