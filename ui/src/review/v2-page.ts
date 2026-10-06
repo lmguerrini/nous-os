@@ -2464,13 +2464,18 @@ export class V2Page {
             const relations = completeRelations(this.index, 'combined');
             const essentialSeed = this.density === 'essential' ? selection.rendered
                 : this.selectLod({ ...input, budget: DENSITY_BUDGETS.essential.nodes }, null).rendered;
+            // D082-A-DENSITYh parity: explicit user state always wins over the automatic
+            // isolated-node repair here too — the typed path feeds the same mandatory ids
+            // (selection path, hover, expanded containers, active node) as the classic renderer.
+            const requiredDensityIds = [...pinned, ...(active ? [active] : [])];
             const essential = new Set(densityConnectedNodes(essentialSeed, infos, relations.edges,
-                DENSITY_BUDGETS.essential.nodes));
+                DENSITY_BUDGETS.essential.nodes, requiredDensityIds));
             const originalEssential = new Set(essentialSeed);
             const balancedSeed = [...essential,
                 ...selection.rendered.filter(id => !originalEssential.has(id) && !essential.has(id))];
             const rendered = this.density === 'essential' ? essential : new Set(densityConnectedNodes(
-                balancedSeed, infos, relations.edges, DENSITY_BUDGETS.balanced.nodes, [...essential]));
+                balancedSeed, infos, relations.edges, DENSITY_BUDGETS.balanced.nodes,
+                [...new Set([...essential, ...requiredDensityIds])]));
             const importance = new Map(this.index.nodes.map(node => [node.id, node.importance.value]));
             const essentialSelection = densityRelationsByReading(relations.edges, 'combined', essential,
                 DENSITY_BUDGETS.essential.arcs, importance);
