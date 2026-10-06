@@ -1010,7 +1010,9 @@ export class V2Page {
     // D081-P6 BEGIN: one visible centre starts a stationary 3D wheel gesture.
     private wheelGesture: { id: string; clusterId: string; x: number; y: number;
         view: ProductView; point: Vec3 } | null = null;
-    private readonly wheelLevels: ReadonlyMap<string, number>;
+    // D082-A-ZOOMANCHOR BEGIN: fetched Indra passages extend this lookup.
+    private readonly wheelLevels: Map<string, number>;
+    // D082-A-ZOOMANCHOR END
     // D081-P6 END.
     constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
@@ -3141,6 +3143,10 @@ export class V2Page {
             if (!ids.has(passage.id)) {
                 this.index.nodes.push(passage);
                 ids.add(passage.id);
+                // D082-A-ZOOMANCHOR BEGIN: a fetched depth-five mark participates in
+                // the same deepest-mark ordering as nodes present at page creation.
+                if (this.axes.organization === 'indra') this.wheelLevels.set(passage.id, passage.level);
+                // D082-A-ZOOMANCHOR END
             }
             this.detailCache.set(passage.id, { detail: item });
         }
@@ -3599,7 +3605,11 @@ export class V2Page {
             // the layout, then compensate only if that node actually moved on screen.
             let anchor: { id: string; point: { x: number; y: number } } | null = null;
             // D082-A-DENSITY BEGIN
-            if (disclosureChanged && !this.densitySwitchPending && old && keep && this.view) {
+            // D082-A-ZOOMANCHOR BEGIN: the lower-density Indra pool can stay byte-identical
+            // while a newly fetched passage repacks its full hierarchy. That remount must
+            // retain the pointed mark just like a disclosure remount does.
+            if ((disclosureChanged || indraLayoutMoved) && !this.densitySwitchPending && old && keep && this.view) {
+            // D082-A-ZOOMANCHOR END
             // D082-A-DENSITY END
                 // D082-A-PERF BEGIN
                 const witness = this.view.gestureWitness?.() ?? this.view.witness();
