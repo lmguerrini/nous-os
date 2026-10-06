@@ -3362,6 +3362,14 @@ export class V2Page {
                 this.history.state.manualOrder, V2_PAGE,
             );
             const pinned = this.pinnedNodeIds(tiers);
+            // D082-A-ZOOMANCHOR2 BEGIN: a stationary Indra 3D wheel gesture is an
+            // explicit pointer focus. Keep its drawn mark through the near LOD's
+            // fixed-budget replacement; densityConnectedNodes also treats pinned
+            // ids as required, so its connectivity repair cannot remove it.
+            if (organization === 'indra' && projection === '3d' && this.wheelGesture && this.cursor &&
+                Math.hypot(this.cursor.x - this.wheelGesture.x, this.cursor.y - this.wheelGesture.y) <= 3 &&
+                ids.has(this.wheelGesture.id)) pinned.add(this.wheelGesture.id);
+            // D082-A-ZOOMANCHOR2 END
             // D-072 R1: a selection failure keeps the last mounted selection verbatim
             // (`safeSelectNodes`), so the drawing never loses its node set — or its labels.
             // D082-A-READINGS BEGIN
@@ -3627,8 +3635,13 @@ export class V2Page {
                     : admissionAnchorAtPointer(witness.nodeViewport, this.wheelLevels, renderedIds, cursor);
                 const fallback = [underPointer, this.revealState.focusClusterId, this.selected]
                     .filter(id => !gesture || id && clusterOf(id) === gesture.clusterId);
+                // D082-A-ZOOMANCHOR2 BEGIN: a disclosed but culled mark has a
+                // layout position and no glyph in the replacement view. Anchor
+                // only on the next drawn set, then use the pointed cluster's
+                // deepest surviving mark under the pointer.
                 const id = gestureRemountAnchorId(gesture?.id ?? null, witness.nodeViewport,
-                    new Set(next.keys()), fallback);
+                    renderedIds, fallback);
+                // D082-A-ZOOMANCHOR2 END
                 // D081-P6 END.
                 if (id) anchor = { id, point: witness.nodeViewport[id]! };
             }
