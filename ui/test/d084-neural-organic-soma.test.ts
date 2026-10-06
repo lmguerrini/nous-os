@@ -9,10 +9,11 @@ import { buildMorphologyGeometry, NEURAL_LEAF_BODY_SCALE, NEURAL_PROFILE_GLSL, N
   neuralRootProfileAt, neuralRootProfileAtLength, neuralVisibleRootLengthPx } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
-import { NEURAL_EDGE_SOMA_OVERLAP_PX, neuralLeafRootWidthPx, neuralRootInsideSoma, neuralSomaFrames,
-  somaOutlineRadiusAtAngle, type MorphologyCanvasStyle, type NeuralSomaFrame } from "#render-common/morphology-canvas.ts";
+import { NEURAL_EDGE_SOMA_OVERLAP_PX, drawNeuralProfile, neuralLeafRootWidthPx, neuralRibbonProfile, neuralRootInsideSoma, neuralSomaFrames,
+  neuralSomaOutlineAlpha, somaOutlineRadiusAtAngle, type MorphologyCanvasStyle, type MorphologyEdgePaint, type NeuralSomaFrame } from "#render-common/morphology-canvas.ts";
 import { FILAMENT_FRAGMENT_SHADER, FILAMENT_VERTEX_SHADER, neuralRootCompactScaleQA } from "#render3f/filament-material.ts";
 import { FILAMENT_NEURAL_PROFILE_TABLE_3D } from "#render3f/filament-material.ts";
+import { NODE_FRAGMENT_SHADER } from "#render3f/node-material.ts";
 import { buildNodeBuffers, buildSceneBuffers } from "#render3f/buffers.ts";
 import { buildScene } from "#scene/build.ts";
 import { sceneFixtureGraph, sceneVisualState } from "#test-scene/support.ts";
@@ -122,6 +123,114 @@ test("canvas sampling and both GPU uniforms use the one engine table", async () 
     assert.ok(Math.abs(fromCanvas.somaMix - fromTable.somaMix) < 1e-6);
   }
 });
+
+// D084-W2-NEURAL-R6 BEGIN: these cases falsify the former 0.9 floor, the
+// native ceiling, and the extra dense-edge factor at an otherwise unchanged soma.
+const alphaCases = [[0.35, 0.97], [0.75, 0.2], [0.18, 0.64]] as const;
+test("canvas soma outline and outer root gradient share endpoint alpha in both directions", () => {
+  const parseAlpha = (colour: string) => Number(colour.match(/,\s*([\d.]+)\)$/)?.[1] ?? NaN);
+  for (const projection of ["2d", "3d"] as const) for (const [edgeAlpha, somaAlpha] of alphaCases) {
+    const drawnSomaAlpha = neuralSomaOutlineAlpha(somaAlpha, 1, 1, projection);
+    assert.equal(drawnSomaAlpha, somaAlpha);
+    const radius = 8, length = 40, width = 2;
+    const mouth = neuralRootProfileAtLength(0, radius, width, edgeAlpha, 1.8, length, width, drawnSomaAlpha);
+    const tail = neuralRootProfileAtLength(length + radius * NEURAL_ROOT_FILLET_LENGTH_RADII,
+      radius, width, edgeAlpha, 1.8, length, width, drawnSomaAlpha);
+    assert.equal(mouth.alpha, drawnSomaAlpha);
+    assert.equal(tail.alpha, edgeAlpha);
+    for (const endpoint of ["rootStart", "rootEnd"] as const) {
+      const gradients: { stops: { offset: number; colour: string }[] }[] = [];
+      const context = ({ createLinearGradient() {
+        const gradient = { stops: [] as { offset: number; colour: string }[],
+          addColorStop(offset: number, colour: string) { this.stops.push({ offset, colour }); } };
+        gradients.push(gradient);
+        return gradient;
+      }, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() {}, fillStyle: "" }) as unknown as CanvasRenderingContext2D;
+      const root = { outlinePx: endpoint === "rootStart" ? 0 : 100, radiusPx: radius,
+        lengthPx: length, ratio: 1.8, degree: 1, trunkWidthPx: width,
+        somaColor: "rgb(210, 210, 210)", somaAlpha: drawnSomaAlpha };
+      const paint = { points: [{ x: 0, y: 0 }, { x: 100, y: 0 }], cumulative: [0, 100],
+        totalPx: 100, color: "rgb(100, 100, 100)", alpha: edgeAlpha, widthAt: () => width,
+        [endpoint]: root } as unknown as MorphologyEdgePaint;
+      drawNeuralProfile(context, paint);
+      const stops = gradients[0]!.stops;
+      assert.ok(stops.length > 2);
+      assert.ok(Math.abs(parseAlpha(stops[endpoint === "rootStart" ? 0 : stops.length - 1]!.colour)
+        - drawnSomaAlpha) < 1e-9);
+      assert.ok(Math.abs(parseAlpha(stops[endpoint === "rootStart" ? stops.length - 1 : 0]!.colour)
+        - edgeAlpha * neuralRibbonProfile(width)[0]!.alpha) < 1e-9);
+    }
+  }
+  assert.equal(neuralSomaOutlineAlpha(0.4, 1, 1, "2d", false, 0.5), 0.2);
+  assert.equal(neuralSomaOutlineAlpha(0.4, 1, 0, "3d"), 0.34);
+});
+
+test("dense 2D packs endpoint node alpha independently of edge alpha and veil", async () => {
+  Object.assign(globalThis, { WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3,
+    SHORT: 4, UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 },
+    WebGLRenderingContext: { TRIANGLES: 4, FLOAT: 8, UNSIGNED_BYTE: 9 } });
+  const [{ FilamentProgram, FILAMENT_PROGRAM_FRAGMENT_SOURCE }, { floatColor }] = await Promise.all([
+    import("#render2d/filament-program.ts"), import("sigma/utils")]);
+  type Program = InstanceType<typeof FilamentProgram>;
+  const program = Object.assign(Object.create(FilamentProgram.prototype), { array: new Float32Array(64) }) as Program;
+  const attributes = program.getDefinition().ATTRIBUTES;
+  const offsetOf = (name: string) => attributes.slice(0, attributes.findIndex(attribute => attribute.name === name))
+    .reduce((total, attribute) => total + (attribute.type === 9 ? 1 : attribute.size), 0);
+  assert.equal(attributes.find(attribute => attribute.name === "a_somaStartColor")?.normalized, true);
+  assert.equal(attributes.find(attribute => attribute.name === "a_somaEndColor")?.normalized, true);
+  for (const [edgeAlpha, somaAlpha] of alphaCases) {
+    const sourceColor = `rgba(220, 210, 200, ${somaAlpha})`;
+    const targetColor = `rgba(150, 140, 130, ${1 - somaAlpha})`;
+    const edgeColor = `rgba(80, 90, 100, ${edgeAlpha})`;
+    const node = (color: string) => ({ x: 0, y: 0, size: 8, color });
+    const edge = { size: 2, color: edgeColor, neuralDenseFactor: 0.05 };
+    program.processVisibleItem(0, 0, node(sourceColor) as Parameters<Program["processVisibleItem"]>[2],
+      node(targetColor) as Parameters<Program["processVisibleItem"]>[3],
+      edge as unknown as Parameters<Program["processVisibleItem"]>[4]);
+    const packed = new Uint32Array((program as unknown as { array: Float32Array }).array.buffer);
+    const bits = (color: string) => new Uint32Array(new Float32Array([floatColor(color)]).buffer)[0];
+    assert.equal(packed[offsetOf("a_somaStartColor")], bits(sourceColor));
+    assert.equal(packed[offsetOf("a_somaEndColor")], bits(targetColor));
+    assert.equal(packed[offsetOf("a_color")], bits(edgeColor));
+    const fade = neuralProfileTableAt(NEURAL_ROOT_FILLET_LENGTH_RADII + 9).somaMix;
+    assert.equal(fade, 0);
+    assert.ok(Math.abs(edgeAlpha + (somaAlpha - edgeAlpha) * 1 - somaAlpha) < 1e-9);
+    assert.ok(Math.abs(edgeAlpha + (somaAlpha - edgeAlpha) * fade - edgeAlpha) < 1e-9);
+  }
+  assert.match(FILAMENT_PROGRAM_FRAGMENT_SOURCE,
+    /gradientColor\.a = mix\(gradientColor\.a,\s*rootSomaColor\.a \* bodyCoverage, rootSomaMix\)/);
+  assert.doesNotMatch(FILAMENT_PROGRAM_FRAGMENT_SOURCE, /rootSomaColor\.a \* v_materialVariation\.z/);
+});
+
+test("native 3D node and filament inputs retain the independent soma alpha", () => {
+  const graph = sceneFixtureGraph();
+  const scene = buildScene(graph, { ...sceneVisualState(graph), morphology: "neural" });
+  const edge = scene.edges[0]!;
+  for (const [edgeAlpha, somaAlpha] of alphaCases) {
+    const tuned = { ...scene,
+      nodes: scene.nodes.map(node => node.id === edge.source
+        ? { ...node, opacityPermille: Math.round(somaAlpha * 1000) } : node),
+      edges: scene.edges.map(relation => relation.id === edge.id
+        ? { ...relation, opacityPermille: Math.round(edgeAlpha * 1000) } : relation) };
+    const buffers = buildSceneBuffers(tuned);
+    const index = buffers.filaments.edgeIds.indexOf(edge.id);
+    const nodeIndex = buffers.nodes.ids.indexOf(edge.source);
+    assert.ok(index >= 0 && nodeIndex >= 0);
+    const rootInput = buffers.filaments.somaStartColorsSrgb[index * 4 + 3]!;
+    const nodeInput = buffers.nodes.opacityPermille[nodeIndex]!;
+    const shaftInput = buffers.filaments.opacityPermille[index]!;
+    assert.equal(rootInput, nodeInput);
+    assert.equal(rootInput / 1000, somaAlpha);
+    assert.equal(shaftInput / 1000, edgeAlpha);
+    assert.ok(Math.abs(shaftInput / 1000 + (rootInput - shaftInput) / 1000 - somaAlpha) < 1e-9);
+    assert.ok(Math.abs(shaftInput / 1000 + (rootInput - shaftInput) / 1000 * 0 - edgeAlpha) < 1e-9);
+  }
+  assert.match(NODE_FRAGMENT_SHADER, /float alpha = \(coreAlpha \+ haloAlpha\) \* v_opacity;/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /rootSomaOpacity = somaTone\.a \/ u_permilleScale;/);
+  assert.match(FILAMENT_FRAGMENT_SHADER,
+    /alpha = mix\(alpha, rootSomaOpacity \* longitudinal \* radial, rootSomaMix\)/);
+});
+// D084-W2-NEURAL-R6 END
 // D084-W2-NEURAL-R4 END
 
 const wrap = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
@@ -175,25 +284,28 @@ test("the root begins at the shoulder chord and remains thick for 2.5 radii", ()
   // first step. The old full-radius mouth and compact 3D taper fail these bounds.
   for (const [radius, width] of [[6, 0.3], [8, 1.2], [12, 3]] as const) {
     const length = neuralRootLengthPx(radius, 140);
-    const mouth = neuralRootProfileAtLength(0, radius, width, 0.4, 1.8, length);
+    // D084-W2-NEURAL-R6 BEGIN: the soma alpha is independent of the edge.
+    const somaAlpha = 0.97;
+    const mouth = neuralRootProfileAtLength(0, radius, width, 0.4, 1.8, length, width, somaAlpha);
     assert.ok(Math.abs(mouth.width - 2 * radius * Math.sqrt(1 - NEURAL_ROOT_ANCHOR_RADII ** 2)) < 1e-6);
     assert.ok(mouth.width / (2 * radius) >= 0.55 && mouth.width / (2 * radius) <= 0.65,
       `r=${radius}: junction half-width stays near the shoulder`);
     assert.ok(length >= Math.min(radius * NEURAL_ROOT_LENGTH_RADII, 140 * 0.5) - 1e-9);
-    assert.ok(Math.abs(mouth.alpha - 0.9) < 1e-12, "the junction alpha matches the soma fill");
+    assert.equal(mouth.alpha, somaAlpha, "the junction alpha matches its attached soma");
     let previousWidth = mouth.width, previousAlpha = mouth.alpha;
     for (let index = 1; index <= 200; index++) {
-      const sample = neuralRootProfileAtLength((length + radius * NEURAL_ROOT_FILLET_LENGTH_RADII) * index / 200, radius, width, 0.4, 1.8, length);
+      const sample = neuralRootProfileAtLength((length + radius * NEURAL_ROOT_FILLET_LENGTH_RADII) * index / 200, radius, width, 0.4, 1.8, length, width, somaAlpha);
       assert.ok(sample.width <= previousWidth + 1e-9, `r=${radius}: width rises at ${index}`);
       assert.ok(sample.alpha <= previousAlpha + 1e-9, `r=${radius}: alpha rises at ${index}`);
       assert.ok(previousWidth - sample.width <= 2.8 * (length + radius * NEURAL_ROOT_FILLET_LENGTH_RADII) / 200,
         `r=${radius}: no abrupt first width jump at ${index}`);
       previousWidth = sample.width; previousAlpha = sample.alpha;
     }
-    const early = neuralRootProfileAtLength(2.5 * radius, radius, width, 0.4, 1.8, length);
+    const early = neuralRootProfileAtLength(2.5 * radius, radius, width, 0.4, 1.8, length, width, somaAlpha);
     assert.ok(early.width >= 0.5 * (2 * radius * NEURAL_ROOT_MOUTH_RADII), "the process retains half its junction width for 2.5R");
     assert.equal(previousWidth, width, "the profile settles at the trunk width");
     assert.ok(Math.abs(previousAlpha - 0.4) < 1e-9, "the tail alpha matches the shaft");
+    // D084-W2-NEURAL-R6 END
   }
   // D084-W2-NEURAL-R3 END
 });

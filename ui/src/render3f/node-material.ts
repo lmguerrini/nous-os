@@ -206,8 +206,10 @@ void main() {
   float haloOffset = clamp((radialDistance - v_coreRadiusDevicePx) / haloSpan, 0.0, 1.0);
   // Sample the tight halo linearly.
   float haloAlpha = sampledHaloAlpha(haloOffset) * (1.0 - coreAlpha);
-  // D082-A-NEURAL: the visible soma outline and the root begin at the same 0.9 alpha.
-  float alpha = (coreAlpha + haloAlpha) * (v_somaShape.x > 0.5 ? min(v_opacity, 0.9) : v_opacity);
+  // D084-W2-NEURAL-R6 BEGIN: the soma outline uses its own scene opacity,
+  // which the attached root receives through the matching endpoint attribute.
+  float alpha = (coreAlpha + haloAlpha) * v_opacity;
+  // D084-W2-NEURAL-R6 END
   if (alpha <= 0.0 || somaDistance > v_haloRadiusDevicePx) {
     discard;
   }

@@ -260,9 +260,9 @@ export function neuralMouthScale(edgeWidthPx: number): number {
  * `spanPx` is the projected full edge length, not a world-space distance. */
 export function neuralRootProfileAt(distancePx: number, somaRadiusPx: number, edgeWidthPx: number,
   edgeAlpha: number, rootRatio = NEURAL_ROOT_RATIO, spanPx = somaRadiusPx * 20,
-  trunkWidthPx = edgeWidthPx): NeuralRootSample {
+  trunkWidthPx = edgeWidthPx, somaAlpha = edgeAlpha): NeuralRootSample {
   return neuralRootProfileAtLength(distancePx, somaRadiusPx, edgeWidthPx, edgeAlpha, rootRatio,
-    neuralRootLengthPx(somaRadiusPx, spanPx), trunkWidthPx);
+    neuralRootLengthPx(somaRadiusPx, spanPx), trunkWidthPx, somaAlpha);
 }
 /** A convex width falloff gives the neurite a curved, concave side, rather than a wedge.
  * The mouth is hidden inside the soma; its visible silhouette comes from the union with the body.
@@ -274,7 +274,7 @@ export function neuralRootProfileAt(distancePx: number, somaRadiusPx: number, ed
 // decreases monotonically (concave sides, no local minimum) to the trunk width.
 export function neuralRootProfileAtLength(distancePx: number, somaRadiusPx: number, edgeWidthPx: number,
   edgeAlpha: number, rootRatio: number, rootLengthPx: number,
-  trunkWidthPx = edgeWidthPx): NeuralRootSample {
+  trunkWidthPx = edgeWidthPx, somaAlpha = edgeAlpha): NeuralRootSample {
   const width = Math.max(0, edgeWidthPx);
   const alpha = Math.max(0, Math.min(1, edgeAlpha));
   if (somaRadiusPx < NEURAL_MIN_SHAPED_RADIUS_PX) return { width, alpha, somaMix: 0 };
@@ -294,8 +294,13 @@ export function neuralRootProfileAtLength(distancePx: number, somaRadiusPx: numb
   const somaMix = profile.somaMix;
   const trunk = Math.max(width, trunkWidthPx);
   const rootWidth = 2 * somaRadiusPx * profile.halfWidthRadii;
+  // D084-W2-NEURAL-R6 BEGIN: the table blends from the attached soma's drawn
+  // opacity to the independent edge opacity, with no junction floor or ceiling.
+  const drawnSomaAlpha = Math.max(0, Math.min(1, somaAlpha));
   return { width: trunk + (rootWidth - trunk) * somaMix,
-    alpha: alpha + (Math.max(0.9, alpha) - alpha) * somaMix, somaMix };
+    alpha: somaMix === 1 ? drawnSomaAlpha : somaMix === 0 ? alpha
+      : alpha + (drawnSomaAlpha - alpha) * somaMix, somaMix };
+  // D084-W2-NEURAL-R6 END
 }
 // D084-W2-NEURAL-R3 END
 /** Historical test bound; live roots use their ratios across the full width slider. */

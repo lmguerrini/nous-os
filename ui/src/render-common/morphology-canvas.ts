@@ -302,13 +302,20 @@ export function neuralHaloNeighbourCounts(nodes: readonly MorphologyGeometry["no
 /** D-072 V4: a Stellar data node draws a readable, nearly opaque core. The floor binds the core's
  * own paint only — size still follows the importance scale, the halo stays faint. */
 export const STELLAR_CORE_MIN_ALPHA = 0.9;
-/** D-072 V5: a Neural soma draws clearly visible and nearly opaque, no soft membrane wash. */
-export const NEURAL_SOMA_MIN_ALPHA = 0.9;
-/** The alpha floor of one morphology's node core/soma body: 0.9 for Stellar and Neural (V4/V5),
- * the historical 0.48 for Mycelium. Pure. */
+// D084-W2-NEURAL-R6 BEGIN: Neural opacity belongs to its own node presentation;
+// only Stellar and Mycelium retain a node floor.
+/** The alpha floor of one morphology's node core/soma body. */
 export function morphologyCoreAlphaFloor(morphology: Morphology): number {
-  return morphology === "stellar" ? STELLAR_CORE_MIN_ALPHA : morphology === "neural" ? NEURAL_SOMA_MIN_ALPHA : 0.48;
+  return morphology === "stellar" ? STELLAR_CORE_MIN_ALPHA : morphology === "neural" ? 0 : 0.48;
 }
+/** Match the neural outline's own paint, including depth and node focus opacity. */
+export function neuralSomaOutlineAlpha(baseOpacity: number, emphasisBrightness: number,
+  scale: number, projection: "2d" | "3d", indra3d = false, focusOpacity = 1): number {
+  const depth = projection === "3d" ? indra3d ? bucketedDepthScale(scale) : clamp(scale, 0, 1) : 1;
+  const depthAlpha = projection === "3d" ? clamp(0.85 + 0.15 * depth, 0.85, 1) : 1;
+  return clamp(baseOpacity * emphasisBrightness * depthAlpha, 0, 1) * focusOpacity;
+}
+// D084-W2-NEURAL-R6 END
 
 // ---------------------------------------------------------------- D-072 M1b star grammar
 //
@@ -920,8 +927,8 @@ export function bucketedDepthScale(scale: number): number {
 
 /** The paint of one pearl, from its key's quantised depth: pure colour computation over parsed
  * channels (no regex, no per-pearl string parsing), with the same rounding the exact path uses.
- * `coreOpacityFloor` carries the morphology's core alpha floor (D-072: 0.9 for Stellar pearls and
- * Neural somata, the historical 0.48 elsewhere). */
+ * `coreOpacityFloor` carries the morphology's core alpha floor (Stellar 0.9,
+ * Mycelium 0.48, Neural none). */
 export function pearlPaintColours(
   color: string,
   scale: number,
@@ -1094,8 +1101,10 @@ export type MorphologyEdgePaint = {
   readonly widthAt: (i: number) => number;
   // D084-W2-NEURAL: detailStartPx/detailEndPx (cosmetic offshoot markers) are removed.
   /** Visible outline distance and final radius; the root profile is evaluated in screen space. */
-  readonly rootStart?: { readonly outlinePx: number; readonly radiusPx: number; readonly lengthPx: number; readonly ratio: number; readonly degree: number; readonly trunkWidthPx: number; readonly somaColor: string } | undefined;
-  readonly rootEnd?: { readonly outlinePx: number; readonly radiusPx: number; readonly lengthPx: number; readonly ratio: number; readonly degree: number; readonly trunkWidthPx: number; readonly somaColor: string } | undefined;
+  // D084-W2-NEURAL-R6 BEGIN: each endpoint carries the alpha of its own drawn outline.
+  readonly rootStart?: { readonly outlinePx: number; readonly radiusPx: number; readonly lengthPx: number; readonly ratio: number; readonly degree: number; readonly trunkWidthPx: number; readonly somaColor: string; readonly somaAlpha: number } | undefined;
+  readonly rootEnd?: { readonly outlinePx: number; readonly radiusPx: number; readonly lengthPx: number; readonly ratio: number; readonly degree: number; readonly trunkWidthPx: number; readonly somaColor: string; readonly somaAlpha: number } | undefined;
+  // D084-W2-NEURAL-R6 END
 };
 
 // D082-A-NCOMPLETA BEGIN: the calibrated screen-cell veil narrows Neural ribbons as well
@@ -1319,7 +1328,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
   bounds: { readonly width: number; readonly height: number },
   // D082-A-PERF BEGIN: retain identical paint construction for the selected
   // flow edges without projecting every unanimated segment.
-  edgeIds?: ReadonlySet<string>): MorphologyEdgePaint[] {
+  edgeIds?: ReadonlySet<string>, indra3d = false): MorphologyEdgePaint[] {
   // D082-A-PERF END
   // D082-A-PERF BEGIN: topology, endpoint lookup and sample reduction are layout data.
   // They survive camera changes and remounts when the prepared geometry is reused.
@@ -1358,6 +1367,9 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     // shape with no suspended-egg gap. Screen space, so 2D and 3D share the exact grammar.
     let startRadius = 0, endRadius = 0;
     let startSomaColor = "rgb(255, 255, 255)", endSomaColor = "rgb(255, 255, 255)";
+    // D084-W2-NEURAL-R6 BEGIN: sample each node's actual outline presentation;
+    // the edge's dense veil does not define the opacity of a different owner.
+    let startSomaAlpha = 0, endSomaAlpha = 0;
     let startRatio = 2.4, endRatio = 2.4;
     let startDegree = 0, endDegree = 0;
     let startTipDistancePx = 0, endTipDistancePx = 0;
@@ -1375,6 +1387,20 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         depthBrightness(points[0]!.scale, projection));
       if (endFrame && endSoma) endSomaColor = dim(style.nodes.get(endSoma.id)?.color ?? "rgb(245, 245, 245)",
         depthBrightness(points[points.length - 1]!.scale, projection));
+      if (startFrame && startSoma) {
+        const nodeEmphasis = style.interaction?.hoverId === startSoma.id ? contract.hover
+          : style.interaction?.focusIds?.has(startSoma.id) ? contract.focus : null;
+        startSomaAlpha = neuralSomaOutlineAlpha(style.nodes.get(startSoma.id)?.opacity ?? 1,
+          nodeEmphasis?.brightnessMultiplier ?? 1, points[0]!.scale,
+          projection, indra3d, focusNodeOpacity(style.interaction?.dimFocus?.members ?? null, startSoma.id));
+      }
+      if (endFrame && endSoma) {
+        const nodeEmphasis = style.interaction?.hoverId === endSoma.id ? contract.hover
+          : style.interaction?.focusIds?.has(endSoma.id) ? contract.focus : null;
+        endSomaAlpha = neuralSomaOutlineAlpha(style.nodes.get(endSoma.id)?.opacity ?? 1,
+          nodeEmphasis?.brightnessMultiplier ?? 1, points[points.length - 1]!.scale,
+          projection, indra3d, focusNodeOpacity(style.interaction?.dimFocus?.members ?? null, endSoma.id));
+      }
       startRatio = neuralRootRatio(startSoma?.degree ?? 1);
       endRatio = neuralRootRatio(endSoma?.degree ?? 1);
       startDegree = startSoma?.degree ?? 0;
@@ -1402,6 +1428,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         points = [first, ...points.slice(1, -1), last];
       }
     }
+    // D084-W2-NEURAL-R6 END
     if (geometry.morphology === "neural" && style.interaction?.quality !== "moving") points = smoothNeuralCurve(points);
     const cumulative: number[] = [0];
     for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
@@ -1536,10 +1563,10 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       // D082-A-NCOMPLETA END
       rootStart: startRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: startTipDistancePx, radiusPx: startRootRadius,
         lengthPx: startRootLengthPx, ratio: startRatio, degree: startDegree,
-        trunkWidthPx: startTrunkWidth, somaColor: startSomaColor } : undefined,
+        trunkWidthPx: startTrunkWidth, somaColor: startSomaColor, somaAlpha: startSomaAlpha } : undefined,
       rootEnd: endRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: totalPx - endTipDistancePx, radiusPx: endRootRadius,
         lengthPx: endRootLengthPx, ratio: endRatio, degree: endDegree,
-        trunkWidthPx: endTrunkWidth, somaColor: endSomaColor } : undefined,
+        trunkWidthPx: endTrunkWidth, somaColor: endSomaColor, somaAlpha: endSomaAlpha } : undefined,
       // D084-W2-NEURAL: the cosmetic close-up sprouts (detailStart/detailEnd) are gone —
       // no decorative filament may fake a relation the graph does not draw.
     };
@@ -1600,7 +1627,7 @@ function flowModulation(paint: MorphologyEdgePaint, now: number, speed: number, 
   return Object.assign((distance: number) => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity), { centre, radius });
 }
 function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
-  modulation: EdgeModulation, alpha: number, rootLayerAlpha = 0.9): CanvasGradient {
+  modulation: EdgeModulation, alpha: number, outerRoot = false): CanvasGradient {
   const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
   const first = paint.cumulative[0]!, last = paint.cumulative[paint.cumulative.length - 1]!;
   const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
@@ -1628,14 +1655,12 @@ function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyE
     if (paint.rootStart && distance < paint.rootStart.outlinePx + paint.rootStart.lengthPx + paint.rootStart.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) {
       somaChannels = colourChannels(paint.rootStart.somaColor);
       ramp = neuralRootProfileAtLength(distance - paint.rootStart.outlinePx, paint.rootStart.radiusPx, 1, alpha,
-        paint.rootStart.ratio, paint.rootStart.lengthPx);
+        paint.rootStart.ratio, paint.rootStart.lengthPx, 1, outerRoot ? paint.rootStart.somaAlpha : 0);
     } else if (paint.rootEnd && distance > paint.rootEnd.outlinePx - paint.rootEnd.lengthPx - paint.rootEnd.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) {
       somaChannels = colourChannels(paint.rootEnd.somaColor);
       ramp = neuralRootProfileAtLength(paint.rootEnd.outlinePx - distance, paint.rootEnd.radiusPx, 1, alpha,
-        paint.rootEnd.ratio, paint.rootEnd.lengthPx);
+        paint.rootEnd.ratio, paint.rootEnd.lengthPx, 1, outerRoot ? paint.rootEnd.somaAlpha : 0);
     }
-    if (ramp.somaMix > 0) ramp = { ...ramp,
-      alpha: alpha + (rootLayerAlpha - alpha) * ramp.somaMix };
     const edgeChannels = colourChannels(paint.color);
     const channels: readonly [number, number, number] = [
       edgeChannels[0] + (somaChannels[0] - edgeChannels[0]) * ramp.somaMix,
@@ -1658,20 +1683,19 @@ export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: Morp
   const profileSafeBoost = Math.max(0, 0.416666 / Math.max(paint.alpha, 0.001) - 0.1);
   const layers = neuralRibbonProfile(neuralProfileWidth(paint));
   for (const [index, layer] of layers.entries()) {
-    // The outer root layer takes the attached soma's colour and outline alpha.
-    // D082-A-NCOMPLETA BEGIN: the old fixed 0.9 mouth bypassed the dense edge veil.
-    const rootLayerAlpha = index === 0 ? 0.9 * (paint.neuralDenseFactor ?? 1) : 0;
-    // D082-A-NCOMPLETA END
+    // D084-W2-NEURAL-R6 BEGIN: the outer layer inherits each endpoint's own alpha.
+    const outerRoot = index === 0;
     if (modulation) {
       const gain: EdgeModulation = (distance: number) => 1 + Math.min(profileSafeBoost, modulation(distance));
       const timed = modulation as EdgeModulation;
       if (timed.centre !== undefined && timed.radius !== undefined) {
         gain.centre = timed.centre; gain.radius = timed.radius;
       }
-      context.fillStyle = edgeLightGradient(context, paint, gain, paint.alpha * layer.alpha, rootLayerAlpha);
+      context.fillStyle = edgeLightGradient(context, paint, gain, paint.alpha * layer.alpha, outerRoot);
     } else context.fillStyle = paint.rootStart || paint.rootEnd
-      ? edgeLightGradient(context, paint, (() => 1) as EdgeModulation, paint.alpha * layer.alpha, rootLayerAlpha)
+      ? edgeLightGradient(context, paint, (() => 1) as EdgeModulation, paint.alpha * layer.alpha, outerRoot)
       : rgba(paint.color, clamp(paint.alpha * layer.alpha, 0, 1));
+    // D084-W2-NEURAL-R6 END
     fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
 }
@@ -1683,10 +1707,10 @@ export function drawNeuralLight(context: CanvasRenderingContext2D, paint: Morpho
   if (!pulseVisible(paint, modulation as EdgeModulation)) return;
   const layers = neuralRibbonProfile(neuralProfileWidth(paint));
   for (const [index, layer] of layers.entries()) {
-    // D082-A-NCOMPLETA BEGIN
-    const rootLayerAlpha = index === 0 ? 0.9 * (paint.neuralDenseFactor ?? 1) : 0;
-    // D082-A-NCOMPLETA END
-    context.fillStyle = edgeLightGradient(context, paint, modulation as EdgeModulation, paint.alpha * layer.alpha, rootLayerAlpha);
+    // D084-W2-NEURAL-R6 BEGIN
+    context.fillStyle = edgeLightGradient(context, paint, modulation as EdgeModulation,
+      paint.alpha * layer.alpha, index === 0);
+    // D084-W2-NEURAL-R6 END
     fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
 }
@@ -1889,7 +1913,8 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const gradientCapable = typeof context.createLinearGradient === "function";
     // D082-A-PERF BEGIN
     const paints = samePaint ? previous!.paints
-      : buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames, bounds);
+      : buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames, bounds,
+        undefined, indra3d);
     if (!samePaint) projectedPaintSnapshots.set(context, { geometry, nodes: style.nodes, edges: style.edges,
       focusIds: style.interaction?.focusIds, dimFocus: style.interaction?.dimFocus,
       hoverId: style.interaction?.hoverId, quality: style.interaction?.quality,
@@ -1958,7 +1983,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // luminous mass that invades the dendrites. Built once per frame, only when halos are drawn.
   const haloDensity = geometry.morphology === "neural" && !simplified && appearance.glow > 0 && !testHook()?.hideEdges && !moving
     ? neuralHaloNeighbourCounts(geometry.nodes) : null;
-  // D-072 V4/V5: the Stellar core and the Neural soma draw nearly opaque; Mycelium keeps its floor.
+  // D084-W2-NEURAL-R6: Neural keeps its own node opacity; Stellar and Mycelium retain their floors.
   const coreFloor = morphologyCoreAlphaFloor(geometry.morphology);
   for (const node of (testHook()?.hideNodes ? [] : geometry.nodes)) {
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
@@ -2025,10 +2050,16 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // Depth reads on the pearls themselves: the back ones are slightly fainter (the radius already
     // carries the depth through the projection's size scale).
     const depthAlpha = projection === "3d" ? clamp(0.85 + 0.15 * Math.min(1, Math.max(0, p.scale)), 0.85, 1) : 1;
-    const opacity = paint ? paint.opacity
+    // D084-W2-NEURAL-R6 BEGIN: the filled outline uses the same node-owned
+    // alpha that the root endpoint sampled before this node pass.
+    const opacity = geometry.morphology === "neural"
+      ? neuralSomaOutlineAlpha(baseOpacity, emphasis?.brightnessMultiplier ?? 1, p.scale,
+        projection, indra3d)
+      : paint ? paint.opacity
       : coreFloor > 0.48
         ? clamp(Math.max(coreFloor, baseOpacity * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha), 0, 1)
         : clamp(Math.max(0.48, baseOpacity) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
+    // D084-W2-NEURAL-R6 END
     if (!simplified && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
       const halo = radius * haloRatio;
       if (paint?.glow && canTransform) {
@@ -2142,7 +2173,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         context.closePath?.();
       };
       // D082-A-NEURALe BEGIN: erase the portion of every root hidden by the soma before
-      // painting the body. Source-over otherwise adds two 0.9-alpha white fills and
+      // painting the body. Source-over otherwise adds the root and soma fills and
       // exposes a bright, hard-edged patch at the junction. The same path is reused
       // for subtraction and fill; no extra tessellation or offscreen surface is needed.
       if (!testHook()?.hideEdges) {
@@ -2157,8 +2188,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         context.globalAlpha = previousAlpha;
       }
       // D082-A-NEURALe END
-      // D082-A-NEURAL: match the root's 0.9 base alpha where it emerges from the outline.
-      context.fillStyle = rgbaChannels(litChannels, Math.min(opacity, 0.9));
+      // D084-W2-NEURAL-R6 BEGIN: paint the same alpha passed to attached roots.
+      context.fillStyle = rgbaChannels(litChannels, opacity);
+      // D084-W2-NEURAL-R6 END
       somaPath();
       context.fill();
       // Brighter small nucleus inside the body, oriented with the soma; its gradient is cached per

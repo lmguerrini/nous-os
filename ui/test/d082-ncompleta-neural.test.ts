@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { toVisualGraph } from '#adapter/projection.ts';
 import { buildRenderModel } from '#render2d/model.ts';
 
-function recordProfile(factor?: number) {
+function recordProfile(factor?: number, somaAlpha = 0.9) {
   const fills: { width: number; rootAlpha: number }[] = [];
   const path: { x: number; y: number }[] = [];
   let rootAlpha = 0;
@@ -29,24 +29,27 @@ function recordProfile(factor?: number) {
     color: "rgb(120, 120, 120)", alpha: 0.4 * (factor ?? 1),
     widthAt: () => 4 * neuralDenseRibbonWidthFactor(factor ?? 1),
     rootStart: { outlinePx: 0, radiusPx: 8, lengthPx: 24, ratio: 1.8, degree: 2,
-      trunkWidthPx: 4, somaColor: "rgb(230, 230, 230)" },
+      trunkWidthPx: 4, somaColor: "rgb(230, 230, 230)", somaAlpha },
     neuralDenseFactor: factor,
   };
   drawNeuralProfile(context, paint);
   return fills;
 }
 
-test("measured Completa overlap narrows and dims the Neural root and ribbons", () => {
+test("measured Completa overlap narrows the root and dims the edge without overriding soma alpha", () => {
   const denseAlpha = denseEdgeScreenAlphaPermille(720, 500, 0);
   const factor = denseEdgeVeilFactor(denseAlpha, 720);
   assert.ok(factor < 0.1);
   const base = recordProfile();
   const dense = recordProfile(factor);
   assert.ok(dense[0]!.width < base[0]!.width * 0.5);
-  assert.ok(dense[0]!.rootAlpha < base[0]!.rootAlpha * 0.1);
+  // D084-W2-NEURAL-R6 BEGIN: only a dense factor in the soma's own paint dims its root.
+  assert.equal(dense[0]!.rootAlpha, base[0]!.rootAlpha);
+  assert.ok(recordProfile(factor, 0.9 * factor)[0]!.rootAlpha < base[0]!.rootAlpha * 0.1);
+  // D084-W2-NEURAL-R6 END
   assert.ok(neuralDenseHaloFactor(4, 0.5) < neuralDenseHaloFactor(1, 0.5));
   assert.match(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth \*= max\(0\.22, sqrt\(denseFactor\)\)/);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /radial \* denseRootFactor/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /rootSomaOpacity \* longitudinal \* radial, rootSomaMix/);
 });
 
 test("six zoom bands restore the exact A-INT12 Neural ribbon geometry and mouth alpha", () => {
@@ -117,8 +120,10 @@ test('first 2D Completa scene has density factors before a renderer or gesture e
   assert.match(source, /firstNeuralScreen\?\.edgeDensities[\s\S]*?const presentation = \{/);
   assert.match(source, /initialScene = \{ \.\.\.draft, geometry \}/);
   const shader = readFileSync(new URL('../src/render2d/filament-program.ts', import.meta.url), 'utf8');
-  // D084-W2-NEURAL-R5: the veil now scales the attached soma's alpha.
-  assert.match(shader, /rootSomaColor\.a \* \(v_materialVariation\.z < 1\.0/);
+  // D084-W2-NEURAL-R6 BEGIN: the edge veil does not dim its attached node's alpha.
+  assert.match(shader, /rootSomaColor\.a \* bodyCoverage, rootSomaMix/);
+  assert.doesNotMatch(shader, /rootSomaColor\.a \* \(v_materialVariation\.z < 1\.0/);
+  // D084-W2-NEURAL-R6 END
 });
 
 test('jsdom first-scene viewport supplies dense factors without a pan', { skip: !JSDOM }, () => {

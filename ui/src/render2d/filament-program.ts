@@ -515,14 +515,12 @@ void main(void) {
     if (u_neuralProfile > 0.5) {
       // Polish-III neural BEGIN: the attached node supplies the fillet tone.
       gradientColor.rgb = mix(v_color.rgb, rootSomaColor.rgb, rootSomaMix);
-      // Keep the shared outline coverage while fading to the ordinary edge.
-      // "D082-A-NCOMPLETA3 BEGIN": the old fixed 0.9 mouth ignored the local
-      // Completa veil and accumulated into bright radial rings at far zoom.
+      // D084-W2-NEURAL-R6 BEGIN: the endpoint node attribute already contains
+      // its own painted alpha; the edge's dense factor belongs to the shaft.
       gradientColor.a = mix(gradientColor.a,
-        rootSomaColor.a * (v_materialVariation.z < 1.0 ? v_materialVariation.z : 1.0)
-          * bodyCoverage, rootSomaMix);
+        rootSomaColor.a * bodyCoverage, rootSomaMix);
       // Polish-III neural END
-      // "D082-A-NCOMPLETA3 END"
+      // D084-W2-NEURAL-R6 END
     }
     // D082-A-NEURAL END
     // Sigma's blend operator expects every material band to be premultiplied before source-over composition.

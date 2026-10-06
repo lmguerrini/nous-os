@@ -339,7 +339,9 @@ void main() {
     // scene token and opacity, then the engine table blends into the edge.
     vec4 somaTone = startProfile.y >= endProfile.y ? v_somaStartColor : v_somaEndColor;
     rootSomaColor = somaTone.rgb;
-    rootSomaOpacity = min(somaTone.a / u_permilleScale, 0.9);
+    // D084-W2-NEURAL-R6 BEGIN: the endpoint input is the soma's own opacity.
+    rootSomaOpacity = somaTone.a / u_permilleScale;
+    // D084-W2-NEURAL-R6 END
     // D084-W2-NEURAL-R5 END
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
       0.5 * max(mix(ordinary, 2.0 * startRadius * startProfile.x, startProfile.y),
@@ -403,14 +405,10 @@ void main() {
     float alpha = clamp(v_opacity * radial * longitudinal
       * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
     // D082-A-NEURAL: match the pure root profile, including opacity and white-to-edge colour.
-    // D082-A-NCOMPLETA BEGIN: the old 0.9 root floor bypassed the native veil.
-    // D082-A-N3D BEGIN
-    float denseRootFactor = v_neuralProfile.w >= 3.0
-      ? clamp(v_neuralProfile.w - 3.0, 0.0, 1.0)
-      : v_neuralProfile.w > 1.0001 ? clamp(v_neuralProfile.w - 1.0, 0.0, 1.0) : 1.0;
-    // D082-A-N3D END
-    alpha = mix(alpha, rootSomaOpacity * longitudinal * radial * denseRootFactor, rootSomaMix);
-    // D082-A-NCOMPLETA END
+    // D084-W2-NEURAL-R6 BEGIN: the edge veil is already in v_opacity; it must
+    // not dim the attached soma's independently painted endpoint.
+    alpha = mix(alpha, rootSomaOpacity * longitudinal * radial, rootSomaMix);
+    // D084-W2-NEURAL-R6 END
     if (alpha <= 0.0) discard;
     vec3 color = mix(v_color, v_hotColor, clamp(hot * 0.35, 0.0, 0.35));
     color = mix(color, rootSomaColor, rootSomaMix);

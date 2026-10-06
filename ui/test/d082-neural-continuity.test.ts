@@ -46,10 +46,13 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
       const span = 100;
       const length = neuralRootLengthPx(radius, span);
       const trunkWidth = degree === 12 ? width * 3.2 : width * 1.8;
+      // D084-W2-NEURAL-R6 BEGIN: alpha follows the attached soma and the shaft independently.
+      const somaAlpha = 0.8;
       const samples = Array.from({ length: 401 }, (_, index) =>
-        neuralRootProfileAt((length + NEURAL_ROOT_FILLET_LENGTH_RADII * radius) * index / 400, radius, width, edgeAlpha, 2.4, span, trunkWidth));
-      const centre = neuralRootProfileAt(-radius, radius, width, edgeAlpha, 2.4, span, trunkWidth);
+        neuralRootProfileAt((length + NEURAL_ROOT_FILLET_LENGTH_RADII * radius) * index / 400, radius, width, edgeAlpha, 2.4, span, trunkWidth, somaAlpha));
+      const centre = neuralRootProfileAt(-radius, radius, width, edgeAlpha, 2.4, span, trunkWidth, somaAlpha);
       assert.equal(centre.alpha, samples[0]!.alpha, `${renderer}/${reading}: soma-to-root alpha`);
+      assert.equal(samples[0]!.alpha, somaAlpha, `${renderer}/${reading}: soma-owned fillet`);
       assert.equal(centre.somaMix, 1, `${renderer}/${reading}: soma-to-root luminance`);
       assert.equal(centre.width, samples[0]!.width, `${renderer}/${reading}: soma-to-root width`);
       assert.ok(samples[0]!.width >= width * 2);
@@ -60,6 +63,7 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
       assert.equal(samples[0]!.somaMix, 1);
       assert.equal(samples.at(-1)!.width, trunkWidth, `${renderer}/${degree}: D-081 trunk width`);
       assert.equal(samples.at(-1)!.alpha, edgeAlpha, `${renderer}/${degree}: shaft alpha`);
+      // D084-W2-NEURAL-R6 END
       assert.equal(samples.at(-1)!.somaMix, 0, `${renderer}/${degree}: shaft colour`);
       assert.ok(samples.every(sample => sample.width >= trunkWidth), "no pointed arm narrower than the trunk");
       const curvatureRadius = neuralRootFilletRadiusPx(samples[0]!.width, trunkWidth, length);
@@ -109,13 +113,17 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
 test("reference overview roots are broad and rounded while leaves keep one attached tail", () => {
   for (const [radius, span, width] of [[5, 80, 1.2], [8, 120, 1.5], [10, 160, 1.8]] as const) {
     const length = neuralRootLengthPx(radius, span);
-    const join = neuralRootProfileAt(0, radius, width, 0.3, 1.8, span);
+    // D084-W2-NEURAL-R6 BEGIN: a dimmer soma may meet a brighter shaft.
+    const somaAlpha = 0.2;
+    const join = neuralRootProfileAt(0, radius, width, 0.3, 1.8, span, width, somaAlpha);
     assert.ok(length >= radius * 2.5, `root length ${length} at r=${radius}`);
     assert.ok(length <= span && length >= Math.min(NEURAL_ROOT_MIN_LENGTH_PX, span));
     assert.ok(join.width >= radius * 0.9, `join width ${join.width} at r=${radius}`);
-    assert.ok(join.alpha >= 0.9, "the edge at the soma is as opaque as the root");
+    assert.equal(join.alpha, somaAlpha, "the root has the attached soma's alpha");
     assert.equal(join.somaMix, 1);
     assert.equal(neuralRootProfileAt(length + NEURAL_ROOT_FILLET_LENGTH_RADII * radius, radius, width, 0.3, 1.8, span).width, width);
+    assert.equal(neuralRootProfileAt(length + NEURAL_ROOT_FILLET_LENGTH_RADII * radius, radius, width, 0.3, 1.8, span, width, somaAlpha).alpha, 0.3);
+    // D084-W2-NEURAL-R6 END
   }
   assert.ok(neuralRootProfileAt(0, 24, 1.4, 0.3, 2.6, 160).width >= 24 * 0.9,
     "large hubs retain a soma-width mouth rather than a capped narrow arm");
@@ -213,10 +221,13 @@ test("edge-width control changes the rounded mouth without a neck", () => {
 test("tiny leaves have one continuous, concave body-to-tail profile", () => {
   for (const radius of [2, 3, 5, 8]) {
     const length = neuralRootLengthPx(radius, 80);
+    // D084-W2-NEURAL-R6 BEGIN
+    const somaAlpha = 0.96;
     const samples = Array.from({ length: 101 }, (_, i) =>
-      neuralRootProfileAtLength((length + radius * NEURAL_ROOT_FILLET_LENGTH_RADII) * i / 100, radius, 1.1, 0.34, 1.8, length));
+      neuralRootProfileAtLength((length + radius * NEURAL_ROOT_FILLET_LENGTH_RADII) * i / 100, radius, 1.1, 0.34, 1.8, length, 1.1, somaAlpha));
     assert.equal(samples[0]!.somaMix, 1);
-    assert.ok(Math.abs(samples[0]!.alpha - 0.9) < 1e-12);
+    assert.equal(samples[0]!.alpha, somaAlpha);
+    // D084-W2-NEURAL-R6 END
     assert.equal(samples.at(-1)!.width, 1.1);
     assert.equal(samples.at(-1)!.alpha, 0.34);
     assert.equal(samples.at(-1)!.somaMix, 0);
