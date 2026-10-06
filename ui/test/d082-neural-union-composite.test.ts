@@ -57,7 +57,7 @@ test("a projected 3D root starts in its soma's dimmed colour and fades toward th
     points: [{ x: 0, y: 0 }, { x: 40, y: 0 }], cumulative: [0, 40], totalPx: 40,
     color: "rgb(90, 90, 90)", alpha: 0.4, widthAt: () => 4,
     rootStart: { outlinePx: 3, radiusPx: 8, lengthPx: 20, ratio: 1.8,
-      degree: 1, trunkWidthPx: 4, somaColor: "rgb(190, 190, 190)" },
+      degree: 1, trunkWidthPx: 4, somaColor: "rgb(190, 190, 190)", somaAlpha: 0.75 },
   } as unknown as MorphologyEdgePaint;
   drawNeuralProfile(context, paint);
   assert.equal(gradients.length, 2);

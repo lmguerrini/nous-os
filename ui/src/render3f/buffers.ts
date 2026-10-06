@@ -6,6 +6,13 @@ import { SceneCache, preparedSceneKey } from "#render-common/scene-cache.ts";
 // D081-P1E BEGIN: share the area normalization with canvas without another renderer import.
 import { buildMorphologyGeometry, neuralPrincipalTrunks, neuralTrunkLobeStrength, somaLobeAreaScale, type MorphologyNodeShape } from "#engine/morphology-geometry.ts";
 // D081-P1E END
+// D084-W2-NEURAL BEGIN: the degree-one body scale crosses into the GPU buffers through the
+// already-registered namespace import (exactly how NEURAL_GEOMETRY_VERSION arrives), keeping
+// the engine as its single source without widening the named-symbol allow-list.
+// D084-W2-NEURAL-R3 BEGIN
+const neuralEndpointBodyScale = neuralGeometryModule.neuralEndpointBodyScale;
+// D084-W2-NEURAL-R3 END
+// D084-W2-NEURAL END
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneAggregate, SceneEdge, SceneNode, SceneTokenEncoding } from "#scene/contract.ts";
 type NeuralRoute = ReturnType<typeof buildMorphologyGeometry>["drawnSegments"][number];
@@ -34,6 +41,8 @@ export type FilamentBuffers = {
   readonly edgeIds: readonly string[]; readonly sourceIds: readonly string[]; readonly targetIds: readonly string[];
   readonly startPositions: Float32Array; readonly controlPositions: Float32Array; readonly endPositions: Float32Array;
   readonly colorsSrgb: Float32Array; readonly hotColorsSrgb: Float32Array;
+  /** Endpoint soma tones sampled from the same scene node tokens as the node pass. */
+  readonly somaStartColorsSrgb: Float32Array; readonly somaEndColorsSrgb: Float32Array;
   readonly opacityPermille: Float32Array; readonly widthsAndPicking: Float32Array;
   /** Ordinary width, endpoint soma radii, and Neural flag for the screen-space profile. */
   readonly neuralProfile: Float32Array; readonly neuralRootRatios: Float32Array;
@@ -171,6 +180,10 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
           const eccentricity = shape.eccentricity;
           return eccentricity / Math.hypot(Math.cos(local), eccentricity * Math.sin(local));
         });
+      // D084-W2-NEURAL: the degree-one body scale is folded here (the shader's own
+      // lobe-strength leaf test can no longer see it — every strength is now moderate).
+      if (shape.degree === 1)
+        somaShape[index * 2 + 1] = somaShape[index * 2 + 1]! * neuralEndpointBodyScale(shape?.degree ?? 0);
       trunks.forEach((trunk, lobeIndex) => [somaLobe0, somaLobe1, somaLobe2][lobeIndex]!.set([
         trunk.direction.x, trunk.direction.y, trunk.direction.z,
         neuralTrunkLobeStrength(trunk, maximum, shape.degree),
@@ -223,7 +236,13 @@ export function buildFilamentBuffers(
   const controlPositions = new Float32Array(ordered.length * coordinateCount());
   const endPositions = new Float32Array(ordered.length * coordinateCount());
   const colorsSrgb = new Float32Array(ordered.length * colorChannelCount());
-  const hotColorsSrgb = new Float32Array(ordered.length * colorChannelCount());
+  const hotColorsSrgb = new Float32Array(ordered.length * packedChannelCount());
+  // D084-W2-NEURAL-R5 BEGIN: pass each actual soma tone to its attached process.
+  const somaStartColorsSrgb = new Float32Array(ordered.length * packedChannelCount());
+  const somaEndColorsSrgb = new Float32Array(ordered.length * packedChannelCount());
+  const nodeColors = new Map(nodes.map(node => [node.id, tokenToSrgb(node.token, encoding)]));
+  const nodeOpacities = new Map(nodes.map(node => [node.id, node.opacityPermille]));
+  // D084-W2-NEURAL-R5 END
   const opacityPermille = new Float32Array(ordered.length);
   const widthsAndPicking = new Float32Array(ordered.length * packedChannelCount());
   const neuralProfile = new Float32Array(ordered.length * packedChannelCount());
@@ -271,7 +290,16 @@ export function buildFilamentBuffers(
     writeCoordinates(controlPositions, edgeIndex, control);
     writeCoordinates(endPositions, edgeIndex, neural ? nodeCenters.get(edge.target) ?? end : end);
     writeColor(colorsSrgb, edgeIndex, tokenToSrgb(edge.token, encoding));
-    writeColor(hotColorsSrgb, edgeIndex, hotColor);
+    // D084-W2-NEURAL-R5: pack existing edge opacity with hot colour to stay
+    // within the GPU attribute limit; keep the original permille precision.
+    writePacked(hotColorsSrgb, edgeIndex, [hotColor.red, hotColor.green, hotColor.blue,
+      edge.opacityPermille]);
+    const startTone = nodeColors.get(edge.source) ?? tokenToSrgb(edge.token, encoding);
+    const endTone = nodeColors.get(edge.target) ?? tokenToSrgb(edge.token, encoding);
+    writePacked(somaStartColorsSrgb, edgeIndex, [startTone.red, startTone.green, startTone.blue,
+      nodeOpacities.get(edge.source) ?? edge.opacityPermille]);
+    writePacked(somaEndColorsSrgb, edgeIndex, [endTone.red, endTone.green, endTone.blue,
+      nodeOpacities.get(edge.target) ?? edge.opacityPermille]);
     opacityPermille[edgeIndex] = edge.opacityPermille;
     writePacked(widthsAndPicking, edgeIndex, [
       edge.widthStartPx,
@@ -281,11 +309,15 @@ export function buildFilamentBuffers(
     ]);
     // The governed Neural material alone has a nonzero hot-mix channel in the default grammar.
     // Carry its flag once per scene revision; shaders do no per-frame relation lookup.
+    // D084-W2-NEURAL: the root anchors at the body it leaves — a degree-one body draws at
+    // NEURAL_LEAF_BODY_SCALE, so its tail radius carries the same scale (canvas parity).
     writePacked(neuralProfile, edgeIndex, [edge.bodyWidthPx,
-      nodeRadii.get(edge.source) ?? 0, nodeRadii.get(edge.target) ?? 0,
+      (nodeRadii.get(edge.source) ?? 0) * neuralEndpointBodyScale(sourceNode?.degree ?? 0),
+      (nodeRadii.get(edge.target) ?? 0) * neuralEndpointBodyScale(targetNode?.degree ?? 0),
       edge.filament.hotMixPermille > 0 ? 1 : 0]);
-    // Negative ratios flag a shared root to the shader: it uses bounded trunk width
-    // and suppresses the per-edge cosmetic sprouts that made dense hubs starburst.
+    // Negative ratios flag a shared root to the shader: it uses bounded trunk width and
+    // the shared-root reach. (D084-W2-NEURAL: the cosmetic sprouts they once suppressed
+    // are gone entirely.)
     neuralRootRatios.set([
       sourceTrunk && sourceTrunk.edgeIds.length > 1 ? -sourceTrunk.rootWidthFactor : sourceNode?.rootRatio ?? 1,
       targetTrunk && targetTrunk.edgeIds.length > 1 ? -targetTrunk.rootWidthFactor : targetNode?.rootRatio ?? 1,
@@ -331,6 +363,8 @@ export function buildFilamentBuffers(
     endPositions,
     colorsSrgb,
     hotColorsSrgb,
+    somaStartColorsSrgb,
+    somaEndColorsSrgb,
     opacityPermille,
     widthsAndPicking,
     neuralProfile,

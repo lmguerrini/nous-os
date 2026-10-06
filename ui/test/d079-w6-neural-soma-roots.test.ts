@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildMorphologyGeometry, NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO,
-  neuralRootRatio, neuralScreenWidthAt,
+  neuralRootRatio, neuralScreenWidthAt, neuralTrunkLobeStrength,
 } from "#engine/morphology-geometry.ts";
 import { buildSceneBuffers } from "#render3f/buffers.ts";
 import { FILAMENT_FRAGMENT_SHADER } from "#render3f/filament-material.ts";
@@ -21,7 +21,19 @@ test("a real seven-edge hub has a measurable lobe toward its dominant bundle", (
   const edges = angles.map((_, i) => ({ id: `e${i}`, source: "hub", target: `n${i}`, width: i < 5 ? 2 : 1 }));
   const hub = buildMorphologyGeometry("neural", nodes, edges).nodes[0]!;
   assert.ok(hub.axis.x > 0.95);
-  assert.ok(hub.eccentricity >= 1.24);
+  // D084-W2-NEURAL: the body itself is round (eccentricity exactly 1, no spindle) — a
+  // dominant bundle shows as a broad lobe on its real trunk direction, never as a free
+  // axis elongation that no drawn relation supports.
+  assert.equal(hub.eccentricity, 1);
+  assert.equal(hub.spindleRatio, undefined);
+  const dominant = hub.trunks?.[0]!;
+  assert.ok(Math.abs(Math.atan2(dominant.direction.y, dominant.direction.x)) < 0.1,
+    "the leading lobe points into the dominant bundle");
+  assert.ok(dominant.edgeIds.length >= 3, "the dominant bundle shares one trunk");
+  // D084-W2-NEURAL-R3: the root supplies the long shoulder; the body bump stays compact.
+  assert.ok(neuralTrunkLobeStrength(dominant,
+    Math.max(1, ...(hub.trunks ?? []).map(trunk => trunk.weight)), hub.degree) <= 0.09,
+    "the dominant bundle does not turn the body into a drop");
   assert.deepEqual(hub, buildMorphologyGeometry("neural", nodes, [...edges].reverse()).nodes[0]);
 });
 
@@ -35,20 +47,15 @@ test("fit and hub zoom keep hub and secondary roots above the screen-space ratio
       }
     }
   }
-  // D082-A-NEURAL BEGIN: P1 requires broad shared roots, including negative shared-trunk factors.
-  assert.match(FILAMENT_FRAGMENT_SHADER, /ordinary \* abs\(v_neuralRootRatios\.x\)/);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /ordinary \* abs\(v_neuralRootRatios\.y\)/);
-  // D082 P1 lines 69–76: a short rounded join must reach the existing trunk before it forms a star arm.
-  assert.match(FILAMENT_FRAGMENT_SHADER, /startRadius \* 2\.5/);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /mix\(startTrunk, startMouth, startEase\)/);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /min\(0\.49, startRadius \* 1\.5 \/ span\)/);
+  // D084-W2-NEURAL-R4: the fillet and downstream thickness use the engine table.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /uniform vec4 u_neuralProfileTable\[64\]/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /neuralProfileSample\(neuralProfileDistance\(startDistance/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /mix\(ordinary, 2\.0 \* startRadius \* startProfile\.x/);
   const shader2d = await readFile(new URL("../src/render2d/filament-program.ts", import.meta.url), "utf8");
-  assert.match(shader2d, /v_thickness \* abs\(v_rootRatios\.x\)/);
-  assert.match(shader2d, /v_thickness \* abs\(v_rootRatios\.y\)/);
-  assert.match(shader2d, /v_somaRadii\.x \* 2\.5/);
-  assert.match(shader2d, /mix\(startTrunk, rootStart, startEase\)/);
-  // D082-A-NEURAL END
-  assert.match(shader2d, /min\(0\.49, v_somaRadii\.x \* 1\.5 \/ span\)/);
+  assert.match(shader2d, /NEURAL_PROFILE_GLSL/);
+  assert.match(shader2d, /uniform4fv\(programInfo\.uniformLocations\.u_neuralProfileTable/);
+  assert.match(shader2d, /mix\(v_thickness, 2\.0 \* v_somaRadii\.x \* startProfile\.x/);
+  assert.match(shader2d, /NEURAL_ROOT_ANCHOR_RADII/);
   assert.match(NODE_FRAGMENT_SHADER, /smoothstep\(v_coreRadiusDevicePx - fwidth\(somaDistance\)/);
 });
 

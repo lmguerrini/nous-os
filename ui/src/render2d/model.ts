@@ -17,6 +17,9 @@ import { renderedStateToken } from "#scene/rendered-state.ts";
 import { assertEngineAccessTrace, assertVisualGraphFieldRegister, createEngineGraphView, renderDebugAssertionsEnabled } from "#engine/contract.ts";
 import type { Coordinates, DerivedValue, EngineAccessTrace, RenderedState, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
+// Polish-III neural BEGIN: dense WebGL receives the same leaf body scale as canvas and native rendering.
+import { neuralEndpointBodyScale } from "#engine/morphology-geometry.ts";
+// Polish-III neural END
 import type { LayoutAnchors } from "#engine/layout.ts";
 import { lodView } from "#engine/lod.ts";
 import type { LodBand, ResolvedMaterial } from "#engine/lod.ts";
@@ -71,6 +74,9 @@ export type RenderEdgeAttributes = {
   readonly hotCore: number;
   /** Neural root ratios derived from the drawn incident edges. */
   readonly neuralRootRatios?: readonly [number, number];
+  // Polish-III neural BEGIN
+  readonly neuralBodyScales?: readonly [number, number];
+  // Polish-III neural END
   // "D082-A-NCOMPLETA3 BEGIN": native Neural roots follow their edge's local veil.
   readonly neuralDenseFactor?: number;
   // "D082-A-NCOMPLETA3 END"
@@ -541,6 +547,12 @@ function* renderModelSteps(
         hotCore: edgeMaterial.hotCorePermille / materialScale,
         neuralRootRatios: [neuralRootRatio(neuralDegree.get(edge.source) ?? 1),
           neuralRootRatio(neuralDegree.get(edge.target) ?? 1)],
+        // Polish-III neural BEGIN
+        neuralBodyScales: activeOptions.morphology === "neural"
+          ? [neuralEndpointBodyScale(neuralDegree.get(edge.source) ?? 0),
+            neuralEndpointBodyScale(neuralDegree.get(edge.target) ?? 0)]
+          : [1, 1],
+        // Polish-III neural END
         // "D082-A-NCOMPLETA3 BEGIN"
         // "D082-A-VEIL2 BEGIN: keep non-Neural edge records identical to A-INT12"
         ...((activeOptions.morphology === "neural")

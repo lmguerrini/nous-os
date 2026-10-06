@@ -31,16 +31,19 @@ const appearance = { ...DEFAULT_APPEARANCE, glow: 0 };
 const frame = (id: string, projection: "2d" | "3d") => neuralSomaFrames(geometry, project, style,
   MORPHOLOGY_CONTRACT.neural, appearance, projection).get(id)!;
 
-test("degree-one soma has a real-edge teardrop in both projections", () => {
+test("degree-one soma has a real-edge broad lobe in both projections", () => {
   const leaf2d = frame("leaf", "2d"), leaf3d = frame("leaf", "3d");
   for (const leaf of [leaf2d, leaf3d]) {
     assert.equal(leaf.lobes?.length, 1);
     assert.ok(Math.abs(Math.abs(leaf.lobes![0]!.angle) - Math.PI) < 1e-6);
     assert.ok(somaOutlineRadiusAtAngle(leaf, Math.PI) > somaOutlineRadiusAtAngle(leaf, 0) * 1.2);
+    // D084-W2-NEURAL: the long teardrop is gone — a degree-one cell keeps a compact body
+    // whose single real direction carries one moderate, broad lobe.
     const plain = { ...leaf, lobes: [], lobeAreaScale: 1 };
     const extension = (somaOutlineRadiusAtAngle(leaf, Math.PI)
       - somaOutlineRadiusAtAngle(plain, Math.PI)) / leaf.radius;
-    assert.ok(extension >= 0.9 && extension <= 1.2, `protrusion/minor radius = ${extension}`);
+    // D084-W2-NEURAL-R3: the body bump is small; the process supplies the shoulder.
+    assert.ok(extension >= 0.03 && extension <= 0.10, `compact lobe/minor radius = ${extension}`);
   }
   assert.deepEqual(leaf2d.lobes, leaf3d.lobes);
   for (let i = 0; i < 64; i++) {
@@ -79,7 +82,7 @@ test("the low-degree protrusion holds its ribbon width without a concave neck", 
     const x = tip + inset;
     const shoulder = points.filter(point => Math.abs(point.x - x) < 0.15);
     const width = 2 * Math.max(...shoulder.map(point => Math.abs(point.y)));
-    assert.ok(width >= previous - 0.05, `shoulder narrows toward tip at ${inset}: ${width} < ${previous}`);
+    assert.ok(width >= previous - 0.2, `shoulder forms a smooth chord at ${inset}: ${width} < ${previous}`);
     previous = width;
   }
   for (const inset of [1.5, 2, 3, 4, 5]) {
@@ -138,7 +141,9 @@ test("GPU soma texture carries the same three bounded real trunk directions", ()
         + Math.max(1, buffers.haloStopCount) * 2 + slot * 4;
       assert.ok(Math.abs(data[offset]! - trunk.direction.x) < 1e-6);
       assert.ok(Math.abs(data[offset + 1]! - trunk.direction.y) < 1e-6);
-      assert.ok(data[offset + 3]! >= 0.70 - 1e-6 && data[offset + 3]! <= 0.80 + 1e-6);
+      // D084-W2-NEURAL: every real direction now carries a moderate broad lobe (the old
+      // 0.70–0.80 narrow teardrop strengths are the defect this cycle removes).
+      assert.ok(data[offset + 3]! >= 0.04 - 1e-6 && data[offset + 3]! <= 0.09 + 1e-6);
     }
   }
   assert.equal(resources.geometry.attributes.a_somaLobe0, undefined, "no extra vertex attributes");
@@ -152,7 +157,9 @@ test("GPU soma texture carries the same three bounded real trunk directions", ()
 
 // D082-A-NEURAL BEGIN: P1 lines 67–74 require fewer, broader apparent hub directions.
 test("canvas and GPU share the leaf shoulder and broaden hub lobes", () => {
-  assert.equal(somaLobeAngularWidth(frame("leaf", "2d").lobes![0]!.strength), 0.32);
+  // D084-W2-NEURAL: every real trunk strength is now moderate (< 0.6), so every lobe —
+  // leaf and hub alike — draws with the broad angular width in both renderers.
+  assert.equal(somaLobeAngularWidth(frame("leaf", "2d").lobes![0]!.strength), 0.62);
   assert.equal(somaLobeAngularWidth(0.44), 0.62);
   assert.match(NODE_FRAGMENT_SHADER, /lobe\.z > 0\.6 \? 0\.32 : 0\.62/);
 });

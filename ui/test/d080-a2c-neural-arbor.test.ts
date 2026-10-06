@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
+import { buildMorphologyGeometry, neuralPrincipalTrunks, neuralTrunkLobeStrength } from "#engine/morphology-geometry.ts";
 import { neuralBranchRoute } from "#engine/neural-trunks.ts";
-import { neuralBranchedWidthPx, neuralEdgeEndOnSoma, somaOutlineRadiusAtAngle, somaSpindleFactor } from "#render-common/morphology-canvas.ts";
+import { neuralBranchedWidthPx, neuralEdgeEndOnSoma, somaOutlineRadiusAtAngle } from "#render-common/morphology-canvas.ts";
 
 const hub = { id: "hub", position: { x: 0, y: 0, z: 0 }, radius: 8 };
 const nodes = [hub, ...Array.from({ length: 24 }, (_, index) => {
@@ -39,19 +39,25 @@ test("A2c arbor partitions real relations through deterministic recursive splits
   assert.equal(first.edges.length, edges.length);
   assert.deepEqual(first.edges.map(edge => edge.id), edges.map(edge => edge.id));
   assert.ok(first.edges.every(edge => edge.segments.length === 1));
-  assert.ok(first.nodes[0]!.spindleRatio! >= 1.6 && first.nodes[0]!.spindleRatio! <= 2.2);
+  // D084-W2-NEURAL BEGIN: the spindle is gone — the hub body is round and compact, and
+  // only its real trunk directions extend it, through moderate broad lobes.
+  assert.equal(first.nodes[0]!.spindleRatio, undefined);
   const shape = first.nodes[0]!;
+  const trunks = neuralPrincipalTrunks(shape.trunks ?? []);
+  const maximum = Math.max(1, ...trunks.map(trunk => trunk.weight));
+  const lobes = trunks.map(trunk => ({ angle: Math.atan2(trunk.direction.y, trunk.direction.x),
+    strength: neuralTrunkLobeStrength(trunk, maximum, shape.degree) }));
   const frame = { x: 0, y: 0, angle: Math.atan2(shape.axis.y, shape.axis.x),
-    radius: 8, eccentricity: shape.spindleRatio!, harmonics: shape.outline, spindle: true };
+    radius: 8, eccentricity: 1, harmonics: shape.outline, lobes };
   const forward = somaOutlineRadiusAtAngle(frame, frame.angle);
   const side = somaOutlineRadiusAtAngle(frame, frame.angle + Math.PI / 2);
-  assert.ok(forward / side >= 1.6 && forward / side <= 2.2, `spindle silhouette ${forward / side}`);
-  const join = neuralEdgeEndOnSoma(frame, { x: 100 * Math.cos(frame.angle), y: 100 * Math.sin(frame.angle) });
+  assert.ok(forward / side >= 1.05 && forward / side <= 1.6,
+    `compact organic silhouette ${forward / side}`);
+  const join = neuralEdgeEndOnSoma(frame, { x: 150 * Math.cos(frame.angle), y: 150 * Math.sin(frame.angle) });
   assert.ok(Math.hypot(join.x, join.y) < forward, "root begins inside the same soma outline");
-  const polar = Math.atan2(Math.sin(0.7), frame.eccentricity * Math.cos(0.7));
-  const radial = somaOutlineRadiusAtAngle({ ...frame, harmonics: [], angle: 0 }, polar);
-  const drawn = Math.hypot(8 * frame.eccentricity * Math.cos(0.7), 8 * Math.sin(0.7)) * somaSpindleFactor(0.7);
-  assert.ok(Math.abs(radial - drawn) < 1e-9, "projected join follows the painted spindle at oblique angles");
+  const radial = somaOutlineRadiusAtAngle({ ...frame, harmonics: [], lobes: [], angle: 0 }, 0.7);
+  assert.ok(Math.abs(radial - 8) < 1e-9, "a bare body is exactly round at oblique angles");
+  // D084-W2-NEURAL END
   const widths = [0, 10, 20].map(index => neuralBranchedWidthPx(index, 61, 2, 1, 8, 3.2));
   assert.ok(Math.abs(widths[1]! / widths[0]! - 0.76) < 1e-9);
   assert.ok(Math.abs(widths[2]! / widths[1]! - 0.76) < 1e-9);

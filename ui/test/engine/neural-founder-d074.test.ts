@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
-import { buildMorphologyGeometry, neuralDetailVisible, neuralScreenWidthAt, neuralShoulderFraction } from "#engine/morphology-geometry.ts";
+import { buildMorphologyGeometry, neuralScreenWidthAt, neuralShoulderFraction } from "#engine/morphology-geometry.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { drawMorphologyCanvas, neuralEdgeEndOnSoma, somaOutlineRadiusAtAngle } from "#render-common/morphology-canvas.ts";
 import type { MorphologyCanvasStyle } from "#render-common/morphology-canvas.ts";
@@ -27,14 +27,13 @@ test("Neural root reaches the actual soma outline and tapers monotonically over 
   }
   assert.ok(Math.abs(previous - 1.5) < 1e-9);
   assert.equal(neuralScreenWidthAt(0.5, 1.5, 7, 7, [2.4, 2.4], 240), 1.5);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /startShoulder.*endShoulder/s);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /neuralProfileSample.*neuralProfileDistance/s);
 });
 
 // D082-A-NEURAL BEGIN: a leaf's single neurite must be its only tail.
 test("degree-one Neural cells retain one tail even in close-up and never add graph instances", () => {
-  assert.equal(neuralDetailVisible(1, 7, 180), false);
-  assert.equal(neuralDetailVisible(2, 7, 180), true);
-  assert.equal(neuralDetailVisible(2, 4, 180), false);
+  // D084-W2-NEURAL: neuralDetailVisible and its cosmetic offshoots are removed entirely —
+  // no decorative filament may fake a relation the graph does not draw.
   const nodes = [
     { id: "a", position: { x: 0, y: 0, z: 0 }, radius: 10 },
     { id: "b", position: { x: 180, y: 0, z: 0 }, radius: 10 },
@@ -83,7 +82,8 @@ test("degree-one Neural cells retain one tail even in close-up and never add gra
   }
   assert.equal(filaments.geometry.instanceCount, scene.edges.length);
   assert.equal(somata.geometry.instanceCount, scene.nodes.length);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /neuralBranchCoverage/);
+  // D084-W2-NEURAL: the cosmetic branch arm must stay gone from the GPU program.
+  assert.doesNotMatch(FILAMENT_FRAGMENT_SHADER, /neuralBranchCoverage/);
   assert.match(NODE_FRAGMENT_SHADER, /v_somaShape/);
   assert.ok(buffers.nodes.somaShape.some((value, index) => index % 2 === 0 && value === 1));
   filaments.geometry.dispose(); filaments.material.dispose();

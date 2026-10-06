@@ -23,8 +23,7 @@ function longPaint(neural: boolean, offset = 0): MorphologyEdgePaint {
   const points = Array.from({ length: 2001 }, (_, i) => ({ x: i * 10 - 10000 + offset, y: 200, scale: 1 }));
   return { part: {} as MorphologyEdgePaint["part"], edgeId: "long", category: "exploratory", neural,
     points, cumulative: points.map((_, i) => i * 10), totalPx: 20000,
-    color: "rgb(200, 220, 240)", alpha: 0.6, widthAt: () => 3,
-    detailStartPx: 0, detailEndPx: 0 };
+    color: "rgb(200, 220, 240)", alpha: 0.6, widthAt: () => 3 };
 }
 
 test("approach-camera clipping bounds vertices and skips offscreen edges", () => {
