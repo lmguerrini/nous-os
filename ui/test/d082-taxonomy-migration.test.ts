@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { LULL_NAME_AUTHORISED } from '../src/topology/lull.ts';
 import { test } from 'node:test';
 import { computeLayout } from '../src/review/layout-v2.ts';
 import type { LayoutInput } from '../src/review/layout-v2.ts';
@@ -70,9 +69,11 @@ test('view2 precedence, density, palette and stable URL round trip', () => {
 test('wire taxonomy and label gating follow law support', () => {
   assert.equal(wireTopology('lull'), 'circular-combinatorial');
   assert.equal(lawTopology('circular-combinatorial'), 'lull');
-  assert.equal(topologyLabel('julia', '2d'), 'Julia · coordinate esterne');
-  // D082-B5 integration: the label follows the verified name gate of the implemented law.
-  assert.equal(topologyLabel('lull', '2d'), LULL_NAME_AUTHORISED ? 'Combinatoria lulliana' : 'Topologia circolare combinatoria');
+  // D084-W3-LABELS: the selector shows the short English names; the law's long verified
+  // name stays available as explanation (Llull's is overridden in the registry layer).
+  assert.equal(topologyLabel('julia', '2d'), 'Julia');
+  assert.equal(topologyLabel('lull', '2d'), 'Llull');
+  assert.equal(topologyLabel('lull', '3d'), 'Llull');
   assert.deepEqual(topologySupport('natural', '3d', true), { ok: true });
   const forbidden = topologySupport('lull', '3d', false);
   assert.equal(forbidden.ok, false);

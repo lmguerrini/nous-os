@@ -249,7 +249,8 @@ test('selecting Fractal projects the disclosed domain through the registered ass
   assert.equal(recordOf(page).cameraKey, '2d/fractal');
 
   const status = statusText();
-  assert.match(status, /Fractal/);
+  // D084-W3-LABELS: the disclosure names the view the selector shows («Canopy»), never the legacy organization name.
+  assert.match(status, /Canopy/);
   assert.match(status, /geometria derivata, non semantica/);
   assert.match(status, /raggi esterni inversi/);
   assert.match(status, /p=[23], c=-?0\./, 'the certified dynamics are named');
@@ -286,7 +287,7 @@ test('a pending state is on screen while the projection computes and clears when
   assert.equal(root.attrs['aria-busy'], 'false');
   assert.equal('data-projection-pending' in root.attrs, false);
   assert.equal(recordOf(page).pending, false);
-  assert.match(statusText(), /Vista Fractal/);
+  assert.match(statusText(), /Vista Canopy/);
 });
 
 test('a refresh superseded before the assembly starts never computes it', async () => {
@@ -382,7 +383,7 @@ test('focus on a genuinely lazy level opens it by requestedLevelId on the same h
   for (const visibility of trace.updates.slice(updates))
     assert.ok(visibility.projectionResultDigest === before || visibility.projectionResultDigest === recordOf(page).resultDigest);
   assert.equal(trace.updates.at(-1)!.projectionResultDigest, recordOf(page).resultDigest);
-  assert.match(statusText(), /Vista Fractal/);
+  assert.match(statusText(), /Vista Canopy/);
 });
 
 test('a focus outside the lazy level and the far band request no level', async () => {
@@ -576,7 +577,7 @@ test('a page without the typed pipeline serves Fractal through it and returns to
   assert.equal(counts.destroys, 1, 'the product view it replaces is retired once the typed renderer is up');
   assert.equal(recordOf(page).algorithm, 'fractal');
   assert.equal(recordOf(page).cameraKey, '2d/fractal');
-  assert.match(statusText(), /Vista Fractal/);
+  assert.match(statusText(), /Vista Canopy/);
 
   await page.setAxes({ organization: 'natural' });
   assert.equal(trace.destroys, 1, 'the typed renderer is retired');

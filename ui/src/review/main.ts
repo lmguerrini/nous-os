@@ -51,7 +51,9 @@ import { observeToolbarSectionVisibility } from "./toolbar-sections.ts";
 // D082-B2 BEGIN
 import { geometryToLegacyAxes, lawTopology, resolveGeometryView2, resolveSupportedGeometryView2, rewriteGeometryUrl, serializeGeometryView2, wireTopology } from './geometry-view2.ts'; // D082-LAB-FIX4
 import type { GeometryView2, SavedGeometryView2 } from './geometry-view2.ts';
-import { TOPOLOGY_IDS, topologyLabel, topologyRowState, topologySupport } from '../topology/registry.ts';
+// D084-W3-LABELS BEGIN: the selector keeps the short names; tooltips carry the classification.
+import { LAB_CONTAINER_DESCRIPTION, TOPOLOGY_IDS, topologyLabel, topologyRowState, topologySupport, topologyTooltip } from '../topology/registry.ts';
+// D084-W3-LABELS END
 import type { TopologyId } from '../topology/contract.ts';
 // D082-B2 END
 // D082-B-NOTICE BEGIN
@@ -190,9 +192,13 @@ function showSelectedGeometryDescription(onlyIfNoNotice = false): void {
   // D082-B-NOTICE BEGIN: the notice ends with its condition — back on Natural the lab
   // description no longer applies, so any standing notice is dismissed at once.
   if (topology === 'natural') { dismissLabNotice(); return; }
+  // D084-W3-LABELS BEGIN: the notice names the topology with its short selector name and
+  // carries the classification; the lab is never grouped under «Fractal» (a design
+  // decision). The extended technical name stays in the registry's explanation text.
   showLabNotice(topology === 'canopy-ifs'
-    ? 'Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica'
-    : topologyLabel(topology, axes.projection));
+    ? 'Canopy · sistema di funzioni iterate (IFS) sperimentale · geometria derivata, non semantica'
+    : topologyTooltip(topology, axes.projection));
+  // D084-W3-LABELS END
 }
 // D082-B-NOTICE END
 /** Whether the page draws Natural through the typed pipeline (`#projection=natural`); off, the legacy layout is drawn. */
@@ -248,7 +254,10 @@ if (geometryRead.error) {
   experimentalSuspensionNotice = `view2 rifiutata: ${geometryRead.error}. URL conservato per la riparazione.`;
 }
 if ('suspendedIntent' in geometry && geometry.suspendedIntent) {
-  experimentalSuspensionNotice = `${geometry.suspendedIntent === 'fractal' ? 'Fractal' : 'Holographic'} è una vista sperimentale: caricata Natural.`;
+  // D084-W3-LABELS BEGIN: the suspended legacy link names the view the selector shows; the
+  // backing organization's legacy identifier never reaches the notice.
+  experimentalSuspensionNotice = `${geometry.suspendedIntent === 'fractal' ? 'Canopy' : 'Holographic'} è una vista sperimentale: caricata Natural.`;
+  // D084-W3-LABELS END
   experimentalInitialFallback = true;
 }
 if (initialUrlView !== null && (geometryRead.source === 'query-view' || geometryRead.source === 'hash-view'))
@@ -393,7 +402,9 @@ function updateButtons() {
 const BAR_LABELS = {
   projection: { "2d": "2D", "3d": "3D" },
   morphology: { stellar: "Stellar", neural: "Neural", mycelium: "Mycelium" },
-  organization: { natural: "Natural", indra: "Indra", fractal: "Fractal", holographic: "Holographic" },
+  // D084-W3-LABELS: the topology line of the summary is written by the lab register
+  // (`topologyLabel`), so the organization row — whose legacy entry still carried the
+  // «Fractal» display name — is gone instead of left reachable.
   reading: { attested: "Attestata", exploratory: "Esplorativa", combined: "Combinata" },
 } as const;
 function syncToolbarSummary(): void {
@@ -421,7 +432,11 @@ function installTaxonomyControls(): void {
       button.setAttribute('aria-pressed', 'false');
     }
     const label = organizationAxis.querySelector<HTMLElement>('strong, .fullscreen-group-label');
-    if (label) label.textContent = 'Topologia';
+    // D084-W3-LABELS BEGIN: the container keeps its group name but its tooltip states that
+    // the lab holds mathematical topologies of different families — never one «IFS» or
+    // «Fractal» family.
+    if (label) { label.textContent = 'Topologia'; label.title = LAB_CONTAINER_DESCRIPTION; }
+    // D084-W3-LABELS END
     organizationAxis.dataset.axis = 'topology';
     for (const id of TOPOLOGY_IDS) {
       const button = document.createElement('button');
@@ -478,7 +493,10 @@ function syncTaxonomyControls(): void {
       button.removeAttribute('aria-describedby');
       button.removeAttribute('tabindex');
     }
-    button.title = reason ?? row.label;
+    // D084-W3-LABELS BEGIN: the visible selector text stays the short name; the tooltip
+    // carries the full name and its mathematical classification.
+    button.title = reason ?? topologyTooltip(topology, axes.projection);
+    // D084-W3-LABELS END
     button.dataset.reason = reason ?? '';
     button.setAttribute('aria-label', reason ? `${row.label}: ${reason}` : row.label);
     // D082-LAB-FIX4 BEGIN: only the currently visible toolbar placement is pressed.
@@ -543,6 +561,10 @@ async function chooseTaxonomy(topology: TopologyId, indra = 'mode' in geometry ?
       : topology === 'canopy-ifs' && !indra ? { compatibility: 'd081-canopy' as const } : {}) };
   view2WriteAllowed = true;
   persistView(); updateButtons(); syncToolbarSummary();
+  // D084-W3-LABELS BEGIN: the legend surfaces follow the taxonomy change, so the classification
+  // block appears with the lab topology and leaves with it.
+  refreshFlowLegends();
+  // D084-W3-LABELS END
   // D082-B-NOTICE BEGIN
   showSelectedGeometryDescription();
   // D082-B-NOTICE END
@@ -723,7 +745,11 @@ function updatePanel() {
   structuralPickControls.hidden = true;
   legendSection.append(structuralPickControls);
   details.append(legendSection);
-  appendFlowLegend(details, activePalette(), axes.organization === "indra" ? "indra" : "natural");
+  // D084-W3-LABELS BEGIN: the panel «Legenda» carries the lab classification while a lab
+  // topology governs the view.
+  appendFlowLegend(details, activePalette(), axes.organization === "indra" ? "indra" : "natural",
+    'mode' in geometry ? null : lawTopology(geometry.topology));
+  // D084-W3-LABELS END
 }
 let liveQuery = "";
 async function liveSearch(query: string, limit = 10): Promise<LiveFragment[]> {
@@ -1359,10 +1385,14 @@ function activePalette(): PaletteValues {
 function refreshFlowLegends(): void {
   const palette = activePalette();
   const organization = axes.organization === "indra" ? "indra" : "natural";
+  // D084-W3-LABELS BEGIN: while a lab topology governs the view, both legend surfaces carry the
+  // lab's classification block; Natural and the legacy analytical view keep the plain flow legend.
+  const topology = 'mode' in geometry ? null : lawTopology(geometry.topology);
   const fullscreen = get<HTMLElement>("fullscreen-legend");
-  renderFlowLegend(fullscreen, palette, organization);
+  renderFlowLegend(fullscreen, palette, organization, topology);
   for (const host of document.querySelectorAll<HTMLElement>(".flow-legend"))
-    if (host !== fullscreen) renderFlowLegend(host, palette, organization);
+    if (host !== fullscreen) renderFlowLegend(host, palette, organization, topology);
+  // D084-W3-LABELS END
 }
 // D082-A-THEME BEGIN
 function syncUIAccent(name: typeof axes.colour = axes.colour): void {

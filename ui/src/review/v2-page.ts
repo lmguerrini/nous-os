@@ -291,14 +291,18 @@ export function indraDisclosureLine(result: ProjectionResult, dimension: Dimensi
     return `Vista Indra's Pearls \u00B7 ${construction} \u00B7 geometria derivata, non semantica`
         + (dimension === '3d' ? ' \u00B7 3D: semisfera sul disco di ogni pearl' : '');
 }
-/** The status line of a Fractal view: which view this is, that its positions are derived geometry
- * (inverse external rays of the certified dynamics) and never a semantic claim, and the 3D limitation. */
+/** The status line of the view the Canopy route mounts: which view this is, that its positions are
+ * derived geometry (inverse external rays of the certified dynamics) and never a semantic claim,
+ * and the 3D limitation. */
 export function fractalDisclosureLine(result: ProjectionResult, dimension: Dimension): string {
     const diagnostic = (code: string) => result.diagnostics.find(item => item.code === code)?.value;
     const p = diagnostic('fractal:p'), c = diagnostic('fractal:c');
     const dynamics = typeof p === 'number' && typeof c === 'number' ? `certificati p=${p}, c=${Number(c.toPrecision(4))}` : 'certificati';
-    return `Vista Fractal \u00B7 posizioni derivate dai raggi esterni inversi di ${dynamics} \u00B7 geometria derivata, non semantica`
+    // D084-W3-LABELS BEGIN: the disclosure names the view the selector shows (\u00ABCanopy\u00BB); the
+    // legacy \u00ABFractal\u00BB identifier of the backing organization never reaches the user.
+    return `Vista Canopy \u00B7 posizioni derivate dai raggi esterni inversi di ${dynamics} \u00B7 geometria derivata, non semantica`
         + (dimension === '3d' ? ' \u00B7 3D: altezza = potenziale esterno (sollevamento scalare)' : '');
+    // D084-W3-LABELS END
 }
 /** The error-model headline of a Holographic result, read from its diagnostics: how many regions were
  * reconstructed, how many beat the stated baseline, and the median held-out error. */
@@ -616,9 +620,13 @@ export class V2Page {
         while (cursor) { path.unshift(cursor.id); cursor = cursor.parent ? byId.get(cursor.parent) : undefined; }
         const witness = this.lawLayout?.witnesses.get(id) ?? (() => {
             const canopy = this.topology === 'canopy-ifs' ? this.canopy?.positions.get(id) : null;
-            if (canopy) return { law: 'Canopy IFS', address: canopy.address,
+            // D084-W3-LABELS BEGIN: the witness names the topology with the short selector
+            // name; the extended technical name stays in the explanation text («Perché qui»).
+            if (canopy) return { law: 'Canopy', address: canopy.address,
                 values: { ratio: CANOPY_RATIO, livello: node.level },
-                text: 'Indirizzo binario nella gerarchia reale; i binari guida non sono relazioni.' };
+                text: 'Canopy: albero frattale generato tramite un sistema di funzioni iterate (IFS). '
+                    + 'Indirizzo binario nella gerarchia reale; i binari guida non sono relazioni.' };
+            // D084-W3-LABELS END
             if (this.topology === 'natural') return { law: this.topologyIndra ? 'Natural · Indra classico' : 'Natural',
                 address: path.join(' › '), values: { livello: node.level, importanza: node.importance.value },
                 text: this.topologyIndra ? 'Contenimento classico D-081 lungo la gerarchia primaria.'
@@ -2073,10 +2081,11 @@ export class V2Page {
         const refusalKey = `${snapshot.digest}|${domain.domainDigest}|fractal|${dimension}`;
         const remembered = this.rootProjectionRefusals.get(refusalKey);
         if (remembered !== undefined) {
-            this.showProjectionRefusal('Fractal', remembered);
+            // D084-W3-LABELS: the pending/refusal status names the selector-facing view (Canopy).
+            this.showProjectionRefusal('Canopy', remembered);
             return null;
         }
-        this.setProjectionPending(true, 'Fractal', epoch);
+        this.setProjectionPending(true, 'Canopy', epoch);
         try {
             await afterPaint();
             if (epoch !== this.projectionEpoch) return null;
@@ -2085,7 +2094,7 @@ export class V2Page {
             if (epoch !== this.projectionEpoch) return null;
             const state = result.coordinateState;
             if (state.kind === 'no-coordinates') {
-                this.showProjectionRefusal('Fractal', { code: state.code,
+                this.showProjectionRefusal('Canopy', { code: state.code,
                     detail: result.explanations[state.explanationId]?.summary ?? state.code });
                 return null;
             }
@@ -2096,7 +2105,7 @@ export class V2Page {
             if (refusal === null) throw error;
             if (epoch === this.projectionEpoch) {
                 this.rootProjectionRefusals.set(refusalKey, refusal);
-                this.showProjectionRefusal('Fractal', refusal);
+                this.showProjectionRefusal('Canopy', refusal);
             }
             return null;
         } finally {
@@ -2349,7 +2358,7 @@ export class V2Page {
     }
     /** The visible pending state of a projection that computes: the status line says so and the
      * render root carries `aria-busy` and `data-projection-pending` until the result is committed. */
-    private setProjectionPending(pending: boolean, view = 'Fractal', epoch = this.projectionEpoch): void {
+    private setProjectionPending(pending: boolean, view = 'Canopy', epoch = this.projectionEpoch): void {
         this.projectionPending = pending;
         if (pending) this.projectionPendingEpoch = epoch;
         const root = element('render-root');
@@ -3964,7 +3973,7 @@ export class V2Page {
                     this.syncFocusControls();
                     this.renderPanel();
                     element('status').textContent = canopy
-                        ? 'Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica'
+                        ? 'Canopy · sistema di funzioni iterate (IFS) sperimentale · geometria derivata, non semantica' // D084-W3-LABELS: short selector name, no «Fractal» grouping of the lab.
                         : 'Grafo pronto';
                     // D082-B-NOTICE BEGIN
                     if (canopy) showLabNotice(element('status').textContent);
@@ -4273,7 +4282,7 @@ export class V2Page {
             if (added.length && this.positions.size > added.length)
                 this.pulse(added);
             element('status').textContent = canopy
-                ? 'Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica'
+                ? 'Canopy · sistema di funzioni iterate (IFS) sperimentale · geometria derivata, non semantica' // D084-W3-LABELS: short selector name, no «Fractal» grouping of the lab.
                 : 'Grafo pronto';
             // D082-B-NOTICE BEGIN
             if (canopy) showLabNotice(element('status').textContent);
@@ -5351,7 +5360,10 @@ export class V2Page {
             search.append(button);
         }
         host.append(search);
-        appendFlowLegend(host, this.palette, this.axes.organization === 'indra' ? 'indra' : 'natural');
+        // D084-W3-LABELS BEGIN: the panel «Legenda» carries the lab classification while a lab
+        // topology governs the view; Natural and the legacy analytical view keep the plain legend.
+        appendFlowLegend(host, this.palette, this.axes.organization === 'indra' ? 'indra' : 'natural', this.topology);
+        // D084-W3-LABELS END
         // D-073 B8/B10e: the typed pipeline's structural pick controls. The legend owns its own
         // visibility (hidden until a structural relation is actually visible); without the flag the
         // element stays absent, exactly as the off-path browser check expects.
