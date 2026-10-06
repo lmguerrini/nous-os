@@ -60,7 +60,8 @@ test("Stellar edges are collinear and halos stay within twice the core", () => {
 
 test("Neural soma axis, eccentricity, topology and tangent", () => {
   const line = buildMorphologyGeometry("neural", nodes.slice(0, 3), edges.slice(0, 2));
-  assert.ok(line.nodes[0]!.eccentricity > 1.1);
+  // D084-W2-NEURAL-R5: compact somata retire the elongated base ellipse.
+  assert.equal(line.nodes[0]!.eccentricity, 1);
   assert.ok(Math.abs(Math.atan2(line.nodes[0]!.axis.y, line.nodes[0]!.axis.x)) < Math.PI / 18);
   const isotropic = buildMorphologyGeometry("neural", nodes, edges.slice(0, 4)).nodes[0]!;
   assert.ok(isotropic.eccentricity < 1.2);

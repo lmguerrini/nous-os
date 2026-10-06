@@ -98,7 +98,7 @@ test("D-074 default product radii are smaller, ordered by importance, and retain
   }
 });
 
-test("D-071 Neural somata differ: eccentricity spread and bounded outline irregularity", () => {
+test("D-084 Neural somata keep round bases and bounded outline irregularity", () => {
   const nodes = [
     { id: "hub", position: { x: 0, y: 0, z: 0 }, radius: 7 },
     { id: "e", position: { x: 100, y: 0, z: 0 }, radius: 3 },
@@ -115,7 +115,9 @@ test("D-071 Neural somata differ: eccentricity spread and bounded outline irregu
     { id: "et", source: "e", target: "tail", width: 2 },
   ];
   const geometry = buildMorphologyGeometry("neural", nodes, edges);
-  assert.ok(std(geometry.nodes.map(node => node.eccentricity)) > 0.1, JSON.stringify(geometry.nodes.map(node => node.eccentricity)));
+  // The compact construction retired free covariance elongation;
+  // connected direction remains in the outline lobes checked below.
+  assert.ok(geometry.nodes.every(node => node.eccentricity === 1));
   for (const node of geometry.nodes) {
     assert.equal(node.outline.length, 3);
     for (let sample = 0; sample < 64; sample++) {
@@ -136,7 +138,8 @@ test("D-074 Neural soma stays compact with bounded organic outline", () => {
     { id: "he", source: "hub", target: "e", width: 2 },
     { id: "hw", source: "hub", target: "w", width: 2 },
   ]);
-  assert.ok(collinear.nodes[0]!.eccentricity >= 1.25, `collinear eccentricity ${collinear.nodes[0]!.eccentricity}`);
+  // Collinear connections no longer stretch the independent soma ellipse.
+  assert.equal(collinear.nodes[0]!.eccentricity, 1);
   assert.ok(collinear.nodes[0]!.eccentricity <= 1.32);
   // Isolated somata stay round: no local connection to orient them.
   const isolated = buildMorphologyGeometry("neural", [{ id: "iso", position: { x: 0, y: 0, z: 0 }, radius: 6 }], []).nodes[0]!;

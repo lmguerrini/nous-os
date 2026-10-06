@@ -670,9 +670,20 @@ test("D-074 edge-width slider changes drawn widths across its 0.3–3 range", ()
       } finally {
         delete (globalThis as typeof globalThis & { __d070?: object }).__d070;
       }
-      const first = ops.find(op => op.op === "moveTo");
-      assert.ok(first, `${morphology}: missing ribbon`);
-      return Math.abs(Number(first.args[1]) - 160) * 2;
+      const firstPoint = ops.find(op => op.op === "moveTo");
+      assert.ok(firstPoint, `${morphology}: missing ribbon`);
+      if (morphology !== "neural") return Math.abs(Number(firstPoint.args[1]) - 160) * 2;
+      // D084-W2-NEURAL-R5: the soma anchors the root, so its first outline
+      // point intentionally ignores the width slider. Measure the ordinary
+      // edge at the midpoint, where the slider owns the drawn width.
+      const first = ops.findIndex(op => op.op === "moveTo");
+      const finish = ops.findIndex((op, index) => index > first && op.op === "fill");
+      assert.ok(first >= 0 && finish > first, `${morphology}: missing ribbon`);
+      const path = ops.slice(first, finish).filter(op => op.op === "moveTo" || op.op === "lineTo");
+      const count = path.length / 2;
+      assert.ok(Number.isInteger(count) && count > 2, `${morphology}: path points ${path.length}`);
+      const middle = Math.floor(count / 2);
+      return Math.abs(Number(path[middle]!.args[1]) - Number(path[2 * count - 1 - middle]!.args[1]));
     });
     assert.ok(widths[0]! < widths[1]! && widths[1]! < widths[2]!, `${morphology}: ${widths.join(" → ")}`);
   }

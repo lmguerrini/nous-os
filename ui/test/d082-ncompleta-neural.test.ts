@@ -117,7 +117,8 @@ test('first 2D Completa scene has density factors before a renderer or gesture e
   assert.match(source, /firstNeuralScreen\?\.edgeDensities[\s\S]*?const presentation = \{/);
   assert.match(source, /initialScene = \{ \.\.\.draft, geometry \}/);
   const shader = readFileSync(new URL('../src/render2d/filament-program.ts', import.meta.url), 'utf8');
-  assert.match(shader, /0\.9 \* v_materialVariation\.z/);
+  // D084-W2-NEURAL-R5: the veil now scales the attached soma's alpha.
+  assert.match(shader, /rootSomaColor\.a \* \(v_materialVariation\.z < 1\.0/);
 });
 
 test('jsdom first-scene viewport supplies dense factors without a pan', { skip: !JSDOM }, () => {

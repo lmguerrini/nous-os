@@ -41,6 +41,8 @@ export type FilamentBuffers = {
   readonly edgeIds: readonly string[]; readonly sourceIds: readonly string[]; readonly targetIds: readonly string[];
   readonly startPositions: Float32Array; readonly controlPositions: Float32Array; readonly endPositions: Float32Array;
   readonly colorsSrgb: Float32Array; readonly hotColorsSrgb: Float32Array;
+  /** Endpoint soma tones sampled from the same scene node tokens as the node pass. */
+  readonly somaStartColorsSrgb: Float32Array; readonly somaEndColorsSrgb: Float32Array;
   readonly opacityPermille: Float32Array; readonly widthsAndPicking: Float32Array;
   /** Ordinary width, endpoint soma radii, and Neural flag for the screen-space profile. */
   readonly neuralProfile: Float32Array; readonly neuralRootRatios: Float32Array;
@@ -234,7 +236,13 @@ export function buildFilamentBuffers(
   const controlPositions = new Float32Array(ordered.length * coordinateCount());
   const endPositions = new Float32Array(ordered.length * coordinateCount());
   const colorsSrgb = new Float32Array(ordered.length * colorChannelCount());
-  const hotColorsSrgb = new Float32Array(ordered.length * colorChannelCount());
+  const hotColorsSrgb = new Float32Array(ordered.length * packedChannelCount());
+  // D084-W2-NEURAL-R5 BEGIN: pass each actual soma tone to its attached process.
+  const somaStartColorsSrgb = new Float32Array(ordered.length * packedChannelCount());
+  const somaEndColorsSrgb = new Float32Array(ordered.length * packedChannelCount());
+  const nodeColors = new Map(nodes.map(node => [node.id, tokenToSrgb(node.token, encoding)]));
+  const nodeOpacities = new Map(nodes.map(node => [node.id, node.opacityPermille]));
+  // D084-W2-NEURAL-R5 END
   const opacityPermille = new Float32Array(ordered.length);
   const widthsAndPicking = new Float32Array(ordered.length * packedChannelCount());
   const neuralProfile = new Float32Array(ordered.length * packedChannelCount());
@@ -282,7 +290,16 @@ export function buildFilamentBuffers(
     writeCoordinates(controlPositions, edgeIndex, control);
     writeCoordinates(endPositions, edgeIndex, neural ? nodeCenters.get(edge.target) ?? end : end);
     writeColor(colorsSrgb, edgeIndex, tokenToSrgb(edge.token, encoding));
-    writeColor(hotColorsSrgb, edgeIndex, hotColor);
+    // D084-W2-NEURAL-R5: pack existing edge opacity with hot colour to stay
+    // within the GPU attribute limit; keep the original permille precision.
+    writePacked(hotColorsSrgb, edgeIndex, [hotColor.red, hotColor.green, hotColor.blue,
+      edge.opacityPermille]);
+    const startTone = nodeColors.get(edge.source) ?? tokenToSrgb(edge.token, encoding);
+    const endTone = nodeColors.get(edge.target) ?? tokenToSrgb(edge.token, encoding);
+    writePacked(somaStartColorsSrgb, edgeIndex, [startTone.red, startTone.green, startTone.blue,
+      nodeOpacities.get(edge.source) ?? edge.opacityPermille]);
+    writePacked(somaEndColorsSrgb, edgeIndex, [endTone.red, endTone.green, endTone.blue,
+      nodeOpacities.get(edge.target) ?? edge.opacityPermille]);
     opacityPermille[edgeIndex] = edge.opacityPermille;
     writePacked(widthsAndPicking, edgeIndex, [
       edge.widthStartPx,
@@ -346,6 +363,8 @@ export function buildFilamentBuffers(
     endPositions,
     colorsSrgb,
     hotColorsSrgb,
+    somaStartColorsSrgb,
+    somaEndColorsSrgb,
     opacityPermille,
     widthsAndPicking,
     neuralProfile,

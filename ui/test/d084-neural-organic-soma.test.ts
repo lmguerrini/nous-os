@@ -80,12 +80,32 @@ test("the 0.35R concave fillet is tangent to a round soma and a 0.45R process", 
     assert.ok(radius >= 0.3 && radius <= 0.42, `fillet radius ${radius} at ${i}`);
   }
   assert.equal(NEURAL_ROOT_FILLET_RADII, 0.35);
-  for (const [s, minimum] of [[1, 0.85], [2.5, 0.5]] as const) {
-    const sample = neuralRootProfileAtLength((end + s) * 20, 20, 1.5, 0.4, 1.8, 120);
+  for (const [s, minimum] of [[1, 0.8], [2.5, 0.8], [5, 0.5]] as const) {
+    const sample = neuralRootProfileAtLength((end + s) * 20, 20, 1.5, 0.4, 1.8, 180);
     assert.ok(sample.width / 2 >= minimum * NEURAL_ROOT_MOUTH_RADII * 20,
       `process at ${s}R has half-width ${sample.width / 2}`);
   }
 });
+
+// D084-W2-NEURAL-R5 BEGIN: these bounds fail on the round-four short wedge.
+test("the single field holds the process and reaches edge width at the specified distance", () => {
+  for (const [radius, span] of [[4, 120], [12, 400], [30, 1000]] as const) {
+    const terminal = Math.min(span, Math.max(Math.min(9 * radius, 0.5 * span), 24));
+    assert.equal(neuralRootLengthPx(radius, span), terminal);
+    const h0 = NEURAL_ROOT_MOUTH_RADII * radius;
+    const sample = (distance: number) => neuralRootProfileAtLength(
+      (NEURAL_ROOT_FILLET_LENGTH_RADII * radius) + distance, radius, 1.5, 0.35, 1.8, terminal);
+    if (terminal >= 2.5 * radius)
+      assert.ok(sample(2.5 * radius).width / 2 >= 0.8 * h0);
+    if (terminal >= 5 * radius)
+      assert.ok(sample(5 * radius).width / 2 >= 0.5 * h0);
+    assert.ok(Math.abs(sample(terminal).width - 1.5) < 1e-9);
+    assert.equal(sample(terminal).somaMix, 0);
+  }
+  assert.ok(FILAMENT_FRAGMENT_SHADER.includes("rootSomaColor"));
+  assert.ok(!FILAMENT_FRAGMENT_SHADER.includes("mix(color, vec3(1.0), rootSomaMix)"));
+});
+// D084-W2-NEURAL-R5 END
 
 test("canvas sampling and both GPU uniforms use the one engine table", async () => {
   Object.assign(globalThis, { WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3,
@@ -97,7 +117,7 @@ test("canvas sampling and both GPU uniforms use the one engine table", async () 
   assert.equal(NEURAL_PROFILE_TABLE.length, 64 * 4);
   for (const s of [0, 0.1, NEURAL_ROOT_FILLET_LENGTH_RADII, 0.5, 1.2, 2.5, 4, 6]) {
     const fromTable = neuralProfileTableAt(s);
-    const fromCanvas = neuralRootProfileAtLength(s * 20, 20, 0, 0.4, 1.8, 120);
+    const fromCanvas = neuralRootProfileAtLength(s * 20, 20, 0, 0.4, 1.8, 180);
     assert.ok(Math.abs(fromCanvas.width / 2 / 20 - fromTable.halfWidthRadii * fromTable.somaMix) < 1e-6);
     assert.ok(Math.abs(fromCanvas.somaMix - fromTable.somaMix) < 1e-6);
   }
@@ -159,7 +179,7 @@ test("the root begins at the shoulder chord and remains thick for 2.5 radii", ()
     assert.ok(Math.abs(mouth.width - 2 * radius * Math.sqrt(1 - NEURAL_ROOT_ANCHOR_RADII ** 2)) < 1e-6);
     assert.ok(mouth.width / (2 * radius) >= 0.55 && mouth.width / (2 * radius) <= 0.65,
       `r=${radius}: junction half-width stays near the shoulder`);
-    assert.ok(length >= Math.min(radius * NEURAL_ROOT_LENGTH_RADII, 140 * 0.45) - 1e-9);
+    assert.ok(length >= Math.min(radius * NEURAL_ROOT_LENGTH_RADII, 140 * 0.5) - 1e-9);
     assert.ok(Math.abs(mouth.alpha - 0.9) < 1e-12, "the junction alpha matches the soma fill");
     let previousWidth = mouth.width, previousAlpha = mouth.alpha;
     for (let index = 1; index <= 200; index++) {
@@ -272,6 +292,16 @@ test("the GPU body and root anchors carry the same organic profile as the canvas
     assert.ok(Math.abs(anchored - radius) < 1e-4
       || Math.abs(anchored - radius * NEURAL_LEAF_BODY_SCALE) < 1e-4,
       `GPU roots anchor at the body their cell actually draws (${anchored} vs ${radius})`);
+    // D084-W2-NEURAL-R5: each endpoint process receives the exact token and
+    // opacity used by its soma, before the shared table fades into edge paint.
+    for (const [id, tones] of [[source, sceneBuffers.filaments.somaStartColorsSrgb],
+      [sceneBuffers.filaments.targetIds[index]!, sceneBuffers.filaments.somaEndColorsSrgb]] as const) {
+      const nodeIndex = sceneBuffers.nodes.ids.indexOf(id);
+      assert.ok(nodeIndex >= 0);
+      assert.deepEqual(Array.from(tones.slice(index * 4, index * 4 + 3)),
+        Array.from(sceneBuffers.nodes.colorsSrgb.slice(nodeIndex * 3, nodeIndex * 3 + 3)));
+      assert.equal(tones[index * 4 + 3], sceneBuffers.nodes.opacityPermille[nodeIndex]);
+    }
   }
   // The GPU mouth spans the local soma extension with the same bounded response.
   assert.match(FILAMENT_FRAGMENT_SHADER, /neuralProfileSample/);
@@ -286,7 +316,7 @@ test("small somata retain the full proportional root", () => {
     assert.equal(neuralRootCompactnessScale(radius, 3), 1);
     const length = neuralVisibleRootLengthPx(radius, 200, 1, false, 1)
       * neuralRootCompactnessScale(radius, 3);
-    assert.equal(length, Math.min(200, Math.max(18, Math.min(6 * radius, 90))));
+    assert.equal(length, Math.min(200, Math.max(24, Math.min(9 * radius, 100))));
     const mouth = neuralRootProfileAtLength(0, radius, 1.5, 0.4, 1.8, length);
     if (length >= 2.5 * radius) {
       const early = neuralRootProfileAtLength((2.5 + NEURAL_ROOT_FILLET_LENGTH_RADII) * radius, radius, 1.5, 0.4, 1.8, length);
@@ -317,7 +347,7 @@ test("dense WebGL, native 3D and canvas use the engine junction policy", () => {
   assert.ok(FILAMENT_FRAGMENT_SHADER.includes(NEURAL_PROFILE_GLSL));
   assert.ok(programSource.includes("NEURAL_PROFILE_GLSL") && programSource.includes("NEURAL_PROFILE_TABLE"));
   assert.ok(FILAMENT_VERTEX_SHADER.includes(String(2 * NEURAL_PROFILE_TABLE[1]!)));
-  assert.ok(programSource.includes('a_somaRadii", size: 4') && programSource.includes("a_somaRadii.zw")
+  assert.ok(programSource.includes('a_somaRadii", size: COLOR_CHANNEL_COUNT') && programSource.includes("a_somaRadii.zw")
     && modelSource.includes("neuralBodyScales"),
     "the dense path receives two endpoint scales packed with the soma radii");
   assert.ok(programSource.includes("NEURAL_ROOT_ANCHOR_RADII"));

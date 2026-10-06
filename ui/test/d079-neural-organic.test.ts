@@ -135,5 +135,8 @@ test("3D filament ratios match the shared canvas profile at both endpoints", () 
     const ordinary = 1.5, radius = 10;
     assert.equal(neuralScreenWidthAt(0, ordinary, radius, radius, [sourceRatio, targetRatio], 200), ordinary * sourceRatio);
   }
-  assert.match(FILAMENT_FRAGMENT_SHADER, /v_neuralRootRatios\.x/);
+  // D084-W2-NEURAL-R5: root ratios remain in the buffer for route metadata;
+  // the live width and fade now sample the engine profile table in the shader.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /neuralProfileSample\(/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /v_somaStartColor/);
 });

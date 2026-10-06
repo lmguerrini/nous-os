@@ -90,8 +90,8 @@ export const NEURAL_GEOMETRY_VERSION = "d084-r4-concave-profile-4";
 // D084-W2-NEURAL END
 /** A short fillet joins the soma to the existing trunk without drawing a white radial arm. */
 // D084-W2-NEURAL-R3 BEGIN: one screen-space junction policy for every renderer.
-export const NEURAL_ROOT_LENGTH_RADII = 6;
-export const NEURAL_ROOT_MAX_LENGTH_RADII = 6;
+export const NEURAL_ROOT_LENGTH_RADII = 9;
+export const NEURAL_ROOT_MAX_LENGTH_RADII = 9;
 // D084-W2-NEURAL-R4 BEGIN: a circle of radius 0.35R is externally tangent to
 // the unit soma and to the horizontal 0.45R process edge. The circle contact
 // is the root anchor; the process begins at the second tangency.
@@ -101,8 +101,8 @@ const filletCenterY = NEURAL_ROOT_MOUTH_RADII + NEURAL_ROOT_FILLET_RADII;
 const filletCenterX = Math.sqrt((1 + NEURAL_ROOT_FILLET_RADII) ** 2 - filletCenterY ** 2);
 export const NEURAL_ROOT_ANCHOR_RADII = filletCenterX / (1 + NEURAL_ROOT_FILLET_RADII);
 export const NEURAL_ROOT_FILLET_LENGTH_RADII = filletCenterX - NEURAL_ROOT_ANCHOR_RADII;
-export const NEURAL_ROOT_SPAN_FRACTION = 0.45;
-export const NEURAL_ROOT_MIN_LENGTH_PX = 18;
+export const NEURAL_ROOT_SPAN_FRACTION = 0.5;
+export const NEURAL_ROOT_MIN_LENGTH_PX = 24;
 export const NEURAL_PROFILE_FILLET_SAMPLES = 24;
 export const NEURAL_PROFILE_SAMPLES = 64;
 /** Packed (distance/R, half-width/R, soma colour mix, half-width slope), shared by every path. */
@@ -121,9 +121,12 @@ export const NEURAL_PROFILE_TABLE = (() => {
       : NEURAL_ROOT_MOUTH_RADII;
     const slope = fillet ? -(x - filletCenterX) / (half - filletCenterY) : 0;
     const process = Math.max(0, s - NEURAL_ROOT_FILLET_LENGTH_RADII);
-    const mix = fillet ? 1 : process <= 1 ? 1 - 0.1 * smooth(process)
-      : process <= 2.5 ? 0.9 - 0.35 * smooth((process - 1) / 1.5)
-      : 0.55 * (1 - smooth((process - 2.5) / 3.5));
+    // D084-W2-NEURAL-R5 BEGIN: keep a readable shaft after the proven fillet.
+    // The same column governs width, colour and alpha in all four renderers.
+    const mix = fillet || process <= 2.5 ? 1
+      : process <= 5 ? 1 - 0.3 * smooth((process - 2.5) / 2.5)
+        : 0.7 * (1 - smooth((process - 5) / 4));
+    // D084-W2-NEURAL-R5 END
     samples.set([s, half, mix, slope], i * 4);
   }
   return samples;
@@ -140,6 +143,8 @@ function neuralProfileHermite(a: number, b: number, ma: number, mb: number, t: n
 }
 export function neuralProfileTableAt(sRadii: number): { halfWidthRadii: number; somaMix: number } {
   const s = Math.max(0, Math.min(NEURAL_ROOT_FILLET_LENGTH_RADII + NEURAL_ROOT_LENGTH_RADII, sRadii));
+  if (s >= NEURAL_ROOT_FILLET_LENGTH_RADII + NEURAL_ROOT_LENGTH_RADII - 1e-6)
+    return { halfWidthRadii: NEURAL_ROOT_MOUTH_RADII, somaMix: 0 };
   let low = 0, high = NEURAL_PROFILE_SAMPLES - 1;
   while (high - low > 1) {
     const middle = (low + high) >> 1;
@@ -194,12 +199,16 @@ float neuralProfileDistance(float distance, float radius, float processLength) {
   float fillet = radius * ${NEURAL_ROOT_FILLET_LENGTH_RADII};
   float process = max(0.0, distance - fillet);
   float twoAndHalf = 2.5 * radius;
+  float five = 5.0 * radius;
   if (distance <= fillet) return max(0.0, distance / max(radius, 0.000001));
   if (processLength <= twoAndHalf) return ${NEURAL_ROOT_FILLET_LENGTH_RADII}
     + process / max(processLength, 0.000001) * ${NEURAL_ROOT_LENGTH_RADII}.0;
-  return ${NEURAL_ROOT_FILLET_LENGTH_RADII} + (process <= twoAndHalf
+  if (processLength <= five) return ${NEURAL_ROOT_FILLET_LENGTH_RADII} + (process <= twoAndHalf
     ? process / max(radius, 0.000001)
-    : 2.5 + (process - twoAndHalf) / max(processLength - twoAndHalf, 0.000001) * 3.5);
+    : 2.5 + (process - twoAndHalf) / max(processLength - twoAndHalf, 0.000001) * 6.5);
+  return ${NEURAL_ROOT_FILLET_LENGTH_RADII} + (process <= five
+    ? process / max(radius, 0.000001)
+    : 5.0 + (process - five) / max(processLength - five, 0.000001) * 4.0);
 }
 vec2 neuralProfileSample(float s) {
   ${neuralProfileGlslBranch(1, NEURAL_PROFILE_SAMPLES - 1)}
@@ -216,6 +225,8 @@ export const NEURAL_MIN_SHAPED_RADIUS_PX = 1.5;
 export type NeuralRootSample = { readonly width: number; readonly alpha: number; readonly somaMix: number };
 /** The 45% span cap leaves room for the root at the opposite endpoint of short links. */
 export function neuralRootLengthPx(somaRadiusPx: number, spanPx: number): number {
+  // D084-W2-NEURAL-R5: the process reaches ordinary edge width at the requested
+  // screen-space distance, bounded by the actual relation length.
   return Math.min(spanPx, Math.max(NEURAL_ROOT_MIN_LENGTH_PX,
     Math.min(somaRadiusPx * NEURAL_ROOT_LENGTH_RADII, spanPx * NEURAL_ROOT_SPAN_FRACTION)));
 }
@@ -274,8 +285,11 @@ export function neuralRootProfileAtLength(distancePx: number, somaRadiusPx: numb
   const s = distancePx <= filletPx ? distancePx / somaRadiusPx
     : NEURAL_ROOT_FILLET_LENGTH_RADII + (rootLengthPx <= 2.5 * somaRadiusPx
       ? process / Math.max(rootLengthPx, 1e-6) * NEURAL_ROOT_LENGTH_RADII
-      : process <= 2.5 * somaRadiusPx ? process / somaRadiusPx
-        : 2.5 + (process - 2.5 * somaRadiusPx) / Math.max(rootLengthPx - 2.5 * somaRadiusPx, 1e-6) * 3.5);
+      : rootLengthPx <= 5 * somaRadiusPx
+        ? process <= 2.5 * somaRadiusPx ? process / somaRadiusPx
+          : 2.5 + (process - 2.5 * somaRadiusPx) / Math.max(rootLengthPx - 2.5 * somaRadiusPx, 1e-6) * 6.5
+        : process <= 5 * somaRadiusPx ? process / somaRadiusPx
+          : 5 + (process - 5 * somaRadiusPx) / Math.max(rootLengthPx - 5 * somaRadiusPx, 1e-6) * 4);
   const profile = neuralProfileTableAt(s);
   const somaMix = profile.somaMix;
   const trunk = Math.max(width, trunkWidthPx);

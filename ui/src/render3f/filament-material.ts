@@ -106,8 +106,9 @@ in vec3 a_start;
 in vec3 a_control;
 in vec3 a_end;
 in vec3 a_color;
-in vec3 a_hotColor;
-in float a_opacityPermille;
+in vec4 a_hotColor;
+in vec4 a_somaStartColor;
+in vec4 a_somaEndColor;
 in vec4 a_widthsAndPicking;
 in vec4 a_neuralProfile;
 in vec2 a_neuralRootRatios;
@@ -127,6 +128,8 @@ uniform float u_referenceViewDepth;
 uniform float u_permilleScale;
 flat out vec3 v_color;
 flat out vec3 v_hotColor;
+flat out vec4 v_somaStartColor;
+flat out vec4 v_somaEndColor;
 flat out float v_opacity;
 flat out vec4 v_widthsAndPicking;
 flat out vec4 v_neuralProfile;
@@ -204,8 +207,10 @@ void main() {
   clipPosition.xy = ((devicePosition / u_resolutionDevicePx) * 2.0 - 1.0) * clipPosition.w;
   gl_Position = clipPosition;
   v_color = a_color;
-  v_hotColor = a_hotColor;
-  v_opacity = a_opacityPermille / u_permilleScale;
+  v_hotColor = a_hotColor.rgb;
+  v_somaStartColor = a_somaStartColor;
+  v_somaEndColor = a_somaEndColor;
+  v_opacity = a_hotColor.a / u_permilleScale;
   v_widthsAndPicking = a_widthsAndPicking;
   v_neuralProfile = a_neuralProfile;
   v_neuralRootRatios = a_neuralRootRatios;
@@ -226,6 +231,8 @@ void main() {
 export const FILAMENT_FRAGMENT_SHADER = `precision highp float;
 flat in vec3 v_color;
 flat in vec3 v_hotColor;
+flat in vec4 v_somaStartColor;
+flat in vec4 v_somaEndColor;
 flat in float v_opacity;
 flat in vec4 v_widthsAndPicking;
 flat in vec4 v_neuralProfile;
@@ -311,6 +318,8 @@ void main() {
   float denseWidthFloorActive = 0.0;
   // D082-A-N3D END
   float rootSomaMix = 0.0;
+  vec3 rootSomaColor = v_color;
+  float rootSomaOpacity = v_opacity;
   if (v_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
@@ -326,6 +335,12 @@ void main() {
     if (startRadius < 1.5 * u_devicePixelRatio) startProfile = vec2(0.0);
     if (endRadius < 1.5 * u_devicePixelRatio) endProfile = vec2(0.0);
     rootSomaMix = max(startProfile.y, endProfile.y);
+    // D084-W2-NEURAL-R5 BEGIN: the fillet borrows the attached soma's actual
+    // scene token and opacity, then the engine table blends into the edge.
+    vec4 somaTone = startProfile.y >= endProfile.y ? v_somaStartColor : v_somaEndColor;
+    rootSomaColor = somaTone.rgb;
+    rootSomaOpacity = min(somaTone.a / u_permilleScale, 0.9);
+    // D084-W2-NEURAL-R5 END
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
       0.5 * max(mix(ordinary, 2.0 * startRadius * startProfile.x, startProfile.y),
         mix(ordinary, 2.0 * endRadius * endProfile.x, endProfile.y)));
@@ -359,6 +374,10 @@ void main() {
     if (denseWidthFloorActive > 0.5)
       radial = 1.0 - smoothstep(bodyHalfWidth - 0.5, bodyHalfWidth + 0.5, distance);
     if (denseWidthFloorActive < 0.5) radial *= radial;
+    // D084-W2-NEURAL-R5: the soma's filled outline and process share the same
+    // feathered coverage at the fillet instead of a peaked filament profile.
+    radial = mix(radial, 1.0 - smoothstep(bodyHalfWidth - feather,
+      bodyHalfWidth + feather, distance), rootSomaMix);
     // D082-A-N3D END
     float span = max(length(v_cpC - v_cpA), 1.0);
     float fade = min(0.08, max(bodyHalfWidth * 1.5, 2.0 * u_devicePixelRatio) / span);
@@ -390,11 +409,11 @@ void main() {
       ? clamp(v_neuralProfile.w - 3.0, 0.0, 1.0)
       : v_neuralProfile.w > 1.0001 ? clamp(v_neuralProfile.w - 1.0, 0.0, 1.0) : 1.0;
     // D082-A-N3D END
-    alpha = mix(alpha, max(0.9, v_opacity * longitudinal) * radial * denseRootFactor, rootSomaMix);
+    alpha = mix(alpha, rootSomaOpacity * longitudinal * radial * denseRootFactor, rootSomaMix);
     // D082-A-NCOMPLETA END
     if (alpha <= 0.0) discard;
     vec3 color = mix(v_color, v_hotColor, clamp(hot * 0.35, 0.0, 0.35));
-    color = mix(color, vec3(1.0), rootSomaMix);
+    color = mix(color, rootSomaColor, rootSomaMix);
     outputColor = vec4(color * alpha, alpha);
     return;
     // D081-P1 END
@@ -439,8 +458,9 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
   geometry.setAttribute("a_control", instanced(buffers.controlPositions, coordinateCount()));
   geometry.setAttribute("a_end", instanced(buffers.endPositions, coordinateCount()));
   geometry.setAttribute("a_color", instanced(buffers.colorsSrgb, colorChannelCount()));
-  geometry.setAttribute("a_hotColor", instanced(buffers.hotColorsSrgb, colorChannelCount()));
-  geometry.setAttribute("a_opacityPermille", instanced(buffers.opacityPermille, scalarCount()));
+  geometry.setAttribute("a_hotColor", instanced(buffers.hotColorsSrgb, packedChannelCount()));
+  geometry.setAttribute("a_somaStartColor", instanced(buffers.somaStartColorsSrgb, packedChannelCount()));
+  geometry.setAttribute("a_somaEndColor", instanced(buffers.somaEndColorsSrgb, packedChannelCount()));
   geometry.setAttribute("a_widthsAndPicking", instanced(buffers.widthsAndPicking, packedChannelCount()));
   geometry.setAttribute("a_neuralProfile", instanced(buffers.neuralProfile, packedChannelCount()));
   geometry.setAttribute("a_neuralRootRatios", instanced(buffers.neuralRootRatios, 2));
@@ -501,7 +521,8 @@ export function updateFilamentRenderResources(resources: FilamentRenderResources
   // D082-A-NEURALe END
   copyAttribute(resources.geometry, "a_color", buffers.colorsSrgb);
   copyAttribute(resources.geometry, "a_hotColor", buffers.hotColorsSrgb);
-  copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);
+  copyAttribute(resources.geometry, "a_somaStartColor", buffers.somaStartColorsSrgb);
+  copyAttribute(resources.geometry, "a_somaEndColor", buffers.somaEndColorsSrgb);
   copyAttribute(resources.geometry, "a_widthsAndPicking", buffers.widthsAndPicking);
   copyAttribute(resources.geometry, "a_neuralProfile", buffers.neuralProfile);
   copyAttribute(resources.geometry, "a_neuralRootRatios", buffers.neuralRootRatios);

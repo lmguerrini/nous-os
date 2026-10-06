@@ -3,12 +3,12 @@ import { floatColor, parseColor } from "sigma/utils";
 import type { EdgeDisplayData, NodeDisplayData, RenderParams } from "sigma/types";
 import type { InstancedProgramDefinition, ProgramInfo } from "sigma/rendering";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import { NEURAL_PROFILE_GLSL, NEURAL_PROFILE_TABLE, NEURAL_ROOT_ANCHOR_RADII, neuralRootRatio } from "#engine/morphology-geometry.ts";
+import { NEURAL_PROFILE_GLSL, NEURAL_PROFILE_TABLE, NEURAL_ROOT_ANCHOR_RADII, neuralRootCompactnessScale, neuralRootRatio } from "#engine/morphology-geometry.ts";
 import { liveFilamentGeometry } from "#render2d/geometry.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 
 const FILAMENT_VERTEX_DATA = [[0, 1], [0, -1], [1, 1], [0, -1], [1, 1], [1, -1]];
-// D084-W2-NEURAL-R4: the exact array uploaded by Sigma's uniform setter.
+// Polish-III neural: the exact array uploaded by Sigma's uniform setter.
 export const FILAMENT_NEURAL_PROFILE_TABLE_2D = NEURAL_PROFILE_TABLE;
 const FILAMENT_VERTEX_COUNT = FILAMENT_VERTEX_DATA.length;
 const MATERIAL_VARIATION_COMPONENT_COUNT = ["phase", "hotCore", "neuralDenseFactor"].length;
@@ -125,17 +125,22 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
         { name: "a_target", size: 2, type: WebGLRenderingContext.FLOAT },
         { name: "a_control", size: 2, type: WebGLRenderingContext.FLOAT },
         { name: "a_thickness", size: 1, type: WebGLRenderingContext.FLOAT },
-        { name: "a_curvature", size: 1, type: WebGLRenderingContext.FLOAT },
-        { name: "a_pickTolerance", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_propagationArcPosition", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_propagationContinuous", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_afterglowDecayPermille", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_materialWidths", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.FLOAT },
         { name: "a_materialVariation", size: MATERIAL_VARIATION_COMPONENT_COUNT, type: WebGLRenderingContext.FLOAT },
-        // D084-W2-NEURAL-R3 BEGIN: radii.xy and body scales.zw share one vertex slot.
-        { name: "a_somaRadii", size: 4, type: WebGLRenderingContext.FLOAT },
-        // D084-W2-NEURAL-R3 END
-        { name: "a_rootRatios", size: 2, type: WebGLRenderingContext.FLOAT },
+        // Polish-III neural BEGIN: radii.xy and body scales.zw share one vertex slot.
+        { name: "a_somaRadii", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.FLOAT },
+        // Polish-III neural END
+        // Polish-III neural BEGIN: pack curvature and picking tolerance with
+        // the two root ratios, preserving the old vertex attribute count.
+        { name: "a_rootRatios", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.FLOAT },
+        // Polish-III neural END
+        // Polish-III neural BEGIN: use the endpoint node paint at each fillet.
+        { name: "a_somaStartColor", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
+        { name: "a_somaEndColor", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
+        // Polish-III neural END
         { name: "a_color", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
         { name: "a_id", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
       ],
@@ -177,8 +182,6 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = geometry.control.x;
     array[startIndex++] = geometry.control.y;
     array[startIndex++] = edgeData.size;
-    array[startIndex++] = edgeData.curvature ?? 0;
-    array[startIndex++] = edgeData.pickTolerancePx ?? DEFAULT_CALIBRATION.filament.pickTolerancePx;
     array[startIndex++] = edgeData.propagationArcPosition ?? 1;
     array[startIndex++] = edgeData.propagationContinuous ?? 0;
     array[startIndex++] = edgeData.afterglowDecayPermille ?? DEFAULT_CALIBRATION.motion.afterglowDecayPermille;
@@ -197,6 +200,10 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = edgeData.neuralBodyScales?.[1] ?? 1;
     array[startIndex++] = edgeData.neuralRootRatios?.[0] ?? neuralRootRatio(1);
     array[startIndex++] = edgeData.neuralRootRatios?.[1] ?? neuralRootRatio(1);
+    array[startIndex++] = edgeData.curvature ?? 0;
+    array[startIndex++] = edgeData.pickTolerancePx ?? DEFAULT_CALIBRATION.filament.pickTolerancePx;
+    array[startIndex++] = floatColor(sourceData.color);
+    array[startIndex++] = floatColor(targetData.color);
     array[startIndex++] = floatColor(edgeData.color);
     array[startIndex] = edgeIndex;
   }
@@ -218,7 +225,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     gl.uniform1f(programInfo.uniformLocations.u_neuralProfile,
       (uniformMaterial.neuralProfile ?? uniformMaterial.hotMix > 0) ? 1 : 0);
     gl.uniform1f(programInfo.uniformLocations.u_neuralWidthPx, uniformMaterial.neuralWidthPx ?? 1);
-    // D084-W2-NEURAL-R4: both GPU paths receive the engine's exact packed table.
+    // Polish-III neural: both GPU paths receive the engine's exact packed table.
     gl.uniform4fv(programInfo.uniformLocations.u_neuralProfileTable, FILAMENT_NEURAL_PROFILE_TABLE_2D);
     if (!programInfo.isPicking) {
       gl.uniform1f(programInfo.uniformLocations.u_sheathAlpha, uniformMaterial.sheathAlpha);
@@ -247,34 +254,34 @@ export function createFilamentProgram(uniformMaterial: FilamentUniformMaterial):
   };
 }
 
-// D084-W2-NEURAL-R2 BEGIN: the composed shader sources this program registers, exposed for
+// Polish-III neural BEGIN: the composed shader sources this program registers, exposed for
 // governance QA, and a software mirror of the shader's root compactness — it must stay
 // identical to the engine's neuralRootCompactnessScale.
 export const FILAMENT_PROGRAM_VERTEX_SOURCE = vertexShader();
 export const FILAMENT_PROGRAM_FRAGMENT_SOURCE = fragmentShader();
 export function neuralRootCompactScaleQA(somaRadiusPx: number, ordinaryPx: number): number {
-  return Math.min(1, Math.max(0.35, somaRadiusPx / (8 * Math.max(0.3, ordinaryPx))));
+  return neuralRootCompactnessScale(somaRadiusPx, ordinaryPx);
 }
-// D084-W2-NEURAL-R2 END
+// Polish-III neural END
 
 /** This creates clip-space control points and does not choose a normal or picking pass. */
 function vertexShader(): string {
   return `
 attribute vec4 a_id;
 attribute vec4 a_color;
+attribute vec4 a_somaStartColor;
+attribute vec4 a_somaEndColor;
 attribute float a_direction;
 attribute float a_thickness;
 attribute vec2 a_source;
 attribute vec2 a_target;
 attribute vec2 a_control;
 attribute float a_current;
-attribute float a_curvature;
-attribute float a_pickTolerance;
 attribute float a_propagationArcPosition;
 attribute float a_propagationContinuous;
 attribute float a_afterglowDecayPermille;
 attribute vec4 a_somaRadii;
-attribute vec2 a_rootRatios;
+attribute vec4 a_rootRatios;
 attribute vec4 a_materialWidths;
 attribute vec3 a_materialVariation;
 uniform mat3 u_matrix;
@@ -290,6 +297,8 @@ uniform float u_wobbleAmplitude;
 uniform float u_neuralProfile;
 uniform float u_neuralWidthPx;
 varying vec4 v_color;
+varying vec4 v_somaStartColor;
+varying vec4 v_somaEndColor;
 varying float v_thickness;
 varying float v_pickTolerance;
 varying float v_feather;
@@ -329,13 +338,13 @@ void main() {
   vec2 normal = vec2(-delta.y, delta.x) / lengthDelta;
   vec2 viewportControl = clipspaceToViewport(control, u_dimensions);
   float curveOffset = max(
-    abs(lengthDelta * a_curvature),
+    abs(lengthDelta * a_rootRatios.z),
     abs(dot(viewportControl - ((viewportSource + viewportTarget) * 0.5), normal))
   );
   float curveThickness = u_neuralProfile > 0.5
     ? max(u_minEdgeThickness, max(u_minimumBodyWidth, u_neuralWidthPx)) : max(u_minEdgeThickness, a_thickness / u_sizeRatio);
   v_thickness = curveThickness * u_pixelRatio;
-  v_pickTolerance = a_pickTolerance * u_pixelRatio;
+  v_pickTolerance = a_rootRatios.w * u_pixelRatio;
   v_feather = u_feather;
   v_minimumBodyWidth = u_minimumBodyWidth * u_pixelRatio;
   v_arcFraction = a_current;
@@ -345,7 +354,7 @@ void main() {
   v_materialWidths = a_materialWidths;
   v_materialVariation = a_materialVariation;
   v_somaRadii = clamp(a_somaRadii.xy / u_sizeRatio, 2.0, 24.0) * a_somaRadii.zw * u_pixelRatio;
-  v_rootRatios = a_rootRatios;
+  v_rootRatios = a_rootRatios.xy;
   v_neuralScale = 1.0 / u_sizeRatio;
   v_neuralWeight = max(0.0, a_thickness);
   v_cpA = viewportSource;
@@ -357,7 +366,7 @@ void main() {
   );
   if (u_neuralProfile > 0.5) maximumWidthFactor = max(maximumWidthFactor,
     (v_neuralScale >= 1.75 ? 32.0 : 12.0) / max(curveThickness, 0.3));
-  // D084-W2-NEURAL-R2 BEGIN: the quad must also cover the soma-continuation mouth —
+  // Polish-III neural BEGIN: the quad must also cover the soma-continuation mouth —
   // full width 2R (the local soma extension at the boundary) with the width control's
   // bounded response, exactly the root the fragment shades below.
   if (u_neuralProfile > 0.5) {
@@ -366,12 +375,12 @@ void main() {
       ${2 * NEURAL_PROFILE_TABLE[1]!} * max(v_somaRadii.x, v_somaRadii.y));
     maximumWidthFactor = max(maximumWidthFactor, mouth / max(ordinaryDevice, 0.3));
   }
-  // D084-W2-NEURAL-R2 END
+  // Polish-III neural END
   float maximumBodyHalfWidth = v_thickness * 0.5 * maximumWidthFactor;
   maximumBodyHalfWidth = max(maximumBodyHalfWidth, v_minimumBodyWidth * 0.5);
   float maximumMaterialExtent = max(
     maximumBodyHalfWidth * u_sheathScale,
-    maximumBodyHalfWidth + a_pickTolerance * u_pixelRatio
+    maximumBodyHalfWidth + a_rootRatios.w * u_pixelRatio
   ) + u_feather;
   // filamentDistance clamps its closest point at both endpoints, producing round
   // caps that extend one material radius along the chord.  The ribbon must cover
@@ -380,7 +389,7 @@ void main() {
   vec2 tangent = delta / lengthDelta;
   float normalExtent = abs(curveOffset) / 2.0 + maximumMaterialExtent;
   float endpointExtent = maximumMaterialExtent * (1.0 - 2.0 * a_current);
-  v_isStraight = a_curvature == 0.0 ? 1.0 : 0.0;
+  v_isStraight = a_rootRatios.z == 0.0 ? 1.0 : 0.0;
   // A mathematically straight filament must not reclassify itself from global
   // fragment coordinates: their subtraction loses enough precision on long
   // chords to select the ill-conditioned quadratic solver. These coordinates
@@ -395,6 +404,8 @@ void main() {
     + normal * normalExtent * a_direction
     + tangent * endpointExtent;
   gl_Position = vec4(viewportToClipspace(offsetPosition, u_dimensions), 0.0, 1.0);
+  v_somaStartColor = a_somaStartColor;
+  v_somaEndColor = a_somaEndColor;
   #ifdef PICKING_MODE
   v_color = a_id;
   #else
@@ -408,6 +419,8 @@ function fragmentShader(): string {
   return `
 precision highp float;
 varying vec4 v_color;
+varying vec4 v_somaStartColor;
+varying vec4 v_somaEndColor;
 varying float v_thickness;
 varying float v_pickTolerance;
 varying float v_feather;
@@ -455,9 +468,10 @@ void main(void) {
     + v_materialWidths.w * max(0.0, 1.0 - (1.0 - curveT) / 0.13);
   float widthFactor = max(u_minimumWidthFactor, taper + wobble + junction);
   float rootSomaMix = 0.0;
+  vec4 rootSomaColor = v_color;
   if (u_neuralProfile > 0.5) {
     float span = max(length(v_cpC - v_cpA), 1.0);
-    // D084-W2-NEURAL-R4 BEGIN: no shader-local taper; the engine table supplies
+    // Polish-III neural BEGIN: no shader-local taper; the engine table supplies
     // the fillet, thick process and the shared colour/alpha blend.
     float startLength = neuralProcessLength(v_somaRadii.x, span, u_pixelRatio);
     float endLength = neuralProcessLength(v_somaRadii.y, span, u_pixelRatio);
@@ -468,9 +482,10 @@ void main(void) {
     if (v_somaRadii.x < 1.5 * u_pixelRatio) startProfile = vec2(0.0);
     if (v_somaRadii.y < 1.5 * u_pixelRatio) endProfile = vec2(0.0);
     rootSomaMix = max(startProfile.y, endProfile.y);
+    rootSomaColor = startProfile.y >= endProfile.y ? v_somaStartColor : v_somaEndColor;
     widthFactor = max(mix(v_thickness, 2.0 * v_somaRadii.x * startProfile.x, startProfile.y),
       mix(v_thickness, 2.0 * v_somaRadii.y * endProfile.x, endProfile.y)) / v_thickness;
-    // D084-W2-NEURAL-R4 END
+    // Polish-III neural END
   }
   float halfThickness = 0.5 * v_thickness * widthFactor;
   halfThickness = max(halfThickness, v_minimumBodyWidth * 0.5);
@@ -498,14 +513,15 @@ void main(void) {
     gradientColor.a *= propagationAlpha * bodyCoverage;
     // D082-A-NEURAL BEGIN: identical smoothstep root paint in both GPU projections.
     if (u_neuralProfile > 0.5) {
-      gradientColor.rgb = mix(v_color.rgb, vec3(1.0), rootSomaMix);
-      // Keep the white root inside the same radial body coverage as the ordinary edge.
+      // Polish-III neural BEGIN: the attached node supplies the fillet tone.
+      gradientColor.rgb = mix(v_color.rgb, rootSomaColor.rgb, rootSomaMix);
+      // Keep the shared outline coverage while fading to the ordinary edge.
       // "D082-A-NCOMPLETA3 BEGIN": the old fixed 0.9 mouth ignored the local
       // Completa veil and accumulated into bright radial rings at far zoom.
       gradientColor.a = mix(gradientColor.a,
-        v_materialVariation.z < 1.0
-          ? max(0.9 * v_materialVariation.z, v_color.a * propagationAlpha) * bodyCoverage
-          : max(0.9, v_color.a * propagationAlpha) * bodyCoverage, rootSomaMix);
+        rootSomaColor.a * (v_materialVariation.z < 1.0 ? v_materialVariation.z : 1.0)
+          * bodyCoverage, rootSomaMix);
+      // Polish-III neural END
       // "D082-A-NCOMPLETA3 END"
     }
     // D082-A-NEURAL END

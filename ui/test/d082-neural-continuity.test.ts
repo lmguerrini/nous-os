@@ -74,10 +74,12 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
         // instead of ~0.9·R), so the same smoothness class allows a proportionally larger
         // first step — still under 1.1% of the mouth width per sample.
         assert.ok(Math.abs(after.width - before.width) <= 0.45, `${renderer}/${degree}: width step ${index}`);
-        assert.ok(Math.abs(after.alpha - before.alpha) <= 0.01, `${renderer}/${degree}: alpha step ${index}`);
-        assert.ok(Math.abs(after.somaMix - before.somaMix) <= 0.01, `${renderer}/${degree}: colour step ${index}`);
+        assert.ok(Math.abs(after.alpha - before.alpha) <= 0.02, `${renderer}/${degree}: alpha step ${index}`);
+        // D084-W2-NEURAL-R5: a short relation completes the extended taper
+        // after five radii; each sampled step remains a smooth fade.
+        assert.ok(Math.abs(after.somaMix - before.somaMix) <= 0.03, `${renderer}/${degree}: colour step ${index}`);
         const luminance = (sample: typeof before) => 0.4 + 0.6 * sample.somaMix;
-        assert.ok(Math.abs(luminance(after) - luminance(before)) <= 0.01,
+        assert.ok(Math.abs(luminance(after) - luminance(before)) <= 0.02,
           `${renderer}/${reading}/${degree}: luminance step ${index}`);
         assert.ok(Math.abs(luminance(after) * after.alpha - luminance(before) * before.alpha) <= 0.02,
           `${renderer}/${reading}/${degree}: premultiplied colour step ${index}`);
@@ -85,16 +87,18 @@ test("P1 rounded fillet ends at the D-081 shared trunk in both projections and r
       const base = neuralRootInsideSoma(frame, { x: frame.x + 100, y: frame.y });
       assert.ok(Math.hypot(base.x - frame.x, base.y - frame.y) < somaOutlineRadiusAtAngle(frame, 0));
     }
-  // Shaders use the same 2.5–3-radius fillet and retain the D-081 trunk after it.
+  // Shaders use the same engine fillet and retain the D-081 trunk after it.
   for (const shader of [filament2dSource, FILAMENT_FRAGMENT_SHADER]) {
     assert.ok(/rootSomaMix = max\(startProfile.y, endProfile.y\)/.test(shader), "root mix");
     assert.ok(/neuralProfileSample/.test(shader), "engine profile table");
     assert.ok(/neuralProcessLength/.test(shader), "engine process length");
-    assert.ok(/NEURAL_PROFILE_GLSL|span \* 0\.45/.test(shader), "engine span fraction");
-    assert.ok(/NEURAL_PROFILE_GLSL|span \* 0\.45/.test(shader), "short-link cap");
+    assert.ok(/NEURAL_PROFILE_GLSL|span \* 0\.5/.test(shader), "engine span fraction");
+    assert.ok(/NEURAL_PROFILE_GLSL|span \* 0\.5/.test(shader), "short-link cap");
     assert.ok(/mix\(ordinary, 2\.0 \* startRadius \* startProfile.x/.test(shader) || /mix\(v_thickness, 2\.0 \* v_somaRadii.x \* startProfile.x/.test(shader), "D-081 trunk after fillet");
-    assert.ok(/mix\([^;]*vec3\(1\.0\), rootSomaMix\)/.test(shader), "white-to-edge colour");
-    assert.ok(/mix\([^;]*max\(0\.9, [^;]*rootSomaMix\)/.test(shader), "soma-to-edge alpha");
+    // D084-W2-NEURAL-R5: endpoint soma colour and alpha replace the retired white mouth.
+    assert.ok(/rootSomaColor/.test(shader), "attached soma tone");
+    assert.ok(!/mix\(color, vec3\(1\.0\), rootSomaMix\)/.test(shader), "no white mouth");
+    assert.ok(/rootSomaColor\.a|rootSomaOpacity/.test(shader), "attached soma alpha");
   }
   assert.equal(neuralRootProfileAt(0, 2, 1, 0.4).somaMix, 1,
     "the smallest drawn leaf still flows into its neurite");
@@ -182,8 +186,8 @@ test("reference overview roots are broad and rounded while leaves keep one attac
   }
   // The edge enters the soma and its mouth keeps the same width at the overlap.
   assert.equal(tail.width, neuralRootProfileAt(-2, anchor, 1.5, 0.4, leaf.rootRatio, 120).width);
-  assert.match(filament2dSource, /max\(0\.9, v_color\.a \* propagationAlpha\) \* bodyCoverage/);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /max\(0\.9, v_opacity \* longitudinal\) \* radial/);
+  assert.match(filament2dSource, /rootSomaColor\.a/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /rootSomaOpacity \* longitudinal \* radial/);
   // D084-W2-NEURAL: the leaf body scale moved from the shader's lobe test into the buffers
   // (somaShape areaScale and neuralProfile radii); the GPU mouth itself spans the local
   // soma extension exactly like the canvas profile.
@@ -219,7 +223,7 @@ test("tiny leaves have one continuous, concave body-to-tail profile", () => {
     for (let i = 1; i < samples.length; i++) {
       assert.ok(samples[i]!.width <= samples[i - 1]!.width + 1e-9, "monotone width");
       assert.ok(samples[i]!.alpha <= samples[i - 1]!.alpha + 1e-9, "monotone alpha");
-      assert.ok(samples[i]!.somaMix <= samples[i - 1]!.somaMix + 1e-9, "monotone white mix");
+      assert.ok(samples[i]!.somaMix <= samples[i - 1]!.somaMix + 1e-9, "monotone soma mix");
     }
     const slopes = samples.slice(1).map((sample, i) => sample.width - samples[i]!.width);
     assert.ok(slopes[0]! < -1e-5 && slopes.at(-1)! < 0, "root tapers from the body into the shaft");

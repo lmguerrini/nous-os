@@ -1605,7 +1605,8 @@ function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyE
   const first = paint.cumulative[0]!, last = paint.cumulative[paint.cumulative.length - 1]!;
   const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
   const distances = [first, last];
-  // D082-A-NEURAL BEGIN: the same width/alpha/white ramp used by the GPU Neural path.
+  // D084-W2-NEURAL-R5 BEGIN: the soma's own tone and the engine table's fade
+  // continue through the process. The nucleus stays inside the drawn soma.
   for (const root of [paint.rootStart, paint.rootEnd]) if (root)
     for (let j = 0; j <= 8; j++) {
       const displacement = (root.lengthPx + root.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) * j / 8;
@@ -1623,7 +1624,7 @@ function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyE
     if (distance <= previous + 1e-7) continue;
     previous = distance;
     let ramp = { alpha, somaMix: 0 };
-    let somaChannels: readonly [number, number, number] = [255, 255, 255];
+    let somaChannels: readonly [number, number, number] = colourChannels(paint.color);
     if (paint.rootStart && distance < paint.rootStart.outlinePx + paint.rootStart.lengthPx + paint.rootStart.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) {
       somaChannels = colourChannels(paint.rootStart.somaColor);
       ramp = neuralRootProfileAtLength(distance - paint.rootStart.outlinePx, paint.rootStart.radiusPx, 1, alpha,
@@ -1643,7 +1644,7 @@ function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyE
     ];
     gradient.addColorStop((distance - first) / Math.max(1e-7, last - first),
       rgbaChannels(channels, clamp(ramp.alpha * modulation(distance), 0, 1)));
-    // D082-A-NEURAL END
+    // D084-W2-NEURAL-R5 END
   }
   return gradient;
 }
@@ -1657,7 +1658,7 @@ export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: Morp
   const profileSafeBoost = Math.max(0, 0.416666 / Math.max(paint.alpha, 0.001) - 0.1);
   const layers = neuralRibbonProfile(neuralProfileWidth(paint));
   for (const [index, layer] of layers.entries()) {
-    // One 0.9-alpha white mouth meets the soma; the inner shaft band grows out of it.
+    // The outer root layer takes the attached soma's colour and outline alpha.
     // D082-A-NCOMPLETA BEGIN: the old fixed 0.9 mouth bypassed the dense edge veil.
     const rootLayerAlpha = index === 0 ? 0.9 * (paint.neuralDenseFactor ?? 1) : 0;
     // D082-A-NCOMPLETA END
