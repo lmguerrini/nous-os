@@ -112,9 +112,10 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#scene/contract.ts",
     "../projection/contract-types.ts",
   ])],
-  // D082-B-GPUFLOOR: the floor helper is itself a renderer module — material-independent (a numeric
-  // point floor in CSS px); its only import is the type-only Morphology, erased at compile time.
-  ["neural-point-floor.ts", new Set(["#engine/morphology.ts"])],
+  // D082-B-GPUFLOOR: the floor helper is itself a renderer module — it decides only when the floor
+  // applies; the type-only Morphology is erased at compile time and the floor value originates in
+  // the engine (#engine/presentation-options.ts), never in this renderer module.
+  ["neural-point-floor.ts", new Set(["#engine/morphology.ts", "#engine/presentation-options.ts"])],
   ["node-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
   ["picking.ts", new Set(["#engine/contract.ts", "#scene/contract.ts", "../projection/contract-types.ts"])],
   ["resources.ts", new Set(["three", "#engine/renderer-handle.ts"])],
@@ -327,6 +328,8 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     // D082-B-GPUFLOOR: the Morphology import is type-only, so no runtime visual policy reaches the
     // numeric CSS-px point floor.
     ["#engine/morphology.ts", new Set(["Morphology"])],
+    // D082-B-GPUFLOOR: the CSS-px floor value originates in the engine, not in this renderer module.
+    ["#engine/presentation-options.ts", new Set(["DENSE_NEURAL_POINT_FLOOR_CSS_PX"])],
   ])],
   ["node-material.ts", new Map([
     ["three", new Set(["*"])],

@@ -1,4 +1,5 @@
 import type { Morphology } from "#engine/morphology.ts";
+import { DENSE_NEURAL_POINT_FLOOR_CSS_PX } from "#engine/presentation-options.ts";
 
 /**
  * The CSS-pixel point floor the 3D node material raises sub-floor somata to (`densePoint` branch
@@ -12,6 +13,10 @@ import type { Morphology } from "#engine/morphology.ts";
  * Completa — prepared or unprepared — keeps its own node policy (canopy-node-policy.ts clamps
  * every real vertex to a 0.5 px minimum instead) rather than the Natural/Indra 0.9 px floor with
  * flattened, whitened full-alpha points.
+ *
+ * The floor value itself is engine policy: this module decides only when it applies and returns
+ * `DENSE_NEURAL_POINT_FLOOR_CSS_PX` from #engine/presentation-options.ts, so it carries no numeric
+ * material value of its own.
  */
 // D082-B-GPUFLOOR BEGIN
 export function neural3dCompletaPointFloorCssPx(input: {
@@ -21,6 +26,6 @@ export function neural3dCompletaPointFloorCssPx(input: {
   readonly canopyMount: boolean;
 }): number {
   return input.morphology === "neural" && input.morphologyLanguage === "distinct"
-    && input.nodeCount === 11_199 && !input.canopyMount ? 0.9 : 0;
+    && input.nodeCount === 11_199 && !input.canopyMount ? DENSE_NEURAL_POINT_FLOOR_CSS_PX : 0;
 }
 // D082-B-GPUFLOOR END

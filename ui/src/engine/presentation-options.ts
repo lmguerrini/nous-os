@@ -55,6 +55,14 @@ export function structuralVisualPresentation(relation: VisualRelation): Structur
   }
 }
 /**
+ * The CSS-px point floor of the full Natural/Indra Neural 3D Completa scene, D082-A-N3D, not
+ * applied to Canopy hosts. The 3D node material raises sub-floor somata to it; the renderer-side
+ * floor helper (render3f/neural-point-floor.ts) decides only *when* it applies and returns this
+ * engine constant, so no radius-like material value originates in a renderer module.
+ */
+export const DENSE_NEURAL_POINT_FLOOR_CSS_PX = 0.9;
+
+/**
  * Live appearance controls of the review page. Every value is a multiplier where 1 is the engine
  * baseline, except `edgeOpacity` (absolute alpha factor), `labelSizePx` and `labelDensity`, which only
  * the page's label layer reads.

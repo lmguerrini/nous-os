@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { neural3dCompletaPointFloorCssPx } from '#render3f/neural-point-floor.ts';
+import { DENSE_NEURAL_POINT_FLOOR_CSS_PX } from '#engine/presentation-options.ts';
 
 /** The floor-relevant slice of a full 3D Neural Completa mount, exactly as mount() reads it:
  * morphology, distinct morphology language and the 11,199-node scene size. */
@@ -53,4 +54,23 @@ test('mount.tsx resolves the floor through the shared helper and the Canopy host
   // The Neural profile's dense tag follows the same flag, so a Canopy host keeps 1 + factor
   // (the ordinary veil-carrying value) instead of the Natural/Indra 3 + factor ribbon floor.
   assert.match(source, /neuralProfile\.setW\(index, \(denseNeuralCompleta \? 3 : 1\) \+ factor\);/);
+});
+
+test('the floor value originates in the engine, not in the renderer helper module', async () => {
+  // The full Natural/Indra Neural 3D Completa mount receives exactly the engine constant...
+  assert.equal(DENSE_NEURAL_POINT_FLOOR_CSS_PX, 0.9);
+  assert.equal(neural3dCompletaPointFloorCssPx({ ...completaNeural3d, canopyMount: false }),
+    DENSE_NEURAL_POINT_FLOOR_CSS_PX);
+  // ...and the helper reads it from #engine/presentation-options.ts rather than defining it.
+  const source = await readFile(new URL('../src/render3f/neural-point-floor.ts', import.meta.url), 'utf8');
+  assert.match(source, /import \{ DENSE_NEURAL_POINT_FLOOR_CSS_PX \} from "#engine\/presentation-options\.ts";/);
+  // How the numeric-literal check works: strip /* */ and // comments (the module's strings contain
+  // no comment-like text), then collect every numeric literal — a digit run with optional numeric
+  // separators and fraction, guarded on both sides so a digit inside an identifier (the "3d" of the
+  // function's own name) does not count. The only literals left must be the 11,199-node scene size
+  // and the 0 off-value ("no floor", not a material magnitude); any radius-like value such as a
+  // returning 0.9 literal fails the exact-set comparison.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const literals = [...code.matchAll(/(?<![\w$])\d[\d_]*(?:\.\d[\d_]*)?(?![\w$])/g)].map((m) => m[0]);
+  assert.deepEqual([...new Set(literals)].sort(), ['0', '11_199']);
 });
