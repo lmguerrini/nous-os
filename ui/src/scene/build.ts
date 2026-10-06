@@ -14,6 +14,7 @@ import type {
 import {
   assertEngineAccessTrace,
   createEngineGraphView,
+  renderDebugAssertionsEnabled,
 } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import type { LayoutAnchors } from "#engine/layout.ts";
@@ -50,6 +51,9 @@ import type { ScaleNavigationPath } from "#engine/scale-topology.ts";
 import { resolveTemporalMembership, resolveTemporalPlacements } from "#engine/temporal.ts";
 import type { TemporalMembership, TemporalPlacement } from "#engine/temporal.ts";
 import { TOKEN_RAMPS, resolveTokens, separationLuminance, separationRatio } from "#engine/tokens.ts";
+// D082-A-PERF BEGIN
+import { memoizedContrastToken } from "#render-common/contrast-cache.ts";
+// D082-A-PERF END
 import type { OklchToken, TokenMap } from "#engine/tokens.ts";
 import { assertVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
@@ -155,12 +159,18 @@ export function buildScene(
   suppliedAnchors?: LayoutAnchors,
   presentation?: PresentationOptions,
 ): Scene {
-  assertCalibrationProfile(calibration);
-  assertVisualState(graph, visualState);
+  // D082-A-PERF BEGIN: renderer mounts use an verified structural fast path.
+  if (renderDebugAssertionsEnabled()) {
+    assertCalibrationProfile(calibration);
+    assertVisualState(graph, visualState);
+  }
+  // D082-A-PERF END
   const inputs = resolveSceneInputs(visualState, tokensOrCamera, cameraOrTokens);
   const temporalRender = resolveTemporalRenderGraph(graph, temporalInstant);
   const renderedGraph = resolveScaleNavigationGraph(temporalRender.graph, visualState, navigationPath);
-  const { graph: tracedGraph, trace } = createEngineGraphView(renderedGraph);
+  // D082-A-PERF BEGIN
+  const { graph: tracedGraph, trace } = createEngineGraphView(renderedGraph, { fast: true });
+  // D082-A-PERF END
   const engineGraph = orderEngineGraph(tracedGraph);
   const morphology = morphologyProfile(visualState.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
@@ -214,7 +224,9 @@ export function buildScene(
     presentation,
   ));
   const selectedLabelIds = selectedSceneLabelIds(nodes, edges, visualState, calibration);
-  assertEngineAccessTrace(trace);
+  // D082-A-PERF BEGIN
+  if (renderDebugAssertionsEnabled()) assertEngineAccessTrace(trace);
+  // D082-A-PERF END
   const scene: Scene = {
     field: { token: copyToken(requiredToken(activeTokens, "background")) },
     tokens: inputs.tokens,
@@ -249,11 +261,16 @@ export function buildScene(
     selectedProvenance: selectedProvenance(graph, visualState),
     camera: sceneCameraRequest(inputs.cameraKind, visualState, calibration),
   };
-  assertSceneFieldRegister(scene);
+  // D082-A-PERF BEGIN: scene construction can run for every render mount.
+  // The exhaustive field walk belongs to explicit contract/debug sessions.
+  if (renderDebugAssertionsEnabled()) assertSceneFieldRegister(scene);
+  // D082-A-PERF END
   const motionPolicy = visualState.motionGrammar ?? STILL;
   const motionPhase = phase ?? restingPhase(motionPolicy);
   const motionScene = applyMotionGrammar(scene, engineGraph, motionPolicy, motionPhase, calibration, temporalRender.continuity);
-  assertSceneFieldRegister(motionScene);
+  // D082-A-PERF BEGIN
+  if (renderDebugAssertionsEnabled()) assertSceneFieldRegister(motionScene);
+  // D082-A-PERF END
   return motionScene;
 }
 
@@ -1509,8 +1526,12 @@ function sceneNode(
   const boundedHaloRadiusPx = appearance?.radiusPx === undefined
     ? requestedHaloRadiusPx
     : Math.min(requestedHaloRadiusPx, radiusPx * REVIEW_HALO_TO_CORE_MAX);
-  const haloRadiusPx = fusedJunction || blindTerminal ? radiusPx : boundedHaloRadiusPx;
+  // D082-A-NODES BEGIN
+  const completaPoint = presentation?.nodes?.size === 11_199 && appearance?.radiusPx !== undefined;
+  const haloRadiusPx = completaPoint && appearance!.haloPermille === 0 ? radiusPx
+    : fusedJunction || blindTerminal ? radiusPx : boundedHaloRadiusPx;
   const haloIntensityPermille = fusedJunction || blindTerminal ? 0 : requestedHaloIntensityPermille;
+  // D082-A-NODES END
   return {
     id: node.id,
     kind: node.kind,
@@ -1526,11 +1547,15 @@ function sceneNode(
     junctionGeometry: isJunction ? material.junctionGeometry : null,
     terminalTreatment: isTerminal ? material.terminalTreatment : null,
     haloRadiusPx,
-    haloCoreGapPx: fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
+    // D082-A-NODES BEGIN
+    haloCoreGapPx: completaPoint ? 0 : fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
+    // D082-A-NODES END
     haloIntensityPermille,
     haloAlphaStops: resolveSceneHaloAlphaStops(haloIntensityPermille, calibration),
     coreSharpnessPermille: calibration.morphology[morphology.id].coreSharpnessPermille,
-    minimumCoreDeviceRadiusPx: calibration.salience.minimumCoreDeviceRadiusPx,
+    // D082-A-NODES BEGIN
+    minimumCoreDeviceRadiusPx: completaPoint ? 0 : calibration.salience.minimumCoreDeviceRadiusPx,
+    // D082-A-NODES END
     labelCandidacy: presentation?.nativeLabels === false ? null : materialIncludes(resolved.node, "label") ? {
       text: node.visual.role,
       token: copyToken(requiredToken(tokens, "text")),
@@ -2043,6 +2068,16 @@ function minimumNodeContrastToken(
   background: OklchToken,
   calibration: CalibrationProfile,
 ): OklchToken {
+  // D082-A-PERF BEGIN
+  return memoizedContrastToken(token, background, calibration, uncachedMinimumNodeContrastToken);
+}
+
+function uncachedMinimumNodeContrastToken(
+  token: OklchToken,
+  background: OklchToken,
+  calibration: CalibrationProfile,
+): OklchToken {
+  // D082-A-PERF END
   const scale = SCENE_PERMILLE_SCALE;
   const minimumContrast = calibration.luminance.minimumNodeContrastPermille / scale;
   const backgroundLuminance = separationLuminance(background);

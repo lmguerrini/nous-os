@@ -558,6 +558,10 @@ export type ProductView = {
   fit(): Promise<void>;
   /** Optional live world-to-host projection for nonsemantic Fractal rail overlays. */
   projectPoint?(point: { readonly x: number; readonly y: number; readonly z: number }): { readonly x: number; readonly y: number };
+  // D082-A-PERF BEGIN: camera gestures need positions, not a full visibility proof.
+  gestureWitness?(): Pick<ViewWitness, 'nodeViewport' | 'positions' | 'visibleRect'>;
+  readPlacedCounts?(): { readonly labels: number; readonly titles: number };
+  // D082-A-PERF END
   witness(): ViewWitness;
   destroy(): void;
 };

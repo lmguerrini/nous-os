@@ -54,7 +54,10 @@ test("D-080 reference geometry: real-bundle silhouettes and joined monotone root
       rootToTipRatio: +(rootWidth / samples.at(-1)!).toFixed(3),
       taperMonotone: true, seamWidthDeltaPx, overlapPx: +overlapPx.toFixed(3) };
   });
-  assert.match(FILAMENT_FRAGMENT_SHADER, /min\(startRadius \* 1\.1, ordinary \* 6\.0\)/);
+  // D082-A-NEURAL BEGIN: P1 lines 69–76 require a rounded mouth at least as wide as the D-081 trunk.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /max\(max\(startAtJoin, ordinary \* abs\(v_neuralRootRatios\.x\)\)/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /startRadius \* \(v_neuralRootRatios\.x < 0\.0 \? 1\.0 : 0\.9\)/);
+  // D082-A-NEURAL END
   assert.match(NODE_FRAGMENT_SHADER, /irregularity \* 1\.6/);
   mkdirSync("dist/evidence", { recursive: true });
   writeFileSync("dist/evidence/d080-neural-shape-metrics.json", JSON.stringify({

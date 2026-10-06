@@ -52,7 +52,9 @@ test('toolbar and fullscreen controls retain responsive bounds and keyboard focu
   assert.match(html, /#fullscreen-bar \{width:min\(790px,calc\(100vw - 24px\)\)/);
   assert.match(html, /#toolbar-controls \{ display:flex; flex-wrap:wrap; align-items:center; gap:[^}]+min-width:0 \}/);
   assert.match(html, /@media\(max-width:700px\)/);
-  assert.match(html, /button:focus-visible[^}]*outline:2px solid var\(--accent\)/);
+  // D082-A-THEME BEGIN
+  assert.match(html, /button:focus-visible[^}]*outline:2px solid var\(--ui-accent\)/);
+  // D082-A-THEME END
   assert.match(html, /id="toolbar-toggle" class="toolbar-collapse" aria-expanded="true"/);
   assert.match(main, /header\.classList\.toggle\("toolbar-collapsed"\)/);
 });

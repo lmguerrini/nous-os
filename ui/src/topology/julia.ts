@@ -234,4 +234,15 @@ export const juliaLaw: TopologyLaw = {
     if (cache.size > 4) cache.delete(cache.keys().next().value!);
     return result;
   },
+  // D082-LAB-FIX2 BEGIN: one global certificate and inverse solve serve every Indra frame.
+  // Restriction preserves each real node's certified external coordinate and witness.
+  layoutLocal(children, snapshot, dimension) {
+    const full = this.layoutFull(snapshot, dimension).positions;
+    return new Map(children.map(node => {
+      const point = full.get(node.id);
+      if (!point) throw new JuliaRefusal('missing-id', 'indra-local', node.id);
+      return [node.id, point];
+    }));
+  },
+  // D082-LAB-FIX2 END
 };

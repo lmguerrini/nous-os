@@ -4,13 +4,17 @@ import { MultiDirectedGraph } from "graphology";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+// "D082-A-PERF BEGIN"
+import { memoizedContrastToken } from "#render-common/contrast-cache.ts";
+import { mainRelation, MODEL_PREP_SLICE_MS } from "#render-common/quality-ladder.ts";
+// "D082-A-PERF END"
 // The governed RENDERED composition is NOT resolved here. It lives in the shared scene layer, which
 // composes the two axes of a relation's carrier positionally instead of averaging them: the local
 // version collapsed nine legal combinations onto five values, so two elements in different semantic
 // states drew byte-identical. Importing it is how this renderer inherits that repair rather than
 // carrying a second copy of the arithmetic that would drift from it.
 import { renderedStateToken } from "#scene/rendered-state.ts";
-import { assertEngineAccessTrace, assertVisualGraphFieldRegister, createEngineGraphView } from "#engine/contract.ts";
+import { assertEngineAccessTrace, assertVisualGraphFieldRegister, createEngineGraphView, renderDebugAssertionsEnabled } from "#engine/contract.ts";
 import type { Coordinates, DerivedValue, EngineAccessTrace, RenderedState, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import type { LayoutAnchors } from "#engine/layout.ts";
@@ -67,6 +71,9 @@ export type RenderEdgeAttributes = {
   readonly hotCore: number;
   /** Neural root ratios derived from the drawn incident edges. */
   readonly neuralRootRatios?: readonly [number, number];
+  // "D082-A-NCOMPLETA3 BEGIN": native Neural roots follow their edge's local veil.
+  readonly neuralDenseFactor?: number;
+  // "D082-A-NCOMPLETA3 END"
   readonly color: string;
   readonly type: string;
   readonly curvature: number;
@@ -323,11 +330,57 @@ export function buildRenderModel(
   visualState?: VisualState,
   suppliedAnchors?: LayoutAnchors,
 ): RenderModel {
-  assertVisualGraphFieldRegister(graph);
-  if (visualState !== undefined) {
-    assertVisualState(graph, visualState);
+  // "D082-A-PERF BEGIN": the synchronous contract consumes the same steps as the
+  // large-entry async path, so its final graph and attribute order stay exact.
+  const steps = renderModelSteps(graph, options, visualState, suppliedAnchors);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+  // "D082-A-PERF END"
+}
+
+// "D082-A-PERF BEGIN"
+export async function prepareRenderModelInSlices(
+  graph: VisualGraph, options: RenderOptions, visualState?: VisualState,
+  suppliedAnchors?: LayoutAnchors,
+  onProgress?: (progress: RenderModelProgress) => void,
+): Promise<RenderModel> {
+  const steps = renderModelSteps(graph, options, visualState, suppliedAnchors);
+  let step = steps.next();
+  while (!step.done) {
+    onProgress?.(step.value);
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    step = steps.next();
   }
-  const { graph: engineGraph, trace: engineAccessTrace } = createEngineGraphView(graph);
+  return step.value;
+}
+
+export type RenderModelProgress = {
+  readonly stage: 'nodes' | 'mainEdges' | 'allEdges';
+  readonly nodesLoaded: number;
+  readonly mainEdgesLoaded: number;
+  readonly edgesLoaded: number;
+  readonly mainEdgesRequired: number;
+};
+
+function* renderModelSteps(
+  graph: VisualGraph, options: RenderOptions, visualState?: VisualState,
+  suppliedAnchors?: LayoutAnchors,
+): Generator<RenderModelProgress, RenderModel, void> {
+  let sliceBegan = performance.now();
+  const sliceDue = () => {
+    if (performance.now() - sliceBegan < MODEL_PREP_SLICE_MS) return false;
+    sliceBegan = performance.now();
+    return true;
+  };
+// "D082-A-PERF END"
+  // "D082-A-PERF BEGIN": explicit debug runs keep the exhaustive boundary audit.
+  if (renderDebugAssertionsEnabled()) assertVisualGraphFieldRegister(graph);
+  if (visualState !== undefined) {
+    if (renderDebugAssertionsEnabled()) assertVisualState(graph, visualState);
+  }
+  const { graph: engineGraph, trace: engineAccessTrace } = createEngineGraphView(graph, { fast: true });
+  // "D082-A-PERF END"
   const activeOptions = resolveRenderOptions(visualState === undefined ? options : renderOptionsForVisualState(options, visualState));
   const calibration = activeOptions.calibration ?? DEFAULT_CALIBRATION;
   // Anchor sharing is established at the visual-graph boundary before a renderer
@@ -379,6 +432,27 @@ export function buildRenderModel(
   const filaments = new Map<string, FilamentGeometry>();
   const propagation = new Map<string, FilamentPropagation>();
 
+  // "D082-A-PERF BEGIN": main relations use the same predicate as the renderer's
+  // presented-frame ledger. Work on them before secondary relations, then add
+  // all records to Graphology in source order for identical final paint order.
+  const isMain = (edge: (typeof engineGraph.edges)[number]): boolean => {
+    const source = activeOptions.presentation?.nodes?.get(edge.source)?.glyph;
+    const target = activeOptions.presentation?.nodes?.get(edge.target)?.glyph;
+    const category = activeOptions.presentation?.edges?.get(edge.id)?.category;
+    return mainRelation({ attested: category === 'attested', exploratory: category === 'exploratory',
+      selectedIncident: !!(activeOptions.presentation?.emphasisIds?.has(edge.source)
+        || activeOptions.presentation?.emphasisIds?.has(edge.target)),
+      sourceHub: source === 'double-ring', targetHub: target === 'double-ring',
+      sourceDomain: source === 'ring', targetDomain: target === 'ring' });
+  };
+  const mainEdges = engineGraph.edges.filter(isMain);
+  const secondaryEdges = engineGraph.edges.filter(edge => !isMain(edge));
+  const progress = (stage: RenderModelProgress['stage'], mainEdgesLoaded: number, edgesLoaded: number): RenderModelProgress => ({
+    stage, nodesLoaded: sigmaGraph.order, mainEdgesLoaded, edgesLoaded,
+    mainEdgesRequired: mainEdges.length,
+  });
+  // "D082-A-PERF END"
+
   for (const node of engineGraph.nodes) {
     const anchor = view.anchors.get(node.id);
     const nodeMaterial = nodeMaterials.get(node.id);
@@ -416,67 +490,104 @@ export function buildRenderModel(
         (resolvedNode.haloIntensityPermille * calibration.selection.focusDimFactorPermille) / SCENE_PERMILLE_SCALE,
       ),
     } : resolvedNode);
+    // "D082-A-PERF BEGIN"
+    if (sliceDue()) yield progress('nodes', 0, 0);
+    // "D082-A-PERF END"
   }
+  // "D082-A-PERF BEGIN"
+  yield progress('nodes', 0, 0);
+  // "D082-A-PERF END"
   // Pass the shared endpoint degree grammar to the Sigma filament.
   const neuralDegree = new Map<string, number>();
   for (const edge of engineGraph.edges) {
     neuralDegree.set(edge.source, (neuralDegree.get(edge.source) ?? 0) + 1);
     neuralDegree.set(edge.target, (neuralDegree.get(edge.target) ?? 0) + 1);
   }
-  for (const edge of engineGraph.edges) {
-    const source = view.anchors.get(edge.source);
-    const target = view.anchors.get(edge.target);
-    const edgeMaterial = edgeMaterials.get(edge.id);
-    if (source === undefined || target === undefined || edgeMaterial === undefined) {
-      throw new TypeError("renderer edge material lacks an engine anchor");
+  // "D082-A-PERF BEGIN"
+  const preparedEdges = new Map<string, { filament: FilamentGeometry;
+    propagation: FilamentPropagation; attributes: RenderEdgeAttributes }>();
+  let edgesLoaded = 0;
+  for (const [pass, edges] of [mainEdges, secondaryEdges].entries()) {
+    for (const edge of edges) {
+  // "D082-A-PERF END"
+      const source = view.anchors.get(edge.source);
+      const target = view.anchors.get(edge.target);
+      const edgeMaterial = edgeMaterials.get(edge.id);
+      if (source === undefined || target === undefined || edgeMaterial === undefined) {
+        throw new TypeError("renderer edge material lacks an engine anchor");
+      }
+      const curvature = edgeCurvatureForMaterial(edgeMaterial, view.material, calibration);
+      const filament = filamentGeometry(source, target, curvature);
+      const path = { controlPoints: sampleFilament(filament, calibration) };
+      const travelledDistance = propagationDistance(activeOptions.elapsedMilliseconds, calibration);
+      const state = reducedMotionPosition(path, travelledDistance, activeOptions.reducedMotion || calibration.motion.reducedMotionSwitch);
+      const length = arcLength(path);
+      const arcPosition = state.continuous ? normalisedPropagationPosition(travelledDistance, length) : 1;
+      const propagationRecord: FilamentPropagation = {
+        position: state.position,
+        length,
+        arcPosition,
+        continuous: state.continuous,
+        endpointExpressed: state.endpointExpressed,
+      };
+      const attributes: RenderEdgeAttributes = {
+        size: edgeWidthForMaterial(edgeMaterial, view.material, calibration),
+        pickTolerancePx: calibration.filament.pickTolerancePx,
+        widthStart: edgeMaterial.widthStartPermille / materialScale,
+        widthEnd: edgeMaterial.widthEndPermille / materialScale,
+        junctionStart: edgeMaterial.junctionStartPermille / materialScale,
+        junctionEnd: edgeMaterial.junctionEndPermille / materialScale,
+        wobblePhase: (edgeMaterial.phasePermille / materialScale) * Math.PI * 2,
+        hotCore: edgeMaterial.hotCorePermille / materialScale,
+        neuralRootRatios: [neuralRootRatio(neuralDegree.get(edge.source) ?? 1),
+          neuralRootRatio(neuralDegree.get(edge.target) ?? 1)],
+        // "D082-A-NCOMPLETA3 BEGIN"
+        // "D082-A-VEIL2 BEGIN: keep non-Neural edge records identical to A-INT12"
+        ...((activeOptions.morphology === "neural")
+          ? { neuralDenseFactor: activeOptions.presentation?.edges?.get(edge.id)?.neuralDenseFactor ?? 1 }
+          : {}),
+        // "D082-A-VEIL2 END"
+        // "D082-A-NCOMPLETA3 END"
+        color: edgeColorForMaterial(tokens, edgeMaterial, calibration),
+        type: "filament",
+        curvature,
+        propagationArcPosition: arcPosition,
+        propagationContinuous: state.continuous ? 1 : 0,
+        afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
+        label: "",
+        labelText: activeOptions.presentation?.nativeLabels === false ? "" : edge.kind,
+        forceLabel: false,
+        labelColor: requiredTokenColor(tokenColors, "textMuted"),
+        zIndex: edge.visual.label_priority,
+      };
+      const resolvedEdge = edgeAttributesForVisualState(attributes, edge.id, visualState, calibration);
+      const emphasized = activeOptions.presentation?.emphasisIds;
+      preparedEdges.set(edge.id, { filament, propagation: propagationRecord, attributes:
+        emphasized && (!emphasized.has(edge.source) || !emphasized.has(edge.target)) ? {
+          ...resolvedEdge,
+          color: mixTowardField(resolvedEdge.color, fieldColor, calibration.selection.focusDimFactorPermille),
+        } : resolvedEdge });
+      edgesLoaded++;
+      // "D082-A-PERF BEGIN"
+      if (sliceDue()) yield progress(pass === 0 ? 'mainEdges' : 'allEdges',
+        Math.min(edgesLoaded, mainEdges.length), edgesLoaded);
+      // "D082-A-PERF END"
     }
-    const curvature = edgeCurvatureForMaterial(edgeMaterial, view.material, calibration);
-    const filament = filamentGeometry(source, target, curvature);
-    const path = { controlPoints: sampleFilament(filament, calibration) };
-    const travelledDistance = propagationDistance(activeOptions.elapsedMilliseconds, calibration);
-    const state = reducedMotionPosition(path, travelledDistance, activeOptions.reducedMotion || calibration.motion.reducedMotionSwitch);
-    const length = arcLength(path);
-    const arcPosition = state.continuous ? normalisedPropagationPosition(travelledDistance, length) : 1;
-    filaments.set(edge.id, filament);
-    propagation.set(edge.id, {
-      position: state.position,
-      length,
-      arcPosition,
-      continuous: state.continuous,
-      endpointExpressed: state.endpointExpressed,
-    });
-    const attributes: RenderEdgeAttributes = {
-      size: edgeWidthForMaterial(edgeMaterial, view.material, calibration),
-      pickTolerancePx: calibration.filament.pickTolerancePx,
-      widthStart: edgeMaterial.widthStartPermille / materialScale,
-      widthEnd: edgeMaterial.widthEndPermille / materialScale,
-      junctionStart: edgeMaterial.junctionStartPermille / materialScale,
-      junctionEnd: edgeMaterial.junctionEndPermille / materialScale,
-      wobblePhase: (edgeMaterial.phasePermille / materialScale) * Math.PI * 2,
-      hotCore: edgeMaterial.hotCorePermille / materialScale,
-      neuralRootRatios: [neuralRootRatio(neuralDegree.get(edge.source) ?? 1),
-        neuralRootRatio(neuralDegree.get(edge.target) ?? 1)],
-      color: edgeColorForMaterial(tokens, edgeMaterial, calibration),
-      type: "filament",
-      curvature,
-      propagationArcPosition: arcPosition,
-      propagationContinuous: state.continuous ? 1 : 0,
-      afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
-      label: "",
-      labelText: activeOptions.presentation?.nativeLabels === false ? "" : edge.kind,
-      forceLabel: false,
-      labelColor: requiredTokenColor(tokenColors, "textMuted"),
-      zIndex: edge.visual.label_priority,
-    };
-    const resolvedEdge = edgeAttributesForVisualState(attributes, edge.id, visualState, calibration);
-    const emphasized = activeOptions.presentation?.emphasisIds;
-    sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target,
-      emphasized && (!emphasized.has(edge.source) || !emphasized.has(edge.target)) ? {
-        ...resolvedEdge,
-        color: mixTowardField(resolvedEdge.color, fieldColor, calibration.selection.focusDimFactorPermille),
-      } : resolvedEdge);
+    if (pass === 0) yield progress('mainEdges', mainEdges.length, edgesLoaded);
   }
-  assertEngineAccessTrace(engineAccessTrace);
+  // "D082-A-PERF BEGIN"
+  yield progress('allEdges', mainEdges.length, edgesLoaded);
+  for (const edge of engineGraph.edges) {
+    const prepared = preparedEdges.get(edge.id)!;
+    filaments.set(edge.id, prepared.filament);
+    propagation.set(edge.id, prepared.propagation);
+    sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, prepared.attributes);
+    if (sliceDue()) yield progress('allEdges', mainEdges.length, edgesLoaded);
+  }
+  // "D082-A-PERF END"
+  // "D082-A-PERF BEGIN"
+  if (renderDebugAssertionsEnabled()) assertEngineAccessTrace(engineAccessTrace);
+  // "D082-A-PERF END"
   return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, fieldColor, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation, engineAccessTrace };
 }
 
@@ -745,6 +856,16 @@ function minimumNodeContrastToken(
   background: OklchToken,
   calibration: CalibrationProfile,
 ): OklchToken {
+  // "D082-A-PERF BEGIN"
+  return memoizedContrastToken(token, background, calibration, uncachedMinimumNodeContrastToken);
+}
+
+function uncachedMinimumNodeContrastToken(
+  token: OklchToken,
+  background: OklchToken,
+  calibration: CalibrationProfile,
+): OklchToken {
+  // "D082-A-PERF END"
   const scale = permilleScale(calibration);
   const minimumContrast = calibration.luminance.minimumNodeContrastPermille / scale;
   const backgroundLuminance = separationLuminance(background);

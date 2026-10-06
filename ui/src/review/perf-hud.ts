@@ -1,3 +1,6 @@
+import { currentRenderReadiness, renderPercent } from "./render-readiness.ts";
+import type { RenderReadiness } from "./render-readiness.ts";
+
 /** Discreet, opt-in D-081 performance HUD. No sampling work runs while closed. */
 export type D081Status = {
   nodes?: { visible?: number; represented?: number; total?: number; eligible?: number; aggregated?: number };
@@ -54,7 +57,12 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
-export function formatHud(status: D081Status | null, frames: readonly FrameSample[], fallback?: { nodes?: { rendered: number; available: number }; edges?: { rendered: number; available: number } }): string {
+/** A persisted open panel is display state, not a measurement session. */
+export function hudMeasurementActive(open: boolean, status: D081Status | null): boolean {
+  return open && (status?.quality === 'movimento' || status?.quality === 'recupero');
+}
+
+export function formatHud(status: D081Status | null, frames: readonly FrameSample[], fallback?: { nodes?: { rendered: number; available: number }; edges?: { rendered: number; available: number } }, readiness: RenderReadiness | null = currentRenderReadiness()): string {
   const rates = frameStats(frames);
   const nodes = status?.nodes;
   const edges = status?.edges;
@@ -65,16 +73,23 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
   const edgeEligible = edges?.eligible ?? fallback?.edges?.available ?? 0;
   const edgeTotal = edges?.total ?? edgeEligible;
   const quality = status?.quality ?? "dati in attesa";
-  const nextFull = quality === "completa" ? "completa" : formatDuration(status?.msToFullQuality);
+  const lastFullRecovery = formatDuration(status?.msToFullQuality);
   const depth = status?.depth?.label ?? (status?.depth?.level === undefined ? "—" : `livello ${status.depth.level}`);
+  // D082-A-STALE BEGIN
+  const renderRows = readiness ? `<dt title="Stima lato renderer di intervalli richiesti, pronti e visibili; pubblicata due frame dopo il tentativo di disegno. Non conferma la presentazione al compositor.">Render</dt><dd>${renderPercent(readiness)}% · ${readiness.quality}</dd>
+    <dt>Nodi pronti / disegnati / richiesti · totali</dt><dd>${readiness.nodes.loaded.toLocaleString("it-IT")} / ${readiness.nodes.drawn.toLocaleString("it-IT")} / ${readiness.nodes.required.toLocaleString("it-IT")} · ${nodes?.total?.toLocaleString("it-IT") ?? "—"}</dd>
+    <dt>Archi pronti / disegnati / richiesti · totali</dt><dd>${readiness.allEdges.loaded.toLocaleString("it-IT")} / ${readiness.allEdges.drawn.toLocaleString("it-IT")} / ${readiness.allEdges.required.toLocaleString("it-IT")} · ${edges?.total?.toLocaleString("it-IT") ?? "—"}</dd>
+    <dt>LOD · profondità</dt><dd>${readiness.ladder} · ${readiness.depthLabel ?? "—"}</dd>` : "<dt>Render</dt><dd>in attesa dei dati renderer</dd>";
+  // D082-A-STALE END
   return `<dl>
+    ${renderRows}
     <dt>FPS p50 / p95</dt><dd>${rates.fps50.toFixed(1)} / ${rates.fps95.toFixed(1)}</dd>
     <dt>Frame ms p50 / p95</dt><dd>${rates.ms50.toFixed(1)} / ${rates.ms95.toFixed(1)}</dd>
     <dt>Nodi visibili / rappr.</dt><dd>${nodeDrawn} / ${nodes?.represented ?? nodeDrawn} · ${nodeEligible} elegg. / ${nodeTotal} tot. · +${nodes?.aggregated ?? 0}</dd>
     <dt>Archi / bundle</dt><dd>${edgeDrawn} / ${edges?.bundled ?? 0} · ${edgeEligible} elegg. / ${edgeTotal} tot.</dd>
     <dt>Qualità · LOD</dt><dd>${quality} · ${depth}</dd>
     <dt>Ultima interazione</dt><dd>${formatDuration(status?.msSinceInteraction)} fa</dd>
-    <dt>Qualità completa</dt><dd>${nextFull}${status?.msToFullQuality != null && quality !== "completa" ? ` (stima ${formatDuration(status.msToFullQuality)})` : ""}</dd>
+    <dt>Ultimo recupero completo</dt><dd>${lastFullRecovery}</dd>
   </dl>${status?.hint ? `<p class="performance-hint"></p>` : ""}`;
 }
 
@@ -86,20 +101,33 @@ export function mountPerformanceHud(surface: HTMLElement, opener: HTMLButtonElem
   const content = document.createElement("div"); content.className = "performance-content"; surface.append(content);
   const sampler = createFrameSampler(callback => requestAnimationFrame(callback), id => cancelAnimationFrame(id));
   let status: D081Status | null = null;
+  let readiness = currentRenderReadiness();
   let open = false;
-  let refreshTimer = 0;
+  let measuring = false;
+  const syncMeasurement = () => {
+    const active = hudMeasurementActive(open, status);
+    if (active === measuring) return;
+    measuring = active;
+    if (active) sampler.start(); else sampler.stop();
+  };
   const onStatus = (event: Event) => {
     const detail = (event as CustomEvent<D081Status>).detail;
     status = detail ?? win.__d081?.status?.() ?? null;
+    syncMeasurement(); refresh();
+  };
+  const onRender = (event: Event) => {
+    readiness = (event as CustomEvent<RenderReadiness>).detail ?? currentRenderReadiness();
+    refresh();
   };
   const refresh = () => {
     if (!open) return;
     status = win.__d081?.status?.() ?? status;
     const witness = win.__d067?.witness?.();
+    readiness = currentRenderReadiness() ?? readiness;
     content.innerHTML = formatHud(status, sampler.frames(), {
       ...(witness?.lod?.nodes ? { nodes: { rendered: witness.lod.nodes.rendered ?? 0, available: witness.lod.nodes.available ?? 0 } } : {}),
       ...(witness?.lod?.arcs ? { edges: { rendered: witness.lod.arcs.rendered ?? 0, available: witness.lod.arcs.available ?? 0 } } : {}),
-    });
+    }, readiness);
     const hint = content.querySelector(".performance-hint");
     if (hint) hint.textContent = status?.hint ?? "";
   };
@@ -112,12 +140,13 @@ export function mountPerformanceHud(surface: HTMLElement, opener: HTMLButtonElem
     if (open) {
       status = win.__d081?.status?.() ?? null;
       window.addEventListener("d081:status", onStatus);
-      sampler.start();
-      refresh(); refreshTimer = window.setInterval(refresh, 250);
+      window.addEventListener("d082:render", onRender);
+      syncMeasurement(); refresh();
     } else {
-      sampler.stop(); window.clearInterval(refreshTimer);
+      sampler.stop(); measuring = false;
       window.removeEventListener("d081:status", onStatus);
-      refreshTimer = 0; status = null;
+      window.removeEventListener("d082:render", onRender);
+      status = null; readiness = currentRenderReadiness();
     }
   };
   let initiallyOpen = false;

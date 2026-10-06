@@ -150,11 +150,13 @@ test("GPU soma texture carries the same three bounded real trunk directions", ()
   resources.geometry.dispose(); resources.material.dispose();
 });
 
-test("canvas and GPU use the same shoulder function and keep hub lobes unchanged", () => {
+// D082-A-NEURAL BEGIN: P1 lines 67–74 require fewer, broader apparent hub directions.
+test("canvas and GPU share the leaf shoulder and broaden hub lobes", () => {
   assert.equal(somaLobeAngularWidth(frame("leaf", "2d").lobes![0]!.strength), 0.32);
-  assert.equal(somaLobeAngularWidth(0.44), 0.42);
-  assert.match(NODE_FRAGMENT_SHADER, /lobe\.z > 0\.6 \? 0\.32 : 0\.42/);
+  assert.equal(somaLobeAngularWidth(0.44), 0.62);
+  assert.match(NODE_FRAGMENT_SHADER, /lobe\.z > 0\.6 \? 0\.32 : 0\.62/);
 });
+// D082-A-NEURAL END
 
 test("GPU soma joint has full edge alpha and reconstructed centreline has no dark dip", () => {
   const alpha = 0.72;

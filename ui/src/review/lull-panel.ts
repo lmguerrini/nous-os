@@ -123,6 +123,13 @@ export function renderLullPanel(host: HTMLElement, model: LullPanelModel): void 
   note.className = 'lull-panel__note';
   note.textContent = `${model.note} Livello ipotesi: ${model.hypothesesShown ? 'visibile' : 'nascosto (default)'}.`;
   host.append(heading, limit, citation, summary, reading, note);
+  // D082-LAB-FIX3 BEGIN: nested evidence bodies are materialized on first open.
+  const onFirstOpen = (item: HTMLDetailsElement, populate: () => void): void => {
+    let populated = false;
+    item.addEventListener('toggle', () => {
+      if (item.open && !populated) { populated = true; populate(); }
+    });
+  };
   const pairHeader = doc.createElement('h4');
   pairHeader.textContent = 'Coppie (B\u2013K)';
   host.append(pairHeader);
@@ -132,15 +139,17 @@ export function renderLullPanel(host: HTMLElement, model: LullPanelModel): void 
     const label = doc.createElement('summary');
     label.textContent = `${pair.letters} \u00b7 ${pair.rootTitles[0]} + ${pair.rootTitles[1]} \u00b7 ${pair.weight} relazioni${pair.hypothesis ? ' \u00b7 IPOTESI (nessuna evidenza)' : ''}`;
     item.append(label);
-    if (pair.evidence.length) {
-      const list = doc.createElement('ul');
-      for (const row of pair.evidence) {
-        const entry = doc.createElement('li');
-        entry.textContent = `${row.id} \u00b7 ${row.from} ${row.arrow} ${row.to} \u00b7 ${row.klass} \u00b7 ${row.type}${row.provenance ? ` \u00b7 provenienza: ${row.provenance}` : ''}`;
-        list.append(entry);
+    onFirstOpen(item, () => {
+      if (pair.evidence.length) {
+        const list = doc.createElement('ul');
+        for (const row of pair.evidence) {
+          const entry = doc.createElement('li');
+          entry.textContent = `${row.id} \u00b7 ${row.from} ${row.arrow} ${row.to} \u00b7 ${row.klass} \u00b7 ${row.type}${row.provenance ? ` \u00b7 provenienza: ${row.provenance}` : ''}`;
+          list.append(entry);
+        }
+        item.append(list);
       }
-      item.append(list);
-    }
+    });
     host.append(item);
   }
   const tripleHeader = doc.createElement('h4');
@@ -152,38 +161,39 @@ export function renderLullPanel(host: HTMLElement, model: LullPanelModel): void 
     const label = doc.createElement('summary');
     label.textContent = `${triple.letters} \u00b7 condivisi: ${triple.sharedRecordIds.length} \u00b7 coppie: ${triple.pairWeights.join('/')} \u00b7 testimoni di percorso: ${triple.pathWitnessTotal}${triple.hypothesis ? ' \u00b7 IPOTESI' : ''}`;
     item.append(label);
-    // B5-01: the three generating wheel alignments of the Fourth Figure stay
-    // visible explanatory metadata, never merely transient data-model state.
-    const wheels = doc.createElement('p');
-    wheels.className = 'lull-panel__wheel-positions';
-    wheels.textContent = `Allineamenti generanti (Quarta Figura): ${triple.wheelPositions.map(formatLullWheelPosition).join(' \u00b7 ')}.`;
-    item.append(wheels);
-    // B5-01: each of the three pair evidence sets is reported separately and
-    // exactly, as expandable relation-ID lists.
-    for (const pair of triple.pairEvidence) {
-      const pairItem = doc.createElement('details');
-      pairItem.className = 'lull-panel__triple-pair';
-      const pairLabel = doc.createElement('summary');
-      pairLabel.textContent = `Coppia ${pair.letters} \u00b7 ${pair.relationIds.length} relazioni`;
-      pairItem.append(pairLabel);
-      if (pair.relationIds.length) {
-        const ids = doc.createElement('p');
-        ids.className = 'lull-panel__pair-relation-ids';
-        ids.textContent = pair.relationIds.join(', ');
-        pairItem.append(ids);
+    onFirstOpen(item, () => {
+      // B5-01: relation-ID bodies are created only when the row is expanded.
+      const wheels = doc.createElement('p');
+      wheels.className = 'lull-panel__wheel-positions';
+      wheels.textContent = `Allineamenti generanti (Quarta Figura): ${triple.wheelPositions.map(formatLullWheelPosition).join(' \u00b7 ')}.`;
+      item.append(wheels);
+      for (const pair of triple.pairEvidence) {
+        const pairItem = doc.createElement('details');
+        pairItem.className = 'lull-panel__triple-pair';
+        const pairLabel = doc.createElement('summary');
+        pairLabel.textContent = `Coppia ${pair.letters} \u00b7 ${pair.relationIds.length} relazioni`;
+        pairItem.append(pairLabel);
+        onFirstOpen(pairItem, () => {
+          if (!pair.relationIds.length) return;
+          const ids = doc.createElement('p');
+          ids.className = 'lull-panel__pair-relation-ids';
+          ids.textContent = pair.relationIds.join(', ');
+          pairItem.append(ids);
+        });
+        item.append(pairItem);
       }
-      item.append(pairItem);
-    }
-    if (triple.sharedRecordIds.length) {
-      const shared = doc.createElement('p');
-      shared.textContent = `Record condivisi: ${triple.sharedRecordIds.join(', ')}`;
-      item.append(shared);
-    }
-    for (const witness of triple.witnesses) {
-      const line = doc.createElement('p');
-      line.textContent = `Percorso ${witness.recordIds.join(' \u203a ')} tramite ${witness.relationIds.join(', ')}`;
-      item.append(line);
-    }
+      if (triple.sharedRecordIds.length) {
+        const shared = doc.createElement('p');
+        shared.textContent = `Record condivisi: ${triple.sharedRecordIds.join(', ')}`;
+        item.append(shared);
+      }
+      for (const witness of triple.witnesses) {
+        const line = doc.createElement('p');
+        line.textContent = `Percorso ${witness.recordIds.join(' \u203a ')} tramite ${witness.relationIds.join(', ')}`;
+        item.append(line);
+      }
+    });
     host.append(item);
   }
+  // D082-LAB-FIX3 END
 }

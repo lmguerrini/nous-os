@@ -2,13 +2,17 @@
 import { CANOPY_VERSION, computeCanopyLayout } from '../fractal/canopy-layout.ts';
 import type { TopologyDimension, TopologyLaw, TopologyLayout, TopologyNode, TopologySnapshot } from './contract.ts';
 
+// D082-LAB-FIX4 BEGIN: the stationary similarity IFS certificate covers both projections.
 function layout(snapshot: TopologySnapshot, dimension: TopologyDimension): TopologyLayout {
-  if (dimension !== '2d') throw new Error('Canopy 3D attende la certificazione geometrica.');
   const nodes = snapshot.nodes.map(node => ({ id: node.id, parent: node.parent, level: node.level,
     title: node.title, importance: { value: node.importance }, counts: { descendants: 0 } }));
   const canopy = computeCanopyLayout(nodes);
-  const positions = new Map([...canopy.positions].map(([id, row]) => [id, row.point]));
-  const guides = canopy.rails.map(rail => ({ id: `guide:canopy:${rail.address}`, points: [rail.from, rail.to],
+  const point = (row: (typeof canopy.positions extends ReadonlyMap<string, infer R> ? R : never)) =>
+    dimension === '3d' ? row.point3d : row.point;
+  const railPoints = (rail: (typeof canopy.rails)[number]) => dimension === '3d'
+    ? [rail.from3d, rail.to3d] : [rail.from, rail.to];
+  const positions = new Map([...canopy.positions].map(([id, row]) => [id, point(row)]));
+  const guides = canopy.rails.map(rail => ({ id: `guide:canopy:${rail.address}`, points: railPoints(rail),
     kind: 'ifs-rail', semantic: false as const }));
   const witnesses = new Map([...canopy.positions].map(([id, row]) => [id, {
     law: 'Canopy IFS', address: row.address,
@@ -17,11 +21,14 @@ function layout(snapshot: TopologySnapshot, dimension: TopologyDimension): Topol
   }]));
   return { positions, guides, containers: [], witnesses, diagnostics: [] };
 }
+// D082-LAB-FIX4 END
 export const canopyLaw: TopologyLaw = {
   id: 'canopy-ifs', version: `local-${CANOPY_VERSION}`,
   label: () => 'Canopy IFS',
-  supports: (dimension: TopologyDimension) => dimension === '2d' ? { ok: true }
-    : { ok: false, reason: 'Canopy 3D attende la certificazione geometrica.' },
+  // D082-LAB-FIX4 BEGIN: the certificate covers fixed orthogonal maps, contraction, address depth,
+  // deterministic finite iterates and the conservative tail bound used by the spatial coordinates.
+  supports: (_dimension: TopologyDimension) => ({ ok: true }),
+  // D082-LAB-FIX4 END
   layoutFull: layout,
   layoutLocal(children: readonly TopologyNode[], snapshot: TopologySnapshot, dimension: TopologyDimension) {
     const ids = new Set(children.map(node => node.id));

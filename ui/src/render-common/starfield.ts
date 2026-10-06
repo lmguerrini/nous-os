@@ -80,6 +80,11 @@ export function starfieldStars(width: number, height: number, density: number): 
  * covers a session; past the cap the cache resets, never grows unbounded. */
 export const STAR_CACHE_CAP = 8;
 const starCache = new Map<string, readonly StarfieldStar[]>();
+// D082-A-PERF BEGIN: retain a bounded number of stars even after many resizes.
+export const STAR_CACHE_BYTE_LIMIT = 4 * 1024 * 1024;
+let starCacheBytes = 0;
+const starEntryBytes = (key: string, stars: readonly StarfieldStar[]) => key.length * 2 + 64 * stars.length;
+// D082-A-PERF END
 
 /** `starfieldStars` behind a bounded cache keyed by its only inputs (width, height, density): a hit
  * can never serve a stale value, and the flow animation — which repaints this layer many times per
@@ -89,9 +94,22 @@ export function cachedStarfieldStars(width: number, height: number, density: num
   if (!(density > 0) || !(width > 0) || !(height > 0)) return [];
   const key = `${width}\u0000${height}\u0000${density}`;
   const hit = starCache.get(key);
-  if (hit) return hit;
+  // D082-A-PERF BEGIN
+  if (hit) { starCache.delete(key); starCache.set(key, hit); return hit; }
+  // D082-A-PERF END
   const stars = starfieldStars(width, height, density);
-  if (starCache.size >= STAR_CACHE_CAP) starCache.clear();
+  // D082-A-PERF BEGIN
+  const bytes = starEntryBytes(key, stars);
+  if (bytes > STAR_CACHE_BYTE_LIMIT) return stars;
+  while (starCache.size >= STAR_CACHE_CAP || starCacheBytes + bytes > STAR_CACHE_BYTE_LIMIT) {
+    const oldest = starCache.keys().next().value;
+    if (oldest === undefined) break;
+    const removed = starCache.get(oldest)!;
+    starCacheBytes -= starEntryBytes(oldest, removed);
+    starCache.delete(oldest);
+  }
+  starCacheBytes += bytes;
+  // D082-A-PERF END
   starCache.set(key, stars);
   return stars;
 }
@@ -99,7 +117,16 @@ export function cachedStarfieldStars(width: number, height: number, density: num
 /** Empties the star cache; tests use it to observe cache behaviour in isolation. */
 export function resetStarfieldCache(): void {
   starCache.clear();
+  // D082-A-PERF BEGIN
+  starCacheBytes = 0;
+  // D082-A-PERF END
 }
+// D082-A-PERF BEGIN
+export function starfieldCacheOccupancy() {
+  return { entries: starCache.size, estimatedBytes: starCacheBytes,
+    entryLimit: STAR_CACHE_CAP, byteLimit: STAR_CACHE_BYTE_LIMIT };
+}
+// D082-A-PERF END
 
 /**
  * Draws the starfield in screen space, beneath every other layer. Density and brightness 0 draw nothing.

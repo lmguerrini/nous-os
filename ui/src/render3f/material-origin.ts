@@ -37,7 +37,9 @@ const TYPE_ONLY_RENDERER_IMPORTS = new Set(["../projection/contract-types.ts"]);
 const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["aggregate-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
   ["brain-envelope.ts", new Set(["three", "#engine/morphology-contract.ts", "#scene/contract.ts"])],
-  ["buffers.ts", new Set(["#engine/contract.ts", "#engine/tokens.ts", "#engine/stable-hash.ts", "#engine/morphology-geometry.ts", "#scene/contract.ts"])],
+  // D082-A-PERF BEGIN: pure exact-key cache and versioned geometry remain material-independent.
+  ["buffers.ts", new Set(["#engine/contract.ts", "#engine/tokens.ts", "#engine/stable-hash.ts", "#engine/morphology-geometry.ts", "#scene/contract.ts", "#render-common/scene-cache.ts"])],
+  // D082-A-PERF END
   ["camera-framing.ts", new Set(["#engine/contract.ts", "#scene/contract.ts"])],
   ["camera.tsx", new Set([
     "three",
@@ -85,6 +87,9 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#engine/visual-state.ts",
     "#render2d/model.ts",
     "#render-common/projection-style.ts",
+    // D082-A-PERF BEGIN: scheduled presentation quality is renderer-local, never graph policy.
+    "#render-common/quality-ladder.ts",
+    // D082-A-PERF END
     "#render-common/typed-layer.ts",
     "#render3f/camera.tsx",
     "#render3f/camera-framing.ts",
@@ -110,6 +115,9 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
   ["resources.ts", new Set(["three", "#engine/renderer-handle.ts"])],
   ["shader-contract.ts", new Set()],
   ["state.ts", new Set([
+    // D082-A-PERF BEGIN: the render-state diff assertion is debug-only.
+    "#engine/contract.ts",
+    // D082-A-PERF END
     "#engine/camera-kind.ts",
     "#engine/renderer-handle.ts",
     "#scene/contract.ts",
@@ -146,7 +154,12 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#engine/tokens.ts", new Set(["OklchToken"])],
     ["#engine/stable-hash.ts", new Set(["morphologyHash"])],
     // D081-P1E BEGIN: the GPU buffer shares the pure soma-area normalization.
-    ["#engine/morphology-geometry.ts", new Set(["buildMorphologyGeometry", "MorphologyNodeShape", "somaLobeAreaScale"])],
+    // D082-A-PERF BEGIN: namespace read supplies the Neural geometry version during integration.
+    // D082-A-NEURAL BEGIN: only pure direction selection and lobe strength cross into GPU buffers.
+    ["#engine/morphology-geometry.ts", new Set(["*", "buildMorphologyGeometry", "MorphologyNodeShape", "somaLobeAreaScale", "neuralPrincipalTrunks", "neuralTrunkLobeStrength"])],
+    // D082-A-NEURAL END
+    ["#render-common/scene-cache.ts", new Set(["SceneCache", "preparedSceneKey"])],
+    // D082-A-PERF END
     // D081-P1E END
     ["#scene/contract.ts", new Set([
       "SCENE_PERMILLE_SCALE",
@@ -237,7 +250,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     // deciding navigation policy locally, and the symbol drift check below still refuses it.
     ["#engine/scale-topology.ts", new Set(["ScaleNavigationPath"])],
     ["#engine/tokens.ts", new Set(["Palette", "Temperature", "Theme"])],
-    ["#engine/visual-state.ts", new Set(["VisualState", "VisualStateCamera", "createVisualState"])],
+    // D082-A-PERF BEGIN: the renderer's camera-state constructor opts into the verified fast path.
+    ["#engine/visual-state.ts", new Set(["VisualState", "VisualStateCamera", "createRenderVisualState"])],
+    // D082-A-PERF END
     ["#render-common/container-canvas.ts", new Set(["projectedWorldScale"])],
     ["#render2d/model.ts", new Set([
       "EMPTY_LABEL_BOUNDS",
@@ -256,6 +271,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
       "typedLabelTexts",
     ])],
     ["#render-common/typed-layer.ts", new Set(["createTypedProjectionLayer"])],
+    // D082-A-PERF BEGIN
+    ["#render-common/quality-ladder.ts", new Set(["QualityLadder", "mainRelation", "presentRenderReadiness"])],
+    // D082-A-PERF END
     ["#render3f/camera.tsx", new Set([
       "CameraRig",
       "Render3fFramingBox",
@@ -314,6 +332,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
   ])],
   ["shader-contract.ts", new Map()],
   ["state.ts", new Map([
+    // D082-A-PERF BEGIN
+    ["#engine/contract.ts", new Set(["renderDebugAssertionsEnabled"])],
+    // D082-A-PERF END
     ["#engine/camera-kind.ts", new Set(["CameraKind"])],
     ["#engine/renderer-handle.ts", new Set(["SurfaceWitness", "WorldAnchorWitness"])],
     ["#scene/contract.ts", new Set(["Scene"])],

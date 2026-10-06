@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeCanopyLayout } from '../src/fractal/canopy-layout.ts';
+import {
+  CANOPY_RATIO, canopySpatialDisplayPoint, canopySpatialRotation, computeCanopyLayout,
+  type CanopyMatrix3, type CanopyPoint,
+} from '../src/fractal/canopy-layout.ts';
 import { canopyMarks } from '../src/fractal/canopy-reveal.ts';
 import { canopyReadingCount, canopySemanticLabel, placeCanopyLabels } from '../src/fractal/canopy-overlay.ts';
 import { canopyRailWidth, canopySafeRect } from '../src/fractal/renderer-adapter.ts';
@@ -27,15 +30,53 @@ const edges: GraphEdge[] = [
   edge('large-e', 'large:c0', 'large:r1', 'exploratory'),
 ];
 
-test('C4 keeps planar branch angles in 3D and gives every rail joined endpoints', () => {
+function mapAddress3d(address: string): CanopyPoint {
+  const multiply = (a: CanopyMatrix3, b: CanopyMatrix3): CanopyMatrix3 => {
+    const result = Array<number>(9);
+    for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++)
+      result[row * 3 + col] = a[row * 3]! * b[col]! + a[row * 3 + 1]! * b[3 + col]!
+        + a[row * 3 + 2]! * b[6 + col]!;
+    return result as unknown as CanopyMatrix3;
+  };
+  let orientation: CanopyMatrix3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  let endpoint: CanopyPoint = { x: 0, y: 0, z: 0 };
+  let step = 485;
+  for (const bit of address) {
+    orientation = multiply(orientation, canopySpatialRotation(bit as '0' | '1'));
+    step *= CANOPY_RATIO;
+    const stem = canopySpatialDisplayPoint({
+      x: -step * orientation[1], y: -step * orientation[4], z: -step * orientation[7],
+    });
+    endpoint = { x: endpoint.x + stem.x, y: endpoint.y + stem.y, z: endpoint.z + stem.z };
+  }
+  return endpoint;
+}
+
+test('C4 3D rails are stationary IFS address images and have joined endpoints', () => {
   const layout = computeCanopyLayout(nodes, edges);
   const byAddress = new Map(layout.rails.map(rail => [rail.address, rail]));
+  const reference = [...layout.positions.values()][0]!;
+  const rawReference = mapAddress3d(reference.address);
+  const translation = {
+    x: rawReference.x - reference.point3d.x,
+    y: rawReference.y - reference.point3d.y,
+    z: rawReference.z - reference.point3d.z,
+  };
+  const assertAddressImage = (actual: CanopyPoint, address: string) => {
+    const expected = mapAddress3d(address);
+    assert.ok(Math.hypot(actual.x - (expected.x - translation.x),
+      actual.y - (expected.y - translation.y), actual.z - (expected.z - translation.z)) < 1e-8,
+    `3D endpoint must equal the fixed-map image of address ${address}`);
+  };
+  // D082-B1e BEGIN: replace the legacy planar-X test with the stationary IFS invariant.
   for (const rail of layout.rails) {
-    assert.equal(rail.from3d.x, rail.from.x);
-    assert.equal(rail.to3d.x, rail.to.x);
+    if (rail.address === 'root') continue;
+    assertAddressImage(rail.from3d, rail.address.slice(0, -1));
+    assertAddressImage(rail.to3d, rail.address);
     const parent = byAddress.get(rail.address.slice(0, -1));
     if (parent) assert.deepEqual(rail.from3d, parent.to3d);
   }
+  // D082-B1e END
   assert.ok(layout.rails.some(rail => Math.abs(rail.to3d.z - rail.from3d.z) > 1));
   const left = byAddress.get('0')!, right = byAddress.get('1')!;
   const screenX = (p: typeof left.to3d) => Math.cos(Math.PI / 6) * p.x - Math.sin(Math.PI / 6) * p.z;

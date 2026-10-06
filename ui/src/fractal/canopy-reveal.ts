@@ -1,4 +1,6 @@
 import type { CanopyLayout, CanopyInputNode, CanopyPoint } from './canopy-layout.ts';
+import { canopyFitAnchorIds } from './canopy-layout.ts';
+import type { Density } from '../review/lod.ts';
 
 export type CanopyBand = 'fit' | 'mid' | 'deep';
 /** Half-octave camera steps keep disclosure moving within the coarse product LOD bands. */
@@ -10,6 +12,31 @@ export function canopyBandForZoom(zoom: number): CanopyBand {
 }
 export type CanopyMark = Readonly<{ id: string; memberCount: number; memberIds: readonly string[];
   aggregate: boolean }>;
+
+const densityOrderCache = new WeakMap<CanopyLayout, readonly string[]>();
+
+/** One stable lower-density mark sequence; complete always names each real ID. */
+export function canopyDensityMarks(layout: CanopyLayout, nodes: readonly CanopyInputNode[],
+  density: Density, _band: CanopyBand, focusId: string | null, _pixelsPerUnit: number,
+  projection: '2d' | '3d', _projectPoint?: (point: CanopyPoint) => Readonly<{ x: number; y: number }>): CanopyMark[] {
+  if (density === 'complete') return nodes.map(node => ({ id: node.id, memberCount: 1,
+    memberIds: [node.id], aggregate: false }));
+  // D082-B1: semantic selection is independent of camera distance. Ancestor tiers
+  // precede important leaves; ties use real IDs. Both sparse sets retain real fit
+  // extremities and the explicit focus, so E is a subset of B at every zoom.
+  let ordered = densityOrderCache.get(layout);
+  if (!ordered) {
+    ordered = [...nodes].sort((a, b) => a.level - b.level ||
+      (b.importance?.value ?? 0) - (a.importance?.value ?? 0) ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map(node => node.id);
+    densityOrderCache.set(layout, ordered);
+  }
+  const budget = density === 'essential' ? 150 : 850;
+  const ids = new Set(ordered.slice(0, budget));
+  for (const id of canopyFitAnchorIds(layout, projection)) ids.add(id);
+  if (focusId && layout.positions.has(focusId)) ids.add(focusId);
+  return [...ids].map(id => ({ id, memberCount: 1, memberIds: [id], aggregate: false }));
+}
 
 /** A mark is a real representative. Its counted IDs may include nearby siblings at fit;
  * that display grouping makes no parent or relation claim. Each real ID has one owner. */
@@ -51,12 +78,26 @@ export function canopyMarks(layout: CanopyLayout, nodes: readonly CanopyInputNod
     // semantic parentage. The threshold recedes as detail opens.
     const separation = band === 'fit' ? 14 : band === 'mid' ? 9 : 4.5;
     const representatives: { id: string; x: number; y: number }[] = [];
+    const grid = new Map<string, number[]>();
     for (const node of [...visible].sort((a, b) =>
       Number(b.id === focusId) - Number(a.id === focusId) || a.level - b.level || a.id.localeCompare(b.id))) {
       const p = screen(node.id);
-      const nearest = representatives.find(rep => Math.hypot(rep.x - p.x, rep.y - p.y) < separation);
-      if (nearest) clusterOwner.set(node.id, nearest.id);
-      else representatives.push({ id: node.id, ...p });
+      const gx = Math.floor(p.x / separation), gy = Math.floor(p.y / separation);
+      let earliest = Infinity;
+      if (Number.isFinite(gx) && Number.isFinite(gy)) for (let x = gx - 1; x <= gx + 1; x++)
+        for (let y = gy - 1; y <= gy + 1; y++)
+          for (const index of grid.get(`${x}:${y}`) ?? []) {
+            const rep = representatives[index]!;
+            if (index < earliest && Math.hypot(rep.x - p.x, rep.y - p.y) < separation) earliest = index;
+          }
+      if (earliest < Infinity) clusterOwner.set(node.id, representatives[earliest]!.id);
+      else {
+        const index = representatives.push({ id: node.id, ...p }) - 1;
+        if (Number.isFinite(gx) && Number.isFinite(gy)) {
+          const key = `${gx}:${gy}`, bucket = grid.get(key) ?? [];
+          bucket.push(index); grid.set(key, bucket);
+        }
+      }
     }
   }
   const exposed = visible.filter(node => !clusterOwner.has(node.id));

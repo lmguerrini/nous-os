@@ -1,6 +1,9 @@
 import { mixTowardField } from "#engine/presentation-options.ts";
 import type { AppearanceOptions, EdgeCategory, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
+// "D082-A-NCOMPLETA2 BEGIN"
+import { nativeNodePresentationBase } from "#render2d/native-node-presentation.ts";
+// "D082-A-NCOMPLETA2 END"
 import { buildMorphologyGeometry, NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO } from "#engine/morphology-geometry.ts";
 import type { MorphologyGeometry } from "#engine/morphology-geometry.ts";
 import type { Morphology } from "#engine/morphology.ts";
@@ -19,10 +22,11 @@ import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC } from "#engine/camera-kind.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
+import { renderDebugAssertionsEnabled } from "#engine/contract.ts";
 import type { LayoutAnchors } from "#engine/layout.ts";
 import type { NodeFootprintWitness, WorldAnchorWitness } from "#engine/renderer-handle.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
-import { createVisualState } from "#engine/visual-state.ts";
+import { createRenderVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { createFilamentProgram, FilamentProgram } from "#render2d/filament-program.ts";
 import {
@@ -66,6 +70,10 @@ import type {
 import type { PickResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec2 } from "../projection/contract-types.ts";
 import { createProjectionVisualsLayer } from "#render-common/projection-visuals-layer.ts";
 import type { ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
+import { ALL_EDGES_QUALITY_STAGE, FULL_QUALITY_STAGE, QualityLadder, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+// "D082-A-NODES BEGIN"
+import { denseNativeEdgeAlpha } from "#render-common/dense-node-scale.ts";
+// "D082-A-NODES END"
 
 /** Sigma multiplies its camera ratio by this factor for each wheel notch. */
 export const TWO_D_ZOOMING_RATIO = 1 + 1 / (2 * 2);
@@ -272,15 +280,20 @@ export function mount(
   framingBox?: RenderFramingBox,
   initialVisualState?: VisualState,
   suppliedAnchors?: LayoutAnchors,
+  // "D082-A-PERF BEGIN"
+  preparedModel?: RenderModel,
+  // "D082-A-PERF END"
 ): RenderHandle {
   const suppliedState = initialVisualState === undefined
     ? undefined
-    : createVisualState(visualGraph, initialVisualState);
+    : createRenderVisualState(visualGraph, initialVisualState);
   const activeOptions = resolveRenderOptions(suppliedState === undefined ? options : renderOptionsForVisualState(options, suppliedState));
   const modelOptions = activeOptions.presentation?.emphasisIds
     ? { ...activeOptions, presentation: { ...activeOptions.presentation, emphasisIds: null } }
     : activeOptions;
-  const model = buildRenderModel(visualGraph, modelOptions, undefined, suppliedAnchors);
+  // "D082-A-PERF BEGIN"
+  const model = preparedModel ?? buildRenderModel(visualGraph, modelOptions, undefined, suppliedAnchors);
+  // "D082-A-PERF END"
   // Incremented where layout is actually resolved, so the number is a record of what ran rather
   // than a literal describing what is expected to have run.
   const layoutPasses = suppliedAnchors === undefined ? 1 : 0;
@@ -291,6 +304,40 @@ export function mount(
   const baseEdgeAttributes = new Map<string, RenderEdgeAttributes>(
     model.graph.edges().map((id) => [id, model.graph.getEdgeAttributes(id)]),
   );
+  // A-PERF BEGIN: label opacity always starts from the current visual state's
+  // unmodified colour. Reapplying it to the previous label colour made every
+  // settled pass mutate Graphology and schedule another full Sigma refresh.
+  const edgeLabelBaseColors = new Map<string, string>(
+    [...baseEdgeAttributes].map(([id, attributes]) => [id, attributes.labelColor]),
+  );
+  const placeCurrentEdgeLabels = () => {
+    // "D082-A-PERF BEGIN": product DOM labels only — skip ranking hidden Sigma labels.
+    if (!nativeLabelsUsed) return;
+    // "D082-A-PERF END"
+    // "D082-A-PERF BEGIN": the product view supplies its own DOM labels and sets
+    // nativeLabels=false. Ranking every hidden Sigma label cost over a second
+    // on Completa entry while renderEdgeLabels remained false throughout.
+    // "D082-A-PERF END"
+    placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible, edgeLabelBaseColors);
+  };
+  // A-PERF END
+  // "D082-A-NODES BEGIN"
+  const nativeEdgeVeilById = new Map<string, number>([...(activeOptions.presentation?.edges ?? [])]
+    .filter(([, edge]) => edge.denseVeilBaseOpacityPermille !== undefined)
+    .map(([id, edge]) => [id, edge.denseVeilFactor ?? 1]));
+  const nativeEdgeVeilFloorById = new Set<string>([...(activeOptions.presentation?.edges ?? [])]
+    .filter(([, edge]) => (edge as typeof edge & { denseNativeAlphaFloor?: boolean }).denseNativeAlphaFloor === true)
+    .map(([id]) => id));
+  const withNativeEdgeVeil = (id: string, color: string): string => {
+    const factor = id === currentState.selectedId || id === currentState.focusedId ? 1 : nativeEdgeVeilById.get(id) ?? 1;
+    if (factor === 1) return color;
+    const parsed = parseColor(color);
+    // Sigma's native edge colour is encoded into a byte alpha channel. The Completa
+    // screen-density model can request sub-byte alpha, so preserve a two-byte visible veil.
+    const alpha = denseNativeEdgeAlpha(parsed.a, factor, nativeEdgeVeilFloorById.has(id));
+    return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${alpha})`;
+  };
+  // "D082-A-NODES END"
   const materialBindings = createLiveRelationMaterialBindings();
   const geometryBindings = createLiveRelationGeometryBindings();
   // The distinct morphology canvas covers the WebGL tiers. Keep the compatibility picking
@@ -331,8 +378,9 @@ export function mount(
   if (suppliedState !== undefined) {
     restoreCameraState(sigma, cameraStateFromVisualState(suppliedState.camera));
   }
-  assertSingleMaterialPerRelation(liveRelationMaterialBindings(sigma, materialBindings));
-  let currentState = suppliedState ?? createVisualState(visualGraph, {
+  // The full material witness walks every relation at mount.
+  if (renderDebugAssertionsEnabled()) assertSingleMaterialPerRelation(liveRelationMaterialBindings(sigma, materialBindings));
+  let currentState = suppliedState ?? createRenderVisualState(visualGraph, {
     selectedId: null,
     focusedId: null,
     camera: readCameraState(sigma),
@@ -365,31 +413,41 @@ export function mount(
       const bright = emphasisIds === null || (
         emphasisIds.has(model.graph.source(id)) && emphasisIds.has(model.graph.target(id))
       );
-      model.graph.replaceEdgeAttributes(id, bright ? adjusted : {
+      // "D082-A-NODES BEGIN": the Completa veil factor applies to the native edge colour (A-PERF keeps the base label colour)
+      const next = bright ? { ...adjusted, color: withNativeEdgeVeil(id, adjusted.color) } : {
         ...adjusted,
-        color: mixTowardField(adjusted.color, model.fieldColor, calibration.selection.focusDimFactorPermille),
-      });
+        color: withNativeEdgeVeil(id, mixTowardField(adjusted.color, model.fieldColor, calibration.selection.focusDimFactorPermille)),
+      };
+      // "D082-A-NODES END"
+      // A-PERF BEGIN
+      edgeLabelBaseColors.set(id, next.labelColor);
+      model.graph.replaceEdgeAttributes(id, next);
+      // A-PERF END
     }
     sigma.refresh();
   };
-  const refreshCameraInVisualState = (): VisualState => createVisualState(visualGraph, {
+  const refreshCameraInVisualState = (): VisualState => createRenderVisualState(visualGraph, {
     ...currentState,
     camera: readCameraState(sigma),
   });
   const updateVisualState = (selection: string | null, focus: string | null): void => {
-    currentState = createVisualState(visualGraph, {
+    currentState = createRenderVisualState(visualGraph, {
       ...refreshCameraInVisualState(),
       selectedId: selection,
       focusedId: focus,
     });
     applyVisualStateAppearance();
-    placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
+    placeCurrentEdgeLabels();
   };
-  if (currentState.selectedId !== null || currentState.focusedId !== null || emphasisIds !== null) {
+  // "D082-A-NODES BEGIN"
+  if (currentState.selectedId !== null || currentState.focusedId !== null || emphasisIds !== null || nativeEdgeVeilById.size > 0) {
     applyVisualStateAppearance();
   }
-  placeNodeLabels(sigma, model, calibration);
-  placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
+  // "D082-A-NODES END"
+  // "D082-A-PERF BEGIN"
+  if (nativeLabelsUsed) placeNodeLabels(sigma, model, calibration);
+  // "D082-A-PERF END"
+  placeCurrentEdgeLabels();
   // Mount the aggregate windows FIRST and the glow second, then render once more.
   // Each layer calls sigma.resize(true) when it is created, and a resize clears
   // every 2D layer -- so whichever layer is created last silently wipes the one
@@ -456,6 +514,35 @@ export function mount(
     },
     updateVisibleSubset(update: DistinctSubsetUpdate): void {
       distinct?.updateVisibleSubset(update);
+      // "D082-A-NCOMPLETA2 BEGIN": the settled fit arrives after Sigma's prepared model.
+      // Keep its native node tier and the visual-state baseline on the same radii as
+      // the distinct canvas; a graph write after refresh leaves the old discs on screen.
+      let nativeNodeStyleChanged = false;
+      // "D082-A-VEIL2 BEGIN: A-INT12 leaves the native Stellar/Mycelium tier"
+      // untouched on a subset refresh. Only Neural needs its post-fit soma settle.
+      if (activeOptions.morphology === "neural") for (const [id, entry] of update.nodeEntries) {
+        const base = baseNodeAttributes.get(id);
+        if (!base || entry.radiusPx === undefined) continue;
+        baseNodeAttributes.set(id, nativeNodePresentationBase(base, entry));
+        nativeNodeStyleChanged = true;
+      }
+      // "D082-A-VEIL2 END"
+      // "D082-A-NCOMPLETA2 END"
+      // "D082-A-NODES BEGIN"
+      if (nativeEdgeVeilById.size || nativeNodeStyleChanged) {
+        for (const [id, entry] of update.edgeEntries) if (entry.presentation) {
+          nativeEdgeVeilById.set(id, entry.presentation.denseVeilFactor ?? 1);
+          // "D082-A-NCOMPLETA3 BEGIN": a fit updates the native white root too.
+          const base = baseEdgeAttributes.get(id);
+          // "D082-A-VEIL2 BEGIN: preserve the non-Neural edge baseline"
+          if (activeOptions.morphology === "neural" && base) baseEdgeAttributes.set(id, { ...base,
+            neuralDenseFactor: entry.presentation.neuralDenseFactor ?? 1 });
+          // "D082-A-VEIL2 END"
+          // "D082-A-NCOMPLETA3 END"
+        }
+        applyVisualStateAppearance();
+      }
+      // "D082-A-NODES END"
       handlePickGeometry = update.geometry;
       rebuildHandlePickIndex();
     },
@@ -470,9 +557,14 @@ export function mount(
     },
     restoreCameraState(state: RenderCameraState): void {
       restoreCameraState(sigma, state);
-      currentState = createVisualState(visualGraph, { ...currentState, camera: state });
-      placeNodeLabels(sigma, model, calibration);
-      placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
+      currentState = createRenderVisualState(visualGraph, { ...currentState, camera: state });
+      // "D082-A-PERF BEGIN": without the hidden-label pass, keep the one refresh the framing needs.
+      if (!nativeLabelsUsed) sigma.refresh();
+      // "D082-A-PERF END"
+      // "D082-A-PERF BEGIN"
+      if (nativeLabelsUsed) placeNodeLabels(sigma, model, calibration);
+      // "D082-A-PERF END"
+      placeCurrentEdgeLabels();
     },
     readVisualState(): VisualState {
       currentState = refreshCameraInVisualState();
@@ -511,11 +603,11 @@ export function mount(
             },
           };
       applyVisualStateAppearance();
-      placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
+      placeCurrentEdgeLabels();
     },
     setEdgeLabelRevealVisible(visible: boolean): void {
       edgeLabelRevealVisible = visible;
-      placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
+      placeCurrentEdgeLabels();
     },
     readSelectedProvenance(): DerivedValue | null {
       return selectedProvenanceForVisualState(visualGraph, currentState);
@@ -667,6 +759,7 @@ function mountDistinctCanvas(
   destroy(): void;
 } {
   const graph = model.graph;
+  const perfMarksEnabled = new URLSearchParams(location.search).has('perfmarks');
   const buildGeometry = (curvature: number) => buildMorphologyGeometry(
     options.morphology,
     graph.nodes().map((id) => {
@@ -729,17 +822,90 @@ function mountDistinctCanvas(
   }
   let appearance = options.presentation?.appearance ?? DEFAULT_APPEARANCE;
   const context = canvas.getContext("2d");
-  const nodeStyles = new Map(graph.nodes().map((id) => [id, {
+  // "D082-A-NCOMPLETA2 BEGIN": a subset revision changes these map identities so
+  // the projected soma/edge paint cache sees the new fitted styles.
+  let nodeStyles = new Map(graph.nodes().map((id) => [id, {
     color: graph.getNodeAttributes(id).color,
     glyph: options.presentation?.nodes?.get(id)?.glyph,
     radiusPx: options.presentation?.nodes?.get(id)?.radiusPx,
   }]));
-  const edgeStyles = new Map<string, { color: string; presentation: import("#engine/presentation-options.ts").EdgePresentation | undefined }>(graph.edges().map((id) => [id, {
+  let edgeStyles = new Map<string, { color: string; presentation: import("#engine/presentation-options.ts").EdgePresentation | undefined }>(graph.edges().map((id) => [id, {
     color: graph.getEdgeAttributes(id).color,
     presentation: options.presentation?.edges?.get(id),
   }]));
+  const mainEdgeIds = new Set(graph.edges().filter(id => {
+    const source = graph.source(id), target = graph.target(id);
+    const category = options.presentation?.edges?.get(id)?.category;
+    const sourceGlyph = options.presentation?.nodes?.get(source)?.glyph;
+    const targetGlyph = options.presentation?.nodes?.get(target)?.glyph;
+    return mainRelation({ attested: category === 'attested', exploratory: category === 'exploratory',
+      selectedIncident: !!(options.presentation?.emphasisIds?.has(source) || options.presentation?.emphasisIds?.has(target)),
+      sourceHub: sourceGlyph === 'double-ring', targetHub: targetGlyph === 'double-ring',
+      sourceDomain: sourceGlyph === 'ring', targetDomain: targetGlyph === 'ring' });
+  }));
+  let requestedNodes = 0, requestedEdges = 0, requestedMainEdges = 0;
+  let nativeCountDirty = true;
+  let nativeNodeIdsDrawn = 0;
+  let nativeEdgeIdsDrawn: string[] = [];
+  const recountPresented = (): void => {
+    requestedNodes = nativeTier ? graph.order : geometry.nodes.length;
+    requestedEdges = nativeTier ? graph.size : geometry.edges.length;
+    requestedMainEdges = nativeTier ? mainEdgeIds.size
+      : geometry.edges.filter(edge => mainEdgeIds.has(edge.id)).length;
+    nativeCountDirty = true;
+  };
+  recountPresented();
+  let lastMorphologyCamera = JSON.stringify(sigma.getCamera().getState());
+  let presentationRevision = 0;
+  const publishPresented = (): void => {
+    const stage = ladder.state.stage;
+    const nativeNodesCanvas = sigma.getCanvases().nodes;
+    const nativeEdgesCanvas = sigma.getCanvases().edges;
+    if (nativeTier && nativeCountDirty) {
+      nativeNodeIdsDrawn = graph.nodes().filter(id => { const data = sigma.getNodeDisplayData(id);
+        return data !== undefined && !data.hidden; }).length;
+      nativeEdgeIdsDrawn = graph.edges().filter(id => { const data = sigma.getEdgeDisplayData(id);
+        return data !== undefined && !data.hidden; });
+      nativeCountDirty = nativeNodeIdsDrawn === 0 && graph.order > 0;
+    }
+    const nativeNodesDrawn = nativeTier && nativeNodesCanvas?.style.display !== 'none' ? nativeNodeIdsDrawn : 0;
+    const nativeDrawnIds = nativeTier && nativeEdgesCanvas?.style.display !== 'none' ? nativeEdgeIdsDrawn : [];
+    const nativeEdgesDrawn = nativeDrawnIds.length;
+    const canvasDrawn = !nativeTier && canvas.style.visibility !== 'hidden' && context !== null;
+    const nodesDrawn = nativeTier ? nativeNodesDrawn : canvasDrawn ? geometry.nodes.length : 0;
+    const edgesDrawn = nativeTier ? nativeEdgesDrawn : canvasDrawn ? geometry.edges.length : 0;
+    const mainDrawn = nativeTier ? nativeDrawnIds.filter(id => mainEdgeIds.has(id)).length
+      : canvasDrawn ? geometry.edges.filter(edge => mainEdgeIds.has(edge.id)).length : 0;
+    const snapshot = {
+      view: `distinct/2d/${options.morphology}`,
+      quality: ladder.state.moving ? 'movimento' : stage === FULL_QUALITY_STAGE ? 'completa' : 'recupero',
+      ladder: stage,
+      nodes: { required: requestedNodes, loaded: requestedNodes, drawn: nodesDrawn },
+      mainEdges: { required: requestedMainEdges, loaded: requestedMainEdges, drawn: mainDrawn },
+      allEdges: { required: requestedEdges, loaded: requestedEdges, drawn: edgesDrawn },
+      decor: { labels: stage === FULL_QUALITY_STAGE, background: stage === FULL_QUALITY_STAGE,
+        glow: stage === FULL_QUALITY_STAGE, animation: true },
+      decorApplicable: { animation: false },
+    } as const;
+    const revision = ++presentationRevision;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (revision === presentationRevision) presentRenderReadiness(snapshot);
+    }));
+  };
+  const ladder = new QualityLadder(({ stage, moving }) => {
+    if (nativeTier) canvas.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
+    if (!moving && stage === FULL_QUALITY_STAGE) draw();
+    else if (!moving) publishPresented();
+  });
   const draw = (): void => {
     if (!context) return;
+    const cameraFrame = JSON.stringify(sigma.getCamera().getState());
+    if (cameraFrame !== lastMorphologyCamera) {
+      lastMorphologyCamera = cameraFrame;
+      ladder.touch();
+    }
+    if (nativeTier && ladder.state.stage !== FULL_QUALITY_STAGE) { publishPresented(); return; }
+    if (perfMarksEnabled) performance.mark("d082:render2d:canvas:start");
     const box = canvas.getBoundingClientRect();
     const width = Math.max(1, Math.round(box.width * devicePixelRatio));
     const height = Math.max(1, Math.round(box.height * devicePixelRatio));
@@ -759,6 +925,8 @@ function mountDistinctCanvas(
       nodes: nodeStyles,
       edges: edgeStyles,
     }, appearance, undefined, "2d", nativeTier);
+    publishPresented();
+    if (perfMarksEnabled) { performance.mark("d082:render2d:canvas:end"); performance.measure("d082:render2d:canvas", "d082:render2d:canvas:start", "d082:render2d:canvas:end"); }
   };
   (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw = draw;
   sigma.on("afterRender", draw);
@@ -775,16 +943,21 @@ function mountDistinctCanvas(
     // in-place update derives from the current subset, not the mounted one.
     updateVisibleSubset(update): void {
       geometry = update.geometry;
+      recountPresented();
       sharedInput = update.input;
+      nodeStyles = new Map(nodeStyles);
+      edgeStyles = new Map(edgeStyles);
       for (const [id, entry] of update.nodeEntries) {
         const current = nodeStyles.get(id);
         if (current) nodeStyles.set(id, { ...current, glyph: entry.glyph, radiusPx: entry.radiusPx });
       }
       for (const [id, entry] of update.edgeEntries)
         edgeStyles.set(id, { color: entry.color, presentation: entry.presentation });
+      // "D082-A-NCOMPLETA2 END"
       draw();
     },
     destroy(): void {
+      ladder.destroy();
       sigma.off("afterRender", draw);
       sigma.off("resize", collapseLayer);
       collapsed.forEach((item, index) => {
@@ -1078,12 +1251,21 @@ export function readCameraState(sigma: Sigma): RenderCameraState {
 
 /** This restores a camera and its framing before Sigma recalculates display coordinates. */
 export function restoreCameraState(sigma: Sigma, state: RenderCameraState): void {
-  sigma.setCustomBBox({
+  // Camera changes schedule Sigma's render themselves. Its full
+  // refresh reprocesses the entire graph and is only needed for a new bbox.
+  const current = sigma.getCustomBBox() ?? sigma.getBBox();
+  const boundsChanged = current.x[0] !== state.bounds.x[0] || current.x[1] !== state.bounds.x[1]
+    || current.y[0] !== state.bounds.y[0] || current.y[1] !== state.bounds.y[1];
+  const camera = sigma.getCamera();
+  const before = camera.getState();
+  const cameraChanged = before.x !== state.x || before.y !== state.y
+    || before.angle !== state.angle || before.ratio !== state.ratio;
+  if (boundsChanged) sigma.setCustomBBox({
     x: [state.bounds.x[0], state.bounds.x[1]],
     y: [state.bounds.y[0], state.bounds.y[1]],
   });
-  sigma.getCamera().setState(state);
-  sigma.refresh();
+  if (cameraChanged) camera.setState(state);
+  if (boundsChanged) sigma.refresh();
 }
 
 function cameraStateFromVisualState(camera: VisualStateCamera): RenderCameraState {
@@ -1128,11 +1310,15 @@ function placeNodeLabels(sigma: Sigma, model: RenderModel, calibration: Calibrat
     });
   }
   const selected = new Set(resolveLabelIds(candidates, calibration));
+  // Sigma reprocesses every node and edge on refresh. An unchanged
+  // label result must not schedule another whole-graph pass at rest.
+  let changed = false;
   for (const id of model.graph.nodes()) {
     const attributes = model.graph.getNodeAttributes(id);
-    model.graph.setNodeAttribute(id, "label", selected.has(id) ? attributes.labelText : "");
+    const next = selected.has(id) ? attributes.labelText : "";
+    if (attributes.label !== next) { model.graph.setNodeAttribute(id, "label", next); changed = true; }
   }
-  sigma.refresh();
+  if (changed) sigma.refresh();
 }
 
 /** This renders a small collision-filtered subset of IR-derived relation labels and does not alter relation identity. */
@@ -1142,6 +1328,9 @@ function placeEdgeLabels(
   state: Pick<VisualState, "selectedId" | "focusedId">,
   calibration: CalibrationProfile,
   revealVisible: boolean,
+  // A-PERF BEGIN
+  baseColors: ReadonlyMap<string, string>,
+  // A-PERF END
 ): void {
   const eligible = revealVisible ? edgeLabelCandidatesForState(model, state, calibration) : [];
   const visible = new Set<string>();
@@ -1153,7 +1342,12 @@ function placeEdgeLabels(
     }
     const settings = sigma.getSettings();
     context.font = `${settings.edgeLabelWeight} ${calibration.labels.edgeLabelSizePx}px ${settings.edgeLabelFont}`;
-    const candidates = eligible.map((candidate) => {
+    // Selection is priority ordered and capped by the calibration.
+    // Measure only until the cap is full; lower-priority candidates cannot
+    // displace it. This keeps dense Completa entry off the text-metrics
+    // slow path while preserving the exact resolver order and collision rule.
+    const chosen = selectCappedLabelPlacements(eligible, calibration.labels.edgeDensityCap,
+      calibration.labels.collisionPaddingPx, candidate => {
       const source = model.graph.source(candidate.id);
       const target = model.graph.target(candidate.id);
       const sourceAttributes = model.graph.getNodeAttributes(source);
@@ -1171,28 +1365,50 @@ function placeEdgeLabels(
         maximumY: centerY + calibration.labels.edgeLabelSizePx,
       };
     });
-    for (const id of resolveLabelIds(candidates, calibration, calibration.labels.edgeDensityCap)) {
-      visible.add(id);
-    }
+    for (const item of chosen) visible.add(item.id);
   }
   const byId = new Map(eligible.map((candidate) => [candidate.id, candidate]));
+  // Keep Sigma's graph and settings untouched for identical labels.
+  let changed = false;
   for (const id of model.graph.edges()) {
     const candidate = byId.get(id);
     const shown = candidate !== undefined && visible.has(id);
     const attributes = model.graph.getEdgeAttributes(id);
-    model.graph.mergeEdgeAttributes(id, {
-      label: shown && candidate !== undefined ? candidate.text : "",
-      forceLabel: shown,
-      labelColor: candidate === undefined
-        ? attributes.labelColor
-        : withCalibratedAlpha(attributes.labelColor, candidate.opacityPermille, calibration),
-    });
+    const label = shown && candidate !== undefined ? candidate.text : "";
+    // A-PERF BEGIN: never compound alpha from a preceding pass.
+    const baseColor = baseColors.get(id) ?? attributes.labelColor;
+    const labelColor = candidate === undefined || !shown
+      ? baseColor
+      : withCalibratedAlpha(baseColor, candidate.opacityPermille, calibration);
+    // A-PERF END
+    if (attributes.label !== label || attributes.forceLabel !== shown || attributes.labelColor !== labelColor) {
+      model.graph.mergeEdgeAttributes(id, { label, forceLabel: shown, labelColor });
+      changed = true;
+    }
   }
   // An empty relation text draws nothing, whatever selected it: sigma's edge-label pass is
   // enabled only when a label would actually put ink on its layer.
   const drawable = eligible.some((candidate) => visible.has(candidate.id) && candidate.text !== "");
-  sigma.setSetting("renderEdgeLabels", drawable);
-  sigma.refresh();
+  if (sigma.getSetting("renderEdgeLabels") !== drawable) { sigma.setSetting("renderEdgeLabels", drawable); changed = true; }
+  if (changed) sigma.refresh();
+}
+
+/** Lazy equivalent of the priority/collision resolver for a small display cap. */
+export function selectCappedLabelPlacements<T extends { id: string; priority: number }>(
+  candidates: readonly T[], cap: number, padding: number,
+  measure: (candidate: T) => import('./model.ts').LabelPlacementCandidate,
+): readonly import('./model.ts').LabelPlacementCandidate[] {
+  const ordered = [...candidates].sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+  const chosen: import('./model.ts').LabelPlacementCandidate[] = [];
+  for (const candidate of ordered) {
+    if (chosen.length >= cap) break;
+    const placed = measure(candidate);
+    if (chosen.every(other => placed.minimumX > other.maximumX + padding
+      || placed.maximumX + padding < other.minimumX
+      || placed.minimumY > other.maximumY + padding
+      || placed.maximumY + padding < other.minimumY)) chosen.push(placed);
+  }
+  return chosen;
 }
 
 /** This composes a governed label opacity over a resolved neutral token and does not change its hue. */
@@ -1441,8 +1657,9 @@ export function mountProjection2d(
   };
   // The dense Indra line pass rests during camera motion.
   let movingLines = false;
-  let linesStillTimer: ReturnType<typeof setTimeout> | undefined;
+  let visualEdgesPainted = 0;
   const draw = (): void => {
+    visualEdgesPainted = 0;
     if (context === null) return;
     const box = canvas.getBoundingClientRect();
     if (box.width <= 0 || box.height <= 0) return;
@@ -1455,9 +1672,11 @@ export function mountProjection2d(
       if (a === undefined || b === undefined) continue;
       const record = scene.styled.visualStyle[relation.visualId] ?? {};
       context.globalAlpha = Math.min(1, Math.max(0, styleNumber(record, 'opacityPermille', SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE));
+      if (context.globalAlpha <= 0) continue;
       context.lineWidth = Math.max(1 / 2 / 2, styleNumber(record, 'widthPermille', SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE);
       context.strokeStyle = styleColor(record, "#8fa8ac");
       context.beginPath(); line(a, b); context.stroke();
+      visualEdgesPainted++;
       // Every parallel bundle declares the extra relations.
       if (relation.visualId.startsWith("visual:d081:") && relation.count > 1) {
         const midpoint = viewport({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
@@ -1615,18 +1834,87 @@ export function mountProjection2d(
   };
   // Keep native glyphs responsive and restore counted relations when the camera rests.
   let lastLineCameraFrame = JSON.stringify(sigma.getCamera().getState());
+  let mainEdgeIds = new Set<string>();
+  let nativeCountDirty = true;
+  let nativeNodeIdsDrawn: string[] = [];
+  let nativeEdgeIdsDrawn: string[] = [];
+  const recountMainEdges = (): void => {
+    mainEdgeIds = new Set([...scene.semanticEdges].filter(([, edge]) => {
+      const source = scene.nodes.get(edge.source)?.style;
+      const target = scene.nodes.get(edge.target)?.style;
+      const level = edge.style.hierarchyLevel;
+      return mainRelation({ attested: edge.attestation === 'attested', exploratory: edge.attestation === 'exploratory',
+        sourceHub: source?.type === 'hub', targetHub: target?.type === 'hub',
+        sourceDomain: source?.type === 'domain', targetDomain: target?.type === 'domain',
+        ...(typeof level === 'number' ? { hierarchyLevel: level } : {}) });
+    }).map(([id]) => id));
+    nativeCountDirty = true;
+  };
+  recountMainEdges();
+  let presentationRevision = 0;
+  // "D082-A-STALE BEGIN"
+  const readinessSnapshot = () => {
+    const stage = ladder.state.stage;
+    const nodes = scene.nodes.size, semantic = scene.semanticEdges.size, visual = scene.visualRelations.size;
+    const nodeCanvas = sigma.getCanvases().nodes, edgeCanvas = sigma.getCanvases().edges;
+    if (nativeTier && nativeCountDirty) {
+      nativeNodeIdsDrawn = [...scene.nodes.keys()].filter(id => { const data = sigma.getNodeDisplayData(id);
+        return data !== undefined && !data.hidden; });
+      nativeEdgeIdsDrawn = [...scene.semanticEdges.keys()].filter(id => { const data = sigma.getEdgeDisplayData(id);
+        return data !== undefined && !data.hidden; });
+      nativeCountDirty = nativeNodeIdsDrawn.length === 0 && scene.nodes.size > 0;
+    }
+    const nativeNodeIds = nativeTier && nodeCanvas?.style.display !== 'none' ? nativeNodeIdsDrawn : [];
+    const nativeEdgeIds = nativeTier && edgeCanvas?.style.display !== 'none' ? nativeEdgeIdsDrawn : [];
+    const morphologyVisible = !nativeTier && morphologyCanvas.style.visibility !== 'hidden'
+      && morphologyContext !== null;
+    const nodeDrawn = nativeTier ? nativeNodeIds.length : morphologyVisible ? paint.geometry.nodes.length : 0;
+    const semanticDrawn = nativeTier ? nativeEdgeIds.length : morphologyVisible ? paint.geometry.edges.length : 0;
+    const mainDrawn = nativeTier ? nativeEdgeIds.filter(id => mainEdgeIds.has(id)).length
+      : morphologyVisible ? paint.geometry.edges.filter(edge => mainEdgeIds.has(edge.id)).length : 0;
+    return {
+      view: `${scene.styled.projection.determinism.algorithmId}/2d/${morphology}/${scope?.density ?? 'default'}`,
+      quality: ladder.state.moving ? 'movimento' : stage === FULL_QUALITY_STAGE ? 'completa' : 'recupero',
+      ladder: stage,
+      nodes: { required: nodes, loaded: nodes, drawn: nodeDrawn },
+      mainEdges: { required: mainEdgeIds.size, loaded: mainEdgeIds.size, drawn: mainDrawn },
+      allEdges: { required: semantic + visual, loaded: semantic + visual,
+        drawn: semanticDrawn + visualEdgesPainted },
+      decor: { labels: stage === FULL_QUALITY_STAGE, background: stage === FULL_QUALITY_STAGE,
+        glow: stage === FULL_QUALITY_STAGE, animation: true },
+      decorApplicable: { animation: false },
+    } as const;
+  };
+  const publishPresented = (): void => {
+    const snapshot = readinessSnapshot();
+    const revision = ++presentationRevision;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (revision === presentationRevision) presentRenderReadiness(snapshot);
+    }));
+  };
+  // "D082-A-STALE END"
+  // Dense native glyphs remain visible while costly decorative canvases rest.
+  const ladder = new QualityLadder(({ stage, moving }) => {
+    if (nativeTier && scope?.density === 'complete') movingLines = stage < ALL_EDGES_QUALITY_STAGE;
+    if (nativeTier) {
+      morphologyCanvas.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
+      if (visuals.canvas) visuals.canvas.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
+    }
+    const labelLayer = container.querySelector<HTMLElement>('[data-projection-labels]');
+    if (labelLayer) labelLayer.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
+    if (!moving) redraw();
+  });
   const redraw = (): void => {
     const lineCameraFrame = JSON.stringify(sigma.getCamera().getState());
     if (lineCameraFrame !== lastLineCameraFrame) {
       lastLineCameraFrame = lineCameraFrame;
-      if (nativeTier && scope?.density === 'complete'
-        && scene.styled.projection.determinism.algorithmId === "indras-pearls") {
-        movingLines = true;
-        if (linesStillTimer !== undefined) clearTimeout(linesStillTimer);
-        linesStillTimer = setTimeout(() => { linesStillTimer = undefined; movingLines = false; draw(); }, TYPED_COMPLETE_BUNDLE_LABEL.idleMs);
-      }
+      ladder.touch();
     }
-    drawMorphology(); draw(); visuals.draw(); labelPass();
+    if (!nativeTier || ladder.state.stage === FULL_QUALITY_STAGE) drawMorphology();
+    draw();
+    if (!nativeTier || ladder.state.stage === FULL_QUALITY_STAGE) visuals.draw();
+    if (ladder.state.stage === FULL_QUALITY_STAGE) labelPass();
+    publishPresented();
     const bounds = container.getBoundingClientRect();
     const frame = JSON.stringify([sigma.getCamera().getState(), bounds.width, bounds.height]);
     if (frame !== pickFrame) {
@@ -1638,6 +1926,7 @@ export function mountProjection2d(
   drawMorphology();
   draw();
   labelPass();
+  publishPresented();
   rebuildPickIndex();
   const pickNow = (position: Vec2): PickResult | null => {
     const node = semanticPickIndex?.nodeAt(position);
@@ -1716,6 +2005,7 @@ export function mountProjection2d(
         }
       }
       scene = next;
+      recountMainEdges();
       // Switch the already-mounted Sigma layers with the scene size.
       const nextNativeTier = next.nodes.size >= DENSE_SCENE_THRESHOLD;
       if (nextNativeTier !== nativeTier) {
@@ -1726,7 +2016,6 @@ export function mountProjection2d(
       scope = nextScope;
       if (!nativeTier || scope?.density !== 'complete') {
         movingLines = false;
-        if (linesStillTimer !== undefined) { clearTimeout(linesStillTimer); linesStillTimer = undefined; }
       }
       labelBudget = nextScope?.labelBudget ?? labelBudget;
       morphology = nextMorphology;
@@ -1747,14 +2036,29 @@ export function mountProjection2d(
     graphToViewport: point => sigma.graphToViewport(point),
     readCameraState: () => sigma.getCamera().getState(),
     // Zoom recompaction uses the same mounted Sigma camera for Adatta.
-    restoreCameraState(state) { sigma.getCamera().setState(state); sigma.refresh(); redraw(); rebuildPickIndex(); },
+    restoreCameraState(state) {
+      // Camera state changes schedule Sigma's normal render;
+      // refresh would reprocess every node and edge, even for the same pose.
+      const current = sigma.getCamera().getState();
+      if (current.x !== state.x || current.y !== state.y || current.ratio !== state.ratio || current.angle !== state.angle)
+        sigma.getCamera().setState(state);
+    },
     readPlacedLabelIds: () => labels.readLabelIds(),
     readSurfaceWitness: () => ({ nodeIds: graph.nodes(), semanticEdgeIds: graph.edges(),
       visualRelationIds: [...scene.visualRelations.keys()], curveIds: [...scene.curves.keys()],
       containerIds: [...scene.containers.keys()], fieldIds: [...scene.fields.keys()] }),
-    setDerivedMorphology: morphology => visuals.setMorphology(morphology),
+    setDerivedMorphology: morphology => {
+      visuals.setMorphology(morphology);
+      // "D082-A-STALE BEGIN"
+      presentationRevision++;
+      const snapshot = readinessSnapshot();
+      presentRenderReadiness({ ...snapshot, quality: 'recupero', ladder: snapshot.ladder === FULL_QUALITY_STAGE ? ALL_EDGES_QUALITY_STAGE : snapshot.ladder,
+        decor: { ...snapshot.decor, background: false } });
+      sigma.refresh();
+      // "D082-A-STALE END"
+    },
     destroy(): void {
-      if (linesStillTimer !== undefined) clearTimeout(linesStillTimer);
+      ladder.destroy();
       if (pickSettleTimer !== undefined) clearTimeout(pickSettleTimer);
       hoverGate.destroy();
       container.removeEventListener('pointermove', onPointerMoveCapture, true);

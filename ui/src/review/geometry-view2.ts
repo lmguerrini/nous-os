@@ -3,7 +3,7 @@ import { DEFAULT_AXES, parseSavedAxes } from './view-contract.ts';
 import type { PageAxes } from './view-contract.ts';
 import { normalizeDensity } from './lod.ts';
 import type { Density } from './lod.ts';
-import type { TopologyId } from '../topology/contract.ts';
+import type { TopologyId, TopologySupport } from '../topology/contract.ts';
 import { defaultNaturalArrangement } from '../projection/natural-bridge.ts';
 
 export type Compatibility = 'd081-natural' | 'typed-natural-v1' | 'd081-indra-recursive' | 'indras-pearls-v1' | 'd081-canopy';
@@ -19,6 +19,30 @@ export type LegacyHolographicView2 = Readonly<{ schema: 2; mode: 'legacy-hologra
   labels: boolean; brain?: boolean; experimental: true }>;
 export type SavedGeometryView2 = GeometryView2 | LegacyHolographicView2;
 export type ResolvedGeometryView2 = Readonly<{ value: SavedGeometryView2; source: 'query-view2' | 'hash-view2' | 'query-view' | 'hash-view' | 'storage' | 'default'; error?: string }>;
+// D082-LAB-FIX4 BEGIN
+export type SupportedGeometryView2 = Readonly<{ value: SavedGeometryView2; notice?: string }>;
+
+/** Resolve an unsupported portable combination to the closest supported saved view. */
+export function resolveSupportedGeometryView2(value: SavedGeometryView2,
+  supports: (topology: TopologyId, dimension: '2d' | '3d', indra: boolean) => TopologySupport): SupportedGeometryView2 {
+  if ('mode' in value) return { value };
+  const topology = lawTopology(value.topology);
+  const indra = value.indra === 'on';
+  if (supports(topology, value.rendering, indra).ok) return { value };
+
+  const otherDimension = value.rendering === '3d' ? '2d' : '3d';
+  if (supports(topology, otherDimension, indra).ok) {
+    return { value: { ...value, rendering: otherDimension },
+      notice: `${topology} non supporta ${value.rendering.toUpperCase()}: caricata la vista ${otherDimension.toUpperCase()} per mantenere la topologia.` };
+  }
+  if (indra && supports(topology, value.rendering, false).ok) {
+    return { value: { ...value, indra: 'off' },
+      notice: `${topology} non supporta Indra in ${value.rendering.toUpperCase()}: caricata la topologia senza Indra.` };
+  }
+  return { value: { ...value, rendering: '2d', topology: 'natural', indra: 'off', compatibility: 'd081-natural' },
+    notice: `${topology} non è supportata in questa composizione: caricata Natural 2D.` };
+}
+// D082-LAB-FIX4 END
 const TOPOLOGIES: readonly WireTopology[] = ['natural', 'canopy-ifs', 'julia', 'sierpinski', 'circular-combinatorial'];
 const COMPATIBILITIES: readonly Compatibility[] = ['d081-natural', 'typed-natural-v1', 'd081-indra-recursive', 'indras-pearls-v1', 'd081-canopy'];
 const COLOURS = ['bw','warm','earth','gems','night','semantic','amber','old-gold','ochre','copper','alchemical-red','warm-twilight','sepia','brace','miele','custom','stellar-cold','stellar-warm'];

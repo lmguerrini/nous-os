@@ -43,6 +43,8 @@ test('movement settles after 250 ms only when the scene and labels are ready', (
   // Each wheel or drag event moves the origin, so a previous deadline cannot finish the burst.
   assert.equal(completeQuality(390, 200, false, true), 'movimento');
   assert.equal(completeQuality(451, 200, false, true), 'completa');
-  assert.deepEqual(DENSITY_BUDGETS.essential, { nodes: 150, arcs: 150, labels: 20 });
+  // D082-A-DENSITY BEGIN: P3 makes the overview a sparse 80-node reading.
+  assert.deepEqual(DENSITY_BUDGETS.essential, { nodes: 80, arcs: 100, labels: 20 });
+  // D082-A-DENSITY END
   assert.deepEqual(DENSITY_BUDGETS.balanced, { nodes: 400, arcs: 450, labels: 40 });
 });

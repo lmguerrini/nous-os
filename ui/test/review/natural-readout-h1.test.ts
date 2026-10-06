@@ -89,8 +89,21 @@ test('coming back to Natural from another view re-derives from the morphology ch
   assert.deepEqual([page.readout()!.arrangement, page.readout()!.source], ['mycelium', 'morphology-default']);
 });
 
-test('main.ts reads the pipeline switch once, from the same URL flag the page uses', () => {
-  assert.match(source, /const typedPipelineFlag = projectionFlagEnabled\(location\.search, location\.hash\);/);
+test('main.ts reads the URL pipeline switch once and honors migrated typed Natural views', () => {
+  assert.match(source, /let typedPipelineFlag = projectionFlagEnabled\(location\.search, location\.hash\);/);
+  assert.equal(source.match(/projectionFlagEnabled\(location\.search, location\.hash\)/g)?.length, 1);
+  assert.match(source, /geometry\.compatibility === 'typed-natural-v1'\) typedPipelineFlag = true;/);
   assert.match(source, /resolveArrangementReadout\(null, axes\.morphology, typedPipelineFlag,/);
-  assert.match(source, /savedExplicitArrangement\(axes\.arrangement, axes\.morphology, typedPipelineFlag\)/);
+  assert.match(source, /axes: geometryToLegacyAxes\(geometry\)/);
+  assert.match(source, /initialView\?\.explicitArrangement === true \? axes\.arrangement : undefined/);
+});
+
+test('main.ts reads the pipeline switch once, from the same URL flag the page uses', () => {
+  assert.equal((source.match(/\b(?:const|let)\s+typedPipelineFlag\s*=\s*projectionFlagEnabled\(location\.search, location\.hash\);/g) ?? []).length, 1,
+    'one typedPipelineFlag binding is initialized from the URL switch');
+  assert.equal((source.match(/projectionFlagEnabled\(/g) ?? []).length, 1,
+    'all consumers share the initialized flag instead of rereading the URL');
+  assert.match(source, /resolveArrangementReadout\(null, axes\.morphology, typedPipelineFlag,/);
+  assert.match(source, /resolveArrangementReadout\(resolvedArrangement, next\.morphology, typedPipelineFlag,/,
+    'the same URL-derived flag governs subsequent Natural arrangement resolution');
 });

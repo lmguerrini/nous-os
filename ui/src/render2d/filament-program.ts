@@ -9,7 +9,7 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 
 const FILAMENT_VERTEX_DATA = [[0, 1], [0, -1], [1, 1], [0, -1], [1, 1], [1, -1]];
 const FILAMENT_VERTEX_COUNT = FILAMENT_VERTEX_DATA.length;
-const MATERIAL_VARIATION_COMPONENT_COUNT = ["phase", "hotCore"].length;
+const MATERIAL_VARIATION_COMPONENT_COUNT = ["phase", "hotCore", "neuralDenseFactor"].length;
 const FILAMENT_UNIFORMS = [
   "u_matrix",
   "u_sizeRatio",
@@ -156,6 +156,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
       readonly wobblePhase?: number;
       readonly hotCore?: number;
       readonly neuralRootRatios?: readonly [number, number];
+      readonly neuralDenseFactor?: number;
     };
     const array = this.array;
     array[startIndex++] = sourceData.x;
@@ -181,6 +182,9 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = edgeData.junctionEnd ?? 0;
     array[startIndex++] = edgeData.wobblePhase ?? 0;
     array[startIndex++] = edgeData.hotCore ?? 0;
+    // "D082-A-NCOMPLETA3 BEGIN": use the existing variation attribute slot.
+    array[startIndex++] = edgeData.neuralDenseFactor ?? 1;
+    // "D082-A-NCOMPLETA3 END"
     array[startIndex++] = sourceData.size;
     array[startIndex++] = targetData.size;
     array[startIndex++] = edgeData.neuralRootRatios?.[0] ?? neuralRootRatio(1);
@@ -252,7 +256,7 @@ attribute float a_afterglowDecayPermille;
 attribute vec2 a_somaRadii;
 attribute vec2 a_rootRatios;
 attribute vec4 a_materialWidths;
-attribute vec2 a_materialVariation;
+attribute vec3 a_materialVariation;
 uniform mat3 u_matrix;
 uniform float u_sizeRatio;
 uniform float u_pixelRatio;
@@ -275,10 +279,11 @@ varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
 varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
-varying vec2 v_materialVariation;
+varying vec3 v_materialVariation;
 varying vec2 v_somaRadii;
 varying vec2 v_rootRatios;
 varying float v_neuralScale;
+varying float v_neuralWeight;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -322,6 +327,7 @@ void main() {
   v_somaRadii = clamp(a_somaRadii / u_sizeRatio, 2.0, 24.0) * u_pixelRatio;
   v_rootRatios = a_rootRatios;
   v_neuralScale = 1.0 / u_sizeRatio;
+  v_neuralWeight = max(0.0, a_thickness);
   v_cpA = viewportSource;
   v_cpB = viewportControl;
   v_cpC = viewportTarget;
@@ -381,10 +387,11 @@ varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
 varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
-varying vec2 v_materialVariation;
+varying vec3 v_materialVariation;
 varying vec2 v_somaRadii;
 varying vec2 v_rootRatios;
 varying float v_neuralScale;
+varying float v_neuralWeight;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -403,21 +410,6 @@ uniform float u_neuralProfile;
 uniform float u_pixelRatio;
 uniform vec3 u_hotColor;
 ${FILAMENT_DISTANCE_FUNCTION}
-float neuralBranchCoverage(float radius, bool atStart, float span) {
-  if (v_neuralScale < 1.75 || radius < 5.0 * u_pixelRatio || span < radius * 6.0) return 0.0;
-  float t = radius * 1.8 / span;
-  if (!atStart) t = 1.0 - t;
-  vec2 anchor = mix(mix(v_cpA, v_cpB, t), mix(v_cpB, v_cpC, t), t);
-  vec2 tangent = normalize(mix(v_cpB - v_cpA, v_cpC - v_cpB, t));
-  vec2 normal = vec2(-tangent.y, tangent.x);
-  if (!atStart) tangent = -tangent;
-  float side = atStart ? 1.0 : -1.0;
-  vec2 arm = tangent * radius * 0.65 + normal * side * radius * 0.8;
-  float along = clamp(dot(gl_FragCoord.xy - anchor, arm) / max(dot(arm, arm), 0.001), 0.0, 1.0);
-  float distance = length(gl_FragCoord.xy - (anchor + arm * along));
-  float halfWidth = min(v_thickness * 0.175, 0.6 * u_pixelRatio);
-  return 1.0 - smoothstep(halfWidth - v_feather, halfWidth + v_feather, distance);
-}
 void main(void) {
   vec2 distanceSample;
   if (v_isStraight > 0.5) {
@@ -431,20 +423,55 @@ void main(void) {
   float junction = v_materialWidths.z * max(0.0, 1.0 - curveT / 0.13)
     + v_materialWidths.w * max(0.0, 1.0 - (1.0 - curveT) / 0.13);
   float widthFactor = max(u_minimumWidthFactor, taper + wobble + junction);
+  float rootSomaMix = 0.0;
   if (u_neuralProfile > 0.5) {
     float span = max(length(v_cpC - v_cpA), 1.0);
-    float startShoulder = min(0.28, min(48.0 * u_pixelRatio,
-      max(12.0 * u_pixelRatio, v_somaRadii.x * 2.5 + v_thickness * 3.0)) / span);
-    float endShoulder = min(0.28, min(48.0 * u_pixelRatio,
-      max(12.0 * u_pixelRatio, v_somaRadii.y * 2.5 + v_thickness * 3.0)) / span);
+    // D082-A-NEURAL BEGIN: the same short rounded join as Three, ending at the D-081 trunk.
+    float weightReach = clamp(0.85 + 0.15 * sqrt(v_neuralWeight), 0.85, 1.2);
+    float startReach = (v_rootRatios.x > 2.5 ? 0.62 : v_rootRatios.x < 0.0 ? 0.9 : 1.0) * weightReach;
+    float endReach = (v_rootRatios.y > 2.5 ? 0.62 : v_rootRatios.y < 0.0 ? 0.9 : 1.0) * weightReach;
+    float startShoulder = max(min(span * 0.45,
+      min(v_somaRadii.x * 3.0, max(v_somaRadii.x * 2.5, span * 0.12))) * startReach / span, 0.00001);
+    float endShoulder = max(min(span * 0.45,
+      min(v_somaRadii.y * 3.0, max(v_somaRadii.y * 2.5, span * 0.12))) * endReach / span, 0.00001);
     float startBoundary = min(0.49, v_somaRadii.x * 1.5 / span);
     float endBoundary = min(0.49, v_somaRadii.y * 1.5 / span);
-    float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, curveT);
-    float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - curveT);
-    float rootStart = v_somaRadii.x > 0.0 ? v_thickness * v_rootRatios.x : v_thickness;
-    float rootEnd = v_somaRadii.y > 0.0 ? v_thickness * v_rootRatios.y : v_thickness;
-    widthFactor = (v_thickness + (rootStart - v_thickness) * startEase
-      + (rootEnd - v_thickness) * endEase) / v_thickness;
+    if (v_rootRatios.x > 0.0 && v_rootRatios.x <= 1.8)
+      startBoundary = min(0.49, v_somaRadii.x * 2.25 / span);
+    if (v_rootRatios.y > 0.0 && v_rootRatios.y <= 1.8)
+      endBoundary = min(0.49, v_somaRadii.y * 2.25 / span);
+    float startU = clamp((curveT - startBoundary) / startShoulder, 0.0, 1.0);
+    float endU = clamp((1.0 - curveT - endBoundary) / endShoulder, 0.0, 1.0);
+    float startEase = (1.0 - startU) * (1.0 - startU);
+    float endEase = (1.0 - endU) * (1.0 - endU);
+    if (v_somaRadii.x < 1.5 * u_pixelRatio) startEase = 0.0;
+    if (v_somaRadii.y < 1.5 * u_pixelRatio) endEase = 0.0;
+    rootSomaMix = max(startEase, endEase);
+    float oldStartRoot = v_somaRadii.x > 0.0 ? v_thickness * abs(v_rootRatios.x) : v_thickness;
+    float oldEndRoot = v_somaRadii.y > 0.0 ? v_thickness * abs(v_rootRatios.y) : v_thickness;
+    if (v_somaRadii.x < 1.5 * u_pixelRatio) oldStartRoot = v_thickness;
+    if (v_somaRadii.y < 1.5 * u_pixelRatio) oldEndRoot = v_thickness;
+    float oldStartShoulder = min(0.28, min(48.0 * u_pixelRatio,
+      max(12.0 * u_pixelRatio, v_somaRadii.x * 2.5 + v_thickness * 3.0)) / span);
+    float oldEndShoulder = min(0.28, min(48.0 * u_pixelRatio,
+      max(12.0 * u_pixelRatio, v_somaRadii.y * 2.5 + v_thickness * 3.0)) / span);
+    float startTrunk = v_thickness + (oldStartRoot - v_thickness)
+      * (1.0 - smoothstep(0.0, oldStartShoulder, curveT));
+    float endTrunk = v_thickness + (oldEndRoot - v_thickness)
+      * (1.0 - smoothstep(0.0, oldEndShoulder, 1.0 - curveT));
+    float startAtJoin = v_thickness + (oldStartRoot - v_thickness)
+      * (1.0 - smoothstep(0.0, oldStartShoulder, startBoundary + startShoulder));
+    float endAtJoin = v_thickness + (oldEndRoot - v_thickness)
+      * (1.0 - smoothstep(0.0, oldEndShoulder, endBoundary + endShoulder));
+    float rootStart = max(max(startAtJoin, v_thickness * abs(v_rootRatios.x)),
+      v_somaRadii.x * (v_rootRatios.x < 0.0 ? 1.0 : 0.9)
+        * clamp(0.8 + v_thickness / (1.2 * u_pixelRatio) * 0.2, 0.8, 1.2));
+    float rootEnd = max(max(endAtJoin, v_thickness * abs(v_rootRatios.y)),
+      v_somaRadii.y * (v_rootRatios.y < 0.0 ? 1.0 : 0.9)
+        * clamp(0.8 + v_thickness / (1.2 * u_pixelRatio) * 0.2, 0.8, 1.2));
+    widthFactor = max(mix(startTrunk, rootStart, startEase),
+      mix(endTrunk, rootEnd, endEase)) / v_thickness;
+    // D082-A-NEURAL END
   }
   float halfThickness = 0.5 * v_thickness * widthFactor;
   halfThickness = max(halfThickness, v_minimumBodyWidth * 0.5);
@@ -458,15 +485,9 @@ void main(void) {
   }
   #else
   float sheathHalfThickness = halfThickness * u_sheathScale;
-  float branchCoverage = 0.0;
-  if (u_neuralProfile > 0.5) {
-    float span = length(v_cpC - v_cpA);
-    branchCoverage = max(neuralBranchCoverage(v_somaRadii.x, true, span),
-      neuralBranchCoverage(v_somaRadii.y, false, span));
-  }
-  if (distance < sheathHalfThickness || branchCoverage > 0.0) {
+  if (distance < sheathHalfThickness) {
     float sheathCoverage = 1.0 - smoothstep(sheathHalfThickness - v_feather, sheathHalfThickness, distance);
-    float bodyCoverage = max(distance < halfThickness ? 1.0 : 0.0, branchCoverage * 0.55);
+    float bodyCoverage = distance < halfThickness ? 1.0 : 0.0;
     float coreCoverage = distance < halfThickness * u_coreScale ? 1.0 : 0.0;
     float lightPosition = v_propagationContinuous > 0.5 ? v_propagationArcPosition : 1.0;
     float afterglowDecay = max(v_afterglowDecayPermille, 1.0) / ${SCENE_PERMILLE_SCALE.toFixed(1)};
@@ -476,6 +497,19 @@ void main(void) {
     sheathColor.rgb *= sheathColor.a;
     vec4 gradientColor = v_color;
     gradientColor.a *= propagationAlpha * bodyCoverage;
+    // D082-A-NEURAL BEGIN: identical smoothstep root paint in both GPU projections.
+    if (u_neuralProfile > 0.5) {
+      gradientColor.rgb = mix(v_color.rgb, vec3(1.0), rootSomaMix);
+      // Keep the white root inside the same radial body coverage as the ordinary edge.
+      // "D082-A-NCOMPLETA3 BEGIN": the old fixed 0.9 mouth ignored the local
+      // Completa veil and accumulated into bright radial rings at far zoom.
+      gradientColor.a = mix(gradientColor.a,
+        v_materialVariation.z < 1.0
+          ? max(0.9 * v_materialVariation.z, v_color.a * propagationAlpha) * bodyCoverage
+          : max(0.9, v_color.a * propagationAlpha) * bodyCoverage, rootSomaMix);
+      // "D082-A-NCOMPLETA3 END"
+    }
+    // D082-A-NEURAL END
     // Sigma's blend operator expects every material band to be premultiplied before source-over composition.
     gradientColor.rgb *= gradientColor.a;
     vec4 coreColor = vec4(mix(v_color.rgb, u_hotColor, u_hotMix), v_color.a);

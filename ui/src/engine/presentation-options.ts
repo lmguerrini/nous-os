@@ -20,6 +20,15 @@ export type EdgePresentation = {
   readonly category: EdgeCategory;
   readonly opacityPermille: number;
   readonly widthPermille: number;
+  // D082-A-NODES BEGIN
+  /** Original alpha before the Completa veil; the final opacity/base ratio also dims native edges. */
+  readonly denseVeilBaseOpacityPermille?: number;
+  /** Final/base alpha ratio for native edge tiers. */
+  readonly denseVeilFactor?: number;
+  // D082-A-NODES END
+  // D082-A-NCOMPLETA BEGIN: the measured Neural shaft/root coverage at Completa.
+  readonly neuralDenseFactor?: number;
+  // D082-A-NCOMPLETA END
   /** D-079: optional distinct-canvas CSS-pixel floor for Indra 3D structural spokes. */
   readonly minimumScreenWidthPx?: number;
   readonly tintSrgb?: readonly [number, number, number];

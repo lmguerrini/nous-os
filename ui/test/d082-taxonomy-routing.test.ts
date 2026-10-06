@@ -21,6 +21,10 @@ test('full topology snapshot includes every real ID and preserves source relatio
   assert.deepEqual(snapshot.nodes.map(n => n.id), ['root', 'child']);
   assert.deepEqual(snapshot.edges.map(e => e.id), ['real-edge', 'contains:child']);
   assert.equal(snapshot.digest, 'fixture');
+  assert.equal(snapshot.edges[0]?.directed, true);
+  assert.deepEqual(snapshot.edges[0]?.provenance, [], 'empty source evidence remains explicitly empty');
+  assert.equal(snapshot.edges[1]?.directed, true, 'hierarchy containment is parent to child');
+  assert.deepEqual(snapshot.edges[1]?.provenance, ['index.json']);
   assert.deepEqual(topologySnapshot(manifest, index), snapshot);
 });
 

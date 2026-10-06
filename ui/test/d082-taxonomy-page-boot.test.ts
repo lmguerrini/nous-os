@@ -4,8 +4,9 @@ import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import { transformSync } from 'esbuild';
 import { readLocal, writeLocal } from '../src/review/appearance.ts';
-import { geometryToLegacyAxes, resolveGeometryView2, rewriteGeometryUrl, serializeGeometryView2 } from '../src/review/geometry-view2.ts';
+import { geometryToLegacyAxes, resolveGeometryView2, resolveSupportedGeometryView2, rewriteGeometryUrl, serializeGeometryView2 } from '../src/review/geometry-view2.ts';
 import { DEFAULT_AXES, parseSavedAxes, resolveArrangementReadout } from '../src/review/view-contract.ts';
+import { topologySupport } from '../src/topology/registry.ts';
 
 // Execute the actual main.ts boot and persistence statements with page location,
 // history and storage doubles. This catches gaps between the pure migrator and
@@ -38,7 +39,7 @@ function boot(input: { search?: string; hash?: string; storedView?: string; dens
   } };
   const context: Record<string, unknown> = {
     location, history, storage, URLSearchParams, readLocal, writeLocal, DEFAULT_AXES, resolveArrangementReadout,
-    resolveGeometryView2, geometryToLegacyAxes, rewriteGeometryUrl, serializeGeometryView2,
+    resolveGeometryView2, resolveSupportedGeometryView2, topologySupport, geometryToLegacyAxes, rewriteGeometryUrl, serializeGeometryView2,
     typedPipelineFlag: new URLSearchParams(url.search).get('projection') === 'natural'
       || new URLSearchParams(url.hash.slice(1)).get('projection') === 'natural',
     experimentalSuspensionNotice: null, experimentalInitialFallback: false, errors: [],
@@ -139,3 +140,78 @@ test('main.ts boot preserves invalid explicit view2 and unknown legacy fields fo
     assert.match(result.notice ?? '', /rifiutata/);
   }
 });
+
+// D082-LAB-FIX4 BEGIN
+test('unsupported linked topology/projection resolves to the nearest supported state before page construction', () => {
+  const view = { schema: 2 as const, rendering: '3d' as const, topology: 'circular-combinatorial' as const,
+    indra: 'off' as const, morphology: 'stellar' as const, density: 'complete' as const,
+    reading: 'combined' as const, colour: 'bw' as const, labels: true };
+  const resolved = resolveSupportedGeometryView2(view, topologySupport);
+  assert.equal(resolved.value.rendering, '2d');
+  assert.ok(!('mode' in resolved.value));
+  if ('mode' in resolved.value) throw new Error('Expected the taxonomy view to remain a topology view');
+  assert.equal(resolved.value.topology, 'circular-combinatorial');
+  assert.equal(resolved.value.reading, 'combined');
+  assert.match(resolved.notice ?? '', /non supporta 3D.*caricata la vista 2D/i);
+  const booted = boot({ hash: '#experimental=fractal&view2=' + encodeURIComponent(serializeGeometryView2(view)) });
+  assert.equal((booted.axes as { projection?: string }).projection, '2d');
+  assert.equal(booted.axes.reading, 'combined');
+  assert.equal((booted.geometry as { topology?: string }).topology, 'circular-combinatorial');
+  assert.equal((booted.geometry as { rendering?: string }).rendering, '2d');
+  assert.match(booted.notice ?? '', /non supporta 3D.*caricata la vista 2D/i);
+  const rewritten = new URLSearchParams(booted.location.hash.slice(1)).get('view2');
+  assert.ok(rewritten);
+  assert.equal(JSON.parse(rewritten).rendering, '2d');
+});
+
+test('loaded axis state exposes one pressed control per axis and moves it with the active toolbar', () => {
+  const source = section('// D082-LAB-FIX4 BEGIN: legacy organization controls', '// D082-LAB-FIX4 END');
+  const script = transformSync(source + '\nglobalThis.sync = syncLoadedAxisButtons;',
+    { loader: 'ts', format: 'iife', target: 'es2022' }).code;
+  const makeButton = (dataset: Record<string, string>, inFullscreen = false) => ({
+    dataset, pressed: 'false', closest: (selector: string) => selector === '#fullscreen-bar' && inFullscreen ? {} : null,
+    setAttribute(_name: string, value: string) { this.pressed = value; },
+  });
+  const groups: Record<string, ReturnType<typeof makeButton>[]> = {
+    '[data-axis="projection"] button[data-value]': [makeButton({ value: '2d' }), makeButton({ value: '3d' })],
+    '[data-axis="morphology"] button[data-value]': [makeButton({ value: 'stellar' }), makeButton({ value: 'neural' }),
+      makeButton({ value: 'stellar' }, true), makeButton({ value: 'neural' }, true)],
+    '[data-axis="reading"] button[data-value]': [makeButton({ value: 'attested' }), makeButton({ value: 'combined' }),
+      makeButton({ value: 'attested' }, true), makeButton({ value: 'combined' }, true)],
+    '[data-full-projection]': [makeButton({ fullProjection: '2d' }, true), makeButton({ fullProjection: '3d' }, true)],
+    '[data-topology]': [makeButton({ topology: 'natural' }), makeButton({ topology: 'lull' }),
+      makeButton({ topology: 'natural' }, true), makeButton({ topology: 'lull' }, true)],
+    '[data-indra]': [makeButton({ indra: 'off' }), makeButton({ indra: 'on' }),
+      makeButton({ indra: 'off' }, true), makeButton({ indra: 'on' }, true)],
+    '[data-axis="topology"] button[data-value]': [makeButton({ value: 'natural' }), makeButton({ value: 'natural' }, true)],
+  };
+  const viewport = {};
+  const document = { fullscreenElement: null as object | null,
+    querySelectorAll: (selector: string) => groups[selector] ?? [] };
+  const context: Record<string, unknown> = {
+    document, viewport, axes: { projection: '3d', morphology: 'neural', reading: 'combined' },
+    geometry: { schema: 2, topology: 'circular-combinatorial' },
+    lawTopology: (id: string) => id === 'circular-combinatorial' ? 'lull' : id,
+  };
+  runInNewContext(script, context);
+  const sync = context.sync as () => void;
+  const pressed = (selector: string) => (groups[selector] ?? []).filter(button => button.pressed === 'true');
+  sync();
+  for (const selector of ['[data-axis="morphology"] button[data-value]',
+    '[data-axis="reading"] button[data-value]', '[data-topology]', '[data-indra]'])
+    assert.equal(pressed(selector).length, 1, selector);
+  assert.equal(pressed('[data-axis="projection"] button[data-value]').length
+    + pressed('[data-full-projection]').length, 1, 'rendering across toolbar placements');
+  assert.equal(pressed('[data-topology]')[0]?.dataset.topology, 'lull');
+
+  document.fullscreenElement = viewport;
+  sync();
+  for (const selector of ['[data-axis="morphology"] button[data-value]',
+    '[data-axis="reading"] button[data-value]', '[data-topology]', '[data-indra]'])
+    assert.equal(pressed(selector).length, 1, `fullscreen ${selector}`);
+  assert.equal(pressed('[data-axis="projection"] button[data-value]').length, 0, 'fullscreen hides regular rendering state');
+  assert.equal(pressed('[data-axis="projection"] button[data-value]').length
+    + pressed('[data-full-projection]').length, 1, 'fullscreen rendering across toolbar placements');
+  assert.equal(pressed('[data-topology]')[0]?.closest('#fullscreen-bar') !== null, true);
+});
+// D082-LAB-FIX4 END

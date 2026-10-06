@@ -161,15 +161,24 @@ void main() {
     a_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     maximumBaseWidth * maximumWidthFactor * 0.5
   );
+  // D082-A-N3D BEGIN: the dense 3D Neural pass is tagged in the profile's spare range.
+  // Its quad must cover the minimum continuous ribbon even when the encoded width is tiny.
+  if (a_neuralProfile.w >= 3.0)
+    maximumBodyHalfWidth = max(maximumBodyHalfWidth, 0.75);
+  // D082-A-N3D END
   if (a_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio;
-    float rootStart = a_neuralRootRatios.x < 0.0 ? ordinary * -a_neuralRootRatios.x : max(ordinary * a_neuralRootRatios.x,
-      min(clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
-    float rootEnd = a_neuralRootRatios.y < 0.0 ? ordinary * -a_neuralRootRatios.y : max(ordinary * a_neuralRootRatios.y,
-      min(clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
-    // D081-P1F: reserve width for a root at least twice its shaft, including wide sliders.
-    if (a_neuralRootRatios.x > 0.0 && a_neuralRootRatios.x <= 1.8) rootStart = max(rootStart, ordinary * 2.0);
-    if (a_neuralRootRatios.y > 0.0 && a_neuralRootRatios.y <= 1.8) rootEnd = max(rootEnd, ordinary * 2.0);
+    float mouthScale = clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2);
+    float rootStart = max(ordinary * abs(a_neuralRootRatios.x),
+      clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio
+        * (a_neuralRootRatios.x < 0.0 ? 1.0 : 0.9) * mouthScale);
+    float rootEnd = max(ordinary * abs(a_neuralRootRatios.y),
+      clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio
+        * (a_neuralRootRatios.y < 0.0 ? 1.0 : 0.9) * mouthScale);
+    rootStart = max(rootStart, min(clamp(a_neuralProfile.y * startScale, 2.0, 24.0)
+      * u_devicePixelRatio * 1.1, ordinary * 6.0));
+    rootEnd = max(rootEnd, min(clamp(a_neuralProfile.z * endScale, 2.0, 24.0)
+      * u_devicePixelRatio * 1.1, ordinary * 6.0));
     maximumBodyHalfWidth = max(maximumBodyHalfWidth, max(rootStart, rootEnd) * 0.5);
   }
   float materialExtent = max(
@@ -308,41 +317,88 @@ void main() {
     v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     baseWidth * widthFactor * 0.5
   );
+  // D082-A-N3D BEGIN
+  float denseWidthFloorActive = 0.0;
+  // D082-A-N3D END
+  float rootSomaMix = 0.0;
   if (v_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = v_neuralRootRatios.x < 0.0 ? ordinary * -v_neuralRootRatios.x : startRadius > 0.0 ? max(ordinary * v_neuralRootRatios.x,
-      min(startRadius * 1.1, ordinary * 6.0)) : ordinary;
-    float endRoot = v_neuralRootRatios.y < 0.0 ? ordinary * -v_neuralRootRatios.y : endRadius > 0.0 ? max(ordinary * v_neuralRootRatios.y,
-      min(endRadius * 1.1, ordinary * 6.0)) : ordinary;
-    // D081-P1E BEGIN: low-degree roots fit inside the soma protrusion at the joint.
-    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8 && startRadius > 0.0)
-      startRoot = max(ordinary * 2.0, min(startRoot, startRadius * 0.9));
-    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8 && endRadius > 0.0)
-      endRoot = max(ordinary * 2.0, min(endRoot, endRadius * 0.9));
-    // D081-P1E END
     float span = max(length(v_cpC - v_cpA), 1.0);
-    float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
-      max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
-    float endShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
-      max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
-    // The path begins at the centre under the soma. Hold the root through its visible lobe
-    // boundary, then taper over the same shoulder that the canvas path uses from that boundary.
-    // D081-P1F: low-degree outlines reach about 3.2 minor radii in the trunk direction.
+    // D082-A-NEURAL BEGIN: round the soma mouth into the D-081 trunk width.
+    float startWeight = clamp(0.85 + 0.15 * sqrt(max(0.0, v_widthsAndPicking.x)), 0.85, 1.2);
+    float endWeight = clamp(0.85 + 0.15 * sqrt(max(0.0, v_widthsAndPicking.y)), 0.85, 1.2);
+    float startReach = (v_neuralRootRatios.x > 2.5 ? 0.62 : v_neuralRootRatios.x < 0.0 ? 0.9 : 1.0) * startWeight;
+    float endReach = (v_neuralRootRatios.y > 2.5 ? 0.62 : v_neuralRootRatios.y < 0.0 ? 0.9 : 1.0) * endWeight;
+    float startShoulder = max(min(span * 0.45,
+      min(startRadius * 3.0, max(startRadius * 2.5, span * 0.12))) * startReach / span, 0.00001);
+    float endShoulder = max(min(span * 0.45,
+      min(endRadius * 3.0, max(endRadius * 2.5, span * 0.12))) * endReach / span, 0.00001);
     float startBoundary = min(0.49, startRadius * 1.5 / span);
     float endBoundary = min(0.49, endRadius * 1.5 / span);
     if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8)
-      startBoundary = min(0.49, startRadius * 3.2 / span);
+      startBoundary = min(0.49, startRadius * 2.25 / span);
     if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
-      endBoundary = min(0.49, endRadius * 3.2 / span);
-    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8) startShoulder = min(0.28, startRadius / span);
-    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8) endShoulder = min(0.28, endRadius / span);
-    float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, parameter);
-    float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - parameter);
+      endBoundary = min(0.49, endRadius * 2.25 / span);
+    float startU = clamp((parameter - startBoundary) / startShoulder, 0.0, 1.0);
+    float endU = clamp((1.0 - parameter - endBoundary) / endShoulder, 0.0, 1.0);
+    float startEase = (1.0 - startU) * (1.0 - startU);
+    float endEase = (1.0 - endU) * (1.0 - endU);
+    if (startRadius < 1.5 * u_devicePixelRatio) startEase = 0.0;
+    if (endRadius < 1.5 * u_devicePixelRatio) endEase = 0.0;
+    rootSomaMix = max(startEase, endEase);
+    float oldStartRoot = startRadius > 0.0
+      ? (v_neuralRootRatios.x < 0.0 ? ordinary * -v_neuralRootRatios.x
+        : max(ordinary * v_neuralRootRatios.x, min(startRadius * 1.1, ordinary * 6.0)))
+      : ordinary;
+    float oldEndRoot = endRadius > 0.0
+      ? (v_neuralRootRatios.y < 0.0 ? ordinary * -v_neuralRootRatios.y
+        : max(ordinary * v_neuralRootRatios.y, min(endRadius * 1.1, ordinary * 6.0)))
+      : ordinary;
+    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8)
+      oldStartRoot = max(ordinary * 2.0, min(oldStartRoot, startRadius * 0.9));
+    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8)
+      oldEndRoot = max(ordinary * 2.0, min(oldEndRoot, endRadius * 0.9));
+    if (startRadius < 1.5 * u_devicePixelRatio) oldStartRoot = ordinary;
+    if (endRadius < 1.5 * u_devicePixelRatio) oldEndRoot = ordinary;
+    float oldStartShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
+      max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
+    float oldEndShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
+      max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
+    float startTrunk = ordinary + (oldStartRoot - ordinary)
+      * (1.0 - smoothstep(0.0, oldStartShoulder, parameter));
+    float endTrunk = ordinary + (oldEndRoot - ordinary)
+      * (1.0 - smoothstep(0.0, oldEndShoulder, 1.0 - parameter));
+    float startAtJoin = ordinary + (oldStartRoot - ordinary)
+      * (1.0 - smoothstep(0.0, oldStartShoulder, startBoundary + startShoulder));
+    float endAtJoin = ordinary + (oldEndRoot - ordinary)
+      * (1.0 - smoothstep(0.0, oldEndShoulder, endBoundary + endShoulder));
+    float startMouth = max(max(startAtJoin, ordinary * abs(v_neuralRootRatios.x)),
+      startRadius * (v_neuralRootRatios.x < 0.0 ? 1.0 : 0.9)
+        * clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2));
+    float endMouth = max(max(endAtJoin, ordinary * abs(v_neuralRootRatios.y)),
+      endRadius * (v_neuralRootRatios.y < 0.0 ? 1.0 : 0.9)
+        * clamp(0.8 + ordinary / (1.2 * u_devicePixelRatio) * 0.2, 0.8, 1.2));
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
-      0.5 * (ordinary + (startRoot - ordinary) * startEase
-      + (endRoot - ordinary) * endEase));
+      0.5 * max(mix(startTrunk, startMouth, startEase),
+        mix(endTrunk, endMouth, endEase)));
+    // D082-A-NCOMPLETA BEGIN: the native pass receives the calibrated screen-cell
+    // coverage in the Neural flag's spare range. A-INT12 uses exactly the identity.
+    // D082-A-N3D BEGIN: 3 + factor identifies only Neural 3D Completa; old values retain identity.
+    float denseFactor = v_neuralProfile.w >= 3.0
+      ? clamp(v_neuralProfile.w - 3.0, 0.0, 1.0)
+      : v_neuralProfile.w > 1.0001 ? clamp(v_neuralProfile.w - 1.0, 0.0, 1.0) : 1.0;
+    // D082-A-N3D END
+    bodyHalfWidth *= max(0.22, sqrt(denseFactor));
+    // D082-A-N3D BEGIN: opacity still carries the screen-cell veil; width never breaks into dots.
+    if (v_neuralProfile.w >= 3.0 && bodyHalfWidth < 0.75) {
+      denseWidthFloorActive = 1.0;
+      bodyHalfWidth = 0.75;
+    }
+    // D082-A-N3D END
+    // D082-A-NCOMPLETA END
+    // D082-A-NEURAL END
   }
   float medialOffset = filamentMedialOffsetPx(parameter, length(v_cpC - v_cpA));
   float distance = abs(distanceSample.x - medialOffset);
@@ -350,8 +406,13 @@ void main() {
   if (v_neuralProfile.w > 0.5) {
     // D081-P1 BEGIN: one radial density for body, sheath and exploratory light.
     // The moving light varies luminance along the path; it never adds an inner bar.
+    // D082-A-N3D BEGIN: integrate a pixel-wide analytic edge at grazing pixel centres.
+    // The original peaked profile remains exact outside Neural 3D Completa.
     float radial = 1.0 - smoothstep(0.0, 1.0, distance / max(bodyHalfWidth, feather));
-    radial *= radial;
+    if (denseWidthFloorActive > 0.5)
+      radial = 1.0 - smoothstep(bodyHalfWidth - 0.5, bodyHalfWidth + 0.5, distance);
+    if (denseWidthFloorActive < 0.5) radial *= radial;
+    // D082-A-N3D END
     float span = max(length(v_cpC - v_cpA), 1.0);
     float fade = min(0.08, max(bodyHalfWidth * 1.5, 2.0 * u_devicePixelRatio) / span);
     // D081-P1F BEGIN: a soma covers the hidden path origin; its visible joint is full-alpha.
@@ -375,8 +436,18 @@ void main() {
       * (v_propagationPermille.z > 0.0 ? pulse : 0.35);
     float alpha = clamp(v_opacity * radial * longitudinal
       * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
+    // D082-A-NEURAL: match the pure root profile, including opacity and white-to-edge colour.
+    // D082-A-NCOMPLETA BEGIN: the old 0.9 root floor bypassed the native veil.
+    // D082-A-N3D BEGIN
+    float denseRootFactor = v_neuralProfile.w >= 3.0
+      ? clamp(v_neuralProfile.w - 3.0, 0.0, 1.0)
+      : v_neuralProfile.w > 1.0001 ? clamp(v_neuralProfile.w - 1.0, 0.0, 1.0) : 1.0;
+    // D082-A-N3D END
+    alpha = mix(alpha, max(0.9, v_opacity * longitudinal) * radial * denseRootFactor, rootSomaMix);
+    // D082-A-NCOMPLETA END
     if (alpha <= 0.0) discard;
     vec3 color = mix(v_color, v_hotColor, clamp(hot * 0.35, 0.0, 0.35));
+    color = mix(color, vec3(1.0), rootSomaMix);
     outputColor = vec4(color * alpha, alpha);
     return;
     // D081-P1 END
@@ -460,6 +531,14 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
     blendDst: THREE.OneMinusSrcAlphaFactor,
     blendEquation: THREE.AddEquation,
   });
+  // D082-A-NEURALe BEGIN: adjacent real roots also use maximum coverage,
+  // so a hub cannot brighten into a star of overlapping translucent wedges.
+  if (buffers.neuralProfile.some((value, index) => index % 4 === 3 && value > 0.5)) {
+    material.blendEquation = THREE.MaxEquation;
+    material.blendEquationAlpha = THREE.MaxEquation;
+    material.blendDst = THREE.OneFactor;
+  }
+  // D082-A-NEURALe END
   const mesh = new THREE.Mesh(geometry, material);
   // The canvas overlay owns the product's 30 fps clock. This shader samples the same 32 CSS
   // px/s cadence whenever the 3D renderer draws, without starting another full-scene loop.
@@ -471,6 +550,13 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
 
 /** This updates filament material attributes in place and does not move a mounted relation path. */
 export function updateFilamentRenderResources(resources: FilamentRenderResources, buffers: FilamentBuffers): void {
+  // D082-A-NEURALe BEGIN
+  resources.material.blendEquation = buffers.neuralProfile.some((value, index) => index % 4 === 3 && value > 0.5)
+    ? THREE.MaxEquation : THREE.AddEquation;
+  resources.material.blendEquationAlpha = resources.material.blendEquation;
+  resources.material.blendDst = resources.material.blendEquation === THREE.MaxEquation
+    ? THREE.OneFactor : THREE.OneMinusSrcAlphaFactor;
+  // D082-A-NEURALe END
   copyAttribute(resources.geometry, "a_color", buffers.colorsSrgb);
   copyAttribute(resources.geometry, "a_hotColor", buffers.hotColorsSrgb);
   copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);

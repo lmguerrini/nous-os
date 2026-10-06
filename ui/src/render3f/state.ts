@@ -3,6 +3,9 @@ import type { SurfaceWitness, WorldAnchorWitness } from "#engine/renderer-handle
 import type { Scene } from "#scene/contract.ts";
 import { buildSceneBuffers } from "#render3f/buffers.ts";
 import type { SceneBuffers } from "#render3f/buffers.ts";
+// D082-A-PERF BEGIN: the complete scene diff is a debug contract, not mount work.
+import { renderDebugAssertionsEnabled } from "#engine/contract.ts";
+// D082-A-PERF END
 
 type RelationGeometryPoint = {
   readonly x: number;
@@ -32,11 +35,18 @@ export class LiveSceneState {
   private layoutPassCountValue: number;
 
   /** This copies mounted scene data into live arrays and does not allocate graphics resources. */
-  constructor(scenes: CameraScenes, activeKind: CameraKind, layoutPassCount: number) {
-    assertProjectionOnlyDifference(scenes);
+  constructor(scenes: CameraScenes, activeKind: CameraKind, layoutPassCount: number,
+    // D082-B-CANOPYN BEGIN
+    preparedNeuralGeometry?: Parameters<typeof buildSceneBuffers>[1]) {
+    // D082-B-CANOPYN END
+    // D082-A-PERF BEGIN
+    if (renderDebugAssertionsEnabled()) assertProjectionOnlyDifference(scenes);
+    // D082-A-PERF END
     this.scenes = scenes;
     this.activeKind = activeKind;
-    this.buffersValue = buildSceneBuffers(scenes[activeKind]);
+    // D082-B-CANOPYN BEGIN
+    this.buffersValue = buildSceneBuffers(scenes[activeKind], preparedNeuralGeometry);
+    // D082-B-CANOPYN END
     this.layoutPassCountValue = layoutPassCount;
   }
 
@@ -62,10 +72,16 @@ export class LiveSceneState {
 
   /** This replaces material-state scenes after declared layout work and does not conceal that work from the count. */
   replaceScenes(scenes: CameraScenes, layoutPassesRun: number): void {
-    assertProjectionOnlyDifference(scenes);
+    // D082-A-PERF BEGIN
+    if (renderDebugAssertionsEnabled()) assertProjectionOnlyDifference(scenes);
+    // D082-A-PERF END
     const next = buildSceneBuffers(scenes[this.activeKind]);
-    assertSameSurface(this.buffersValue, next);
-    assertSameAnchors(this.buffersValue, next);
+    // D082-A-PERF BEGIN
+    if (renderDebugAssertionsEnabled()) {
+      assertSameSurface(this.buffersValue, next);
+      assertSameAnchors(this.buffersValue, next);
+    }
+    // D082-A-PERF END
     this.scenes = scenes;
     this.buffersValue = next;
     this.layoutPassCountValue += layoutPassesRun;

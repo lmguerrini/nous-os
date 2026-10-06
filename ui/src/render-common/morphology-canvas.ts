@@ -3,12 +3,35 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralLobeStrength, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
+import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, NEURAL_LEAF_BODY_SCALE, NEURAL_MIN_SHAPED_RADIUS_PX, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralPrincipalTrunks, neuralRootProfileAtLength, neuralRootRatio, neuralScreenWidthAt, neuralTrunkLobeStrength, neuralVisibleRootLengthPx, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
+// D082-A-PERF BEGIN: cache keys follow the geometry producer's version without owning its functions.
+import * as neuralGeometryModule from "#engine/morphology-geometry.ts";
+// D082-A-PERF END
 export { somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+// D082-A-NODES BEGIN
+import { denseEdgeVeilFactor } from "#render-common/dense-node-scale.ts";
+// D082-A-NODES END
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
 import type { CanvasDisc } from "#render-common/container-canvas.ts";
+// D082-B1f BEGIN: Canopy's edge-free Neural layer uses worker-prepared unit outlines.
+import { cachedCanopySomaOutlinePacked, canopySomataPrepared, installCanopySomaOutlines } from "../fractal/canopy-soma-cache.ts";
+import { prepareCanopySomataOffThread } from "../fractal/canopy-soma-worker.ts";
+import { beginCanopySomaFrame, presentCanopySomaFrame } from "../fractal/canopy-soma-readiness.ts";
+const canopyWarmups = new WeakMap<MorphologyGeometry, true>();
+function warmCanopySomata(geometry: MorphologyGeometry, canvas: HTMLCanvasElement): void {
+  if (canopySomataPrepared(geometry) || canopyWarmups.has(geometry)) return;
+  canopyWarmups.set(geometry, true);
+  const began = performance.now();
+  void prepareCanopySomataOffThread(geometry.nodes).then(packed => {
+    installCanopySomaOutlines(geometry, packed);
+    performance.mark('d082-b1f:canopy-soma-prepared', { detail: {
+      durationMs: performance.now() - began, nodes: geometry.nodes.length } });
+    if (canvas.isConnected) (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw?.();
+  }, () => { canopyWarmups.delete(geometry); });
+}
+// D082-B1f END.
 import { STELLAR_DUST_BUCKET_ALPHAS, cachedStellarDustClusters, drawStarfield, stellarDustAlpha, stellarDustFraction } from "#render-common/starfield.ts";
 import type { StellarDustCluster } from "#render-common/starfield.ts";
 import {
@@ -16,6 +39,9 @@ import {
   FLOW_HALO_ALPHA,
   FLOW_HALO_WIDTH_MULTIPLIER,
   FLOW_WAVE_MAX_ALPHA,
+  // D082-A-PERF BEGIN
+  FLOW_ANIMATED_EDGE_BUDGET,
+  // D082-A-PERF END
   flowHeadPositionPx,
   flowPulseLengthPx,
   flowWaveAlpha,
@@ -44,7 +70,11 @@ export type MorphologyCanvasStyle = {
     /** D-072 V13: `"separate"` makes this pass skip the travelling flow highlights because a small
      * dedicated overlay draws them alone via {@link drawFlowLayer}; `"inline"` (absence) keeps
      * today's behaviour of drawing them in this pass. */
-    readonly flowLayer?: "inline" | "separate" } | undefined;
+    readonly flowLayer?: "inline" | "separate";
+    // D082-A-NCOMPLETA BEGIN
+    readonly denseNeuralHaloById?: ReadonlyMap<string, number> | undefined;
+    // D082-A-NCOMPLETA END
+  } | undefined;
   readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
@@ -68,7 +98,10 @@ export function focusArcOpacity(
 export type DistinctSubsetUpdate = {
   readonly input: MorphologyInput;
   readonly geometry: MorphologyGeometry;
-  readonly nodeEntries: ReadonlyMap<string, { readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined }>;
+  // D082-A-NODES BEGIN
+  readonly nodeEntries: ReadonlyMap<string, { readonly glyph?: NodeGlyph | undefined;
+    readonly radiusPx?: number | undefined; readonly haloRadiusPx?: number | undefined }>;
+  // D082-A-NODES END
   readonly edgeEntries: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
@@ -172,55 +205,25 @@ const neuralEndpointSomaCache = new WeakMap<MorphologyGeometry, ReadonlyMap<stri
 const segmentEnds = (part: MorphologySegment): readonly (Coordinates | undefined)[] =>
   [part.source ?? part.samples[0], part.target ?? part.samples[part.samples.length - 1]];
 
-/**
- * The nearest soma of every drawn Neural segment endpoint, world-space and deterministic: each
- * endpoint resolves to its nearest soma centre on a fixed grid (the endpoint sits within one soma
- * radius of its own soma by construction). Memoised per geometry, so the per-frame passes pay a map
- * lookup; identical in 2D and 3D (shared canvas layer). D-072 extends the D-071 degree lookup: the
- * junction pass needs the soma itself, the taper pass only its degree.
- */
+/** Resolve roots by their real relation endpoints. A nearby crossing edge cannot inherit a soma. */
 export function neuralEndpointSomata(geometry: MorphologyGeometry): ReadonlyMap<string, MorphologyNodeShape> {
   const cached = neuralEndpointSomaCache.get(geometry);
   if (cached) return cached;
-  let maxRadius = 0;
-  for (const node of geometry.nodes) maxRadius = Math.max(maxRadius, node.radius);
-  // A cell of at least four max radii keeps every endpoint's own soma inside its 3×3 neighbourhood
-  // (the neural inset is bounded by the soma radius times its ≤1.32 eccentricity).
-  const cell = Math.max(NEURAL_HALO_DENSITY_CELL, 4 * maxRadius);
-  const grid = new Map<string, MorphologyNodeShape[]>();
-  for (const node of geometry.nodes) {
-    const key = `${Math.floor(node.position.x / cell)}:${Math.floor(node.position.y / cell)}`;
-    const bucket = grid.get(key);
-    if (bucket) bucket.push(node); else grid.set(key, [node]);
-  }
-  const somaAt = (point: Coordinates): MorphologyNodeShape | null => {
-    const cx = Math.floor(point.x / cell), cy = Math.floor(point.y / cell);
-    let best: MorphologyNodeShape | null = null;
-    let bestDistance = Infinity;
-    for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1)
-      for (const node of grid.get(`${cx + dx}:${cy + dy}`) ?? []) {
-        const distance = (node.position.x - point.x) ** 2 + (node.position.y - point.y) ** 2 + (node.position.z - point.z) ** 2;
-        if (distance < bestDistance) { bestDistance = distance; best = node; }
-      }
-    return best;
-  };
+  const nodes = new Map(geometry.nodes.map(node => [node.id, node]));
   const somata = new Map<string, MorphologyNodeShape>();
-  for (const part of geometry.drawnSegments)
-    for (const point of segmentEnds(part)) {
-      if (!point) continue;
-      const key = neuralEndpointKey(point);
-      if (!somata.has(key)) {
-        const soma = somaAt(point);
-        if (soma) somata.set(key, soma);
-      }
-    }
+  // Some synthetic draw-cost fixtures omit relation records; they have no provable roots.
+  for (const edge of geometry.edges ?? []) {
+    const first = edge.segments[0], last = edge.segments[edge.segments.length - 1];
+    const source = nodes.get(edge.source), target = nodes.get(edge.target);
+    if (first && source) somata.set(neuralEndpointKey(first.source), source);
+    if (last && target) somata.set(neuralEndpointKey(last.target), target);
+  }
   neuralEndpointSomaCache.set(geometry, somata);
   return somata;
 }
 
 /**
- * The soma degree at each end of every drawn Neural segment (D-071 G11): the degree of the nearest
- * soma per endpoint, memoised per geometry, world space, and 1 where no soma is found.
+ * The soma degree at each real relation end, memoised per geometry, and 1 where no soma is found.
  */
 export function neuralEndpointDegrees(geometry: MorphologyGeometry): ReadonlyMap<string, number> {
   const cached = neuralEndpointDegreeCache.get(geometry);
@@ -519,10 +522,176 @@ export type NeuralSomaFrame = {
   readonly eccentricity: number;
   readonly harmonics: readonly SomaOutlineHarmonic[];
   readonly spindle?: boolean;
+  readonly leaf?: boolean;
   readonly lobes?: readonly { readonly angle: number; readonly strength: number }[];
   readonly lobeAreaScale?: number;
 };
 export const NEURAL_SOMA_MAX_VERTICES = 64;
+
+// D082-A-PERF BEGIN: expensive angular integration and outline harmonics are
+// invariant under translation and zoom. Keep only dimensionless shape samples;
+// each frame still projects positions and applies its exact current radius.
+const neuralShapeSignatures = new WeakMap<MorphologyNodeShape, string>();
+const neuralLobeAreas = new Map<string, number>();
+const neuralSilhouettes = new Map<string, readonly number[]>();
+const neuralShapeStats = { lobeHits: 0, lobeMisses: 0, silhouetteHits: 0, silhouetteMisses: 0 };
+export function readNeuralShapeCacheStats(): Readonly<typeof neuralShapeStats> { return { ...neuralShapeStats }; }
+// D082-A-PERF BEGIN: enough room for one complete 11,199-node view, with a
+// fixed ceiling across successive mode switches. Both maps evict oldest keys.
+const NEURAL_SHAPE_CACHE_LIMIT = 12_000;
+const NEURAL_SHAPE_CACHE_BYTES = 4 * 1024 * 1024;
+let neuralLobeBytes = 0;
+let neuralSilhouetteBytes = 0;
+function shapeCacheGet<T>(cache: Map<string, T>, key: string): T | undefined {
+  const value = cache.get(key);
+  if (value !== undefined) { cache.delete(key); cache.set(key, value); }
+  return value;
+}
+function shapeCacheSet<T>(cache: Map<string, T>, key: string, value: T,
+  bytes: number, kind: "lobe" | "silhouette"): void {
+  if (bytes > NEURAL_SHAPE_CACHE_BYTES) return;
+  let total = kind === "lobe" ? neuralLobeBytes : neuralSilhouetteBytes;
+  // D082-A-PERF BEGIN: replacing a key must release its previous accounting.
+  const previous = cache.get(key);
+  if (previous !== undefined) {
+    total -= key.length * 2 + (Array.isArray(previous) ? previous.length * 8 : 8);
+    cache.delete(key);
+  }
+  // D082-A-PERF END
+  cache.set(key, value);
+  total += bytes;
+  while (cache.size > NEURAL_SHAPE_CACHE_LIMIT || total > NEURAL_SHAPE_CACHE_BYTES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    const removed = cache.get(oldest);
+    total -= oldest.length * 2 + (Array.isArray(removed) ? removed.length * 8 : 8);
+    cache.delete(oldest);
+  }
+  if (kind === "lobe") neuralLobeBytes = total; else neuralSilhouetteBytes = total;
+}
+export function neuralShapeCacheOccupancy() {
+  return { lobes: neuralLobeAreas.size, silhouettes: neuralSilhouettes.size,
+    lobeBytes: neuralLobeBytes, silhouetteBytes: neuralSilhouetteBytes,
+    entryLimit: NEURAL_SHAPE_CACHE_LIMIT, byteLimit: NEURAL_SHAPE_CACHE_BYTES };
+}
+// D082-A-PERF END
+function neuralShapeVersion(): string {
+  const declared: unknown = Reflect.get(neuralGeometryModule, "NEURAL_GEOMETRY_VERSION");
+  return typeof declared === "string" ? declared : "d081";
+}
+function nodeShapeSignature(node: MorphologyNodeShape): string {
+  let signature = neuralShapeSignatures.get(node);
+  if (signature === undefined) {
+    const source = JSON.stringify([neuralShapeVersion(), node.id, node.position, node.radius,
+      node.outline, node.trunks, node.degree, node.spindleRatio, node.eccentricity]);
+    // D082-A-PERF BEGIN: keep a compact deterministic fingerprint, not the
+    // full serialised node (hundreds of bytes) in every camera-variant key.
+    // Four independent 32-bit lanes make accidental aliasing negligible while
+    // preserving cross-remount hits for identical immutable geometry.
+    const lanes = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35];
+    for (let index = 0; index < source.length; index++) {
+      const code = source.charCodeAt(index);
+      for (let lane = 0; lane < lanes.length; lane++)
+        lanes[lane] = Math.imul(lanes[lane]! ^ (code + lane * 0x10001), 0x01000193 + lane * 2);
+    }
+    signature = lanes.map(value => (value >>> 0).toString(16).padStart(8, "0")).join("");
+    // D082-A-PERF END
+    neuralShapeSignatures.set(node, signature);
+  }
+  return signature;
+}
+function angularKey(node: MorphologyNodeShape, frame: NeuralSomaFrame): string {
+  // D082-A-PERF BEGIN: a camera roll rotates both the soma axis and its lobes.
+  // The integration and sampled silhouette depend on their relative angles,
+  // while the final path applies the current projection and radius below.
+  // Keep perspective variants bounded by the cache's byte ceiling.
+  const round = (value: number) => Math.round(value * 1e3) / 1e3;
+  const relative = (angle: number) => Math.atan2(Math.sin(angle - frame.angle), Math.cos(angle - frame.angle));
+  return JSON.stringify([nodeShapeSignature(node), round(frame.eccentricity),
+    round(somaIrregularityScale(frame.radius)),
+    frame.lobes?.map(lobe => [round(relative(lobe.angle)), round(lobe.strength)])]);
+  // D082-A-PERF END
+}
+// D082-A-PERF BEGIN: integrate the 3D lobe area once in the node's own basis.
+// Perspective changes the screen ellipse and the projected trunk directions;
+// this fixed normalizer preserves the lobe's area to first order without 64
+// angular samples on every wheel recovery. Translation, zoom and camera pose
+// only transform the already-normalized outline in the frame below.
+type LocalLobeShape = { readonly axisAngle: number;
+  readonly lobeAngles: readonly number[]; readonly lobes: readonly { angle: number; strength: number }[] };
+const localLobeShapes = new WeakMap<MorphologyNodeShape, LocalLobeShape>();
+function localLobeShape(node: MorphologyNodeShape): LocalLobeShape {
+  const hit = localLobeShapes.get(node);
+  if (hit) return hit;
+  const axis = node.axis ?? { x: 1, y: 0, z: 0 };
+  const useYZ = Math.hypot(axis.x, axis.y) < 1e-6;
+  const angleOf = (direction: Coordinates) => Math.atan2(useYZ ? direction.z : direction.y,
+    useYZ ? direction.y : direction.x);
+  const trunks = neuralPrincipalTrunks(node.trunks ?? []);
+  const maximum = Math.max(1, ...trunks.map(trunk => trunk.weight));
+  const lobes = trunks.map(trunk => ({ angle: angleOf(trunk.direction),
+    strength: neuralTrunkLobeStrength(trunk, maximum, node.degree) }));
+  const result = { axisAngle: angleOf(axis), lobeAngles: lobes.map(lobe => lobe.angle), lobes };
+  localLobeShapes.set(node, result);
+  return result;
+}
+export function neuralLocalLobeAreaScale(node: MorphologyNodeShape): number {
+  const { axisAngle: localAngle, lobes } = localLobeShape(node);
+  if (!lobes.length) return 1;
+  const harmonics = node.outline ?? [];
+  const eccentricity = node.spindleRatio
+    ? clamp(node.spindleRatio * somaElongationFactor(harmonics), 1.6, 2.2)
+    : somaDrawnElongation(node.eccentricity ?? 1, harmonics);
+  const localFrame: NeuralSomaFrame = { x: 0, y: 0, angle: localAngle,
+    radius: 11, eccentricity, harmonics, spindle: !!node.spindleRatio,
+    leaf: node.degree === 1, lobes: [] };
+  return somaLobeAreaScale(lobes, angle => somaOutlineRadiusAtAngle(localFrame, angle));
+}
+function localLobesProjectUnchanged(node: MorphologyNodeShape, frame: NeuralSomaFrame): boolean {
+  // An unrotated planar projection has the exact approved 2D outline. Reuse
+  // that integration key to preserve 2D/3D pixel parity in this special case.
+  const shape = localLobeShape(node);
+  const aligned = (a: number, b: number) =>
+    Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) < 1e-12;
+  if (!aligned(frame.angle, shape.axisAngle)) return false;
+  return shape.lobeAngles.length === (frame.lobes?.length ?? 0)
+    && shape.lobeAngles.every((angle, index) => aligned(frame.lobes![index]!.angle, angle));
+}
+function cachedLobeArea(node: MorphologyNodeShape, frame: NeuralSomaFrame,
+  projection: "2d" | "3d"): number {
+  const local = projection === "3d" && !localLobesProjectUnchanged(node, frame);
+  const key = local ? `local:${nodeShapeSignature(node)}` : angularKey(node, frame);
+  const hit = shapeCacheGet(neuralLobeAreas, key);
+  if (hit !== undefined) { neuralShapeStats.lobeHits++; return hit; }
+  neuralShapeStats.lobeMisses++;
+  const value = local ? neuralLocalLobeAreaScale(node)
+    : somaLobeAreaScale(frame.lobes ?? [],
+      polarAngle => somaOutlineRadiusAtAngle({ ...frame, lobes: [] }, polarAngle));
+  shapeCacheSet(neuralLobeAreas, key, value, key.length * 2 + 8, "lobe");
+  return value;
+}
+function cachedSomaSilhouette(node: MorphologyNodeShape, frame: NeuralSomaFrame,
+  steps: number): readonly number[] {
+  const key = `${angularKey(node, frame)}:${steps}`;
+  const hit = shapeCacheGet(neuralSilhouettes, key);
+  if (hit) { neuralShapeStats.silhouetteHits++; return hit; }
+  neuralShapeStats.silhouetteMisses++;
+  const major = frame.radius * frame.eccentricity;
+  const minor = frame.radius;
+  const irregularityScale = somaIrregularityScale(frame.radius);
+  const result = Array.from({ length: steps }, (_, i) => {
+    const theta = (i / steps) * Math.PI * 2;
+    const bulge = 1 + clamp(
+      somaOutlineIrregularity(node.outline ?? [], theta) * irregularityScale * SOMA_IRREGULARITY_BOOST,
+      -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
+    const polarAngle = Math.atan2(minor * Math.sin(theta), major * Math.cos(theta)) + frame.angle;
+    return bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1)
+      * somaLobeFactor(frame.lobes ?? [], polarAngle, frame.lobeAreaScale);
+  });
+  shapeCacheSet(neuralSilhouettes, key, result, key.length * 2 + result.length * 8, "silhouette");
+  return result;
+}
+// D082-A-PERF END
 
 /** A broad, smooth lobe extends the leading soma pole into its strongest real process. */
 export function somaSpindleFactor(theta: number): number {
@@ -533,24 +702,38 @@ export function somaSpindleFactor(theta: number): number {
  * the same clamp, elongation and orientation formulas the node pass draws with. */
 export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: Coordinates) => ProjectedPoint,
   style: MorphologyCanvasStyle, contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT],
-  appearance: AppearanceOptions, projection: "2d" | "3d" = "2d"): ReadonlyMap<string, NeuralSomaFrame> {
+  appearance: AppearanceOptions, projection: "2d" | "3d" = "2d", moving = false,
+  // D082-A-PERF BEGIN: the flow overlay needs only animated endpoints.
+  nodeIds?: ReadonlySet<string>): ReadonlyMap<string, NeuralSomaFrame> {
+  // D082-A-PERF END
   const frames = new Map<string, NeuralSomaFrame>();
   for (const node of geometry.nodes) {
+    // D082-A-PERF BEGIN
+    if (nodeIds && !nodeIds.has(node.id)) continue;
+    // D082-A-PERF END
     const p = project(node.position);
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
     const emphasis = style.interaction?.hoverId === node.id ? contract.hover
       : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
     const given = style.nodes.get(node.id)?.radiusPx ?? node.radius * appearance.nodeScale;
-    const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1), 2, contract.node.maxRadiusPx);
+    // D082-A-NODES BEGIN
+    if (style.nodes.size === 11_199 && given === 0) continue;
+    const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
+      style.nodes.size === 11_199 ? 0.5 : 2, contract.node.maxRadiusPx);
+    // D082-A-NODES END
     const axis = node.axis ?? { x: 1, y: 0, z: 0 };
     const q = project({ x: node.position.x + axis.x, y: node.position.y + axis.y, z: node.position.z + axis.z });
     const angle = Math.atan2(q.y - p.y, q.x - p.x);
-    const basis = [
+    // D082-A-PERF BEGIN: moving quality needs direction and a stable scale,
+    // not three more projected basis points per soma on every camera event.
+    const basis = moving ? [] : [
       project({ x: node.position.x + 1, y: node.position.y, z: node.position.z }),
       project({ x: node.position.x, y: node.position.y + 1, z: node.position.z }),
       project({ x: node.position.x, y: node.position.y, z: node.position.z + 1 }),
     ];
-    const projectedUnit = Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
+    const projectedUnit = moving ? Math.max(1e-9, p.scale)
+      : Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
+    // D082-A-PERF END
     const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
     const projectedEccentricity = Math.sqrt(1 + ((node.spindleRatio ?? node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
     // A 3D camera can foreshorten a trunk almost to a point. Keep its soma spindle legible in the
@@ -560,25 +743,29 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
       ? clamp(node.spindleRatio * somaElongationFactor(node.outline ?? []), 1.6, 2.2)
       : node.spindleRatio ? clamp(projectedEccentricity * somaElongationFactor(node.outline ?? []), 1.04, 1.9)
         : somaDrawnElongation(projectedEccentricity, node.outline ?? []);
-    const strongest = (node.trunks ?? []).slice(0, 3);
+    // D082-A-PERF BEGIN: the declared motion tier uses a simple soma. Avoid
+    // per-trunk projections and angular integration on every wheel/orbit event;
+    // at rest the spatially spread principal trunks (A-NEURALf) shape the lobes.
+    const strongest = moving ? [] : neuralPrincipalTrunks(node.trunks ?? []);
     const maximum = Math.max(1, ...strongest.map(trunk => trunk.weight));
     const lobes = strongest.flatMap(trunk => {
       const tip = project({ x: node.position.x + trunk.direction.x,
         y: node.position.y + trunk.direction.y, z: node.position.z + trunk.direction.z });
       return Math.hypot(tip.x - p.x, tip.y - p.y) < 1e-6 ? []
         : [{ angle: Math.atan2(tip.y - p.y, tip.x - p.x),
-          strength: node.degree <= 3 ? neuralLobeStrength(trunk.weight, maximum)
-            : 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum) }];
+          strength: neuralTrunkLobeStrength(trunk, maximum, node.degree) }];
     });
     const frame: NeuralSomaFrame = {
       x: p.x, y: p.y, angle, radius,
       eccentricity,
       harmonics: node.outline ?? [],
       spindle: !!node.spindleRatio,
+      leaf: node.degree === 1,
       lobes,
     };
-    frames.set(node.id, { ...frame, lobeAreaScale: somaLobeAreaScale(lobes,
-      polarAngle => somaOutlineRadiusAtAngle({ ...frame, lobes: [] }, polarAngle)) });
+    // D082-A-PERF BEGIN
+    frames.set(node.id, { ...frame, lobeAreaScale: moving ? 1 : cachedLobeArea(node, frame, projection) });
+    // D082-A-PERF END
   }
   return frames;
 }
@@ -598,6 +785,7 @@ export function somaOutlineRadiusAtAngle(frame: NeuralSomaFrame, polarAngle: num
     -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
   const lobes = somaLobeFactor(frame.lobes ?? [], polarAngle, frame.lobeAreaScale);
   return bulge * (frame.spindle ? somaSpindleFactor(parameter) : 1) * lobes
+    * (frame.leaf ? NEURAL_LEAF_BODY_SCALE : 1)
     * Math.hypot(major * Math.cos(parameter), minor * Math.sin(parameter));
 }
 
@@ -621,7 +809,7 @@ export function neuralRootInsideSoma(frame: NeuralSomaFrame,
   endPoint: { readonly x: number; readonly y: number }): { readonly x: number; readonly y: number } {
   const boundary = neuralEdgeEndOnSoma(frame, endPoint);
   const dx = boundary.x - frame.x, dy = boundary.y - frame.y;
-  const inset = Math.min(0.58, Math.max(0.2, 2 / Math.max(Math.hypot(dx, dy), 1)));
+  const inset = Math.min(0.58, Math.max(0.42, 2 / Math.max(Math.hypot(dx, dy), 1)));
   return { x: frame.x + dx * (1 - inset), y: frame.y + dy * (1 - inset) };
 }
 
@@ -866,9 +1054,13 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
     const emphasis = style.interaction?.hoverId === node.id ? contract.hover
       : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
     const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
+    // D082-A-NODES BEGIN
+    if (style.nodes.size === 11_199 && given === 0) continue;
+    // D082-A-NODES END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
-    const drawn = geometry.morphology === "stellar" ? stellarStarCoreRadiusPx(radius, node.degree) : radius;
+      style.nodes.size === 11_199 ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    const drawn = geometry.morphology === "stellar" && radius > 1
+      ? stellarStarCoreRadiusPx(radius, node.degree) : radius;
     const elongation = geometry.morphology === "neural"
       ? somaDrawnElongation(Math.max(1, node.eccentricity ?? 1), node.outline ?? [])
       : 1;
@@ -887,6 +1079,9 @@ export type MorphologyEdgePaint = {
   readonly edgeId: string;
   readonly category: EdgeCategory;
   readonly neural?: boolean;
+  // D082-A-NCOMPLETA BEGIN
+  readonly neuralDenseFactor?: number | undefined;
+  // D082-A-NCOMPLETA END
   readonly points: readonly ProjectedPoint[];
   readonly cumulative: readonly number[];
   readonly totalPx: number;
@@ -896,7 +1091,58 @@ export type MorphologyEdgePaint = {
   readonly widthAt: (i: number) => number;
   readonly detailStartPx: number;
   readonly detailEndPx: number;
+  /** Visible outline distance and final radius; the root profile is evaluated in screen space. */
+  readonly rootStart?: { readonly outlinePx: number; readonly radiusPx: number; readonly lengthPx: number; readonly ratio: number; readonly degree: number; readonly trunkWidthPx: number; readonly somaColor: string } | undefined;
+  readonly rootEnd?: { readonly outlinePx: number; readonly radiusPx: number; readonly lengthPx: number; readonly ratio: number; readonly degree: number; readonly trunkWidthPx: number; readonly somaColor: string } | undefined;
 };
+
+// D082-A-NCOMPLETA BEGIN: the calibrated screen-cell veil narrows Neural ribbons as well
+// as reducing alpha. The identity value leaves all A-INT12 close-up geometry unchanged.
+export function neuralDenseRibbonWidthFactor(veilFactor: number): number {
+  return Math.max(0.22, Math.min(1, Math.sqrt(Math.max(0, veilFactor))));
+}
+// D082-A-N3D BEGIN: only the 3D Completa overlay calls this after dense scaling.
+export function neuralCompleta3dRibbonWidthPx(widthCssPx: number, deviceRatio: number): number {
+  return Math.max(widthCssPx, 1.5 / Math.max(1, deviceRatio));
+}
+// D082-A-N3D END
+export function neuralDenseHaloFactor(localDensity: number, zoomProgress: number): number {
+  const zoom = Math.max(0, Math.min(1, zoomProgress));
+  return (1 - zoom) / Math.sqrt(Math.max(1, localDensity)) + zoom;
+}
+// D082-A-NCOMPLETA3 BEGIN: the 2D canvas halo is drawn beside the native tier;
+// keep the accepted 3D halo and the close inspection identity unchanged.
+export function neuralCompletaHaloFactor(localDensity: number, projection: "2d" | "3d",
+  zoomProgress: number): number {
+  const base = neuralDenseHaloFactor(localDensity, zoomProgress);
+  if (projection === "3d") return base;
+  const zoom = Math.max(0, Math.min(1, zoomProgress));
+  return base * (0.08 * (1 - zoom) + zoom);
+}
+// D082-A-NCOMPLETA3 END
+// D082-A-NCOMPLETA2 BEGIN: retain a soft mid-grey neurite field at fit while
+// preserving the original per-edge density ordering and the exact z6 identity.
+export function neuralCompletaVeilFactor(measuredFactor: number, projection: "2d" | "3d",
+  zoomProgress: number): number {
+  const zoom = Math.max(0, Math.min(1, zoomProgress));
+  const measured = Math.max(0, Math.min(1, measuredFactor));
+  // D082-A-VEIL BEGIN: the fitted field now survives camera-only rebuilds. Raise the
+  // Neural mid-tone response from the dark NCOMPLETA3 fit while retaining local order.
+  // Both projections still reach the D-081 identity exactly at zoom band six.
+  if (projection === "2d") return (0.058 + 0.09 * measured) * (1 - zoom) + measured * zoom;
+  return Math.max(measured, 0.4 * (1 - zoom));
+  // D082-A-VEIL END
+}
+export function neuralCompletaPointRadius(radiusPx: number, fitProjectionScale: number,
+  zoomProgress: number): number {
+  const zoom = Math.max(0, Math.min(1, zoomProgress));
+  if (radiusPx <= 0) return 0;
+  const scale = Math.max(0.001, fitProjectionScale);
+  return Math.max(0.85 / scale, Math.min(radiusPx, 0.9 / scale)) * (1 - zoom)
+    + radiusPx * zoom;
+}
+// D082-A-NCOMPLETA2 END
+// D082-A-NCOMPLETA END
 
 // D081-P1G BEGIN: keep projected edge work inside the canvas. Distances remain measured along
 // the original edge so a clipped travelling pulse does not restart at the viewport boundary.
@@ -984,7 +1230,11 @@ export function smoothNeuralCurve(anchors: readonly ProjectedPoint[]): Projected
  * in the inputs, so the main pass and the separate flow layer always agree. */
 export function selectAnimatedFlowEdges(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
   project: (point: Coordinates) => ProjectedPoint, bounds: { readonly width: number; readonly height: number },
-  visiblePaints?: ReadonlySet<string>): ReadonlySet<string> {
+  visiblePaints?: ReadonlySet<string>,
+  // D082-A-PERF BEGIN: flow preparation walks priority prefixes until the
+  // first 60 actually clipped paints have been found.
+  budget = FLOW_ANIMATED_EDGE_BUDGET): ReadonlySet<string> {
+  // D082-A-PERF END
   const hoverId = style.interaction?.hoverId;
   const focusIds = style.interaction?.focusIds;
   const focusPositions = new Map<string, Coordinates>();
@@ -1027,82 +1277,122 @@ export function selectAnimatedFlowEdges(geometry: MorphologyGeometry, style: Mor
     else { current.priority = Math.min(current.priority, priority); current.visible ||= visible; }
   }
   const animatedEdges = selectFlowEdges([...candidates].map(([edgeId, value]) =>
-    ({ edgeId, visible: value.visible, priority: value.priority })));
+    ({ edgeId, visible: value.visible, priority: value.priority })), budget);
   setFlowAnimatedEdgeCount(animatedEdges.size);
   return animatedEdges;
 }
 
 /** Build the shared per-segment paints of one frame. Pure drawing input computation: no canvas
  * state is touched. */
+// D082-A-PERF BEGIN: only projection and style are recomputed when the camera changes.
+type EdgePaintStatic = {
+  readonly endpointSomata: ReturnType<typeof neuralEndpointSomata> | null;
+  readonly neuralDegree: ReadonlyMap<string, number> | null;
+  readonly stellarArcs: ReturnType<typeof stellarArcClasses>;
+  readonly samples: ReadonlyMap<MorphologySegment, readonly Coordinates[]>;
+};
+const edgePaintStatics = new WeakMap<MorphologyGeometry, EdgePaintStatic>();
+function cachedEdgePaintStatic(geometry: MorphologyGeometry): EdgePaintStatic {
+  const hit = edgePaintStatics.get(geometry);
+  if (hit) return hit;
+  const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
+  const samples = new Map<MorphologySegment, readonly Coordinates[]>();
+  for (const part of geometry.drawnSegments) samples.set(part,
+    simplified && part.samples.length > 8
+      ? part.samples.filter((_, i) => i % 4 === 0 || i === part.samples.length - 1)
+      : part.samples);
+  const result: EdgePaintStatic = {
+    endpointSomata: geometry.morphology === "neural" ? neuralEndpointSomata(geometry) : null,
+    neuralDegree: geometry.morphology === "neural" ? new Map(geometry.nodes.map(node => [node.id, node.degree])) : null,
+    stellarArcs: geometry.morphology === "stellar" ? stellarArcClasses(geometry) : null,
+    samples,
+  };
+  edgePaintStatics.set(geometry, result);
+  return result;
+}
+// D082-A-PERF END
 function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
   project: (point: Coordinates) => ProjectedPoint, appearance: AppearanceOptions,
   contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT], projection: "2d" | "3d",
   somaFrames: ReadonlyMap<string, NeuralSomaFrame> | null,
-  bounds: { readonly width: number; readonly height: number }): MorphologyEdgePaint[] {
-  const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
-  const endpointSomata = somaFrames ? neuralEndpointSomata(geometry) : null;
-  const neuralDegree = somaFrames ? new Map(geometry.nodes.map(node => [node.id, node.degree])) : null;
-  const stellarArcs = geometry.morphology === "stellar" ? stellarArcClasses(geometry) : null;
+  bounds: { readonly width: number; readonly height: number },
+  // D082-A-PERF BEGIN: retain identical paint construction for the selected
+  // flow edges without projecting every unanimated segment.
+  edgeIds?: ReadonlySet<string>): MorphologyEdgePaint[] {
+  // D082-A-PERF END
+  // D082-A-PERF BEGIN: topology, endpoint lookup and sample reduction are layout data.
+  // They survive camera changes and remounts when the prepared geometry is reused.
+  const staticPaint = cachedEdgePaintStatic(geometry);
+  const endpointSomata = somaFrames ? staticPaint.endpointSomata : null;
+  const stellarArcs = geometry.morphology === "stellar" ? staticPaint.stellarArcs : null;
+  // D082-A-PERF END
   const paints: MorphologyEdgePaint[] = [];
   for (const part of geometry.drawnSegments) {
+    // D082-A-PERF BEGIN
+    if (edgeIds && !edgeIds.has(part.edgeId)) continue;
+    // D082-A-PERF END
     const edge = style.edges.get(part.edgeId);
     const presentation = edge?.presentation;
     const category = presentation?.category ?? "attested";
     if (!EDGE_CATEGORY_SET.has(category)) continue; // no semantics -> not drawn
-    const opacity = (presentation?.opacityPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
+    // D082-A-NODES BEGIN
+    // Derive the accepted class-window alpha from its original input, then apply the dense veil
+    // outside that window. Applying the reduced opacity inside stellarArcAlpha hits its .2/.35
+    // floor and erases the veil before any stroke reaches the canvas.
+    const opacity = (presentation?.denseVeilBaseOpacityPermille ?? presentation?.opacityPermille
+      ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
+    const veilFactor = denseEdgeVeilFactor(presentation?.opacityPermille ?? SCENE_PERMILLE_SCALE,
+      presentation?.denseVeilBaseOpacityPermille);
+    // D082-A-NODES END
     const arcClass = stellarArcs?.get(part.edgeId);
     const widthFactor = (presentation?.widthPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
     const emphasis = style.interaction?.hoverId === part.edgeId ? contract.hover
       : style.interaction?.focusIds?.has(part.edgeId) ? contract.focus : null;
     const color = presentation?.tintSrgb ? tint(presentation.tintSrgb) : edge?.color ?? "rgb(220, 220, 220)";
-    const source = simplified && part.samples.length > 8 ? part.samples.filter((_, i) => i % 4 === 0 || i === part.samples.length - 1) : part.samples;
+    const source = staticPaint.samples.get(part) ?? part.samples;
     let points = source.map(project);
     if (points.length < 2) continue;
     // D-072 V5: each dendrite end moves onto the outline of the soma it leaves — the soma the node
     // pass is about to draw under it — overlapping the boundary, so soma and dendrites read as one
     // shape with no suspended-egg gap. Screen space, so 2D and 3D share the exact grammar.
     let startRadius = 0, endRadius = 0;
-    let startRootCap = Infinity, endRootCap = Infinity;
+    let startSomaColor = "rgb(255, 255, 255)", endSomaColor = "rgb(255, 255, 255)";
+    let startRatio = 2.4, endRatio = 2.4;
+    let startDegree = 0, endDegree = 0;
     let startTipDistancePx = 0, endTipDistancePx = 0;
-    let lowDegreeStart = false, lowDegreeEnd = false;
-    let rootRatios: readonly [number, number] = [1.8, 1.8];
     if (somaFrames && endpointSomata) {
       const [segmentStart, segmentEnd] = segmentEnds(part);
       const startSoma = segmentStart ? endpointSomata.get(neuralEndpointKey(segmentStart)) : undefined;
       const endSoma = segmentEnd ? endpointSomata.get(neuralEndpointKey(segmentEnd)) : undefined;
       const startFrame = startSoma ? somaFrames.get(startSoma.id) : undefined;
       const endFrame = endSoma ? somaFrames.get(endSoma.id) : undefined;
-      rootRatios = [neuralRootRatio(neuralDegree?.get(startSoma?.id ?? "") ?? 1),
-        neuralRootRatio(neuralDegree?.get(endSoma?.id ?? "") ?? 1)];
-      if ((part.trunkSourceCount ?? 1) > 1)
-        rootRatios = [part.trunkSourceWidthFactor ?? rootRatios[0], rootRatios[1]];
-      if ((part.trunkTargetCount ?? 1) > 1)
-        rootRatios = [rootRatios[0], part.trunkTargetWidthFactor ?? rootRatios[1]];
       startRadius = startFrame?.radius ?? 0;
       endRadius = endFrame?.radius ?? 0;
-      // D081-P1E BEGIN: the low-degree ribbon fits inside the teardrop shoulder.
-      lowDegreeStart = !!startFrame && (startSoma?.degree ?? 0) <= 3;
-      lowDegreeEnd = !!endFrame && (endSoma?.degree ?? 0) <= 3;
-      if (lowDegreeStart) startRootCap = Math.max(startRadius * 0.9, appearance.edgeWidth * 2);
-      if (lowDegreeEnd) endRootCap = Math.max(endRadius * 0.9, appearance.edgeWidth * 2);
-      // D081-P1E END
+      // D082-A-NEURALe: the root mouth takes the projected soma colour. A white
+      // root over a depth-dimmed 3D soma made a bright polygon even with max coverage.
+      if (startFrame && startSoma) startSomaColor = dim(style.nodes.get(startSoma.id)?.color ?? "rgb(245, 245, 245)",
+        depthBrightness(points[0]!.scale, projection));
+      if (endFrame && endSoma) endSomaColor = dim(style.nodes.get(endSoma.id)?.color ?? "rgb(245, 245, 245)",
+        depthBrightness(points[points.length - 1]!.scale, projection));
+      startRatio = neuralRootRatio(startSoma?.degree ?? 1);
+      endRatio = neuralRootRatio(endSoma?.degree ?? 1);
+      startDegree = startSoma?.degree ?? 0;
+      endDegree = endSoma?.degree ?? 0;
+      if ((part.trunkSourceCount ?? 1) > 1) startRatio = -(part.trunkSourceWidthFactor ?? startRatio);
+      if ((part.trunkTargetCount ?? 1) > 1) endRatio = -(part.trunkTargetWidthFactor ?? endRatio);
       if (startFrame || endFrame) {
         let first = points[0]!, last = points[points.length - 1]!;
         if (startFrame) {
           const adjusted = neuralRootInsideSoma(startFrame, points[1]!);
           first = { x: adjusted.x, y: adjusted.y, scale: first.scale };
-          if (lowDegreeStart) {
-            const tip = neuralEdgeEndOnSoma(startFrame, points[1]!);
-            startTipDistancePx = Math.hypot(tip.x - first.x, tip.y - first.y);
-          }
+          const tip = neuralEdgeEndOnSoma(startFrame, points[1]!);
+          startTipDistancePx = Math.hypot(tip.x - first.x, tip.y - first.y);
         }
         if (endFrame) {
           const adjusted = neuralRootInsideSoma(endFrame, points[points.length - 2]!);
           last = { x: adjusted.x, y: adjusted.y, scale: last.scale };
-          if (lowDegreeEnd) {
-            const tip = neuralEdgeEndOnSoma(endFrame, points[points.length - 2]!);
-            endTipDistancePx = Math.hypot(tip.x - last.x, tip.y - last.y);
-          }
+          const tip = neuralEdgeEndOnSoma(endFrame, points[points.length - 2]!);
+          endTipDistancePx = Math.hypot(tip.x - last.x, tip.y - last.y);
         }
         points = [first, ...points.slice(1, -1), last];
       }
@@ -1111,8 +1401,39 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     const cumulative: number[] = [0];
     for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
     const totalPx = cumulative[cumulative.length - 1]! || 1;
+    const startRootLengthPx = neuralVisibleRootLengthPx(startRadius, totalPx, startDegree, startRatio < 0, part.widthStart);
+    const endRootLengthPx = neuralVisibleRootLengthPx(endRadius, totalPx, endDegree, endRatio < 0, part.widthEnd);
     // The Neural profile retains its full width at both soma ends, including high-degree hubs.
     const neuralTaper = geometry.morphology === "neural";
+    const neuralBody = Math.max(0.3, appearance.edgeWidth * widthFactor
+      * (emphasis?.radiusMultiplier ?? 1));
+    // D082-A-NEURAL BEGIN: D-081 owns the grey trunk after the short soma fillet.
+    const trunkWidthAt = (t: number) => {
+      const index = t * (points.length - 1);
+      const shapedStartRadius = startRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? startRadius : 0;
+      const shapedEndRadius = endRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? endRadius : 0;
+      let ordinary = neuralScreenWidthAt(t, neuralBody, shapedStartRadius, shapedEndRadius,
+        [Math.abs(startRatio), Math.abs(endRatio)], totalPx, [startRatio >= 0, endRatio >= 0]);
+      if (startDegree <= 3 && shapedStartRadius > 0 || endDegree <= 3 && shapedEndRadius > 0)
+        ordinary = Math.max(neuralBody,
+          startDegree <= 3 ? neuralLeafRootWidthPx(t * totalPx - startTipDistancePx, neuralBody, shapedStartRadius) : neuralBody,
+          endDegree <= 3 ? neuralLeafRootWidthPx((1 - t) * totalPx - endTipDistancePx, neuralBody, shapedEndRadius) : neuralBody);
+      const cap = t < 0.5
+        ? startDegree <= 3 && shapedStartRadius > 0
+          ? Math.max(shapedStartRadius * 0.9, neuralBody * 2) : Infinity
+        : endDegree <= 3 && shapedEndRadius > 0
+          ? Math.max(shapedEndRadius * 0.9, neuralBody * 2) : Infinity;
+      return Math.min(Math.max(neuralBody, cap), Math.max(ordinary,
+        neuralBranchedWidthPx(index, points.length, part.sourceBranches?.length ?? 0,
+          neuralBody, shapedStartRadius, Math.abs(startRatio)),
+        neuralBranchedWidthPx(points.length - 1 - index, points.length,
+          part.targetBranches?.length ?? 0, neuralBody, shapedEndRadius, Math.abs(endRatio))));
+    };
+    const startTrunkWidth = neuralTaper && startRadius > 0
+      ? trunkWidthAt(Math.min(1, (startTipDistancePx + startRootLengthPx) / totalPx)) : 0;
+    const endTrunkWidth = neuralTaper && endRadius > 0
+      ? trunkWidthAt(Math.max(0, 1 - (endTipDistancePx + endRootLengthPx) / totalPx)) : 0;
+    // D082-A-NEURAL END
     const projectedWidthAt = (i: number) => {
       const index = Math.min(points.length - 1, Math.max(0, Math.floor(i)));
       const fraction = Math.min(1, Math.max(0, i - index));
@@ -1134,28 +1455,46 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       if (neuralTaper) {
         // The slider sets the ordinary pixel width. Perspective changes the soma frame and
         // centre-line only; it cannot turn the shaft into a zoom-scaled band.
-        const body = Math.max(0.3, appearance.edgeWidth * widthFactor
-          * (emphasis?.radiusMultiplier ?? 1));
-        let ordinary = neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx,
-          [(part.trunkSourceCount ?? 1) <= 1, (part.trunkTargetCount ?? 1) <= 1]);
-        // D081-P1F: low-degree roots taper from the drawn tip over one minor radius.
-        if (lowDegreeStart || lowDegreeEnd) {
-          ordinary = Math.max(body,
-            lowDegreeStart ? neuralLeafRootWidthPx(t * totalPx - startTipDistancePx, body, startRadius) : body,
-            lowDegreeEnd ? neuralLeafRootWidthPx((1 - t) * totalPx - endTipDistancePx, body, endRadius) : body);
-        }
-        return Math.min(Math.max(body, t < 0.5 ? startRootCap : endRootCap), Math.max(ordinary,
-          neuralBranchedWidthPx(i, points.length, part.sourceBranches?.length ?? 0, body, startRadius, rootRatios[0]),
-          neuralBranchedWidthPx(points.length - 1 - i, points.length, part.targetBranches?.length ?? 0,
-            body, endRadius, rootRatios[1])));
+        const body = neuralBody;
+        // The fillet begins under the rounded soma and ends at the unmodified D-081 trunk.
+        const startDistance = t * totalPx - startTipDistancePx;
+        const endDistance = (1 - t) * totalPx - endTipDistancePx;
+        if (startRadius > 0 && startDistance < startRootLengthPx)
+          return neuralRootProfileAtLength(startDistance, startRadius, body, 1, startRatio,
+            startRootLengthPx, startTrunkWidth).width;
+        if (endRadius > 0 && endDistance < endRootLengthPx)
+          return neuralRootProfileAtLength(endDistance, endRadius, body, 1, endRatio,
+            endRootLengthPx, endTrunkWidth).width;
+        return trunkWidthAt(t);
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);
     };
     // D-079: only the Indra 3D structural presentation sets this floor. It is applied after
     // Stellar's class window and perspective scaling, and also reaches the moving Neural stroke.
-    const widthAt = (i: number) => screenSpaceEdgeWidthPx(projectedWidthAt(i),
-      projection === "3d" ? presentation?.minimumScreenWidthPx : 0);
+    // D082-A-PERF BEGIN: a ribbon, its light profile and its clipping pass ask
+    // for the same vertex widths many times. Projection invalidates this memo
+    // with the paint; within one camera pose each width is evaluated once.
+    const projectedWidths = new Map<number, number>();
+    const widthAt = (i: number) => {
+      const cached = projectedWidths.get(i);
+      if (cached !== undefined) return cached;
+      const width = screenSpaceEdgeWidthPx(projectedWidthAt(i),
+        projection === "3d" ? presentation?.minimumScreenWidthPx : 0)
+        // D082-A-NCOMPLETA BEGIN
+        * (neuralTaper && presentation?.neuralDenseFactor !== undefined
+          ? neuralDenseRibbonWidthFactor(presentation.neuralDenseFactor) : 1);
+        // D082-A-NCOMPLETA END
+      // D082-A-N3D BEGIN: keep the projected canvas outline continuous at device resolution.
+      const continuousWidth = projection === "3d" && neuralTaper
+        && presentation?.neuralDenseFactor !== undefined
+        ? neuralCompleta3dRibbonWidthPx(width, typeof devicePixelRatio === "number" ? devicePixelRatio : 1)
+        : width;
+      // D082-A-N3D END
+      projectedWidths.set(i, continuousWidth);
+      return continuousWidth;
+    };
+    // D082-A-PERF END
     // D-072 V13: the base alpha of a line is constant across frames — presentation-derived factors
     // only. D-072 M1b: a Stellar arc's base alpha is its class window (intra faint, bridges near
     // 0.5), the presentation's opacity mapping inside it; emphasis may push above the window.
@@ -1165,10 +1504,27 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         ? stellarArcAlpha(arcClass, opacity * appearance.edgeOpacity) * (emphasis?.brightnessMultiplier ?? 1)
         : Math.max(0.14, opacity * appearance.edgeOpacity * (emphasis?.brightnessMultiplier ?? 1))),
       0, 1);
-    const alpha = focusArcOpacity(focus ?? null, part.edgeId, baseAlpha);
+    // D082-A-NODES BEGIN
+    // Hover/focus remains readable above the resting veil. All other arcs (including their
+    // exploratory halos) inherit this same attenuated paint alpha.
+    const focusedAlpha = focusArcOpacity(focus ?? null, part.edgeId, baseAlpha);
+    const alpha = emphasis || focus?.arcs.has(part.edgeId) ? focusedAlpha : focusedAlpha * veilFactor;
+    // D082-A-NODES END
     const paint: MorphologyEdgePaint = { part, edgeId: part.edgeId, category, neural: neuralTaper, points, cumulative, totalPx, color, alpha, widthAt,
-      detailStartPx: neuralTaper && neuralDetailVisible(points[0]!.scale, startRadius, totalPx) ? startRadius : 0,
-      detailEndPx: neuralTaper && neuralDetailVisible(points[points.length - 1]!.scale, endRadius, totalPx) ? endRadius : 0 };
+      // D082-A-NCOMPLETA BEGIN
+      neuralDenseFactor: neuralTaper ? presentation?.neuralDenseFactor : undefined,
+      // D082-A-NCOMPLETA END
+      rootStart: startRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: startTipDistancePx, radiusPx: startRadius,
+        lengthPx: startRootLengthPx, ratio: startRatio, degree: startDegree,
+        trunkWidthPx: startTrunkWidth, somaColor: startSomaColor } : undefined,
+      rootEnd: endRadius >= NEURAL_MIN_SHAPED_RADIUS_PX ? { outlinePx: totalPx - endTipDistancePx, radiusPx: endRadius,
+        lengthPx: endRootLengthPx, ratio: endRatio, degree: endDegree,
+        trunkWidthPx: endTrunkWidth, somaColor: endSomaColor } : undefined,
+      // Leaves keep one continuous tail; crowded hubs use only their real shared trunks.
+      detailStartPx: neuralTaper && startDegree >= 2 && startDegree <= 3
+        && neuralDetailVisible(points[0]!.scale, startRadius, totalPx) ? startRadius : 0,
+      detailEndPx: neuralTaper && endDegree >= 2 && endDegree <= 3
+        && neuralDetailVisible(points[points.length - 1]!.scale, endRadius, totalPx) ? endRadius : 0 };
     paints.push(...clipEdgePaint(paint, bounds.width, bounds.height));
   }
   return paints;
@@ -1226,11 +1582,17 @@ function flowModulation(paint: MorphologyEdgePaint, now: number, speed: number, 
   return Object.assign((distance: number) => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity), { centre, radius });
 }
 function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
-  modulation: EdgeModulation, alpha: number): CanvasGradient {
+  modulation: EdgeModulation, alpha: number, rootLayerAlpha = 0.9): CanvasGradient {
   const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
   const first = paint.cumulative[0]!, last = paint.cumulative[paint.cumulative.length - 1]!;
   const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
   const distances = [first, last];
+  // D082-A-NEURAL BEGIN: the same width/alpha/white ramp used by the GPU Neural path.
+  for (const root of [paint.rootStart, paint.rootEnd]) if (root)
+    for (let j = 0; j <= 8; j++) {
+      const displacement = root.lengthPx * j / 8;
+      distances.push(clamp(root === paint.rootStart ? root.outlinePx + displacement : root.outlinePx - displacement, first, last));
+    }
   if (modulation.centre !== undefined && modulation.radius !== undefined) {
     for (let j = -8; j <= 8; j++) distances.push(clamp(modulation.centre + j * modulation.radius / 8, first, last));
   } else if (Math.abs(modulation(first) - modulation(last)) > 1e-6 ||
@@ -1242,8 +1604,28 @@ function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyE
   for (const distance of distances) {
     if (distance <= previous + 1e-7) continue;
     previous = distance;
+    let ramp = { alpha, somaMix: 0 };
+    let somaChannels: readonly [number, number, number] = [255, 255, 255];
+    if (paint.rootStart && distance < paint.rootStart.outlinePx + paint.rootStart.lengthPx) {
+      somaChannels = colourChannels(paint.rootStart.somaColor);
+      ramp = neuralRootProfileAtLength(distance - paint.rootStart.outlinePx, paint.rootStart.radiusPx, 1, alpha,
+        paint.rootStart.ratio, paint.rootStart.lengthPx);
+    } else if (paint.rootEnd && distance > paint.rootEnd.outlinePx - paint.rootEnd.lengthPx) {
+      somaChannels = colourChannels(paint.rootEnd.somaColor);
+      ramp = neuralRootProfileAtLength(paint.rootEnd.outlinePx - distance, paint.rootEnd.radiusPx, 1, alpha,
+        paint.rootEnd.ratio, paint.rootEnd.lengthPx);
+    }
+    if (ramp.somaMix > 0) ramp = { ...ramp,
+      alpha: alpha + (rootLayerAlpha - alpha) * ramp.somaMix };
+    const edgeChannels = colourChannels(paint.color);
+    const channels: readonly [number, number, number] = [
+      edgeChannels[0] + (somaChannels[0] - edgeChannels[0]) * ramp.somaMix,
+      edgeChannels[1] + (somaChannels[1] - edgeChannels[1]) * ramp.somaMix,
+      edgeChannels[2] + (somaChannels[2] - edgeChannels[2]) * ramp.somaMix,
+    ];
     gradient.addColorStop((distance - first) / Math.max(1e-7, last - first),
-      rgba(paint.color, clamp(alpha * modulation(distance), 0, 1)));
+      rgbaChannels(channels, clamp(ramp.alpha * modulation(distance), 0, 1)));
+    // D082-A-NEURAL END
   }
   return gradient;
 }
@@ -1255,15 +1637,22 @@ export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: Morp
   // Source-over saturation flattens the centre/shoulder ratio at high base opacity. Bound the
   // inline gain so that ratio stays within ten percent of the resting nested-ribbon profile.
   const profileSafeBoost = Math.max(0, 0.416666 / Math.max(paint.alpha, 0.001) - 0.1);
-  for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
+  const layers = neuralRibbonProfile(neuralProfileWidth(paint));
+  for (const [index, layer] of layers.entries()) {
+    // One 0.9-alpha white mouth meets the soma; the inner shaft band grows out of it.
+    // D082-A-NCOMPLETA BEGIN: the old fixed 0.9 mouth bypassed the dense edge veil.
+    const rootLayerAlpha = index === 0 ? 0.9 * (paint.neuralDenseFactor ?? 1) : 0;
+    // D082-A-NCOMPLETA END
     if (modulation) {
       const gain: EdgeModulation = (distance: number) => 1 + Math.min(profileSafeBoost, modulation(distance));
       const timed = modulation as EdgeModulation;
       if (timed.centre !== undefined && timed.radius !== undefined) {
         gain.centre = timed.centre; gain.radius = timed.radius;
       }
-      context.fillStyle = edgeLightGradient(context, paint, gain, paint.alpha * layer.alpha);
-    } else context.fillStyle = rgba(paint.color, clamp(paint.alpha * layer.alpha, 0, 1));
+      context.fillStyle = edgeLightGradient(context, paint, gain, paint.alpha * layer.alpha, rootLayerAlpha);
+    } else context.fillStyle = paint.rootStart || paint.rootEnd
+      ? edgeLightGradient(context, paint, (() => 1) as EdgeModulation, paint.alpha * layer.alpha, rootLayerAlpha)
+      : rgba(paint.color, clamp(paint.alpha * layer.alpha, 0, 1));
     fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
 }
@@ -1273,8 +1662,12 @@ export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: Morp
 export function drawNeuralLight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   modulation: (distancePx: number) => number): void {
   if (!pulseVisible(paint, modulation as EdgeModulation)) return;
-  for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
-    context.fillStyle = edgeLightGradient(context, paint, modulation as EdgeModulation, paint.alpha * layer.alpha);
+  const layers = neuralRibbonProfile(neuralProfileWidth(paint));
+  for (const [index, layer] of layers.entries()) {
+    // D082-A-NCOMPLETA BEGIN
+    const rootLayerAlpha = index === 0 ? 0.9 * (paint.neuralDenseFactor ?? 1) : 0;
+    // D082-A-NCOMPLETA END
+    context.fillStyle = edgeLightGradient(context, paint, modulation as EdgeModulation, paint.alpha * layer.alpha, rootLayerAlpha);
     fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
   }
 }
@@ -1406,6 +1799,30 @@ export function drawEdgeStaticCue(context: CanvasRenderingContext2D, paint: Morp
 }
 
 /** One world-space geometry, with projection and depth scale supplied by the renderer. */
+// D082-A-PERF BEGIN: a settled label pass may repaint the same camera. Retain
+// projected soma/edge paints for that exact view; camera changes only project
+// the cached world geometry and angular shapes again.
+type ProjectedPaintSnapshot = {
+  readonly geometry: MorphologyGeometry;
+  readonly nodes: MorphologyCanvasStyle["nodes"];
+  readonly edges: MorphologyCanvasStyle["edges"];
+  readonly focusIds: ReadonlySet<string> | null | undefined;
+  readonly dimFocus: unknown;
+  readonly hoverId: string | null | undefined;
+  readonly quality: "full" | "moving" | undefined;
+  readonly appearanceKey: string;
+  readonly projection: "2d" | "3d";
+  readonly width: number;
+  readonly height: number;
+  readonly anchors: readonly number[];
+  readonly somata: ReadonlyMap<string, NeuralSomaFrame> | null;
+  readonly paints: readonly MorphologyEdgePaint[];
+};
+const projectedPaintSnapshots = new WeakMap<CanvasRenderingContext2D, ProjectedPaintSnapshot>();
+function sameAnchors(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+// D082-A-PERF END
 export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry: MorphologyGeometry,
   project: (point: Coordinates) => ProjectedPoint, style: MorphologyCanvasStyle,
   appearance: AppearanceOptions = DEFAULT_APPEARANCE, containers: readonly MorphologyContainerPath[] = geometry.containers ?? [],
@@ -1416,6 +1833,17 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // D-072 M1b: the reduced frame while the camera moves — solid node fills, no decorative layers,
   // simple neural dendrites. The flow drawing is untouched: its owner decides what it draws.
   const moving = style.interaction?.quality === "moving";
+  // D082-B1f BEGIN: product labels/edges are owned by the Canopy overlay in both projections.
+  const canopyHost = canvas.closest?.('[data-fractal-rails-active]');
+  const canopyDenseNeural = geometry.morphology === "neural"
+    && geometry.drawnSegments.length === 0
+    && !!canopyHost;
+  const canopyDrawBegan = canopyDenseNeural ? performance.now() : 0;
+  if (canopyDenseNeural) {
+    beginCanopySomaFrame(canopyHost, geometry, moving);
+    if (!structureOnly) warmCanopySomata(geometry, canvas);
+  }
+  // D082-B1f END.
   context.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
   if (geometry.morphology === "stellar" && !moving) drawStarfield(context, bounds.width, bounds.height, appearance.starfieldDensity, appearance.starfieldBrightness);
@@ -1427,7 +1855,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // The disc set the titles avoid: the review label pass's shared set when present, otherwise the
   // pearls about to be drawn — built lazily so a shared label set skips that whole pass.
   const sharedDiscs = style.interaction?.labelDiscs;
-  const pearlDiscs = sharedDiscs ? null : pearlDiscsFor(geometry, style, project, contract, appearance);
+  // D082-B1c BEGIN: Canopy labels are an overlay and need no per-frame disc pass.
+  const pearlDiscs = sharedDiscs ? null : canopyDenseNeural ? [] : pearlDiscsFor(geometry, style, project, contract, appearance);
+  // D082-B1c END.
   // One projection → limb-radius memo per frame keeps each sphere's outline geometry single-pass.
   const frameCache = createContainerFrameCache();
   drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, frameCache);
@@ -1436,6 +1866,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   const titleDiscs: readonly CanvasDisc[] = sharedDiscs ?? pearlDiscs!;
   if (structureOnly) {
     if (!moving || projection === "2d") drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+    // D082-B1f BEGIN: native Sigma/GPU nodes were presented before this canvas pass.
+    if (canopyDenseNeural) presentCanopySomaFrame(canopyHost, geometry, !moving);
+    // D082-B1f END
   context.globalAlpha = 1;
     return;
   }
@@ -1455,10 +1888,33 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   // D-072 V5: the drawn soma frames exist before the dendrites, so the junction pass and the node
   // pass below paint the very same somata (one source of truth per frame).
-  const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance, projection) : null;
+  // D082-A-PERF BEGIN
+  const appearanceKey = JSON.stringify([appearance.nodeScale, appearance.edgeWidth, appearance.edgeOpacity,
+    appearance.curvature, appearance.glow]);
+  const anchors = flowProjectionAnchors(geometry, project);
+  const previous = projectedPaintSnapshots.get(context);
+  const samePaint = previous?.geometry === geometry && previous.nodes === style.nodes && previous.edges === style.edges
+    && previous.focusIds === style.interaction?.focusIds && previous.dimFocus === style.interaction?.dimFocus
+    && previous.hoverId === style.interaction?.hoverId && previous.quality === style.interaction?.quality
+    && previous.appearanceKey === appearanceKey && previous.projection === projection
+    && previous.width === bounds.width && previous.height === bounds.height
+    && sameAnchors(previous.anchors, anchors);
+  // D082-A-PERF END
+  // D082-B1c BEGIN: the edge-free Canopy scene uses cached node silhouettes.
+  const somaFrames = samePaint ? previous!.somata
+    : geometry.morphology === "neural" && !canopyDenseNeural
+      ? neuralSomaFrames(geometry, project, style, contract, appearance, projection, moving) : null;
+  // D082-B1c END.
   if (!testHook()?.hideEdges) {
     const gradientCapable = typeof context.createLinearGradient === "function";
-    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames, bounds);
+    // D082-A-PERF BEGIN
+    const paints = samePaint ? previous!.paints
+      : buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames, bounds);
+    if (!samePaint) projectedPaintSnapshots.set(context, { geometry, nodes: style.nodes, edges: style.edges,
+      focusIds: style.interaction?.focusIds, dimFocus: style.interaction?.dimFocus,
+      hoverId: style.interaction?.hoverId, quality: style.interaction?.quality,
+      appearanceKey, projection, width: bounds.width, height: bounds.height, anchors, somata: somaFrames, paints });
+    // D082-A-PERF END
     const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds,
       new Set(paints.map(paint => paint.edgeId)));
     const animating = flowMotionAllowedNow() && appearance.flowIntensity > 0 && appearance.flowSpeed > 0;
@@ -1536,11 +1992,33 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const emphasis = style.interaction?.hoverId === node.id ? contract.hover
       : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
     const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
+    // D082-B1f BEGIN: Canopy Completa honours the overlap-safe radius below 2 px.
+    // D082-A-NODES BEGIN: hidden core members have no glyph in the full source scene.
+    if (!canopyHost && style.nodes.size === 11_199 && given === 0) continue;
+    // D082-A-NODES END
     const basis = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+      canopyHost && geometry.nodes.length >= DENSE_SCENE_THRESHOLD ? 0.5
+        : style.nodes.size === 11_199 ? 0.5
+        : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    // D082-B1f END
     // D-072 M1b: a Stellar node draws as a star — the importance basis compressed into the star
     // window of this node's degree, never above the basis (pick radius untouched), 2D and 3D alike.
-    const radius = geometry.morphology === "stellar" ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
+    const radius = geometry.morphology === "stellar" && basis > 1
+      ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
+    // D082-A-NODES BEGIN
+    // Below a CSS pixel, a bright point is more legible than a clipped star or soma outline.
+    // D082-A-N3D BEGIN: the 3D Neural fit uses a larger point before the soma outline resolves.
+    if (!canopyHost && style.nodes.size === 11_199 && radius <= (projection === "3d" && geometry.morphology === "neural" ? 0.9 : 0.75)) {
+    // D082-A-N3D END
+      context.globalAlpha = 1;
+      context.fillStyle = visual?.color ?? "rgb(245, 245, 245)";
+      // D082-A-N3D BEGIN
+      context.beginPath(); context.arc(p.x, p.y,
+        projection === "3d" && geometry.morphology === "neural" ? 0.9 : 0.5, 0, Math.PI * 2); context.fill();
+      // D082-A-N3D END
+      continue;
+    }
+    // D082-A-NODES END
     // A pearl wholly outside the canvas (with its glow halo) draws nothing a viewer could see.
     const haloRatio = geometry.morphology === "neural"
       ? Math.min(contract.glow.maximumCoreRatio, NEURAL_HALO_MAX_RADIUS_RATIO) : contract.glow.maximumCoreRatio;
@@ -1556,12 +2034,16 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       : contract.glow.strength;
     const glowStrength = geometry.morphology === "neural"
       ? Math.min(requestedGlowStrength, NEURAL_HALO_MAX_ALPHA / Math.max(1, appearance.glow)) : requestedGlowStrength;
+    // D082-A-NCOMPLETA BEGIN: local-density halo factor is 1 outside Completa and at z6.
+    const denseGlowStrength = glowStrength * (geometry.morphology === "neural"
+      ? style.interaction?.denseNeuralHaloById?.get(node.id) ?? 1 : 1);
+    // D082-A-NCOMPLETA END
     // In Indra 3D every colour of the pearl comes from one cached paint entry (quantised depth);
     // elsewhere the exact per-node factors stay. The moving frame wants no pearl paint at all.
     const paint = indra3d && !moving
       ? pearlPaint(context, color, p.scale, emphasis?.brightnessMultiplier ?? 1,
         style.interaction?.hoverId === node.id ? 1 : style.interaction?.focusIds?.has(node.id) ? 2 : 0,
-        baseOpacity, radius, appearance.glow, glowStrength, coreFloor)
+        baseOpacity, radius, appearance.glow, denseGlowStrength, coreFloor)
       : null;
     const lit = paint ? paint.lit : dim(color, depthBrightness(p.scale, projection));
     const litChannels = paint ? paint.litChannels : colourChannels(lit);
@@ -1580,7 +2062,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         // D-072: the flat-view halo gradient depends only on (lit colour, quantised alpha), so it
         // comes from the per-context unit cache below and composes under translate + scale — no
         // per-node gradient re-creation, at any node count.
-        const haloAlpha = quantisedAlpha(glowStrength * opacity * appearance.glow);
+        const haloAlpha = quantisedAlpha(denseGlowStrength * opacity * appearance.glow);
         const unit = canTransform
           ? cachedUnitRadial(context, `halo\u0000${lit}\u0000${haloAlpha}`, 0, 0, 0, 1, [
             { offset: 0, colour: rgbaChannels(litChannels, haloAlpha) },
@@ -1601,6 +2083,31 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         }
       }
     }
+    // D082-B1c BEGIN: at rest the cached unit outline preserves the organic body;
+    // moving frames use one disc and never evaluate soma harmonics or lobe area.
+    if (canopyDenseNeural) {
+      context.fillStyle = rgbaChannels(litChannels, opacity);
+      context.beginPath();
+      const points = moving ? undefined : cachedCanopySomaOutlinePacked(geometry, node.id);
+      if (!points) context.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      else {
+        const axis = node.axis ?? { x: 1, y: 0, z: 0 };
+        const q = project({ x: node.position.x + axis.x, y: node.position.y + axis.y,
+          z: node.position.z + axis.z });
+        const angle = Math.atan2(q.y - p.y, q.x - p.x);
+        const cos = Math.cos(angle), sin = Math.sin(angle);
+        for (let index = 0; index < points.length; index += 2) {
+          const x = p.x + radius * (cos * points[index]! - sin * points[index + 1]!);
+          const y = p.y + radius * (sin * points[index]! + cos * points[index + 1]!);
+          if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+        }
+        context.closePath?.();
+      }
+      context.fill();
+      context.globalAlpha = 1;
+      continue;
+    }
+    // D082-B1c END.
     context.beginPath();
     if (geometry.morphology === "neural") {
       // An oriented, organic soma: the ellipse radii carry the connection-driven elongation plus the
@@ -1631,19 +2138,26 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           : somaDrawnElongation(projectedEccentricity, harmonics);
       }
       const major = radius * eccentricity, minor = radius;
-      const steps = simplified ? 24 : moving ? 32 : NEURAL_SOMA_MAX_VERTICES;
+      // D082-A-PERF BEGIN: only the declared moving tier simplifies the
+      // silhouette; full-quality dense scenes retain their approved outline.
+      const steps = moving ? 12 : simplified ? 24 : NEURAL_SOMA_MAX_VERTICES;
+      // D082-A-PERF END
       const cosA = Math.cos(angle), sinA = Math.sin(angle);
       const irregularityScale = somaIrregularityScale(radius);
+      // D082-A-PERF BEGIN: reuse dimensionless lobe/outline samples across zoom steps.
+      const cachedSilhouette = frame && !moving ? cachedSomaSilhouette(node, frame, steps) : null;
+      // D082-A-PERF END
       const somaPath = () => {
         context.beginPath();
         for (let i = 0; i < steps; i += 1) {
           const theta = (i / steps) * Math.PI * 2;
-          const bulge = 1 + clamp(
+          const bulge = moving ? 1 : cachedSilhouette ? 1 : 1 + clamp(
             somaOutlineIrregularity(harmonics, theta) * irregularityScale * SOMA_IRREGULARITY_BOOST,
             -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
-          const polarAngle = Math.atan2(minor * Math.sin(theta), major * Math.cos(theta)) + angle;
-          const silhouette = bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1)
-            * somaLobeFactor(frame?.lobes ?? [], polarAngle, frame?.lobeAreaScale);
+          const polarAngle = cachedSilhouette ? 0 : Math.atan2(minor * Math.sin(theta), major * Math.cos(theta)) + angle;
+          const silhouette = (cachedSilhouette?.[i] ?? (bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1)
+            * somaLobeFactor(frame?.lobes ?? [], polarAngle, frame?.lobeAreaScale)))
+            * (node.degree === 1 ? NEURAL_LEAF_BODY_SCALE : 1);
           const ex = major * Math.cos(theta) * silhouette;
           const ey = minor * Math.sin(theta) * silhouette;
           const x = p.x + cosA * ex - sinA * ey;
@@ -1652,9 +2166,24 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         }
         context.closePath?.();
       };
-      // D-072 V5: the soma body is one nearly opaque, clearly visible shape — no soft membrane
-      // wash toward a transparent edge. The brighter nucleus below keeps it organic.
-      context.fillStyle = rgbaChannels(litChannels, opacity);
+      // D082-A-NEURALe BEGIN: erase the portion of every root hidden by the soma before
+      // painting the body. Source-over otherwise adds two 0.9-alpha white fills and
+      // exposes a bright, hard-edged patch at the junction. The same path is reused
+      // for subtraction and fill; no extra tessellation or offscreen surface is needed.
+      if (!testHook()?.hideEdges) {
+        const previousComposite = context.globalCompositeOperation;
+        const previousAlpha = context.globalAlpha;
+        context.globalCompositeOperation = "destination-out";
+        context.globalAlpha = 1;
+        context.fillStyle = "rgb(0, 0, 0)";
+        somaPath();
+        context.fill();
+        context.globalCompositeOperation = previousComposite;
+        context.globalAlpha = previousAlpha;
+      }
+      // D082-A-NEURALe END
+      // D082-A-NEURAL: match the root's 0.9 base alpha where it emerges from the outline.
+      context.fillStyle = rgbaChannels(litChannels, Math.min(opacity, 0.9));
       somaPath();
       context.fill();
       // Brighter small nucleus inside the body, oriented with the soma; its gradient is cached per
@@ -1796,6 +2325,13 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   }
   // Names come last, above every pearl and arc, so no label is ever covered by its own drawing.
   if (!moving || projection === "2d") drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+  // D082-B1c BEGIN: paired with overlay and restore marks for the browser profile.
+  // D082-B1f BEGIN: only the settled draw of this exact geometry can release readiness.
+  if (canopyDenseNeural) presentCanopySomaFrame(canopyHost, geometry, !moving && canopySomataPrepared(geometry));
+  // D082-B1f END
+  if (canopyDenseNeural) performance.mark('d082-b1c:canopy-product-draw', { detail: {
+    durationMs: performance.now() - canopyDrawBegan, moving, nodes: geometry.nodes.length } });
+  // D082-B1c END.
 }
 
 // ---------------------------------------------------------------- D-072 separate flow layer
@@ -1864,10 +2400,34 @@ export function drawFlowLayer(context: CanvasRenderingContext2D, geometry: Morph
     || cache.focusIds !== style.interaction?.focusIds || cache.dimFocus !== style.interaction?.dimFocus
     || cache.anchors.length !== anchors.length || cache.anchors.some((value, index) => value !== anchors[index])) {
     const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
-    const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance) : null;
-    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames, bounds);
-    const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds,
-      new Set(paints.map(paint => paint.edgeId)));
+    // D082-A-PERF BEGIN: selection formerly ran after paints for every drawn
+    // segment. Rank eligible exploratory edges first, then use the original
+    // paint clipping to identify the first 60 actually visible ones.
+    const drawable = new Set<string>();
+    for (const part of geometry.drawnSegments) if (part.samples.length >= 2
+      && style.edges.get(part.edgeId)?.presentation?.category === "exploratory") drawable.add(part.edgeId);
+    let budget = Math.min(FLOW_ANIMATED_EDGE_BUDGET, drawable.size);
+    let paints: MorphologyEdgePaint[] = [];
+    let animatedEdges: ReadonlySet<string> = new Set();
+    do {
+      const candidates = selectAnimatedFlowEdges(geometry, style, project, bounds, drawable, budget);
+      const endpoints = geometry.morphology === "neural" ? new Set<string>() : null;
+      if (endpoints) for (const edge of geometry.edges) if (candidates.has(edge.id)) {
+        endpoints.add(edge.source); endpoints.add(edge.target);
+      }
+      const somaFrames = endpoints ? neuralSomaFrames(geometry, project, style, contract, appearance,
+        projection, false, endpoints) : null;
+      paints = buildEdgePaints(geometry, style, project, appearance, contract, projection,
+        somaFrames, bounds, candidates);
+      // clipEdgePaint is the authoritative visibility test. A prefix may
+      // contain offscreen edges, so expand until 60 visible edges are known.
+      const painted = new Set(paints.map(paint => paint.edgeId));
+      animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds, painted);
+      if (painted.size >= FLOW_ANIMATED_EDGE_BUDGET || budget >= drawable.size
+        || candidates.size < budget) break;
+      budget = Math.min(drawable.size, budget * 2);
+    } while (true);
+    // D082-A-PERF END
     cache = { geometry, project, style, projection, boundsWidth: bounds.width, boundsHeight: bounds.height,
       canvasWidth: context.canvas.width, canvasHeight: context.canvas.height, appearanceKey,
       hoverId: style.interaction?.hoverId, focusIds: style.interaction?.focusIds,

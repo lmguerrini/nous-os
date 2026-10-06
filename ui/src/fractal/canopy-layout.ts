@@ -4,8 +4,42 @@ import type { Reading } from '../review/view-contract.ts';
 
 export const CANOPY_RATIO = 0.64;
 export const CANOPY_TURN = 42 * Math.PI / 180;
-export const CANOPY_VERSION = 'c4-readable-canopy-v3';
+// The least integer tilt meeting the existing C3 volume threshold; projected
+// displacement from the legacy presentation is reported separately.
+export const CANOPY_SPATIAL_TILT = 66 * Math.PI / 180;
+// One fixed display similarity fitted to the D-081 Adatta camera's projected
+// reference snapshot (weighted by hierarchy level). It does not alter the maps.
+export const CANOPY_SPATIAL_DISPLAY_SCALE = 1.1646668795276887;
+export const CANOPY_SPATIAL_DISPLAY_ROTATION: CanopyMatrix3 = [
+  0.24589704368586743, -0.21760416813696506, -0.9445544293030285,
+  0.7260160639336389, 0.6869904530400668, 0.030737474556478673,
+  0.6422112727263957, -0.693319943057477, 0.32691304308932034,
+];
+export const CANOPY_VERSION = 'c4-readable-canopy-v4-stationary-3d';
 export type CanopyPoint = Readonly<{ x: number; y: number; z: number }>;
+export type CanopyMatrix3 = readonly [number, number, number, number, number, number, number, number, number];
+export function canopySpatialDisplayPoint(point: CanopyPoint): CanopyPoint {
+  const m = CANOPY_SPATIAL_DISPLAY_ROTATION, scale = CANOPY_SPATIAL_DISPLAY_SCALE;
+  return { x: scale * (m[0] * point.x + m[1] * point.y + m[2] * point.z),
+    y: scale * (m[3] * point.x + m[4] * point.y + m[5] * point.z),
+    z: scale * (m[6] * point.x + m[7] * point.y + m[8] * point.z) };
+}
+const IDENTITY3: CanopyMatrix3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+/** Row-major Rz(±42°) Rx(±tilt); the bit is one address symbol, not a hierarchy level. */
+export function canopySpatialRotation(bit: '0' | '1'): CanopyMatrix3 {
+  const sign = bit === '0' ? -1 : 1;
+  const c = Math.cos(CANOPY_TURN), s = sign * Math.sin(CANOPY_TURN);
+  const ct = Math.cos(CANOPY_SPATIAL_TILT), st = sign * Math.sin(CANOPY_SPATIAL_TILT);
+  return [c, -s * ct, s * st, s, c * ct, -c * st, 0, st, ct];
+}
+const ROTATIONS = { '0': canopySpatialRotation('0'), '1': canopySpatialRotation('1') } as const;
+function multiply3(a: CanopyMatrix3, b: CanopyMatrix3): CanopyMatrix3 {
+  const result = Array<number>(9);
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++)
+    result[row * 3 + col] = a[row * 3]! * b[col]! + a[row * 3 + 1]! * b[3 + col]!
+      + a[row * 3 + 2]! * b[6 + col]!;
+  return result as unknown as CanopyMatrix3;
+}
 export type CanopyInputNode = Readonly<{ id: string; parent: string | null; level: number;
   title?: string; display_label?: string; importance?: { value: number }; counts?: { descendants: number } }>;
 export type CanopyPosition = Readonly<{ id: string; parentId: string | null; level: number;
@@ -36,6 +70,41 @@ export function canopyBundlesForReading(layout: CanopyLayout, reading: Reading):
     (reading === 'attested' ? bundle.role === 'attested' : bundle.role === 'exploratory'));
 }
 
+const fitAnchorCache = new WeakMap<CanopyLayout, Partial<Record<'2d' | '3d', readonly string[]>>>();
+/** Real extreme IDs make Adatta frame the full canopy in either projection. */
+export function canopyFitAnchorIds(layout: CanopyLayout, projection: '2d' | '3d'): readonly string[] {
+  const cached = fitAnchorCache.get(layout)?.[projection];
+  if (cached) return cached;
+  const point = (row: CanopyPosition) => projection === '3d' ? row.point3d : row.point;
+  const anchors = new Set<string>();
+  for (const axis of projection === '3d' ? ['x', 'y', 'z'] as const : ['x', 'y'] as const) {
+    let minimum: CanopyPosition | null = null, maximum: CanopyPosition | null = null;
+    for (const row of layout.positions.values()) {
+      if (!minimum || point(row)[axis] < point(minimum)[axis] ||
+        point(row)[axis] === point(minimum)[axis] && compare(row.id, minimum.id) < 0) minimum = row;
+      if (!maximum || point(row)[axis] > point(maximum)[axis] ||
+        point(row)[axis] === point(maximum)[axis] && compare(row.id, maximum.id) > 0) maximum = row;
+    }
+    if (minimum) anchors.add(minimum.id);
+    if (maximum) anchors.add(maximum.id);
+  }
+  if (projection === '3d') for (const dx of [-1, 0, 1]) for (const dy of [-1, 0, 1])
+    for (const dz of [-1, 0, 1]) {
+      if (dx === 0 && dy === 0 && dz === 0) continue;
+      let best: CanopyPosition | null = null, value = -Infinity;
+      for (const row of layout.positions.values()) {
+        const p = row.point3d, next = dx * p.x + dy * p.y + dz * p.z;
+        if (next > value || next === value && best && compare(row.id, best.id) < 0) {
+          best = row; value = next;
+        }
+      }
+      if (best) anchors.add(best.id);
+    }
+  const result = [...anchors];
+  fitAnchorCache.set(layout, { ...fitAnchorCache.get(layout), [projection]: result });
+  return result;
+}
+
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 /** Complete prefix code: nine roots occupy both halves of one binary canopy. */
 const bitWord = (index: number, count: number): string => {
@@ -49,16 +118,17 @@ const bitWord = (index: number, count: number): string => {
 };
 type Frame = { x: number; y: number; angle: number; step: number };
 const initial: Frame = { x: 0, y: 0, angle: -Math.PI / 2, step: 485 };
-type SpatialFrame = { p: CanopyPoint; step: number; depth: number };
-const initial3d: SpatialFrame = { p: { x: 0, y: 0, z: 0 }, step: initial.step, depth: 0 };
-function advance3d(frame: SpatialFrame, bit: string, planar: Frame): SpatialFrame {
-  const sign = bit === '0' ? -1 : 1;
+type SpatialFrame = { p: CanopyPoint; step: number; orientation: CanopyMatrix3 };
+const initial3d: SpatialFrame = { p: { x: 0, y: 0, z: 0 }, step: initial.step, orientation: IDENTITY3 };
+function advance3d(frame: SpatialFrame, bit: '0' | '1'): SpatialFrame {
+  const orientation = multiply3(frame.orientation, ROTATIONS[bit]);
   const step = frame.step * CANOPY_RATIO;
-  // Preserve the planar fork angles exactly. Alternating, bounded depth separates
-  // nested forks without rotating the canopy into an unreadable side view.
-  const torsion = frame.depth % 2 === 0 ? 1 : -0.72;
-  return { p: { x: planar.x, y: planar.y, z: frame.p.z - sign * step * 1.15 * torsion },
-    step, depth: frame.depth + 1 };
+  // In the display frame, 485*S_word(0) is the sum of these rotated unit stems.
+  // Neither matrix nor scale depends on depth, sibling count or source metadata.
+  const stem = canopySpatialDisplayPoint({ x: -step * orientation[1],
+    y: -step * orientation[4], z: -step * orientation[7] });
+  return { p: { x: frame.p.x + stem.x, y: frame.p.y + stem.y, z: frame.p.z + stem.z },
+    step, orientation };
 }
 function advance(frame: Frame, bit: string): Frame {
   const sign = bit === '0' ? -1 : 1;
@@ -102,7 +172,7 @@ export function computeCanopyLayout(nodes: readonly CanopyInputNode[], edges: re
       let address = prefix;
       for (const bit of word) {
         const next = advance(cursor, bit);
-        const next3d = advance3d(cursor3d, bit, next);
+        const next3d = advance3d(cursor3d, bit as '0' | '1');
         address += bit;
         const rail = branch.get(address) ?? { from: point(cursor), to: point(next),
           from3d: cursor3d.p, to3d: next3d.p, count: 0, virtual: parentId === null };
@@ -153,8 +223,7 @@ export function computeCanopyLayout(nodes: readonly CanopyInputNode[], edges: re
   };
   const c3x = centre3d('x'), c3y = centre3d('y'), c3z = centre3d('z');
   const shift3d = (value: CanopyPoint): CanopyPoint =>
-    // The same depth-axis presentation expansion used by spatial graph views.
-    ({ x: value.x - c3x, y: (value.y - c3y) * 1.5, z: value.z - c3z });
+    ({ x: value.x - c3x, y: value.y - c3y, z: value.z - c3z });
   for (const [id, row] of positions)
     positions.set(id, { ...row, point: shift(row.point), point3d: shift3d(row.point3d) });
 

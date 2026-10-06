@@ -6,6 +6,9 @@ import { COMPLETE_IDLE_MS, completeQuality, completeRelations, completeRoute, co
 import { completeIndraOverlay } from './completa-indra.ts';
 import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-routing.ts';
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
+// D082-A-PLUSN BEGIN
+import { hiddenMemberCounts, withHiddenMemberCount, withHiddenMemberLabels } from './hidden-member-count.ts';
+// D082-A-PLUSN END
 import type { GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
 // D081-P3c BEGIN
@@ -22,7 +25,9 @@ import { relationVisible } from './reading.ts';
 import { buildVisibilityWitness, countAggregateRepresentation, countExcludedRelations } from './visibility-witness.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, projectionPick, projectionVisibility, semanticZoom, typedV2Path, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
-import type { V2Index, V2Node } from './v2-core.ts';
+// D082-A-DENSITY BEGIN
+import type { V2Index, V2Node, V2Visible } from './v2-core.ts';
+// D082-A-DENSITY END
 import type { TypedPathStep } from './v2-relations.ts';
 import type { AnalyticalDomain, Dimension, NaturalArrangement, PickResult, ProjectionRequest, ProjectionResult, ProjectionRenderer, RawJson, RecursiveLevel, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec3, VisualRelation } from '../projection/contract-types.ts';
 import { selectAnalyticalDomain } from '../projection/domain.ts';
@@ -49,21 +54,25 @@ import type { Render3fRendererHandle } from '../render3f/mount.tsx';
 import { resolvedNodeBounds } from '../render3f/camera.tsx';
 import type { VisualGraph } from '../engine/contract.ts';
 import { structuralVisualPresentation } from '../engine/presentation-options.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, recentDisclosedPage, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, densityConnectedNodes, densityDisclosure, densityRelationsByReading, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, recentDisclosedPage, readingIsolatedNodeIds, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { anyPointOutsideInsets, initialViewInsets } from './insets.ts';
 import type { Insets } from './view-contract.ts';
+// D082-A-SWITCH BEGIN
+import type { Reading } from './view-contract.ts';
+// D082-A-SWITCH END
 import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
 import { summarizeD081Bundles } from './toolbar-status.ts';
 import { createProductView } from './product-view.ts';
 // C2 Fractal-only integration imports. Natural and Indra do not call these modules.
-import { CANOPY_RATIO, computeCanopyLayout, type CanopyLayout } from '../fractal/canopy-layout.ts';
+import { CANOPY_RATIO, type CanopyLayout } from '../fractal/canopy-layout.ts';
+import { computeCanopyLayoutOffThread } from '../fractal/canopy-worker.ts';
 import { certifyCanopy } from '../fractal/canopy-certificate.ts';
-import { adaptFractalDates, fractalDateRuleCounts } from '../fractal/date-adapter.ts';
+import { fractalDateRuleCounts } from '../fractal/date-adapter.ts';
 // D081-P7b BEGIN: Fractal-only ink and status contracts.
-import { canopyBandForZoom, canopyMarks, canopyZoomStep, type CanopyMark } from '../fractal/canopy-reveal.ts';
-import { canopyGraphStatus } from '../fractal/canopy-status.ts';
+import { canopyBandForZoom, canopyDensityMarks, canopyZoomStep, type CanopyMark } from '../fractal/canopy-reveal.ts';
+import { canopyGraphStatus, canopyRelationDenominators } from '../fractal/canopy-status.ts';
 // D081-P7 BEGIN
 import { canopyEvidenceArcs } from '../fractal/evidence-edges.ts';
 // D081-P7 END
@@ -73,11 +82,24 @@ import type { D081GraphStatus } from './toolbar-status.ts';
 // D082-B2 BEGIN: Geometry Lab laws share the classic renderer without altering its Natural routes.
 import type { TopologyId, TopologyLayout, TopologySnapshot, TopologyWitness } from '../topology/contract.ts';
 import { TOPOLOGY_LAWS, topologySupport } from '../topology/registry.ts';
-import { computeTopologyLayout, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
+// D082-LAB-FIX2 BEGIN
+import { computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
+// D082-LAB-FIX2 END
 import { mountTopologyGuides } from '../topology/guide-layer.ts';
 // D082-B2 END.
+// D082-LAB-LULL-UI BEGIN: the Lullian inquiry table mounts in the side panel (P8, Build B).
+import { LullInquiryMount, lullReadingLabel } from './lull-inquiry-mount.ts';
+// D082-LAB-LULL-UI END.
 // D081-P7b END.
 import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
+// D082-B-NOTICE BEGIN
+import { showLabNotice } from './lab-notice.ts';
+// D082-B-NOTICE END
+// D082-A-HUD BEGIN: page-owned readiness until renderers publish presented-frame counts.
+import { reportRenderReadiness, renderPercent } from './render-readiness.ts';
+import type { RenderReadiness, StageCounts } from './render-readiness.ts';
+import { withRenderProgress } from './toolbar-status.ts';
+// D082-A-HUD END
 import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import { centeringNodeId } from './panel.ts';
 import type { V2Category } from './palette.ts';
@@ -131,6 +153,14 @@ export function projectionFlagEnabled(search: string, hash: string): boolean {
         return false;
     }
 }
+// D082-A-ANCHORB BEGIN: hash-only opt-in travels with the serialized view hash.
+export function naturalCompletaAnchorEnabled(hash: string): boolean {
+    try {
+        return new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash)
+            .get('naturalAnchor') === 'completa';
+    } catch { return false; }
+}
+// D082-A-ANCHORB END
 function defaultPipelineEnabled(): boolean {
     if (typeof location !== 'object' || location === null) return false;
     return projectionFlagEnabled(location.search, location.hash);
@@ -546,6 +576,26 @@ export function confirmFitDue(state: {
 }): boolean {
     return state.scheduledEpoch === state.currentEpoch && !state.userMoved && state.anyOutside;
 }
+// D082-A-ZOOMLAB BEGIN: keep fit bookkeeping compatible with the small structural page harnesses.
+export function densityStableOverviewRatio(
+    ratiosByDensity: ReadonlyMap<string, number>, mostRecentByView: ReadonlyMap<string, number>,
+    viewKey: string, density: string, overviewRatio: number | null, liveRatio: number,
+): number {
+    return ratiosByDensity.get(`${viewKey}/${density}`) ?? mostRecentByView.get(viewKey) ?? overviewRatio ?? liveRatio;
+}
+
+function rememberDensityOverviewRatio(page: object, ratio: number): void {
+    const record = page as { overviewRatio?: number | null; overviewRatioByDensity?: Map<string, number>;
+        overviewRatioKey?: () => string; overviewRatioViewKey?: () => string;
+        mostRecentOverviewRatioByView?: Map<string, number> };
+    record.overviewRatio = ratio;
+    const key = record.overviewRatioKey?.();
+    if (key !== undefined) record.overviewRatioByDensity?.set(key, ratio);
+    const viewKey = record.overviewRatioViewKey?.();
+    if (viewKey !== undefined) record.mostRecentOverviewRatioByView?.set(viewKey, ratio);
+}
+// D082-A-ZOOMLAB END
+
 export class V2Page {
     // D082-B2 BEGIN: fixed full snapshot; density only selects draw IDs from its law coordinates.
     private topology: TopologyId = 'natural';
@@ -578,6 +628,15 @@ export class V2Page {
         return witness ? { witness, path: this.topologyIndra ? path : [] } : null;
     }
     // D082-B2 END
+    // D082-LAB-LULL-UI BEGIN: the inquiry table; choosing a pair/triple highlights exactly
+    // the real relations it lists, through the existing emphasis path below.
+    // D082-LAB-FIX6 BEGIN: route only actual inquiry selection transitions into graph emphasis.
+    private readonly lullInquiryMount = new LullInquiryMount({ onSelectionChange: selection => {
+        this.handleLullInquirySelectionChange(selection);
+    } });
+    private lullHighlightApplied = false;
+    // D082-LAB-FIX6 END.
+    // D082-LAB-LULL-UI END.
     readonly history = new DisclosureHistory();
     readonly index: V2Index;
     readonly manifest: GraphManifest;
@@ -655,6 +714,11 @@ export class V2Page {
     private d081LastFullMs = 0;
     private d081Quality: 'movimento' | 'recupero' | 'completa' = 'completa';
     private d081QualityTimer: ReturnType<typeof setTimeout> | null = null;
+    // D082-A-HUD BEGIN: monotone page state id, advanced only on actual status transitions.
+    private d082Frame = 0;
+    private d082ReadinessKey = '';
+    private d082StatusPercent: number | null = null;
+    // D082-A-HUD END
     // D081-P3g BEGIN: a 3D status cannot become full before its settled label pass.
     private d081LabelsReady = true;
     private d081PointerMoved = false;
@@ -689,7 +753,67 @@ export class V2Page {
         // D081-FRACTAL-MERGE END.
         if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function')
             window.dispatchEvent(new CustomEvent('d081:status', { detail: this.d081Status() }));
+        // D082-A-HUD BEGIN: interim counts are the real page-visible sets; renderer producers replace this.
+        this.d082PublishReadiness();
+        // D082-A-HUD END
     }
+    // D082-A-HUD BEGIN: temporary real-count producer; no time-based progress is synthesized.
+    private d082PublishReadiness() {
+        // d081Publish already maintains these counts while it builds the requested scene.
+        // Keep this hot path O(1); in particular, do not enumerate `rendered` here.
+        const visible = this.d081Metrics.nodes.visible;
+        const edgesDrawn = this.d081Quality === 'movimento' && this.density === 'complete'
+            && this.indraPearlsView() ? 0 : this.d081Metrics.edges.drawn;
+        const nodeRequired = Math.max(visible, this.density === 'complete'
+            ? this.datasetNodeCount : this.lodCounts.nodes.available);
+        const edgeRequired = Math.max(edgesDrawn, this.renderedRelations.size);
+        const reducedMotion = typeof window.matchMedia === 'function'
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const counts = (required: number, loaded: number, drawn: number): StageCounts => ({
+            required: Math.max(0, Math.trunc(required)),
+            loaded: Math.min(Math.max(0, Math.trunc(required)), Math.max(0, Math.trunc(loaded))),
+            drawn: Math.min(Math.max(0, Math.trunc(loaded)), Math.max(0, Math.trunc(drawn))),
+        });
+        const quality = this.refreshPending > 0 ? 'recupero' : this.d081Quality;
+        const full = quality === 'completa';
+        const decor = {
+            labels: this.d081LabelsReady,
+            background: full,
+            glow: full,
+            animation: full && this.flowMotion && !reducedMotion,
+        };
+        const next: RenderReadiness = {
+            frame: this.d082Frame + 1,
+            view: `${this.axes.organization}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`,
+            quality,
+            ladder: visible === 0 ? 0 : full ? 4 : quality === 'recupero' ? 2 : 1,
+            nodes: counts(nodeRequired, visible, visible),
+            // Until the renderer's main-edge predicate lands, current scene edges form the available main set.
+            mainEdges: counts(edgeRequired, edgesDrawn, edgesDrawn),
+            allEdges: counts(edgeRequired, edgesDrawn, edgesDrawn),
+            decor,
+            decorApplicable: { animation: this.flowMotion && !reducedMotion },
+            depthLabel: this.d081Metrics.depth.label,
+        };
+        const key = JSON.stringify({ view: next.view, quality: next.quality, ladder: next.ladder,
+            nodes: next.nodes, mainEdges: next.mainEdges, allEdges: next.allEdges,
+            decor: next.decor, decorApplicable: next.decorApplicable, depthLabel: next.depthLabel });
+        // d081Emit also serves UI paths that do not change render readiness. Publish only
+        // meaningful state transitions; never turn an idle frame or repeated event into work.
+        if (key === this.d082ReadinessKey) return;
+        this.d082ReadinessKey = key;
+        this.d082Frame++;
+        reportRenderReadiness(next);
+        const percent = renderPercent(next);
+        if (percent !== this.d082StatusPercent) {
+            this.d082StatusPercent = percent;
+            const statusLine = typeof document !== 'undefined' ? document.getElementById('human-status') : null;
+            if (!statusLine) return;
+            statusLine.textContent = withRenderProgress(statusLine.textContent ?? '', renderPercent(next));
+            statusLine.title = statusLine.textContent;
+        }
+    }
+    // D082-A-HUD END
     private d081Interaction() {
         this.d081LastInteraction = performance.now();
         this.d081Quality = 'movimento';
@@ -748,6 +872,26 @@ export class V2Page {
                     : `La densità ${this.density === 'essential' ? 'Essenziale' : 'Bilanciata'} mostra una selezione dei nodi. Zooma o apri un contenitore per rivelarne altri, oppure scegli «Completa» per rappresentarli tutti.`,
             // D081-P3b END
         };
+        // D082-A-DENSITY BEGIN: expose exact exclusion classes for the mounted lower
+        // density. The full eligible denominator continues to follow the reading.
+        if (this.density !== 'complete' && this.index.nodes.length > V2_CAP &&
+            (this.axes.organization === 'natural' || this.axes.organization === 'indra')) {
+            const pool = this.visible().nodes.length;
+            // D082-A-SWITCH BEGIN: reuse the same immutable source projection as routing.
+            const eligible = this.densityRelations(reading).edges;
+            // D082-A-SWITCH END
+            const possible = eligible.filter(edge => this.rendered.has(edge.source) && this.rendered.has(edge.target)).length;
+            const label = this.density === 'essential' ? 'Essenziale' : 'Bilanciata';
+            this.d081Metrics.hint = `Densità ${label}: ${formatCount(visible)} nodi visibili su ${formatCount(pool)} candidati; `
+                + `${formatCount(this.datasetNodeCount - pool)} esclusi dalla selezione semantica, `
+                + `${formatCount(pool - visible)} oltre il budget di densità. `
+                + `Archi: ${formatCount(route.drawn.length)} disegnati, `
+                + `${formatCount(eligible.length - possible)} con estremità non visibili, `
+                + `${formatCount(Math.max(0, possible - route.drawn.length))} oltre il budget di linee.`;
+            this.d081Metrics.limit = { kind: 'densità', value: DENSITY_BUDGETS[this.density].nodes,
+                reason: `${label}: selezione semantica e budget per leggibilità.` };
+        }
+        // D082-A-DENSITY END
         const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
         if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.datasetNodeCount)} rappresentati · ${formatCount(route.drawn.length)} archi`;
         if (this.d081Quality !== 'movimento' && this.d081LastInteraction) this.d081FinishIfReady();
@@ -764,7 +908,14 @@ export class V2Page {
     // D081-P6c BEGIN: an explicit fit reuses the exact settled camera for this scene.
     private readonly canonicalFitCameras = new Map<string, ReturnType<ProductView['readCamera']>>();
     private canonicalFitKey(): string {
-        return `${this.lastBoundsKey}|${JSON.stringify(this.insets)}|${this.axes.brain === true}`;
+        // D082-A-DENSITY BEGIN: classic Indra fits the complete hierarchy at every density.
+        // Keep its canonical fit camera keyed to that stable shell, not the disclosed bounds
+        // (which legitimately change as the density reveals more nodes).
+        const bounds = this.axes.organization === 'indra' && this.index.nodes.length > V2_CAP
+            ? `${this.axes.organization}|${this.axes.projection}|${this.axes.morphology}`
+            : this.lastBoundsKey;
+        return `${bounds}|${JSON.stringify(this.insets)}|${this.axes.brain === true}`;
+        // D082-A-DENSITY END.
     }
     // D081-P6c END.
     /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
@@ -786,8 +937,9 @@ export class V2Page {
     private pointerFocusTimer: number | null = null;
     private revealRoute: RouteResult | null = null;
     // D-080 A5b reveal-witness region: coalesce expensive audit construction after settle.
-    private revealWitnessTimer: ReturnType<typeof setTimeout> | null = null;
+    // D082-A-PERF BEGIN: proof records are built only by an explicit proof read.
     private pendingRevealBuild: (() => void) | null = null;
+    // D082-A-PERF END
     private routePickById = new Map<string, PickResult>();
     private revealRecord: (ReturnType<typeof buildRevealWitness> & {
         band: RevealState['band']; zoom: number;
@@ -799,6 +951,26 @@ export class V2Page {
     private cursor: { x: number; y: number } | null = null;
     private zoomOn = true;
     private overviewRatio: number | null = null;
+    // D082-A-ZOOMLAB BEGIN: semantic thresholds follow the active density fit without changing
+    // the density-stable camera or the page's layout.
+    private readonly overviewRatioByDensity = new Map<string, number>();
+    private readonly mostRecentOverviewRatioByView = new Map<string, number>();
+    private overviewRatioViewKey(): string {
+        return `${this.cameraKey()}/${this.axes.morphology}/${this.axes.reading}`;
+    }
+    private overviewRatioKey(): string {
+        return `${this.overviewRatioViewKey()}/${this.density}`;
+    }
+    private rememberOverviewRatio(ratio: number): void {
+        this.overviewRatio = ratio;
+        this.overviewRatioByDensity.set(this.overviewRatioKey(), ratio);
+        this.mostRecentOverviewRatioByView.set(this.overviewRatioViewKey(), ratio);
+    }
+    private semanticOverviewRatio(liveRatio: number): number {
+        return densityStableOverviewRatio(this.overviewRatioByDensity, this.mostRecentOverviewRatioByView,
+            this.overviewRatioViewKey(), this.density, this.overviewRatio, liveRatio);
+    }
+    // D082-A-ZOOMLAB END
     private suppressZoomUntil = 0;
     private lastZoomRatio: number | null = null;
     private pending = Promise.resolve();
@@ -815,38 +987,66 @@ export class V2Page {
     private readonly typedByDefault: boolean;
     // C2 FRACTAL-ONLY BEGIN: isolated to the large reference dataset; small projection fixtures stay intact.
     private canopy: CanopyLayout | null = null;
+    // D082-B1 BEGIN: share one full-snapshot layout job across refreshes.
+    private canopyPending: Promise<CanopyLayout> | null = null;
+    private canopyWorkerNotice: string | null = null;
+    // D082-B1 END.
     private canopyRailLayer: CanopyRailLayer | null = null;
     // D081-P7b BEGIN: publish the counts of Fractal ink and represented real IDs.
     private canopyMarksShown: readonly CanopyMark[] = [];
     private canopyStatus: D081GraphStatus | null = null;
     private canopyStatusSignature = '';
     private canopyStatusAt = 0;
+    private canopyStatusTimer: ReturnType<typeof setTimeout> | null = null;
     private canopyLastQualityMs = 0;
     private canopyQualityRecorded = false;
+    // D082-B1c BEGIN: one reading has one denominator at every density.
+    private canopyDenominators = new Map<string, Readonly<{ eligible: number; total: number }>>();
+    private canopyCompleteRelations = new Map<string, ReturnType<typeof completeRelations>>();
+    private canopyCompleteRoutes = new Map<string, RouteResult>();
+    // D082-B1c END.
     private readonly coreStatusGetter = () => this.d081Status();
     private readonly canopyStatusGetter = () => this.canopyStatus && ({ ...this.canopyStatus,
         msSinceInteraction: Math.max(0, performance.now() - this.canopyStatusAt) });
     private publishCanopyStatus(): void {
         if (!this.canopyActive() || !this.canopyRailLayer) return;
         const stats = this.canopyRailLayer.stats();
-        const eligibleEdges = this.index.edges.filter(edge => relationVisible(
-            edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading)).length;
+        // D082-B1c BEGIN: the full snapshot defines both denominators at every density.
+        let denominators = this.canopyDenominators.get(this.axes.reading);
+        if (!denominators) {
+            denominators = canopyRelationDenominators(
+                { ...this.index, nodes: [...this.canopyDatasetNodes] }, this.axes.reading);
+            this.canopyDenominators.set(this.axes.reading, denominators);
+        }
+        // D082-B1c END.
         const elapsed = Math.max(0, performance.now() - this.canopyStatusAt);
-        if (elapsed >= 400 && !this.canopyQualityRecorded) {
+        if (elapsed >= 400 && stats.paintedFull && stats.motionNodes === null && !this.canopyQualityRecorded) {
             this.canopyLastQualityMs = elapsed;
             this.canopyQualityRecorded = true;
         }
         // D081-P7d BEGIN: dataset count excludes drawer-loaded passages.
-        const status = canopyGraphStatus({ marks: this.canopyMarksShown, visible: this.rendered.size,
-            totalNodes: this.canopyDatasetNodes.length, evidenceDrawn: stats.evidenceDrawn,
+        const status = canopyGraphStatus({ marks: this.canopyMarksShown,
+            visible: stats.motionNodes ?? this.rendered.size,
+            totalNodes: this.canopyDatasetNodes.length,
+            evidenceDrawn: this.density === 'complete' && stats.motionNodes === null
+                ? stats.paintedFull ? stats.submittedEdges : 0 : stats.evidenceDrawn,
             evidenceBundles: stats.evidenceBundles, evidenceBundled: stats.evidenceBundled,
-            eligibleEdges, totalEdges: this.index.edges.length, lod: this.lod,
-            edgeBudget: this.lod === 'far' ? Math.min(300, DENSITY_BUDGETS[this.density].arcs)
-                : DENSITY_BUDGETS[this.density].arcs,
+            eligibleEdges: denominators.eligible, totalEdges: denominators.total,
+            density: this.density, lod: this.lod,
+            ...(this.density === 'complete' ? {} : { edgeBudget: this.lod === 'far'
+                ? Math.min(300, DENSITY_BUDGETS[this.density].arcs) : DENSITY_BUDGETS[this.density].arcs }),
+            motion: stats.motionNodes !== null, ready: stats.paintedFull,
             msSinceInteraction: elapsed, msToFullQuality: this.canopyLastQualityMs });
         // D081-P7d END.
         const signature = JSON.stringify({ ...status, msSinceInteraction: 0 });
         this.canopyStatus = status;
+        // D082-B1 BEGIN: a static complete scene has no RAF after the full pass.
+        // Publish its settled readiness once without keeping the renderer alive.
+        if (this.canopyStatusTimer) clearTimeout(this.canopyStatusTimer);
+        this.canopyStatusTimer = status.quality !== 'completa' && stats.paintedFull && stats.motionNodes === null
+            ? setTimeout(() => { this.canopyStatusTimer = null; this.publishCanopyStatus(); },
+                Math.max(1, 401 - elapsed)) : null;
+        // D082-B1 END.
         const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
         owner.__d081 = { ...owner.__d081, status: this.canopyStatusGetter };
         if (signature !== this.canopyStatusSignature) {
@@ -862,7 +1062,6 @@ export class V2Page {
     // D081-P7d BEGIN: drawer passage loads are outside the fixed graph snapshot.
     private readonly canopyDatasetNodes: readonly V2Node[];
     // D081-P7d END.
-    private canopyIngested = false;
     private canopyActive(): boolean {
         // D082-B2 BEGIN: the explicit Canopy topology is no longer a legacy experimental flag.
         return this.axes.organization === 'fractal' && !this.topologyIndra && this.index.nodes.length > V2_CAP
@@ -872,16 +1071,28 @@ export class V2Page {
     private async prepareCanopy(): Promise<CanopyLayout> {
         // D081-P7d BEGIN: build the canopy from the immutable dataset snapshot.
         if (this.canopy && this.canopyNodeCount === this.canopyDatasetNodes.length) return this.canopy;
-        // C0 rules are applied to a Fractal-only copy before typed validation. The page and its
-        // Natural/Indra snapshots retain the unmodified source index and date semantics.
-        if (!this.canopyIngested) {
-            const adapted = adaptFractalDates(this.index.nodes.filter(node => node.level <= 4));
-            await normalizeRawLedger({ manifest: this.manifest,
-                index: { schema: 'nousos.review-graph/2', nodes: adapted, edges: this.index.edges } });
-            this.canopyIngested = true;
-        }
+        // D082-B1 BEGIN: layout and static rail geometry are prepared once in a worker.
+        if (this.canopyPending) return this.canopyPending;
+        this.canopyPending = this.prepareCanopySnapshot();
+        try { return await this.canopyPending; }
+        finally { this.canopyPending = null; }
+    }
+    private async prepareCanopySnapshot(): Promise<CanopyLayout> {
+        // D082-B1 END.
+        // D082-B1 BEGIN: the old date-normalization result was discarded here after
+        // a full JSON copy/hash on the main thread. Canopy coordinates do not use dates.
+        // Source dates remain optional; date-adapter rules are unchanged.
+        // D082-B1 END.
         const began = performance.now();
-        const layout = computeCanopyLayout(this.canopyDatasetNodes, this.index.edges);
+        const layout = await computeCanopyLayoutOffThread(this.canopyDatasetNodes, this.index.edges, reason => {
+            this.canopyWorkerNotice = `Avviso: Canopy calcolato sul thread principale (${reason}).`;
+            element('error').textContent = this.canopyWorkerNotice;
+            element('error').hidden = false;
+        });
+        // D082-B1c BEGIN: worker round trip, including transfer and response handling.
+        performance.mark('d082-b1c:canopy-worker-ready', { detail: {
+            durationMs: performance.now() - began, nodes: layout.positions.size } });
+        // D082-B1c END.
         this.recordProjectionPhase('canopyPrecompute', performance.now() - began);
         const certificate = certifyCanopy(layout, this.canopyDatasetNodes, this.index.edges);
         if (!certificate.addressUnique || !certificate.bounded || !certificate.sourceEdgeAccounting)
@@ -909,6 +1120,15 @@ export class V2Page {
     private typedNaturalCache: { raw: ProjectionResult; detail: RelationDetail; active: string | null; result: ProjectionResult } | null = null;
     // D-080 A5b projection/result-adaptation region: completed outputs only, shared across returning modes.
     private readonly pageResults = new PageResultCache<ProjectionResult | LayoutResult>();
+    // D082-A-SWITCH BEGIN: the nine-view Bilanciata tour overflowed the
+    // two-entry projection memo on every step. Keep only completed classic
+    // lower-density layouts in a separate bounded resident set.
+    private readonly switchLayoutResults = new PageResultCache<LayoutResult>(12, 24 * 1024 * 1024);
+    // D082-A-ANCHORB BEGIN: retain the one full Natural layout across density switches.
+    private readonly naturalCompletaLayoutResults = new PageResultCache<LayoutResult>(12, 96 * 1024 * 1024);
+    private readonly naturalCompletaAnchor: boolean;
+    // D082-A-ANCHORB END
+    // D082-A-SWITCH END
     /** Injected clients may be stateful test seams; only the page-owned worker is memoized here. */
     private readonly cacheWorkerResults: boolean;
     private readonly projectionPhases = new Map<string, { count: number; lastMs: number; totalMs: number; maxMs: number }>();
@@ -927,7 +1147,14 @@ export class V2Page {
             const prior = base?.() ?? {};
             return { ...prior, phases: { ...((prior.phases as Record<string, unknown> | undefined) ?? {}),
                 ...Object.fromEntries(this.projectionPhases) },
-                projectionCache: { ...this.pageResults.stats, last: this.projectionCacheOutcome } };
+                // D082-A-SWITCH BEGIN: report the cache that served this product switch.
+                // D082-A-ANCHORB BEGIN: expose the full-layout cache used by option (b).
+                projectionCache: { ...(!this.typedActive() && this.axes.organization === 'natural' && this.naturalCompletaAnchor
+                    ? this.naturalCompletaLayoutResults.stats
+                    : this.typedActive() || this.density === 'complete'
+                        ? this.pageResults.stats : this.switchLayoutResults.stats), last: this.projectionCacheOutcome } };
+                // D082-A-ANCHORB END
+                // D082-A-SWITCH END
         }) as typeof base & { a5bPage?: V2Page };
         wrapped.a5bPage = this;
         (target.__d080 ??= {}).perf = wrapped;
@@ -1014,6 +1241,10 @@ export class V2Page {
         this.palette = palette;
         this.v2Colours = colours;
         this.density = normalizeDensity(density);
+        // D082-A-ANCHORB BEGIN
+        this.naturalCompletaAnchor = typeof location === 'object' && location !== null &&
+            naturalCompletaAnchorEnabled(location.hash);
+        // D082-A-ANCHORB END
         if (typeof window !== 'undefined')
             (window as typeof window & { __d081?: { status?: () => unknown } }).__d081 =
                 { ...(window as typeof window & { __d081?: object }).__d081, status: this.coreStatusGetter };
@@ -1184,6 +1415,14 @@ export class V2Page {
         });
     }
     private visible() {
+        // D082-B1 BEGIN: Canopy Completa uses the immutable full dataset, never V2_CAP.
+        if (this.canopyActive() && this.density === 'complete') {
+            const counts: Record<number, number> = {};
+            for (const node of this.canopyDatasetNodes) counts[node.level] = (counts[node.level] ?? 0) + 1;
+            return { nodes: this.canopyDatasetNodes, edges: this.index.edges, hidden: new Map<string, number>(),
+                capped: false, counts };
+        }
+        // D082-B1 END.
         // D081-P3b BEGIN complete Indra domain
         if (this.density === 'complete' && !this.canopyActive() && (!this.typedActive() || this.indraPearlsView())) return completeVisible(this.index);
         // D081-P3b END
@@ -1193,9 +1432,55 @@ export class V2Page {
         const state = this.canopyActive() ? { ...this.history.state,
             expanded: new Set([...this.history.state.expanded,
                 ...this.index.nodes.filter(node => node.level <= 2).map(node => node.id)]) } : this.history.state;
-        return v2Visible(this.index, state, pages, V2_CAP,
+        const base = v2Visible(this.index, state, pages, V2_CAP,
             this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId);
+        // D082-A-DENSITY BEGIN: the two lower levels share one semantic disclosure.
+        // D082 A-DENSITYc: the pool base is the explicit disclosure only — manual
+        // expansions over the overview, never the reveal controller's zoom admissions
+        // or disclosure a previous density left behind — so the Essenziale and
+        // Bilanciata candidate sets are pure in (dataset, explicit state, selection).
+        return this.density === 'complete' || this.index.nodes.length <= V2_CAP ||
+            (this.axes.organization !== 'natural' && this.axes.organization !== 'indra')
+            ? base : densityDisclosure(this.index, this.densityManualVisible(), this.selected);
+        // D082-A-DENSITY END
     }
+    // D082-A-DENSITY BEGIN: use the unchanged D-081 disclosure as the overview
+    // scaffold before placing any extra lower-density candidates. D082 A-DENSITYc:
+    // explicit only — the reveal controller's auto pages stay out of both the anchor
+    // overview and the candidate pool.
+    private densityManualVisible(): V2Visible {
+        const pages = new Map<string, number>();
+        for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
+        return v2Visible(this.index, this.history.state, pages, V2_CAP,
+            this.history.state.manualOrder.at(-1));
+    }
+    private densityOverview(): V2Visible {
+        return this.densityManualVisible();
+    }
+    private densitySwitchPending = false;
+    private densityStableKey = '';
+    private densityStablePositions = new Map<string, Point3>();
+    // D082-A-PLUSN BEGIN: the mounted product label callback reads the current density.
+    private indraLabelHiddenCounts: ReadonlyMap<string, number> = new Map();
+    // D082-A-PLUSN END
+    // D082-A-SWITCH BEGIN: mode changes revisit the same small approved overview.
+    // Keep completed results by their full layout input, including disclosure and seeds.
+    private readonly densityOverviewResults = new Map<string, LayoutResult>();
+    private densityRelationsMemo: {
+        reading: Reading; nodes: number; edges: number;
+        result: ReturnType<typeof completeRelations>;
+    } | null = null;
+    private densityRelations(reading: Reading): ReturnType<typeof completeRelations> {
+        const memo = this.densityRelationsMemo;
+        if (memo && memo.reading === reading && memo.nodes === this.index.nodes.length &&
+            memo.edges === this.index.edges.length) return memo.result;
+        const result = completeRelations(this.index, reading);
+        this.densityRelationsMemo = { reading, nodes: this.index.nodes.length,
+            edges: this.index.edges.length, result };
+        return result;
+    }
+    // D082-A-SWITCH END
+    // D082-A-DENSITY END
     private disclosureKey() {
         const state = this.history.state;
         return JSON.stringify({ expanded: [...state.expanded].sort(),
@@ -1205,6 +1490,9 @@ export class V2Page {
         return this.index.nodes.map(node => ({ id: node.id, parent: node.parent, level: node.level,
             ...(node.level === 4 ? { passageCount: node.counts.passages } : {}) }));
     }
+    // D082-A-DENSITY BEGIN: D072 reveal priority for the paths that still follow the
+    // camera (Completa and the small capped graphs). D082 A-DENSITYc: the lower
+    // densities no longer call this — their sets are pure in explicit state only.
     private focusedRenderPriority(disclosed: readonly V2Node[]): string[] {
         const cluster = this.revealState.focusClusterId;
         if (!cluster) return [];
@@ -1217,19 +1505,17 @@ export class V2Page {
             [...eligible].filter(id => !this.rendered.has(id)).sort((a, b) =>
                 (byId.get(a)?.level ?? 0) - (byId.get(b)?.level ?? 0) || a.localeCompare(b)));
     }
+    // D082-A-DENSITY END
     private publishReveal(route: RouteResult, rendered: ReadonlySet<string>,
         exclusions?: RevealWitnessInput['exclusions']): void {
+        // D082-A-PERF BEGIN: an idle timer generated the full visibility proof on
+        // every scene revision, even when no observer asked for it.
         this.revealRoute = route;
-        if (this.revealWitnessTimer !== null) clearTimeout(this.revealWitnessTimer);
         const settledRendered = new Set(rendered);
         this.pendingRevealBuild = () => this.buildSettledRevealWitness(route, settledRendered, exclusions);
-        this.revealWitnessTimer = setTimeout(() => {
-            this.flushRevealWitness();
-        }, 0);
+        // D082-A-PERF END
     }
     private flushRevealWitness(): void {
-        if (this.revealWitnessTimer !== null) clearTimeout(this.revealWitnessTimer);
-        this.revealWitnessTimer = null;
         const build = this.pendingRevealBuild;
         this.pendingRevealBuild = null;
         build?.();
@@ -1280,7 +1566,9 @@ export class V2Page {
         if (this.wheelGesture && (x !== this.wheelGesture.x || y !== this.wheelGesture.y))
             this.wheelGesture = null;
         const clusterOf = (id: string) => revealClusterOf(this.index, id);
-        const witness = this.view.witness();
+        // D082-A-PERF BEGIN: wheel steps need anchors only, never the full proof.
+        const witness = this.view.gestureWitness?.() ?? this.view.witness();
+        // D082-A-PERF END
         const cursor = { x: event.clientX, y: event.clientY };
         if (!this.wheelGesture) {
             const nearest = gestureAnchorAtPointer(witness.nodeViewport, this.rendered, cursor);
@@ -1327,7 +1615,9 @@ export class V2Page {
         const positions = new Map<string, { x: number; y: number; radius?: number }>();
         const byId = new Map(this.index.nodes.map(node => [node.id, node]));
         if (this.view) {
-            const witness = this.view.witness();
+            // D082-A-PERF BEGIN
+            const witness = this.view.gestureWitness?.() ?? this.view.witness();
+            // D082-A-PERF END
             for (const [id, point] of Object.entries(witness.nodeViewport))
                 positions.set(id, { ...revealPointInRoot(point, rootRect),
                     radius: byId.has(id) ? nodeRadius(byId.get(id)!, this.appearance.nodeScale) : 12 });
@@ -1472,12 +1762,14 @@ export class V2Page {
         this.recordProjectionPhase('snapshotPreparation', performance.now() - preViewBegan);
         assertPageSnapshotIndex(this.index, snapshot);
         const disclosed = this.visible();
-        // D081-P3b BEGIN: only typed Indra's Completa names the full domain.
-        const completeIndra = this.density === 'complete' && this.indraPearlsView();
-        const domain = selectAnalyticalDomain(snapshot, disclosed.nodes.map(node => node.id),
+        // D082-A-DENSITY BEGIN: all typed Indra densities use the same complete
+        // pearl geometry; the density filter below chooses which members draw.
+        const completeIndra = this.indraPearlsView() && this.index.nodes.length > V2_CAP;
+        const domain = selectAnalyticalDomain(snapshot,
+            completeIndra ? this.index.nodes.map(node => node.id) : disclosed.nodes.map(node => node.id),
             completeIndra ? { selectionPolicy: 'd081-indra-complete', selectionPolicyVersion: '1',
                 levelPolicy: 'all-indexed-nodes-v1', maxNodes: snapshot.nodes.length } : {});
-        // D081-P3b END
+        // D082-A-DENSITY END
         // GATE-B audit 2: the typed relations honour the relation-detail control and the
         // legacy-style focus source (selected relation, its source node, the selection, hover).
         const active = this.projectionFocus();
@@ -1495,15 +1787,42 @@ export class V2Page {
         if (organization === 'natural') {
             const arrangement = this.resolvedNaturalArrangement();
             arrangementToCommit = arrangement;
-            const layoutRelationPolicy = this.axes.reading === 'attested' ? 'attested-essential' as const
-                : this.axes.reading === 'exploratory' ? 'exploratory-essential' as const : 'combined-essential' as const;
+            const layoutReading = this.density !== 'complete' && this.index.nodes.length > V2_CAP
+                ? 'combined' : this.axes.reading;
+            const layoutRelationPolicy = layoutReading === 'attested' ? 'attested-essential' as const
+                : layoutReading === 'exploratory' ? 'exploratory-essential' as const : 'combined-essential' as const;
             // GATE-B audit 3: continuity anchors. The request identity is everything but style and
             // anchors; while it holds, the stored anchors replay byte-identically (a pure style,
             // density or LOD change keeps the digest). A changed identity — a disclosure change —
             // re-seeds from the last flat result's coordinates, D-072's `previous` parity.
             const anchorKey = [snapshot.digest, domain.domainDigest, dimension, arrangement,
                 layoutRelationPolicy, this.appearance.expandX, this.appearance.expandY, this.appearance.expandZ].join('\u00B7');
+            // D082-A-DENSITY BEGIN
+            const stableKey = [organization, dimension, arrangement, layoutRelationPolicy,
+                this.appearance.expandX, this.appearance.expandY, this.appearance.expandZ].join('|');
+            if (stableKey !== this.densityStableKey) {
+                this.densityStableKey = stableKey;
+                this.densityStablePositions.clear();
+            }
+            // D082-A-DENSITY END
             let continuityAnchors: Readonly<Record<string, Vec3>> | null = null;
+            // D082-A-DENSITY BEGIN: project the D-081 disclosure once so the
+            // 850-candidate layout grows around its approved overview.
+            if (!this.naturalPreviousFlat && this.density !== 'complete' && this.index.nodes.length > V2_CAP) {
+                const overview = this.densityOverview();
+                const overviewDomain = selectAnalyticalDomain(snapshot, overview.nodes.map(node => node.id));
+                const original = await registry.project<ProjectionResult>('natural', snapshot, {
+                    id: 'natural', snapshotDigest: snapshot.digest, domain: overviewDomain,
+                    parameters: { dimension, arrangement, layoutVersion: NATURAL_LAYOUT_VERSION,
+                        layoutRelationPolicy, volumeExpansion: { x: this.appearance.expandX,
+                            y: this.appearance.expandY, z: this.appearance.expandZ } },
+                });
+                this.naturalPreviousFlat = original.result;
+                const points = dimension === '2d' ? original.result.positions2 : original.result.positions3;
+                for (const [id, point] of Object.entries(points ?? {})) if (point)
+                    this.densityStablePositions.set(id, { x: point.x, y: point.y, z: (point as Vec3).z ?? 0 });
+            }
+            // D082-A-DENSITY END
             if (this.naturalAnchorState?.key === anchorKey)
                 continuityAnchors = this.naturalAnchorState.anchors;
             else {
@@ -1522,6 +1841,17 @@ export class V2Page {
                     if (Object.keys(anchors).length) continuityAnchors = anchors;
                 }
             }
+            // D082-A-DENSITY BEGIN: switching through Completa must not replace
+            // the larger lower-density layout with its smaller typed disclosure.
+            if (this.index.nodes.length > V2_CAP && this.densityStablePositions.size) {
+                const anchors = { ...continuityAnchors } as Record<string, Vec3>;
+                for (const id of domain.nodeIds) {
+                    const point = this.densityStablePositions.get(id);
+                    if (point) anchors[id] = point;
+                }
+                continuityAnchors = Object.keys(anchors).length ? anchors : null;
+            }
+            // D082-A-DENSITY END
             const request = { id: 'natural' as const, snapshotDigest: snapshot.digest, domain,
                 parameters: { dimension, arrangement,
                     layoutVersion: NATURAL_LAYOUT_VERSION,
@@ -1595,6 +1925,10 @@ export class V2Page {
         this.recordProjectionPhase('preView', performance.now() - preViewBegan);
         const result = styled.projection;
         assertPageProjection(result, domain, dimension);
+        // D082-A-DENSITY BEGIN: the source projection and digest stay untouched;
+        // continuity offsets apply to the scene sent to the renderer.
+        if (organization === 'natural') styled = { ...styled, projection: this.naturalDisplayAnchored(result) };
+        // D082-A-DENSITY END
         styled = this.withSelectionEmphasis(styled);
         if (result.fullLedger.snapshotDigest !== snapshot.digest ||
             result.fullLedger.canonicalBytesDigest !== snapshot.rawLedger.canonicalBytesDigest)
@@ -1610,6 +1944,11 @@ export class V2Page {
         // D-073 C8b: the six-class revision follows the legacy semantic LOD (level, density budgets).
         const lod = this.typedLodVisibility(styled, snapshot, disclosed.nodes, active, this.projectionRevision + 1);
         const visibility = lod.visibility;
+        // D082-A-PLUSN BEGIN: decorate only typed Indra's displayed label strings.
+        // The source projection, digest, geometry and visibility stay untouched.
+        if (organization === 'indra') lod.displayStyled = { ...lod.displayStyled,
+            nodeStyle: withHiddenMemberLabels(lod.displayStyled.nodeStyle, this.index.nodes, visibility.nodeIds) };
+        // D082-A-PLUSN END
         if (mounted) {
             mounted.updateVisibleSubset(lod.displayStyled, visibility);
         } else {
@@ -1648,12 +1987,21 @@ export class V2Page {
         if (anchorKeyToCommit !== null) {
             this.naturalAnchorState = { key: anchorKeyToCommit, anchors: anchorsToCommit };
             this.naturalPreviousFlat = result;
+            // D082-A-DENSITY BEGIN
+            if (this.index.nodes.length > V2_CAP) {
+                const points = dimension === '2d' ? lod.displayStyled.projection.positions2
+                    : lod.displayStyled.projection.positions3;
+                for (const [id, point] of Object.entries(points ?? {}))
+                    if (point && !this.densityStablePositions.has(id)) this.densityStablePositions.set(id,
+                        { x: point.x, y: point.y, z: (point as Vec3).z ?? 0 });
+            }
+            // D082-A-DENSITY END
         }
         // The mounted projection camera is the zoom-LOD tick's overview baseline, exactly as the
         // legacy view's first fit is (a null overview would freeze the level at the mount ratio).
         if (this.overviewRatio === null) {
             const camera = this.projectionRenderer?.readCameraState?.();
-            this.overviewRatio = camera?.ratio ?? 1;
+            this.rememberOverviewRatio(camera?.ratio ?? 1);
         }
         this.rendered = new Set(visibility.nodeIds);
         this.publishReveal(lod.route, this.rendered);
@@ -1668,8 +2016,13 @@ export class V2Page {
         this.dropHiddenTypedSelection();
         this.adoptSelectedNode();
         this.renderPanel();
-        element('status').textContent = this.typedStatusLine();
+        // D082-B-NOTICE BEGIN
+        this.publishTypedStatusLine();
+        // D082-B-NOTICE END
         this.openTypedLevels();
+        // D082-A-DENSITY BEGIN
+        this.densitySwitchPending = false;
+        // D082-A-DENSITY END
     }
     /** A selection that did not come from a canvas pick (a search result, a list, a programmatic call)
      * reaches the typed explanation the way a pick does: a selected node the result draws becomes the
@@ -1962,7 +2315,9 @@ export class V2Page {
         const parentId = opened.parentId === null || opened.parentId === ROOT_LEVEL_ID ? null : opened.parentId;
         const refusedLevelId = parentId ?? opened.id;
         if (this.refusedLevels.has(`${result.determinism.resultDigest}|${refusedLevelId}`)) {
-            element('status').textContent = this.typedStatusLine();
+            // D082-B-NOTICE BEGIN
+            this.publishTypedStatusLine();
+            // D082-B-NOTICE END
             return;
         }
         let target = request;
@@ -1986,7 +2341,9 @@ export class V2Page {
         const styled = this.typedPipeline().style(projected, snapshot);
         this.commitLevelResult(styled, result, snapshot, domain, renderer, cameraKey, epoch, parentId);
         this.indraLeftFocus = this.selected;
-        element('status').textContent = this.typedStatusLine();
+        // D082-B-NOTICE BEGIN
+        this.publishTypedStatusLine();
+        // D082-B-NOTICE END
     }
     /** The visible pending state of a projection that computes: the status line says so and the
      * render root carries `aria-busy` and `data-projection-pending` until the result is committed. */
@@ -2016,6 +2373,9 @@ export class V2Page {
             : { ...analytic, visibility: projectionVisibility(analytic.result, analytic.snapshot, 1, 1) };
         element('status').textContent = `Vista ${view} \u00B7 proiezione rifiutata [${refusal.code}]: ${refusal.detail} \u00B7 nessuna posizione mostrata`
             + (analytic === undefined ? '' : ` \u00B7 sperimentale \u00B7 i campi senza posizione restano spiegati nel pannello \u00B7 ${holographicErrorHeadline(analytic.result)}`);
+        // D082-B-NOTICE BEGIN
+        showLabNotice(element('status').textContent);
+        // D082-B-NOTICE END
         this.renderPanel();
     }
     /** The disclosure of the mounted Fractal result, plus the levels the assembly refused to open. */
@@ -2034,6 +2394,14 @@ export class V2Page {
         if (result?.determinism.algorithmId === 'holographic') return holographicDisclosureLine(result, this.axes.projection);
         return 'Grafo pronto';
     }
+    // D082-B-NOTICE BEGIN
+    /** Keep the legacy status contract while making Geometry Lab disclosures visible. */
+    private publishTypedStatusLine(): void {
+        const message = this.typedStatusLine();
+        element('status').textContent = message;
+        showLabNotice(message);
+    }
+    // D082-B-NOTICE END
     /** The disclosure of the mounted Indra's Pearls result, plus the levels the assembly refused to open. */
     private indraStatusLine(): string {
         const result = this.projectionResult;
@@ -2108,7 +2476,9 @@ export class V2Page {
                 if (depth !== undefined && (refusal.code === 'depth-cap-exceeded' || refusal.code === 'word-cap-exceeded'))
                     for (const level of current.levels)
                         if (level.depth === depth && isLazyLevel(current, level)) this.refusedLevels.set(`${digest}|${level.id}`, refusal);
-                element('status').textContent = this.typedStatusLine();
+                // D082-B-NOTICE BEGIN
+                this.publishTypedStatusLine();
+                // D082-B-NOTICE END
             }
             return true;
         }
@@ -2158,6 +2528,7 @@ export class V2Page {
         // D082-B2 END
         // D081-P7b BEGIN: a retired Fractal view cannot keep serving stale counts.
         this.canopyStatus = null;
+        this.canopyStatusSignature = '';
         const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
         if (owner.__d081?.status === this.canopyStatusGetter) owner.__d081.status = this.coreStatusGetter;
         // D081-P7b END.
@@ -2212,7 +2583,9 @@ export class V2Page {
         const styled = this.typedPipeline().style(result, snapshot);
         if (styled.projection !== result) throw new Error('Morphology replaced the projection result');
         this.commitLevelResult(styled, result, snapshot, domain, renderer, this.mountedCameraKey, this.projectionEpoch);
-        element('status').textContent = this.typedStatusLine();
+        // D082-B-NOTICE BEGIN
+        this.publishTypedStatusLine();
+        // D082-B-NOTICE END
     }
     /** The legacy-style focus source: the selected relation's source node, the selection, the hover. */
     private projectionFocus(): string | null {
@@ -2225,6 +2598,70 @@ export class V2Page {
      * for the visual relations and the semantic edges — and only ever narrows the result: the
      * coordinates, the digest and the source graph are untouched. Curves follow their relation;
      * containers and fields are kept whole. */
+    // D082-A-DENSITY BEGIN: keep Natural's projected proof unchanged while
+    // retaining the reference overview and every common rendered coordinate.
+    private naturalDisplayAnchored(result: ProjectionResult): ProjectionResult {
+        if (this.index.nodes.length <= V2_CAP || !this.densityStablePositions.size) return result;
+        const positions2 = result.positions2 && Object.fromEntries(Object.entries(result.positions2).map(([id, point]) => {
+            const anchor = this.densityStablePositions.get(id);
+            return [id, anchor ? { x: anchor.x, y: anchor.y } : point];
+        }));
+        const positions3 = result.positions3 && Object.fromEntries(Object.entries(result.positions3).map(([id, point]) => {
+            const anchor = this.densityStablePositions.get(id);
+            return [id, anchor ?? point];
+        }));
+        return { ...result, ...(positions2 ? { positions2 } : {}), ...(positions3 ? { positions3 } : {}) };
+    }
+    // Indra's source projection remains auditable. Only its
+    // displayed coordinates are translated with the fixed domain/project pearls.
+    private indraDisplayAnchored(result: ProjectionResult): ProjectionResult {
+        // D082-A-DENSITY BEGIN: the complete hierarchy is already the stable
+        // geometry at every density, so translation would break pearl packing.
+        if (result.domainNodeIds.length === this.index.nodes.length) return result;
+        // D082-A-DENSITY END
+        if (!this.indraPearlsView() || !this.densityStablePositions.size || this.index.nodes.length <= V2_CAP)
+            return result;
+        const byId = new Map(this.index.nodes.map(node => [node.id, node]));
+        const anchorOf = (id: string): string | null => {
+            let node = byId.get(id);
+            while (node && node.level > 2) node = node.parent ? byId.get(node.parent) : undefined;
+            return node?.id ?? null;
+        };
+        const source = result.positions2 ?? result.positions3 ?? {};
+        const shifts = new Map<string, Point3>();
+        for (const [id, target] of this.densityStablePositions) {
+            const point = source[id];
+            if (point) shifts.set(id, { x: target.x - point.x, y: target.y - point.y,
+                z: target.z - ((point as Vec3).z ?? 0) });
+        }
+        if (!shifts.size) return result;
+        const shiftOf = (id: string) => shifts.get(anchorOf(id) ?? '');
+        const positions2 = result.positions2 && Object.fromEntries(Object.entries(result.positions2).map(([id, point]) => {
+            const fixed = this.densityStablePositions.get(id);
+            if (fixed && (byId.get(id)?.level ?? 5) <= 2) return [id, { x: fixed.x, y: fixed.y }];
+            const shift = shiftOf(id);
+            return [id, shift && point ? { x: point.x + shift.x, y: point.y + shift.y } : point];
+        }));
+        const positions3 = result.positions3 && Object.fromEntries(Object.entries(result.positions3).map(([id, point]) => {
+            const fixed = this.densityStablePositions.get(id);
+            if (fixed && (byId.get(id)?.level ?? 5) <= 2) return [id, fixed];
+            const shift = shiftOf(id);
+            return [id, shift && point ? { x: point.x + shift.x, y: point.y + shift.y, z: point.z + shift.z } : point];
+        }));
+        const containers = result.containers.map(container => {
+            const members = container.sourceCommunityId ? [container.sourceCommunityId] : container.memberNodeIds ?? [];
+            const anchors = new Set(members.map(anchorOf).filter((id): id is string => id !== null));
+            const shift = anchors.size === 1 ? shifts.get([...anchors][0]!) : undefined;
+            return !shift ? container : { ...container,
+                ...(container.center2 ? { center2: { x: container.center2.x + shift.x,
+                    y: container.center2.y + shift.y } } : {}),
+                ...(container.center3 ? { center3: { x: container.center3.x + shift.x,
+                    y: container.center3.y + shift.y, z: container.center3.z + shift.z } } : {}),
+            };
+        });
+        return { ...result, ...(positions2 ? { positions2 } : {}), ...(positions3 ? { positions3 } : {}), containers };
+    }
+    // D082-A-DENSITY END
     private typedLodVisibility(styled: StyledProjection, snapshot: SemanticGraphSnapshot,
         allDisclosed: readonly V2Node[], active: string | null, revision: number) {
         const result = styled.projection;
@@ -2235,7 +2672,8 @@ export class V2Page {
             const { rendered, relations, route, visuals: synthetic, displayResult } =
                 completeIndraOverlay(this.index, this.axes.reading, result, this.lod === 'near');
             const extraStyle = this.styleTypedProjection(displayResult, snapshot).visualStyle;
-            const displayStyled: StyledProjection = { ...styled, projection: displayResult,
+            const anchoredDisplay = this.indraDisplayAnchored(displayResult);
+            const displayStyled: StyledProjection = { ...styled, projection: anchoredDisplay,
                 visualStyle: { ...styled.visualStyle, ...Object.fromEntries(synthetic.map(item =>
                     [item.visualId, item.underlyingEdgeIds.length
                         ? styled.edgeStyle[item.underlyingEdgeIds[0]!] ?? extraStyle[item.visualId] ?? {}
@@ -2243,7 +2681,7 @@ export class V2Page {
             const base = projectionVisibility(result, snapshot, revision, 1, rendered);
             const visibility: RenderVisibility = { ...base, semanticEdgeIds: new Set(),
                 visualRelationIds: new Set(synthetic.map(item => item.visualId)), density: 1 };
-            validateRenderVisibility(displayResult, visibility, snapshot);
+            validateRenderVisibility(anchoredDisplay, visibility, snapshot);
             const pickMap = new Map<string, PickResult>();
             for (let index = 0; index < route.drawn.length; index++) {
                 const edge = route.drawn[index]!, visual = synthetic[index]!;
@@ -2259,6 +2697,87 @@ export class V2Page {
                 route, displayStyled, pickMap };
         }
         // D081-P3b END
+        // D082-A-DENSITY BEGIN: typed Natural and Indra use the same source-relation
+        // prefix as the classic renderer. Projection coordinates are reused verbatim.
+        if (this.density !== 'complete' && this.index.nodes.length > V2_CAP &&
+            (this.axes.organization === 'natural' || this.axes.organization === 'indra')) {
+            const budget = DENSITY_BUDGETS[this.density];
+            const communityOf = communityResolver(this.index.nodes);
+            const infos = allDisclosed.map(node => ({ id: node.id, level: node.level, parent: node.parent,
+                importance: node.importance.value }));
+            const tiers = manualExpansionTiers(infos, this.history.state.manualOrder, V2_PAGE);
+            const pinned = this.pinnedNodeIds(tiers);
+            const focusPriority = this.selected ? focusMembers(allDisclosed as V2Node[], this.index.edges, this.selected) : null;
+            const byImportance = new Map(infos.map(node => [node.id, node.importance]));
+            // D082 A-DENSITYc: explicit state only — the reveal focus cluster never
+            // enters the lower-density priority, so a round trip through Completa
+            // returns the identical Essenziale/Bilanciata sets.
+            const priority = [...tiers.priorityChildren,
+                ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
+            const adjacency = adjacencyOf(allDisclosed as V2Node[], this.index.edges);
+            const input = { nodes: infos, level: this.lod, pinned, focus: active, priority, adjacency, communityOf,
+                reserveStructure: true };
+            const selection = this.selectLod({ ...input, budget: budget.nodes }, this.lastNodeSelection);
+            // Node admission is one shared union-graph plan; only relation selection varies by reading.
+            const relations = completeRelations(this.index, 'combined');
+            const essentialSeed = this.density === 'essential' ? selection.rendered
+                : this.selectLod({ ...input, budget: DENSITY_BUDGETS.essential.nodes }, null).rendered;
+            const essential = new Set(densityConnectedNodes(essentialSeed, infos, relations.edges,
+                DENSITY_BUDGETS.essential.nodes));
+            const originalEssential = new Set(essentialSeed);
+            const balancedSeed = [...essential,
+                ...selection.rendered.filter(id => !originalEssential.has(id) && !essential.has(id))];
+            const rendered = this.density === 'essential' ? essential : new Set(densityConnectedNodes(
+                balancedSeed, infos, relations.edges, DENSITY_BUDGETS.balanced.nodes, [...essential]));
+            const importance = new Map(this.index.nodes.map(node => [node.id, node.importance.value]));
+            const essentialSelection = densityRelationsByReading(relations.edges, 'combined', essential,
+                DENSITY_BUDGETS.essential.arcs, importance);
+            const balancedSelection = densityRelationsByReading(relations.edges, this.axes.reading, rendered,
+                DENSITY_BUDGETS.balanced.arcs, importance, {
+                    attested: essentialSelection.attested, exploratory: essentialSelection.exploratory,
+                    structural: essentialSelection.structural,
+                });
+            const essentialEdges = densityRelationsByReading(relations.edges, this.axes.reading, essential,
+                DENSITY_BUDGETS.essential.arcs, importance).drawn;
+            const balancedEdges = balancedSelection.drawn;
+            const edges = this.density === 'essential' ? essentialEdges : balancedEdges;
+            const route = completeRoute(edges, rendered, true);
+            const visuals: VisualRelation[] = route.drawn.map(edge => ({
+                visualId: `visual:d082:${edge.id}`, semantic: false,
+                source: edge.from.id, target: edge.to.id,
+                kind: edge.id.startsWith('contains:') ? 'synthetic-containment' : 'lifted-route',
+                underlyingEdgeIds: edge.sourceRelationIds.filter(id => !id.startsWith('contains:')),
+                count: edge.count, explanationId: `explanation:visual:d082:${edge.id}`,
+            }));
+            const displayResult: ProjectionResult = { ...result,
+                visualRelations: [...result.visualRelations, ...visuals],
+                explanations: { ...result.explanations, ...Object.fromEntries(visuals.map(item =>
+                    [item.explanationId, { elementId: item.visualId, elementKind: 'visual-relation' as const,
+                        summary: 'Relazione sorgente o contenimento', sourceIds: item.underlyingEdgeIds,
+                        parameterIds: ['layoutRelationPolicy'] }])) },
+                lod: { ...result.lod, maxVisibleVisualRelations: result.visualRelations.length + visuals.length },
+            };
+            const extraStyle = this.styleTypedProjection(displayResult, snapshot).visualStyle;
+            const anchoredDisplay = this.indraDisplayAnchored(displayResult);
+            const displayStyled: StyledProjection = { ...styled, projection: anchoredDisplay,
+                visualStyle: { ...styled.visualStyle, ...Object.fromEntries(visuals.map(item =>
+                    [item.visualId, extraStyle[item.visualId] ?? {}])) } };
+            const base = projectionVisibility(result, snapshot, revision, 1, rendered);
+            const visibility: RenderVisibility = { ...base, semanticEdgeIds: new Set(),
+                visualRelationIds: new Set(visuals.map(item => item.visualId)),
+                density: rendered.size / Math.max(1, result.loadedNodeIds.length) };
+            validateRenderVisibility(anchoredDisplay, visibility, snapshot);
+            const pickMap = new Map<string, PickResult>(visuals.map(item => [item.visualId,
+                item.underlyingEdgeIds.length ? { kind: 'semantic-edge', id: item.underlyingEdgeIds[0]! }
+                    : { kind: 'node', id: item.target }]));
+            const counts = { nodes: { rendered: rendered.size, available: allDisclosed.length,
+                pinned: [...pinned].filter(id => rendered.has(id)).length,
+                pinnedIds: [...pinned].filter(id => rendered.has(id)).sort() },
+                arcs: { rendered: visuals.length, available: relations.total,
+                    pinned: 0, pinnedIds: [] as string[] } };
+            return { visibility, counts, selection, route, displayStyled, pickMap };
+        }
+        // D082-A-DENSITY END
         const budget = DENSITY_BUDGETS[this.density];
         const communityOf = communityResolver(this.index.nodes);
         // A Holographic focus on a region discloses only that region's members to the level of detail.
@@ -2486,7 +3005,9 @@ export class V2Page {
         assertCurrentLevelToken(level, snapshot, domain, result);
         const priorRefusal = this.refusedLevels.get(`${result.determinism.resultDigest}|${levelId}`);
         if (priorRefusal !== undefined) {
-            element('status').textContent = this.typedStatusLine();
+            // D082-B-NOTICE BEGIN
+            this.publishTypedStatusLine();
+            // D082-B-NOTICE END
             return;
         }
         if (result.determinism.algorithmId === 'indras-pearls') this.indraRequestedLevelRefusals.clear();
@@ -2500,7 +3021,9 @@ export class V2Page {
         }
         this.commitLevelResult(styled, result, snapshot, domain, renderer, cameraKey, epoch,
             styled.projection.determinism.algorithmId === 'indras-pearls' ? levelId : undefined);
-        element('status').textContent = this.typedStatusLine();
+        // D082-B-NOTICE BEGIN
+        this.publishTypedStatusLine();
+        // D082-B-NOTICE END
     }
     /** Lands a level revision on the mounted host: the camera is kept. The result the level was
      * requested for, its domain and snapshot, the epoch and the camera key must all still be current. */
@@ -2515,7 +3038,13 @@ export class V2Page {
         const lod = this.typedLodVisibility(styled, snapshot, this.visible().nodes,
             this.projectionFocus(), this.projectionRevision + 1);
         const visibility = lod.visibility;
-        renderer.updateVisibleSubset(this.withSelectionEmphasis(lod.displayStyled), visibility);
+        // D082-A-PLUSN BEGIN: a loaded typed Indra level keeps the same count contract
+        // as the initial mount and density switches.
+        const displayedStyled = this.axes.organization === 'indra' ? { ...lod.displayStyled,
+            nodeStyle: withHiddenMemberLabels(lod.displayStyled.nodeStyle, this.index.nodes, visibility.nodeIds) }
+            : lod.displayStyled;
+        renderer.updateVisibleSubset(this.withSelectionEmphasis(displayedStyled), visibility);
+        // D082-A-PLUSN END
         this.projectionRevision = visibility.revision;
         this.projectionResult = styled.projection;
         this.projectionVisibility = visibility;
@@ -2883,6 +3412,9 @@ export class V2Page {
     refresh(): Promise<void> {
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
         this.refreshPending++;
+        // D082-A-HUD BEGIN: publish the requested scene as in recovery while its new view is pending.
+        this.d081Emit();
+        // D082-A-HUD END
         const projectionEpoch = ++this.projectionEpoch;
         this.cancelProjectionWork();
         return this.run(async () => {
@@ -2898,7 +3430,7 @@ export class V2Page {
             // D081-P7d BEGIN: the canopy reveal owns its representatives independently of
             // manual disclosure. A fixed graph snapshot excludes later passage fetches.
             const projection = this.axes.projection;
-            let canopyViewMarks: ReturnType<typeof canopyMarks> = [];
+            let canopyViewMarks: CanopyMark[] = [];
             if (canopy) {
                 const focusId = this.selected ?? this.revealState.focusClusterId
                     ?? this.history.state.manualOrder.at(-1) ?? null;
@@ -2910,9 +3442,13 @@ export class V2Page {
                 const previousAxes = this.view?.witness().axes as PageAxes | undefined;
                 const sameCanopyCamera = previousAxes?.organization === 'fractal'
                     && previousAxes.projection === projection;
-                canopyViewMarks = canopyMarks(canopy, this.canopyDatasetNodes, band, focusId,
-                    pixelsPerUnit, projection, sameCanopyCamera && this.view?.projectPoint
-                        ? point => this.view!.projectPoint!(point) : undefined, this.canopyDatasetNodes);
+                // D082-B1 BEGIN: all marks are real IDs. E/B are nested stable semantic
+                // selections; Completa includes every immutable dataset ID.
+                canopyViewMarks = canopyDensityMarks(canopy, this.canopyDatasetNodes,
+                    this.density, band, focusId, pixelsPerUnit, projection,
+                    sameCanopyCamera && this.view?.projectPoint
+                        ? point => this.view!.projectPoint!(point) : undefined);
+                // D082-B1 END.
             }
             const canopyNodeById = canopy
                 ? new Map(this.canopyDatasetNodes.map(node => [node.id, node])) : null;
@@ -2929,14 +3465,24 @@ export class V2Page {
                 return hidden && !visibleParents.has(node.id) ? Math.max(hidden, node.counts.descendants) : hidden;
             };
             const projectionInputBegan = performance.now();
-            const layoutEdges = projectLayoutRelations(
-                this.index.nodes, this.index.edges, ids, this.axes.reading, 'natural', 'essential',
+            // D082-A-READINGS BEGIN
+            // D082-A-ANCHORB3 BEGIN: the default lower-density geometry uses the union graph;
+            // option (b) replays each active reading's D-081 Completa geometry.
+            const layoutReading = this.index.nodes.length > V2_CAP &&
+                (organization === 'natural' || organization === 'indra') && this.density !== 'complete' &&
+                !(this.naturalCompletaAnchor && organization === 'natural')
+                ? 'combined' : this.axes.reading;
+            // D082-A-ANCHORB3 END
+            // D082-A-READINGS END
+            const layoutEdges = canopy ? [] : projectLayoutRelations(
+                this.index.nodes, this.index.edges, ids, layoutReading, 'natural', 'essential',
             ).edges;
             const usePrevious = !canopy && this.layoutSource === 'flat-community' && organization === 'natural'
                 && this.layoutProjection === projection && this.axes.morphology === this.lastMorphology;
             // D-080 A5b projection/result-adaptation region. Serialize the actual layout
             // inputs, including continuity seeds, so a returning mode gets the same object.
-            const layoutInput: LayoutInput = {
+            // D082-LAB-MERGE-TRIAL BEGIN: Canopy representatives are layout inputs too.
+            let layoutInput: LayoutInput = {
                 // D081-P7d BEGIN: include revealed records in the Fractal scene.
                 nodes: sceneNodes.map(n => ({
                     id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
@@ -2950,25 +3496,106 @@ export class V2Page {
                 ...(organization === 'indra' ? { expandZ: this.appearance.expandZ } : {}),
                 ...(usePrevious ? { previous: this.rawPositions } : {}),
             };
-            // D081-FRACTAL-MERGE BEGIN: the canopy has its own immutable layout cache.
-            // D082-B2 BEGIN: a law sees the full immutable source snapshot and is cached independently of density.
+            // D082-A-DENSITY BEGIN: Indra's recursive shells must be measured from
+            // the complete hierarchy at every density. Packing a disclosed slice
+            // makes the parent radii smaller; translating its centres afterwards
+            // leaves sibling shells piled on top of one another.
+            if (organization === 'indra' && this.index.nodes.length > V2_CAP) {
+                layoutInput = { ...layoutInput,
+                    nodes: this.index.nodes.map(n => ({ id: n.id, level: n.level,
+                        parent: n.parent, size: n.size, domains: n.domains,
+                        hiddenDescendants: 0 })),
+                    edges: [],
+                };
+            }
+            // D082-A-DENSITY END
+            // D082-A-DENSITY END
+            // D082-A-DENSITY BEGIN: Natural keeps D-081's 41-node overview as the
+            // incremental seed. Indra already has its full-hierarchy geometry.
+            const stableKey = [organization, projection, this.axes.morphology, layoutReading,
+                this.appearance.expandX, this.appearance.expandY, this.appearance.expandZ].join('|');
+            if (stableKey !== this.densityStableKey) {
+                this.densityStableKey = stableKey;
+                this.densityStablePositions.clear();
+            }
+            const densityLayout = !canopy && !this.lawActive() && this.index.nodes.length > V2_CAP &&
+                (organization === 'natural' || organization === 'indra');
+            // D082-A-ANCHORB2 BEGIN: replay D-081's default-density refresh before
+            // Completa. Its raw 41-node result is the `previous` input of the full
+            // layout; the displayed, canonicalized 3D positions are not the seed.
+            const completaAnchor = this.naturalCompletaAnchor && densityLayout && organization === 'natural';
+            if (completaAnchor) {
+                const completeIds = new Set(this.index.nodes.map(node => node.id));
+                const completeEdges = projectLayoutRelations(this.index.nodes, this.index.edges,
+                    completeIds, this.axes.reading, 'natural', 'essential').edges;
+                layoutInput = { ...layoutInput,
+                    nodes: this.index.nodes.map(node => ({ id: node.id, level: node.level,
+                        parent: node.parent, size: node.size, domains: node.domains, hiddenDescendants: 0 })),
+                    edges: completeEdges.map(edge => ({ id: edge.id, source: edge.source,
+                        target: edge.target, class: edge.class === 'exploratory' ? 'exploratory' as const : 'attested' as const })),
+                };
+                delete (layoutInput as { previous?: ReadonlyMap<string, Point3> }).previous;
+            }
+            // D082-A-ANCHORB2 END
+            let overviewPositions: Map<string, Point3> | null = null;
+            // D082-A-ANCHORB2 BEGIN: option (b) needs this D-081 overview even
+            // when Completa is the requested density.
+            if (densityLayout && organization === 'natural' && (completaAnchor ||
+                (this.density !== 'complete' && !this.densityStablePositions.size))) {
+                const overview = this.densityOverview();
+                const overviewIds = new Set(overview.nodes.map(node => node.id));
+                const overviewParents = new Set(overview.nodes.map(node => node.parent).filter((id): id is string => id !== null));
+                const overviewEdges = projectLayoutRelations(this.index.nodes, this.index.edges,
+                    overviewIds, layoutReading, 'natural', 'essential').edges;
+                const overviewInput: LayoutInput = { ...layoutInput,
+                    nodes: overview.nodes.map(node => ({ id: node.id, level: node.level, parent: node.parent,
+                        size: node.size, domains: node.domains,
+                        hiddenDescendants: (overview.hidden.get(node.id) ?? 0) && !overviewParents.has(node.id)
+                            ? Math.max(overview.hidden.get(node.id) ?? 0, node.counts.descendants)
+                            : overview.hidden.get(node.id) ?? 0 })),
+                    edges: overviewEdges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+                        class: edge.class === 'exploratory' ? 'exploratory' as const : 'attested' as const })),
+                };
+                delete (overviewInput as { previous?: ReadonlyMap<string, Point3> }).previous;
+                // D082-A-SWITCH BEGIN: the 41-node seed repeats on morphology and projection
+                // round trips. Key the exact worker input, then retain only completed results.
+                const overviewKey = pageLayoutKey(this.manifest.digest, overviewInput);
+                let overviewResult = this.densityOverviewResults.get(overviewKey);
+                if (!overviewResult) {
+                    overviewResult = await computeClassicLayout(overviewInput);
+                    this.densityOverviewResults.set(overviewKey, overviewResult);
+                    if (this.densityOverviewResults.size > 12)
+                        this.densityOverviewResults.delete(this.densityOverviewResults.keys().next().value!);
+                }
+                overviewPositions = new Map(overviewResult.positions);
+                // D082-A-SWITCH END
+                if (organization === 'natural') layoutInput = { ...layoutInput, previous: overviewPositions };
+            }
+            // D082-A-ANCHORB2 END
+            // D082-A-DENSITY END
+            // D081-FRACTAL-MERGE BEGIN: Canopy has its own immutable layout cache.
+            // D082-B2 BEGIN: a law sees the full source snapshot independent of density.
             const law = this.lawActive() ? TOPOLOGY_LAWS[this.topology]! : null;
             const lawKey = law ? `${this.lawSnapshot.digest}|${law.id}|${law.version}|${projection}|${this.topologyIndra}` : null;
             const layoutKey = lawKey ? `topology:${lawKey}` : canopy ? `fractal-canopy:${projection}:${this.manifest.digest}:${canopy.digest}:${[...ids].sort().join('|')}`
                 : pageLayoutKey(this.manifest.digest, layoutInput);
+            // D082-LAB-MERGE-TRIAL END
             this.recordProjectionPhase('projectionInput', performance.now() - projectionInputBegan);
             const projectionBegan = performance.now();
-            const reused = this.pageResults.get(layoutKey) as LayoutResult | undefined;
+            // D082-A-SWITCH BEGIN: all nine returning lower-density layouts fit
+            // without keeping a second GPU scene or rerunning the worker lane.
+            // D082-A-ANCHORB BEGIN
+            const resultCache = completaAnchor ? this.naturalCompletaLayoutResults
+                : this.density === 'complete' ? this.pageResults : this.switchLayoutResults;
+            // D082-A-ANCHORB END
+            const reused = resultCache.get(layoutKey) as LayoutResult | undefined;
+            // D082-A-SWITCH END
             this.projectionCacheOutcome = reused ? 'hit' : 'miss';
             // D081-P3c BEGIN: large classic layouts run in the embedded worker.
-            const lawResult = lawKey ? this.lawCache.get(lawKey) ?? await new Promise<TopologyLayout>((resolve, reject) => {
-                // Yield one task before the pure law runs; no partial result is ever mounted.
-                setTimeout(() => {
-                    try { resolve(computeTopologyLayout(this.topology as Exclude<TopologyId, 'natural'>,
-                        this.lawSnapshot, projection, this.topologyIndra)); }
-                    catch (error) { reject(error); }
-                }, 0);
-            }) : null;
+            // D082-LAB-FIX2 BEGIN: compute the certified full law and Indra composition in the worker.
+            const lawResult = lawKey ? this.lawCache.get(lawKey) ?? await computeTopologyLayoutAsync(
+                this.topology as Exclude<TopologyId, 'natural'>, this.lawSnapshot, projection, this.topologyIndra) : null;
+            // D082-LAB-FIX2 END
             if (lawKey && lawResult && !this.lawCache.has(lawKey)) this.lawCache.set(lawKey, lawResult);
             const result: LayoutResult = reused ?? (lawResult ? topologyLayoutResult(lawResult) : canopy
                 ? { positions: canopyRenderPositions(canopy, sceneNodes.map(node => node.id), projection),
@@ -2980,7 +3607,9 @@ export class V2Page {
             // D081-P3c END
             // D081-FRACTAL-MERGE END.
             this.recordProjectionPhase('projectionCompute', reused ? 0 : performance.now() - projectionBegan);
-            if (!reused) this.pageResults.set(layoutKey, result);
+            // D082-A-SWITCH BEGIN
+            if (!reused) resultCache.set(layoutKey, result);
+            // D082-A-SWITCH END
             // End D-080 A5b projection/result-adaptation region.
             // D-072 R1: everything this refresh computes is held in locals until the new view is
             // on screen — a refresh that fails mid-way must leave the page describing the view it
@@ -2990,9 +3619,27 @@ export class V2Page {
             const flat3d = !canopy && !this.lawActive() && organization === 'natural' && projection === '3d';
             // D082-B2 END
             const nextCanonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
-            const expanded = flat3d
+            // D082-A-DENSITY BEGIN: display coordinates can receive fixed anchors.
+            const expanded = new Map(flat3d
                 ? applyExpansion(nextCanonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
-                : result.positions;
+                : result.positions);
+            // D082-A-DENSITY END
+            // D082-A-DENSITY BEGIN: canonicalization depends on the number of
+            // points. Its frame must not rotate existing marks on density changes.
+            if (densityLayout && organization === 'natural' && !completaAnchor) {
+                if (overviewPositions) {
+                    const original = flat3d ? applyExpansion(canonicalize(overviewPositions), {
+                        expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ }) : overviewPositions;
+                    for (const [id, point] of original) expanded.set(id, point);
+                }
+                for (const [id, point] of this.densityStablePositions) if (expanded.has(id)) expanded.set(id, point);
+            }
+            // Preserve only disclosed shells in the view; their centres and radii
+            // are taken from the same complete packing as the member positions.
+            const positionedContainers = organization === 'indra' && densityLayout
+                ? result.containers.filter(container => container.id === ABSOLUTE_CONTAINER_ID || ids.has(container.id))
+                : result.containers;
+            // D082-A-DENSITY END
             const next = new Map<string, Point3>();
             for (const n of sceneNodes)
                 next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
@@ -3008,14 +3655,33 @@ export class V2Page {
             const budget = DENSITY_BUDGETS[this.density];
             const routingBegan = performance.now();
             // D081-FRACTAL-MERGE BEGIN: Completa remains the core route only off Fractal.
-            const projectedArcs = this.density === 'complete' && !canopy
-                ? completeRelations(this.index, this.axes.reading)
+            // D082-B1c BEGIN: morphology/projection switches reuse the immutable
+            // complete source relation set. Reading remains part of the cache key.
+            let cachedCanopyArcs = canopy && this.density === 'complete'
+                ? this.canopyCompleteRelations.get(this.axes.reading) : undefined;
+            if (canopy && this.density === 'complete' && !cachedCanopyArcs) {
+                cachedCanopyArcs = completeRelations(
+                    { ...this.index, nodes: [...this.canopyDatasetNodes] }, this.axes.reading);
+                this.canopyCompleteRelations.set(this.axes.reading, cachedCanopyArcs);
+            }
+            // D082-A-DENSITY BEGIN: rank original eligible source relations once for both
+            // lower levels. Direct endpoints give every retained relation a stable identity.
+            const densityPolicy = !canopy && !this.lawActive() && this.density !== 'complete' && this.index.nodes.length > V2_CAP &&
+                (organization === 'natural' || organization === 'indra');
+            const projectedArcs = this.density === 'complete'
+                ? cachedCanopyArcs ?? this.densityRelations(this.axes.reading)
+                : densityPolicy
+                // D082-A-SWITCH BEGIN
+                ? this.densityRelations(this.axes.reading)
+                // D082-A-SWITCH END
                 : projectRelations(this.index.nodes, this.index.edges, ids, this.axes.reading,
                     organization, this.relationDetail, active);
-            const canopyArcs = canopy ? canopyEvidenceArcs(projectedArcs.edges) : null;
+            // D082-B1c END.
+            const canopyArcs = canopy ? this.density === 'complete'
+                ? projectedArcs.edges : canopyEvidenceArcs(projectedArcs.edges) : null;
             const availableArcs = canopyArcs ? { ...projectedArcs,
                 edges: canopyArcs, total: canopyArcs.length } : projectedArcs;
-            // D081-FRACTAL-MERGE END.
+            // D082-A-DENSITY END
             const communityOf = communityResolver(this.index.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
             const tiers = manualExpansionTiers(
@@ -3025,16 +3691,29 @@ export class V2Page {
             const pinned = this.pinnedNodeIds(tiers);
             // D-072 R1: a selection failure keeps the last mounted selection verbatim
             // (`safeSelectNodes`), so the drawing never loses its node set — or its labels.
-            const focusPriority = this.selected ? this.focusMembers(this.selected, disclosed.nodes) : null;
+            // D082-A-READINGS BEGIN
+            const focusPriority = densityPolicy && this.selected
+                ? focusMembers(disclosed.nodes, this.index.edges, this.selected)
+                : this.selected ? this.focusMembers(this.selected, disclosed.nodes) : null;
+            // D082-A-READINGS END
             const byImportance = new Map(disclosed.nodes.map(node => [node.id, node.importance.value]));
-            const priority = [...tiers.priorityChildren, ...this.focusedRenderPriority(disclosed.nodes),
+            // D082-A-DENSITY BEGIN: at the lower densities the priority may carry
+            // explicit state only (manual expansion tiers, the selection's members).
+            // The reveal focus cluster and the previously rendered ids are
+            // camera/disclosure state — a density switch must not inherit them, or
+            // E → B → C → E cannot return the same set. Completa and the small capped
+            // graphs keep the D-072 behaviour.
+            const priority = [...tiers.priorityChildren,
+                ...(densityPolicy ? [] : this.focusedRenderPriority(disclosed.nodes)),
                 ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
-            const selection = this.density === 'complete' && !canopy
+            // D082-A-DENSITY END
+            const selection = this.density === 'complete'
                 ? { rendered: disclosed.nodes.map(node => node.id), dropped: [] }
                 : this.selectLod({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
                 level: this.lod,
                 budget: budget.nodes,
+                reserveStructure: densityPolicy,
                 pinned,
                 focus: active,
                 priority,
@@ -3048,32 +3727,91 @@ export class V2Page {
                 if (this.selected && visibleById.has(this.selected)) renderedIds.add(this.selected);
             }
             // D081-FRACTAL-MERGE END.
+            let densityEssentialIds: Set<string> | null = null;
+            if (densityPolicy) {
+                const essentialSeed = this.density === 'essential' ? selection.rendered : this.selectLod({
+                    nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
+                    level: this.lod, budget: DENSITY_BUDGETS.essential.nodes, pinned, focus: active,
+                    priority, adjacency, communityOf, reserveStructure: true,
+                }, null).rendered;
+                const candidates = disclosed.nodes.map(node => ({ id: node.id, level: node.level,
+                    parent: node.parent, importance: node.importance.value }));
+                // D082-A-DENSITYh BEGIN: explicit user state always wins over
+                // automatic isolated-node repair at both lower densities.
+                const requiredDensityIds = [...pinned, ...(active ? [active] : [])];
+                const unionRelations = completeRelations(this.index, 'combined');
+                const essentialNodes = densityConnectedNodes(essentialSeed, candidates, unionRelations.edges,
+                    DENSITY_BUDGETS.essential.nodes, requiredDensityIds);
+                densityEssentialIds = new Set(essentialNodes);
+                if (this.density === 'essential') renderedIds = densityEssentialIds;
+                else {
+                    const originalEssential = new Set(essentialSeed);
+                    const balancedSeed = [...essentialNodes,
+                        ...selection.rendered.filter(id => !originalEssential.has(id) && !densityEssentialIds!.has(id))];
+                    renderedIds = new Set(densityConnectedNodes(balancedSeed, candidates, unionRelations.edges,
+                        DENSITY_BUDGETS.balanced.nodes, [...new Set([...essentialNodes, ...requiredDensityIds])]));
+                }
+                // D082-A-DENSITYh END
+            }
             if (this.density !== 'complete' && this.neighbourhoodDepth && focusPriority && !canopy) {
                 // D-079 reading contract: focus traverses exactly the selected semantic class.
                 const allowed = this.index.edges.filter(edge => relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading));
                 renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
             } else if (this.density !== 'complete' && this.restoreNeighbourhood && this.neighbourhoodBefore && !canopy) renderedIds = new Set(this.neighbourhoodBefore.nodes);
-            const routedInput: RouteRelation[] = availableArcs.edges.map(edge => ({
+            // D082-B1c BEGIN: Completa uses completeRoute directly, so no second
+            // 15,800-element RouteRelation list is needed for Canopy.
+            const routedInput: RouteRelation[] = canopy && this.density === 'complete' ? [] : availableArcs.edges.map(edge => ({
                 id: edge.id, channel: 'lifted', source: edge.source, target: edge.target,
                 class: edge.class, type: edge.type, count: edge.count,
                 sourceEdgeIds: edge.underlying.map(item => item.id),
             }));
+            // D082-B1c END.
             // The reading mask belongs to routing's audit as well as its drawing. Keep the
             // source relations that the older projector omitted so each has a suppression cause.
             if (!canopy && this.axes.reading !== 'combined') for (const edge of this.index.edges)
                 if (!relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading))
                     routedInput.push({ id: edge.id, channel: 'semantic', source: edge.source,
                         target: edge.target, class: edge.class, type: edge.type, count: 1 });
-            const route = this.density === 'complete' && !canopy
-                ? completeRoute(availableArcs.edges, renderedIds)
-                : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
-                renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
-                budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs)
-                    : organization === 'indra' && this.relationDetail === 'essential'
-                    ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
-                focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
+            // D082-A-DENSITY BEGIN: Bilanciata retains the exact source relations of
+            // Essenziale before admitting its own. Completa keeps its existing route.
+            const importance = new Map(this.index.nodes.map(node => [node.id, node.importance.value]));
+            const essentialIds = densityEssentialIds ?? renderedIds;
+            const unionRelations = densityPolicy ? completeRelations(this.index, 'combined').edges : [];
+            const essentialSelection = !densityPolicy ? null : densityRelationsByReading(unionRelations,
+                'combined', essentialIds, DENSITY_BUDGETS.essential.arcs, importance);
+            const essentialEdges = !essentialSelection ? [] : densityRelationsByReading(unionRelations,
+                this.axes.reading, essentialIds, DENSITY_BUDGETS.essential.arcs, importance).drawn;
+            const balancedEdges = !densityPolicy ? [] : densityRelationsByReading(unionRelations,
+                this.axes.reading, renderedIds, budget.arcs, importance, {
+                    attested: essentialSelection!.attested, exploratory: essentialSelection!.exploratory,
+                    structural: essentialSelection!.structural,
+            }).drawn;
+            const densityEdges = this.density === 'essential' ? essentialEdges
+                : densityPolicy && this.density === 'balanced' ? balancedEdges : [];
+            const cachedCanopyRoute = canopy && this.density === 'complete'
+                && renderedIds.size === this.canopyDatasetNodes.length
+                ? this.canopyCompleteRoutes.get(this.axes.reading) : undefined;
+            const route = this.density === 'complete'
+                ? cachedCanopyRoute ?? completeRoute(availableArcs.edges, renderedIds, !!canopy)
+                : densityPolicy ? completeRoute(densityEdges, renderedIds, true)
+                    : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
+                        renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
+                        budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs)
+                            : organization === 'indra' && this.relationDetail === 'essential'
+                            ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
+                        focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
+            // D082-A-DENSITY END
+            // D082-B1c BEGIN: a full route is deterministic for the fixed Canopy
+            // snapshot and reading; a partial route never enters this cache.
+            if (canopy && this.density === 'complete'
+                && renderedIds.size === this.canopyDatasetNodes.length && !cachedCanopyRoute)
+                this.canopyCompleteRoutes.set(this.axes.reading, route);
+            // D082-B1c END.
             this.recordProjectionPhase('relationRouting', performance.now() - routingBegan);
-            const relationById = new Map(availableArcs.edges.map(edge => [edge.id, edge]));
+            // D082-B1c BEGIN: reuse completeRelations' source-ID map.
+            const relationById = canopy && this.density === 'complete'
+                ? availableArcs.byId : new Map(availableArcs.edges.map(edge => [edge.id, edge]));
+            // D082-B1c END.
             let shown: LiftedRelation[] = route.drawn.map(edge => {
                 const originals = edge.sourceRelationIds.map(id => relationById.get(id)).filter((item): item is LiftedRelation => !!item);
                 const base = originals[0]!;
@@ -3095,6 +3833,13 @@ export class V2Page {
             // D081-P7 BEGIN
             const nextArcTotal = availableArcs.total;
             // D081-P7 END
+            // D082-A-PLUSN BEGIN: suffixes describe every indexed descendant omitted
+            // from this exact visible set, including nodes omitted by the density budget.
+            const hiddenMembers = organization === 'indra'
+                ? hiddenMemberCounts(this.index.nodes, renderedIds) : null;
+            const displayHiddenCount = (node: V2Node) => hiddenMembers
+                ? hiddenMembers.get(node.id) ?? 0 : hiddenCount(node);
+            // D082-A-PLUSN END
             // An Indra container whose children the LOD dropped draws as a closed pearl, never as
             // an empty shell; the drawing reads the open flag, positions are untouched.
             const renderedChildren = new Map<string, number>();
@@ -3104,14 +3849,18 @@ export class V2Page {
             }
             // This is the view's container snapshot. The geometry memo uses its array identity,
             // so freeze the array, each record and each centre before either renderer sees it.
-            const nextContainers = Object.freeze(result.containers.map(c => {
+            // D082-A-DENSITY BEGIN
+            const nextContainers = Object.freeze(positionedContainers.map(c => {
                 const node = visibleById.get(c.id);
                 const title = node && displayLabel(node);
-                const hidden = node ? hiddenCount(node) : 0;
+                // D082-A-PLUSN BEGIN
+                const hidden = node ? displayHiddenCount(node) : 0;
+                // D082-A-PLUSN END
                 const open = c.id === ABSOLUTE_CONTAINER_ID || (c.open !== false && (renderedChildren.get(c.id) ?? 0) > 0);
                 return Object.freeze({ ...c, center: Object.freeze({ ...c.center }), open,
-                    ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) });
+                    ...(title ? { title: withHiddenMemberCount(title, hidden) } : {}) });
             }));
+            // D082-A-DENSITY END
             const declaredAggregateCounts = nextContainers.reduce((counts, container) => {
                 const match = container.title?.match(/ · \+(\d+)$/);
                 if (match) { counts.members += Number(match[1]); counts.groups++; }
@@ -3146,6 +3895,10 @@ export class V2Page {
                 [...ids].sort().join('|')].join('\u00B7');
             if (this.view && this.view.updateVisibleSubset && lodKey === this.lastLodKey && !indraLayoutMoved) {
                 let applied = false;
+                // D082-A-PLUSN BEGIN
+                const previousHiddenCounts = this.indraLabelHiddenCounts;
+                if (hiddenMembers) this.indraLabelHiddenCounts = hiddenMembers;
+                // D082-A-PLUSN END
                 try {
                     applied = this.view.updateVisibleSubset({
                         visibleNodeIds: renderedIds,
@@ -3157,6 +3910,9 @@ export class V2Page {
                     });
                 }
                 catch { applied = false; }
+                // D082-A-PLUSN BEGIN
+                if (!applied) this.indraLabelHiddenCounts = previousHiddenCounts;
+                // D082-A-PLUSN END
                 if (applied) {
                     // The same commit a successful mount makes, minus everything a remount owns
                     // (positions, camera bookkeeping, layout keys — the scene did not change).
@@ -3191,12 +3947,18 @@ export class V2Page {
                     element('status').textContent = canopy
                         ? 'Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica'
                         : 'Grafo pronto';
+                    // D082-B-NOTICE BEGIN
+                    if (canopy) showLabNotice(element('status').textContent);
+                    // D082-B-NOTICE END
                     element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
                     if (added.length && this.positions.size > added.length)
                         this.pulse(added);
                     // A subset revision kept the live camera. Do not quarantine the next
                     // wheel step as if a programmatic fit had moved it.
                     this.suppressZoomUntil = 0;
+                    // D082-A-DENSITY BEGIN
+                    this.densitySwitchPending = false;
+                    // D082-A-DENSITY END
                     return;
                 }
                 // The view could not take the update in place: fall through and remount as before.
@@ -3218,8 +3980,12 @@ export class V2Page {
             // depth volume; Indra repacks recursively). Capture one screen point before replacing
             // the layout, then compensate only if that node actually moved on screen.
             let anchor: { id: string; point: { x: number; y: number } } | null = null;
-            if (disclosureChanged && old && keep && this.view) {
-                const witness = this.view.witness();
+            // D082-A-DENSITY BEGIN
+            if (disclosureChanged && !this.densitySwitchPending && old && keep && this.view) {
+            // D082-A-DENSITY END
+                // D082-A-PERF BEGIN
+                const witness = this.view.gestureWitness?.() ?? this.view.witness();
+                // D082-A-PERF END
                 const rootRect = element('render-root').getBoundingClientRect();
                 const cursor = this.cursor && { x: this.cursor.x + rootRect.left, y: this.cursor.y + rootRect.top };
                 // D081-P6 BEGIN: a stationary 3D gesture cannot fall back to another cluster.
@@ -3240,7 +4006,10 @@ export class V2Page {
             }
             // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
             const userMoved = !!old && this.userMovedSinceFit;
-            const cameraAction = refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
+            // D082-A-DENSITY BEGIN
+            const cameraAction = this.densitySwitchPending && old && keep ? 'restore'
+                : refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
+            // D082-A-DENSITY END
             // D-072 R1: never destroy the working view before its replacement exists. The new view
             // mounts first; only a mount that succeeds swaps it in, destroys the old one exactly
             // once and commits the page state. A mount that throws keeps the old view with its
@@ -3249,6 +4018,14 @@ export class V2Page {
             const nextHost = document.createElement('div');
             nextHost.className = 'view-host';
             Object.assign(nextHost.style, { position: 'absolute', inset: '0' });
+            // D082-B1c BEGIN: the product's first Neural paint needs the Canopy
+            // fast path before the rail layer is mounted after createView.
+            if (canopy) nextHost.setAttribute('data-fractal-rails-active', '');
+            // D082-B1c END.
+            // D082-B1f BEGIN: the HUD waits for this host's Neural soma presentation.
+            if (canopy && this.axes.morphology === 'neural' && this.density === 'complete')
+                nextHost.setAttribute('data-fractal-soma-required', '');
+            // D082-B1f END
             element('render-root').append(nextHost);
             // D081-P3c BEGIN: routing/adaptation and renderer construction are
             // separate main-thread tasks; the resident view stays on screen.
@@ -3260,9 +4037,13 @@ export class V2Page {
             // D082-B2 BEGIN
             let nextGuideLayer: { destroy(): void } | null = null;
             // D082-B2 END
+            // D082-A-PLUSN BEGIN
+            const previousHiddenCounts = this.indraLabelHiddenCounts;
+            if (hiddenMembers) this.indraLabelHiddenCounts = hiddenMembers;
+            // D082-A-PLUSN END
             try {
                 // D081-FRACTAL-MERGE BEGIN: canopy owns its edge and title layers.
-                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const hint = (canopy || this.axes.organization === 'indra') && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -3288,7 +4069,9 @@ export class V2Page {
                     appendCanopyExplanation(nextHost, canopy, this.axes.reading, this.insets);
                     // D081-P7d BEGIN: morphology changes the canopy ink, never its positions.
                     nextRailLayer = mountCanopyRailLayer(nextHost, canopy, mounted, renderedIds, this.axes.reading,
-                        projection, this.axes.morphology, this.selected, 30000, this.insets, canopyViewMarks, this.axes.labels,
+                        projection, this.axes.morphology, this.selected,
+                        this.density === 'complete' ? 1500 : 30000,
+                        this.insets, canopyViewMarks, this.axes.labels,
                         () => { if (this.canopyActive() && this.canopyRailLayer) this.renderPanel(); },
                         shown as CanopyEvidenceStroke[],
                         () => { if (this.canopyRailLayer === nextRailLayer) this.publishCanopyStatus(); },
@@ -3305,6 +4088,9 @@ export class V2Page {
                 // D082-B2 BEGIN
                 nextGuideLayer?.destroy();
                 // D082-B2 END
+                // D082-A-PLUSN BEGIN
+                this.indraLabelHiddenCounts = previousHiddenCounts;
+                // D082-A-PLUSN END
                 nextHost.remove();
                 if (!this.view)
                     throw error;
@@ -3334,6 +4120,7 @@ export class V2Page {
                 this.publishCanopyStatus();
             } else {
                 this.canopyStatus = null;
+                this.canopyStatusSignature = '';
                 const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
                 if (owner.__d081?.status === this.canopyStatusGetter) owner.__d081.status = this.coreStatusGetter;
             }
@@ -3350,6 +4137,15 @@ export class V2Page {
             this.layoutProjection = projection;
             this.canonicalPositions = nextCanonicalPositions;
             this.positions = next;
+            // D082-A-DENSITY BEGIN
+            // D082-A-ANCHORB BEGIN: option (b) has no incremental anchor state.
+            if (densityLayout && this.density !== 'complete' && !completaAnchor) {
+            // D082-A-ANCHORB END
+                for (const [id, point] of next) if (organization === 'natural' ||
+                    (visibleById.get(id)?.level ?? 5) <= 2) this.densityStablePositions.set(id, point);
+            }
+            this.densitySwitchPending = false;
+            // D082-A-DENSITY END
             this.lastDisclosureKey = this.disclosureKey();
             this.communities = nextCommunities;
             this.rendered = renderedIds;
@@ -3391,7 +4187,9 @@ export class V2Page {
                         const passes = organization === 'indra' && projection === '3d' &&
                             (this.revealState.band === 'near' || this.revealState.band === 'deep') ? 3 : 1;
                         for (let pass = 0; pass < passes; pass++) {
-                            const after = this.view.witness().nodeViewport[anchor.id];
+                            // D082-A-PERF BEGIN
+                            const after = (this.view.gestureWitness?.() ?? this.view.witness()).nodeViewport[anchor.id];
+                            // D082-A-PERF END
                             if (!after || Math.hypot(after.x - anchor.point.x, after.y - anchor.point.y) <= 1 ||
                                 !keepNodeAt?.call(this.view, anchor.id, anchor.point)) break;
                         }
@@ -3407,7 +4205,9 @@ export class V2Page {
                     if (fitEpoch === this.cameraIntentEpoch) {
                         this.programmaticCamera();
                         this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
-                        this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+                        // D082-A-ZOOMLAB BEGIN
+                        rememberDensityOverviewRatio(this, (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio ?? 1);
+                        // D082-A-ZOOMLAB END
                     }
                 }
             } else if (cameraAction === "refit") {
@@ -3417,7 +4217,9 @@ export class V2Page {
                 if (fitEpoch === this.cameraIntentEpoch) {
                     this.programmaticCamera();
                     this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
-                    this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+                    // D082-A-ZOOMLAB BEGIN
+                    rememberDensityOverviewRatio(this, (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio ?? 1);
+                    // D082-A-ZOOMLAB END
                     this.confirmFit(this.view, fitEpoch);
                 }
             }
@@ -3434,7 +4236,7 @@ export class V2Page {
                 const camera = this.view.readCamera() as {
                     ratio?: number;
                 } | null;
-                this.overviewRatio = camera?.ratio ?? 1;
+        rememberDensityOverviewRatio(this, camera?.ratio ?? 1);
             }
             if (this.selected)
                 this.view.select(this.selected);
@@ -3445,6 +4247,9 @@ export class V2Page {
             element('status').textContent = canopy
                 ? 'Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica'
                 : 'Grafo pronto';
+            // D082-B-NOTICE BEGIN
+            if (canopy) showLabNotice(element('status').textContent);
+            // D082-B-NOTICE END
             const status = canopy ? this.canopyStatus ?? this.d081Status() : this.d081Status();
             element('counter').textContent = `${formatCount(status.nodes.visible)} visibili · ${formatCount(status.nodes.represented)}/${formatCount(status.nodes.total)} rappresentati · ${formatCount(status.edges.drawn)} archi`;
             element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
@@ -3452,13 +4257,21 @@ export class V2Page {
             (element('v2-undo') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
             (element('v2-redo') as HTMLButtonElement).disabled = this.history.redoDepth === 0;
             this.capMessage = disclosed.capped;
-            element('v2-cap').textContent = this.density === 'complete' ? '' : disclosed.capped ? `Finestra di ${V2_CAP} nodi visibili: continua a ingrandire o usa Mostra altri.` : '';
+            // D082-A-DENSITY BEGIN
+            element('v2-cap').textContent = this.density === 'complete' ? '' : disclosed.capped
+                ? this.index.nodes.length > V2_CAP && (organization === 'natural' || organization === 'indra')
+                    ? `Selezione semantica di ${V2_CAP} candidati; scegli «Completa» per l'intero grafo.`
+                    : `Finestra di ${V2_CAP} nodi visibili: continua a ingrandire o usa Mostra altri.` : '';
+            // D082-A-DENSITY END
             this.renderPanel();
         }).finally(() => {
             this.refreshPending--;
             if (this.d081Quality === 'recupero' && this.refreshPending === 0) {
                 this.d081FinishIfReady();
             }
+            // D082-A-HUD BEGIN: publish after the pending scene count changes, including refusal paths.
+            this.d081Emit();
+            // D082-A-HUD END
         });
     }
     async expand(id: string) {
@@ -3533,6 +4346,9 @@ export class V2Page {
         this.neighbourhoodDepth = null;
         this.neighbourhoodBefore = null;
         this.view?.select(id);
+        // D082-LAB-LULL-UI BEGIN: a node selection supersedes the inquiry-table highlight.
+        this.lullInquiryMount.clearSelection();
+        // D082-LAB-LULL-UI END.
         this.updateEmphasis();
         this.syncFocusControls();
         const busy = this.refreshPending > 0;
@@ -3642,6 +4458,9 @@ export class V2Page {
         const next = normalizeDensity(value);
         if (next === this.density)
             return;
+        // D082-A-DENSITY BEGIN: a density switch is a filter change, never a fit intent.
+        this.densitySwitchPending = true;
+        // D082-A-DENSITY END
         this.density = next;
         // D081-P3b BEGIN: the resident lower-density view remains visible while
         // the worker prepares the full Indra domain; disclose that recovery state.
@@ -3716,7 +4535,9 @@ export class V2Page {
             catch { return 0; }
         }
         try {
-            return this.view?.witness().labels.length ?? 0;
+            // D082-A-PERF BEGIN
+            return this.view?.readPlacedCounts?.().labels ?? this.view?.witness().labels.length ?? 0;
+            // D082-A-PERF END
         }
         catch {
             return 0;
@@ -3728,7 +4549,9 @@ export class V2Page {
         // D081-P7b END.
         // The typed label pass places labels only; it does not place product container titles.
         if (this.typedActive()) return 0;
-        try { return this.view?.witness().titleCount ?? 0; }
+        // D082-A-PERF BEGIN
+        try { return this.view?.readPlacedCounts?.().titles ?? this.view?.witness().titleCount ?? 0; }
+        // D082-A-PERF END
         catch { return 0; }
     }
     private focusMembers(id: string, nodes = this.visible().nodes): Set<string> {
@@ -3738,6 +4561,33 @@ export class V2Page {
     }
     private updateEmphasis() {
         if (this.canopyActive()) this.canopyRailLayer?.update(this.rendered, this.selected);
+        // D082-LAB-LULL-UI BEGIN: a pair/triple chosen in the inquiry table highlights exactly
+        // the real relations its row lists, through the existing emphasis APIs; only relations
+        // the current reading and density actually draw are emphasised, none is force-drawn.
+        const lullRow = this.topology === 'lull' ? this.lullInquiryMount.getSelection() : null;
+        if (!this.selected && lullRow) {
+            const members = new Set<string>();
+            const arcs = new Set<string>();
+            for (const id of lullRow.relationIds) {
+                const relation = this.renderedRelations.get(id);
+                if (!relation) continue;
+                arcs.add(id);
+                members.add(relation.source);
+                members.add(relation.target);
+            }
+            const emphasis = new Set([...members].filter(id => this.rendered.has(id)));
+            if (this.axes.organization === 'indra') {
+                const byId = new Map(this.index.nodes.map(node => [node.id, node]));
+                for (const id of members) {
+                    let cursor = byId.get(id);
+                    while (cursor?.parent) { emphasis.add(cursor.parent); cursor = byId.get(cursor.parent); }
+                }
+            }
+            this.view?.setFocusStyle?.({ members: emphasis, arcs, bridges: new Set() });
+            this.view?.setEmphasis(emphasis);
+            return;
+        }
+        // D082-LAB-LULL-UI END.
         if (!this.selected) {
             this.view?.setFocusStyle?.(null);
             const resting = this.hovered || this.hoveredEdge ? restingEmphasis({
@@ -3761,6 +4611,22 @@ export class V2Page {
         this.view?.setFocusStyle?.({ members: emphasis, arcs: arcs.relevant, bridges: arcs.bridges });
         this.view?.setEmphasis(emphasis);
     }
+    // D082-LAB-FIX6 BEGIN: the table's panel lifecycle must not repaint the graph.
+    // Only a real transition into or out of a table highlight reaches emphasis;
+    // in particular, empty → empty does no renderer work (or label placement).
+    private handleLullInquirySelectionChange(selection: ReturnType<LullInquiryMount['getSelection']>) {
+        if (selection) {
+            this.lullHighlightApplied = true;
+            this.updateEmphasis();
+            return;
+        }
+        if (!this.lullHighlightApplied) return;
+        this.lullHighlightApplied = false;
+        // Node selection/reset immediately runs its own emphasis update after clearing
+        // the table selection, so let that single page action own the graph change.
+        if (!this.selected) this.updateEmphasis();
+    }
+    // D082-LAB-FIX6 END.
     private edgeTooltip(target: {
         kind: 'node' | 'edge';
         id: string;
@@ -3788,7 +4654,9 @@ export class V2Page {
         const layer = document.createElement('div');
         layer.className = 'v2-new-nodes';
         Object.assign(layer.style, { position: 'absolute', inset: '0', pointerEvents: 'none', zIndex: '24' });
-        const witness = this.view?.witness();
+        // D082-A-PERF BEGIN
+        const witness = this.view?.gestureWitness?.() ?? this.view?.witness();
+        // D082-A-PERF END
         for (const id of ids.slice(0, 80)) {
             const point = witness?.nodeViewport[id];
             if (!point)
@@ -3929,7 +4797,7 @@ export class V2Page {
         this.userMovedSinceFit = false;
         const fitRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ??
             this.projectionRenderer?.readCameraState?.()?.ratio;
-        this.overviewRatio = fitRatio ?? this.overviewRatio;
+        if (fitRatio !== undefined) rememberDensityOverviewRatio(this, fitRatio);
         this.lastZoomRatio = fitRatio ?? this.lastZoomRatio;
         if (!changed && this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
     }
@@ -3947,7 +4815,15 @@ export class V2Page {
         keepNodeAt.call(this.view, targetId, { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 });
         this.programmaticCamera();
     }
-    async reset() { this.noteCameraIntent(); this.selected = null; if (this.typedActive()) this.typedSelection = null; this.neighbourhoodDepth = null; this.neighbourhoodBefore = null; this.neighbourhoodCamera = null; this.view?.select(null); this.updateEmphasis(); this.syncFocusControls(); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async reset() { this.noteCameraIntent(); this.selected = null; if (this.typedActive()) this.typedSelection = null; this.neighbourhoodDepth = null; this.neighbourhoodBefore = null; this.neighbourhoodCamera = null; this.view?.select(null);
+        // D082-LAB-LULL-UI BEGIN: reset leaves no inquiry-table highlight either.
+        this.lullInquiryMount.clearSelection();
+        // D082-LAB-LULL-UI END.
+        this.updateEmphasis(); this.syncFocusControls(); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; const ratio = (this.lastFitCamera as { ratio?: number } | null)?.ratio; if (ratio !== undefined) {
+        // D082-A-ZOOMLAB BEGIN
+        rememberDensityOverviewRatio(this, ratio);
+        // D082-A-ZOOMLAB END
+    } }
     async frame(id: string) { this.noteCameraIntent(); this.programmaticCamera(); const members = focusMembers(this.visible().nodes, this.index.edges, id); const ids = [...members].filter(member => this.rendered.has(member)); await (this.view?.frameFocus?.(ids.length ? ids : [id]) ?? this.view?.frame(ids.length ? ids : [id])); this.programmaticCamera(); }
     camera() {
         return this.view?.camera() ?? this.projectionRenderer?.readCameraPose?.() ?? null;
@@ -3982,7 +4858,9 @@ export class V2Page {
         this.confirmFitTimer = window.setTimeout(() => {
             this.confirmFitTimer = null;
             if (view !== this.view || scheduledEpoch !== this.cameraIntentEpoch || this.userMovedSinceFit) return;
-            const witness = view.witness();
+            // D082-A-PERF BEGIN
+            const witness = view.gestureWitness?.() ?? view.witness();
+            // D082-A-PERF END
             const rect = witness.visibleRect;
             const outside = anyPointOutsideInsets(witness.nodeViewport, rect, this.insets);
             if (!confirmFitDue({ scheduledEpoch, currentEpoch: this.cameraIntentEpoch, userMoved: this.userMovedSinceFit, anyOutside: outside })) return;
@@ -4024,8 +4902,26 @@ export class V2Page {
         // D-072 R2 (X8): the crossing itself is only noted while the camera still moves; the
         // refresh (an in-place subset change on the mounted view) lands once the camera has
         // been still `LOD_REFRESH_IDLE_MS`, and a zoom back inside the band cancels it.
-        const zoom = cameraRevealZoom(this.overviewRatio ?? ratio, ratio, this.axes.projection);
+        // D082-A-ZOOMLAB BEGIN
+        const zoom = cameraRevealZoom(this.semanticOverviewRatio(ratio), ratio, this.axes.projection);
+        // D082-A-ZOOMLAB END
         const next = lodLevelFromZoom(zoom, this.lod);
+        // D082-B1 BEGIN: Canopy E/B/C IDs and their positions are camera-independent.
+        // The rail/title canvas follows the camera; no scene, layout or route refresh
+        // belongs to a wheel-only change.
+        if (this.canopyActive()) {
+            const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
+                lastCameraChangeMs: this.cameraChangedAt });
+            this.revealCamera = { zoom, band: this.revealState.band, settled };
+            this.pendingLod = settled || next === this.lod ? null : next;
+            if (settled && next !== this.lod) {
+                this.lod = next;
+                this.canopyDetailStep = canopyZoomStep(zoom);
+                this.publishCanopyStatus();
+            }
+            return;
+        }
+        // D082-B1 END.
         // D081-P3 BEGIN complete camera path: all glyphs and bundles are already resident.
         if (this.density === 'complete') {
             const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
@@ -4088,7 +4984,9 @@ export class V2Page {
             this.cameraChangedAt = performance.now();
         if (performance.now() < this.suppressZoomUntil || previous === null)
             return;
-        const zoom = cameraRevealZoom(this.overviewRatio ?? ratio, ratio, this.axes.projection);
+        // D082-A-ZOOMLAB BEGIN
+        const zoom = cameraRevealZoom(this.semanticOverviewRatio(ratio), ratio, this.axes.projection);
+        // D082-A-ZOOMLAB END
         const next = lodLevelFromZoom(zoom, this.lod);
         this.pendingLod = next === this.lod ? null : next;
         const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
@@ -4149,7 +5047,7 @@ export class V2Page {
             organization: this.axes.organization as Axes['organization'], activeId: this.selected });
         const represented = countAggregateRepresentation(this.index.nodes, this.rendered);
         const canopyRailStats = this.canopyActive() ? this.canopyRailLayer?.stats() : undefined;
-        const visibility = this.view ? buildVisibilityWitness({
+        let visibility: (ReturnType<typeof buildVisibilityWitness> & { zeroDegreeReasons?: { reading: string[] } }) | undefined = this.view ? buildVisibilityWitness({
             axes: this.axes as Axes, relationDetail: this.relationDetail, density: this.density,
             nodes: this.index.nodes, renderedNodeIds: this.rendered,
             submittedEdges: [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
@@ -4165,6 +5063,18 @@ export class V2Page {
             starCount: productVisibility?.stars.drawn ?? 0,
             excluded: omitted,
         }) : undefined;
+        // D082-A-READINGS BEGIN
+        if (visibility && this.density !== 'complete' &&
+            (this.axes.organization === 'natural' || this.axes.organization === 'indra')) {
+            const readingOnly = readingIsolatedNodeIds(this.rendered, [...this.renderedRelations.values()],
+                this.index.edges, this.axes.reading);
+            if (readingOnly.length) {
+                const markedUnconnected = [...new Set([...visibility.zeroDegree.markedUnconnected, ...readingOnly])].sort();
+                visibility = { ...visibility, zeroDegree: { ...visibility.zeroDegree, markedUnconnected },
+                    zeroDegreeReasons: { reading: readingOnly.sort() } };
+            }
+        }
+        // D082-A-READINGS END
         return {
             ...viewWitness,
             ...(visibility ? { visibility } : {}),
@@ -4386,6 +5296,15 @@ export class V2Page {
             controls.append(leave);
         }
         host.append(controls);
+        // D082-LAB-LULL-UI BEGIN: «Tabella delle combinazioni», only while the topology is
+        // «Combinatoria lulliana»; collapsed by default, hypotheses OFF by default.
+        this.lullInquiryMount.sync(host, this.topology === 'lull', {
+            snapshot: this.lawSnapshot,
+            visibleIds: new Set(shown.nodes.map(node => node.id)),
+            eligible: edge => relationVisible(edge.class, this.axes.reading),
+            reading: lullReadingLabel(this.axes.reading),
+        });
+        // D082-LAB-LULL-UI END.
         this.appendHolographicControls(host);
         const search = document.createElement('section');
         search.id = 'v2-results';

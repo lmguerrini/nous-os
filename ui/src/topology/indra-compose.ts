@@ -4,7 +4,7 @@ import { ABSOLUTE_CONTAINER_ID, LAYOUT_EXTENT, packDiscs, pearlRadius } from '..
 import type { LayoutContainer, Point3 } from '../review/layout-v2.ts';
 import type { GuideCurve, TopologyDimension, TopologyLaw, TopologyLayout, TopologyNode, TopologySnapshot, TopologyWitness } from './contract.ts';
 
-export const INDRA_COMPOSE_VERSION = '1';
+export const INDRA_COMPOSE_VERSION = '2';
 const cache = new Map<string, TopologyLayout>();
 const cmp = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const zero: Point3 = { x: 0, y: 0, z: 0 };
@@ -35,19 +35,39 @@ function locate(
   law: TopologyLaw, frames: readonly Frame[], snapshot: TopologySnapshot, dim: TopologyDimension,
 ): { offsets: ReadonlyMap<string, Point3>; radius: number; witnesses: ReadonlyMap<string, TopologyWitness>; guides: readonly GuideCurve[]; scale: number } {
   const nodes = frames.map(frame => frame.node);
-  const ids = new Set(nodes.map(node => node.id));
-  const localSnapshot: TopologySnapshot = {
-    digest: snapshot.digest + ':indra:' + nodes.map(node => node.id).join('\0'),
-    nodes: nodes.map(node => ({ ...node, parent: null })),
-    edges: snapshot.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)),
-  };
-  const local = law.layoutLocal ? null : law.layoutFull(localSnapshot, dim);
+  // D082-LAB-FIX2 BEGIN: local laws already use the certified full snapshot.
+  // Avoid scanning all 15,800 relations for every recursive container.
+  const local = law.layoutLocal ? null : (() => {
+    const ids = new Set(nodes.map(node => node.id));
+    const localSnapshot: TopologySnapshot = {
+      digest: snapshot.digest + ':indra:' + nodes.map(node => node.id).join('\0'),
+      nodes: nodes.map(node => ({ ...node, parent: null })),
+      edges: snapshot.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)),
+    };
+    return law.layoutFull(localSnapshot, dim);
+  })();
+  // D082-LAB-FIX2 END
   const points = law.layoutLocal?.(nodes, snapshot, dim) ?? local!.positions;
   if (points.size !== nodes.length) throw new Error('indra-compose: local law must place every real ID exactly once');
   for (const node of nodes)
     if (!valid(points.get(node.id), dim)) throw new Error('indra-compose: invalid local point for ' + node.id);
   const center = times(nodes.reduce((sum, node) => plus(sum, points.get(node.id)!), zero), 1 / nodes.length);
   const gap = Math.max(7, frames.reduce((sum, frame) => sum + frame.radius, 0) / frames.length * 0.08);
+  // D082-LAB-FIX2 BEGIN: a one-child container still has a real contains edge.
+  // Its local centroid is the child, so centring would otherwise collapse that edge.
+  if (frames.length === 1) {
+    const frame = frames[0]!;
+    const source = points.get(frame.node.id)!;
+    const magnitude = length(source);
+    const angle = depthOf(frame.node.id) * Math.PI;
+    const direction = magnitude > 1e-9 ? times(source, 1 / magnitude)
+      : { x: Math.cos(angle), y: Math.sin(angle), z: 0 };
+    const offset = times(direction, frame.radius + gap);
+    return { offsets: new Map([[frame.node.id, offset]]),
+      radius: (length(offset) + frame.radius + gap) / 0.94,
+      witnesses: local?.witnesses ?? new Map(), guides: [], scale: 1 };
+  }
+  // D082-LAB-FIX2 END
   // Classic pearl packing fixes the shell envelope. Local law fixes the directions and ratios.
   const pearls = packDiscs(frames.map(frame => ({ id: frame.node.id, radius: frame.radius })), gap);
   const pearlExtent = Math.max(...frames.map(frame => {

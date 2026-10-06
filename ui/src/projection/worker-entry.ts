@@ -13,7 +13,18 @@ import { ProjectionWorkerHost } from "./worker-host.ts";
 import { computeLayout } from "../review/layout-v2.ts";
 import type { LayoutInput } from "../review/layout-v2.ts";
 import { buildMorphologyGeometry } from "../engine/morphology-geometry.ts";
+// D082-A-PERF BEGIN: transferable dense geometry input.
+import { unpackGeometry, type PackedClassicGeometry } from "../render-common/geometry-transfer.ts";
+// D082-A-PERF END
 // D081-P3c END
+// D082-LAB-FIX2 BEGIN
+import { computeTopologyLayout } from "../topology/page-bridge.ts";
+import type { TopologyDimension, TopologyId, TopologySnapshot } from "../topology/contract.ts";
+// D082-LAB-FIX3 BEGIN
+import { buildLullInquiry } from "../topology/lull-inquiry.ts";
+import type { LullInquiry } from "../topology/lull-inquiry.ts";
+// D082-LAB-FIX3 END
+// D082-LAB-FIX2 END
 
 export interface ProjectionWorkerEntryScope {
   postMessage(message: unknown): void;
@@ -31,8 +42,38 @@ export function installProjectionWorkerEntry(
   const host = new ProjectionWorkerHost({ postEvent: event => scope.postMessage(event), projections });
   scope.onmessage = (event: Readonly<{ data: unknown }>) => {
     // D081-P3c BEGIN
+    // D082-A-PERF BEGIN
     const message = event.data as { kind?: string; requestId?: number; input?: LayoutInput;
-      geometryArgs?: Parameters<typeof buildMorphologyGeometry> } | null;
+      geometryArgs?: Parameters<typeof buildMorphologyGeometry>; geometryPacked?: PackedClassicGeometry;
+      id?: Exclude<TopologyId, 'natural'>; snapshot?: TopologySnapshot;
+      dimension?: TopologyDimension; indra?: boolean } | null;
+    // D082-A-PERF END
+    // D082-LAB-FIX3 BEGIN: inquiry work shares the topology/projection worker bundle.
+    const inquiryMessage = event.data as { kind?: string; requestId?: number; snapshot?: TopologySnapshot;
+      selectedIds?: string[]; reading?: string } | null;
+    if (inquiryMessage?.kind === 'lull-inquiry' && typeof inquiryMessage.requestId === 'number'
+      && inquiryMessage.snapshot && Array.isArray(inquiryMessage.selectedIds) && typeof inquiryMessage.reading === 'string') {
+      try {
+        const result: LullInquiry = buildLullInquiry(inquiryMessage.snapshot, {
+          selectedIds: new Set(inquiryMessage.selectedIds), reading: inquiryMessage.reading,
+        });
+        scope.postMessage({ kind: 'lull-inquiry-result', requestId: inquiryMessage.requestId, result });
+      } catch (error) {
+        scope.postMessage({ kind: 'lull-inquiry-error', requestId: inquiryMessage.requestId, message: String(error) });
+      }
+      return;
+    }
+    // D082-LAB-FIX3 END
+    // D082-LAB-FIX2 BEGIN
+    if (message?.kind === 'topology-layout' && typeof message.requestId === 'number'
+      && message.id && message.snapshot && message.dimension && typeof message.indra === 'boolean') {
+      try { scope.postMessage({ kind: 'topology-layout-result', requestId: message.requestId,
+        result: computeTopologyLayout(message.id, message.snapshot, message.dimension, message.indra) }); }
+      catch (error) { scope.postMessage({ kind: 'topology-layout-error', requestId: message.requestId,
+        message: String(error) }); }
+      return;
+    }
+    // D082-LAB-FIX2 END
     if (message?.kind === "classic-layout" && typeof message.requestId === "number" && message.input) {
       try { scope.postMessage({ kind: "classic-layout-result", requestId: message.requestId,
         result: computeLayout(message.input) }); }
@@ -40,18 +81,22 @@ export function installProjectionWorkerEntry(
         message: String(error) }); }
       return;
     }
-    if (message?.kind === "classic-geometry" && typeof message.requestId === "number" && message.geometryArgs) {
+    // D082-A-PERF BEGIN
+    if (message?.kind === "classic-geometry" && typeof message.requestId === "number"
+      && (message.geometryArgs || message.geometryPacked)) {
       try { scope.postMessage({ kind: "classic-geometry-result", requestId: message.requestId,
-        result: buildMorphologyGeometry(...message.geometryArgs) }); }
+        result: buildMorphologyGeometry(...(message.geometryArgs ?? unpackGeometry(message.geometryPacked!))) }); }
       catch (error) { scope.postMessage({ kind: "classic-geometry-error", requestId: message.requestId,
         message: String(error) }); }
       return;
     }
+    // D082-A-PERF END
     // D081-P3c END
     host.handleCommand(event.data);
   };
   return host;
 }
+
 
 const workerScope = globalThis as unknown as ProjectionWorkerEntryScope & { readonly document?: unknown };
 

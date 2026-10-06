@@ -4,7 +4,8 @@ import type { ProductView } from '../review/view-contract.ts';
 import type { Insets } from '../review/view-contract.ts';
 import type { CanopyMark } from './canopy-reveal.ts';
 import type { Morphology } from '../review/view-contract.ts';
-import { neuralRibbonProfile, somaLobeFactor } from '../render-common/morphology-canvas.ts';
+import { neuralRibbonProfile, readNeuralShapeCacheStats, somaLobeAreaScale,
+  somaLobeFactor } from '../render-common/morphology-canvas.ts';
 import { canopySemanticCandidates, placeCanopyLabels, type CanopyRect } from './canopy-overlay.ts';
 
 const STRUCTURAL_INK = 'rgba(199, 205, 214, .63)';
@@ -70,6 +71,34 @@ export function canopyGlyphKind(morphology: Morphology): 'star' | 'soma' | 'hyph
   return morphology === 'stellar' ? 'star' : morphology === 'neural' ? 'soma' : 'hypha';
 }
 
+// D082-B-CANOPYN2 BEGIN: the two fixed Canopy shoulder strengths need one
+// exact normalizer per projected rail direction, independent of the junction
+// radius. Keep the numeric direction as the key so no rounding changes pixels.
+const canopyJunctionAreas = new Map<number, number>();
+const CANOPY_JUNCTION_AREA_LIMIT = 8192;
+const canopyJunctionAreaStats = { hits: 0, misses: 0 };
+export function readCanopyJunctionAreaCacheStats() {
+  return { ...canopyJunctionAreaStats, entries: canopyJunctionAreas.size,
+    limit: CANOPY_JUNCTION_AREA_LIMIT };
+}
+function canopyJunctionAreaScale(direction: number,
+  lobes: readonly { angle: number; strength: number }[]): number {
+  const hit = canopyJunctionAreas.get(direction);
+  if (hit !== undefined) {
+    canopyJunctionAreaStats.hits++;
+    canopyJunctionAreas.delete(direction);
+    canopyJunctionAreas.set(direction, hit);
+    return hit;
+  }
+  canopyJunctionAreaStats.misses++;
+  const scale = somaLobeAreaScale(lobes);
+  canopyJunctionAreas.set(direction, scale);
+  if (canopyJunctionAreas.size > CANOPY_JUNCTION_AREA_LIMIT)
+    canopyJunctionAreas.delete(canopyJunctionAreas.keys().next().value!);
+  return scale;
+}
+// D082-B-CANOPYN2 END
+
 /** Screen-space glyphs preserve the shared IFS centre in every morphology. */
 export function canopyJunctionOutline(radius: number, morphology: Morphology, direction = 0):
   readonly Readonly<{ x: number; y: number }>[] {
@@ -81,11 +110,15 @@ export function canopyJunctionOutline(radius: number, morphology: Morphology, di
   } else if (morphology === 'neural') {
     const lobes = [{ angle: direction, strength: 0.26 },
       { angle: direction + Math.PI * 0.76, strength: 0.16 }];
+    // D082-B-CANOPYN2 BEGIN: without this argument the default evaluates the
+    // 64-angle area integral for every one of the 24 outline vertices.
+    const areaScale = canopyJunctionAreaScale(direction, lobes);
     for (let i = 0; i < 24; i++) {
       const angle = i * Math.PI / 12;
-      const r = radius * somaLobeFactor(lobes, angle) * (1 + 0.065 * Math.sin(3 * angle + direction));
+      const r = radius * somaLobeFactor(lobes, angle, areaScale) * (1 + 0.065 * Math.sin(3 * angle + direction));
       points.push({ x: Math.cos(angle) * r, y: Math.sin(angle) * r });
     }
+    // D082-B-CANOPYN2 END
   } else for (let i = 0; i < 7; i++) {
     const angle = direction + i * Math.PI * 2 / 7;
     const r = radius * (i % 2 ? 0.79 : 1);
@@ -95,7 +128,13 @@ export function canopyJunctionOutline(radius: number, morphology: Morphology, di
 }
 
 function paintJunction(context: CanvasRenderingContext2D, x: number, y: number,
-  radius: number, morphology: Morphology, ink: string, direction = 0): void {
+  radius: number, morphology: Morphology, ink: string, direction = 0, moving = false): void {
+  // D082-B1c BEGIN: no outline work in a moving Canopy frame.
+  if (moving && morphology === 'neural') {
+    context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fillStyle = ink; context.fill(); return;
+  }
+  // D082-B1c END.
   const outline = canopyJunctionOutline(radius, morphology, direction);
   context.beginPath();
   outline.forEach((point, i) => i === 0 ? context.moveTo(x + point.x, y + point.y)
@@ -104,21 +143,33 @@ function paintJunction(context: CanvasRenderingContext2D, x: number, y: number,
   context.fillStyle = ink; context.fill();
 }
 
+// D082-B1c BEGIN: the little Neural leaf is a fixed unit soma, rotated per rail.
+// D082-B-CANOPYN2 BEGIN
+const NEURAL_LEAF_LOBES = [{ angle: 0, strength: 0.28 }];
+const NEURAL_LEAF_AREA_SCALE = somaLobeAreaScale(NEURAL_LEAF_LOBES);
+// D082-B-CANOPYN2 END
+const NEURAL_LEAF_OUTLINE = Array.from({ length: 16 }, (_, i) => {
+  const angle = i * Math.PI / 8;
+  const radius = 2.9 * somaLobeFactor(NEURAL_LEAF_LOBES, angle, NEURAL_LEAF_AREA_SCALE);
+  return { x: Math.cos(angle) * radius * 1.35, y: Math.sin(angle) * radius };
+});
+// D082-B1c END.
 function paintLeaf(context: CanvasRenderingContext2D, x: number, y: number,
-  morphology: Morphology, direction: number): void {
+  morphology: Morphology, direction: number, moving = false): void {
   if (morphology === 'stellar') {
     context.beginPath(); context.arc(x, y, 4.1, 0, Math.PI * 2);
     context.fillStyle = 'rgba(220, 226, 236, .11)'; context.fill();
     context.beginPath(); context.arc(x, y, 1.55, 0, Math.PI * 2);
   } else if (morphology === 'neural') {
+    if (moving) {
+      context.beginPath(); context.arc(x, y, 2.9, 0, Math.PI * 2);
+      context.fillStyle = '#e8e8e8'; context.fill(); return;
+    }
     // The same broad leading lobe used by core Neural leaves gives the small
     // canopy record a shoulder and one tapered tip along its parent rail.
-    const lobes = [{ angle: 0, strength: 0.28 }];
     context.beginPath();
-    for (let i = 0; i < 16; i++) {
-      const angle = i * Math.PI / 8;
-      const r = 2.9 * somaLobeFactor(lobes, angle);
-      const localX = Math.cos(angle) * r * 1.35, localY = Math.sin(angle) * r;
+    for (let i = 0; i < NEURAL_LEAF_OUTLINE.length; i++) {
+      const { x: localX, y: localY } = NEURAL_LEAF_OUTLINE[i]!;
       const px = x + localX * Math.cos(direction) - localY * Math.sin(direction);
       const py = y + localX * Math.sin(direction) + localY * Math.cos(direction);
       if (i === 0) context.moveTo(px, py); else context.lineTo(px, py);
@@ -276,6 +327,7 @@ export type CanopyRailLayer = Readonly<{
   setInsets(insets: Insets): void;
   stats(): Readonly<{ drawn: number; evidenceDrawn: number; evidenceBundles: number;
     evidenceBundled: number; labels: number; badges: number;
+    submittedEdges: number; motionNodes: number | null; paintedFull: boolean;
     treeOnly: boolean; cycleFree: boolean; paletteValid: boolean }>;
   destroy(): void;
 }>;
@@ -343,15 +395,43 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   const context = canvas.getContext('2d');
   if (!context || !view.projectPoint) return { update() {}, setInsets() {},
     stats: () => ({ drawn: 0, evidenceDrawn: 0, evidenceBundles: 0, evidenceBundled: 0,
+      submittedEdges: 0, motionNodes: null, paintedFull: false,
       labels: 0, badges: 0, treeOnly: true, cycleFree: true, paletteValid: true }), destroy() {
     host.removeAttribute('data-fractal-rails-active'); canvas.remove(); titleRule.remove(); } };
   let rails = visibleCanopyRails(layout, ids, initialCap);
+  let railAudit = auditCanopyRails(rails);
   let drawOrder: CanopyRail[] = [];
   let drawnRails: CanopyRail[] = [];
-  let drawnEvidence: CanopyEvidenceStroke[] = [];
+  let drawnEvidence: { edge: CanopyEvidenceStroke; from: { x: number; y: number };
+    to: { x: number; y: number } }[] = [];
+  let projectedNodeGrid = new Map<string, { x: number; y: number }[]>();
   let currentIds = ids;
   let currentMarks = marks;
   let currentEvidence = evidence;
+  // D082-B1 BEGIN: the complete resident scene takes a bounded motion subset once
+  // per gesture, then restores every real ID automatically after input settles.
+  let motionIds: ReadonlySet<string> | null = null;
+  let restoreTimer: ReturnType<typeof setTimeout> | null = null;
+  const motionSubset = new Set([...layout.lineageIds,
+    ...[...layout.positions.values()].filter(row => row.level <= 2).map(row => row.id),
+    ...marks.slice(0, 250).map(mark => mark.id)]);
+  const completeScene = marks.length > 1000 && marks.every(mark => !mark.aggregate);
+  const restoreFull = () => {
+    restoreTimer = null;
+    if (!motionIds) return;
+    // D082-B1c BEGIN: a profile can separate product restoration from overlay paint.
+    const restoreBegan = performance.now();
+    const restored = view.updateVisibleSubset?.({ visibleNodeIds: currentIds,
+      edges: [], containers: [], labelBudget: 0 });
+    performance.mark('d082-b1c:canopy-product-restore', { detail: {
+      durationMs: performance.now() - restoreBegan, nodes: currentIds.size, projection, morphology } });
+    // D082-B1c END.
+    if (restored === false) return;
+    motionIds = null;
+    activeUntil = performance.now();
+    schedule(0, 'restore'); onDraw?.();
+  };
+  // D082-B1 END.
   const railByAddress = new Map(layout.rails.map(rail => [rail.address, rail]));
   let drawablePrefixes = new Set<string>(['root']);
   const rebuildPrefixes = (visible: ReadonlySet<string>) => {
@@ -375,6 +455,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   let labels = 0;
   let badgeCount = 0;
   let paletteValid = true;
+  let paintedFull = false;
   const badge = document.createElement('div');
   badge.dataset.fractalBundleCount = 'true';
   Object.assign(badge.style, { position: 'absolute', zIndex: '6', display: 'none',
@@ -384,9 +465,21 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   let frame: number | null = null;
   let activeUntil = 0;
   let destroyed = false;
+  // D082-B-CANOPYN2 BEGIN: identify which state change requested each paint.
+  const queuedDrawTriggers = new Set<string>();
+  // D082-B-CANOPYN2 END
   const draw = () => {
     frame = null;
     if (destroyed || !host.isConnected) return;
+    // D082-B1c BEGIN.
+    const drawBegan = performance.now();
+    // D082-B1c END.
+    // D082-B-CANOPYN2 BEGIN
+    const junctionCacheBefore = readCanopyJunctionAreaCacheStats();
+    const somaCacheBefore = readNeuralShapeCacheStats();
+    const triggers = [...queuedDrawTriggers];
+    queuedDrawTriggers.clear();
+    // D082-B-CANOPYN2 END
     const width = Math.max(1, host.clientWidth), height = Math.max(1, host.clientHeight);
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
@@ -417,25 +510,39 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     context.setLineDash([]);
     // Evidence is source backed, reading masked, and drawn only when both real
     // representative endpoints are in the clear viewport at this camera orbit.
-    for (const edge of currentEvidence) {
+    // D082-B1 BEGIN: full evidence is drawn once at rest; ordinary camera motion
+    // keeps source IDs intact but paints a bounded sample until restoration.
+    const evidenceForFrame = motionIds ? currentEvidence.slice(0, 300) : currentEvidence;
+    const batchCompleteEvidence = completeScene && !motionIds;
+    const attestedPath = batchCompleteEvidence ? new Path2D() : null;
+    const exploratoryPath = batchCompleteEvidence ? new Path2D() : null;
+    for (const edge of evidenceForFrame) {
       const a = layout.positions.get(edge.source), b = layout.positions.get(edge.target);
       if (!a || !b) continue;
       const from = view.projectPoint!(projection === '3d' ? a.point3d : a.point);
       const to = view.projectPoint!(projection === '3d' ? b.point3d : b.point);
       if (!canopyEndpointVisible(from, safe) || !canopyEndpointVisible(to, safe)) continue;
-      context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y);
-      context.lineWidth = Math.min(1.5, 0.55 + Math.log1p(edge.count) * 0.14);
-      context.strokeStyle = edge.class === 'exploratory' ? 'rgba(165, 159, 185, .45)' : 'rgba(199, 205, 214, .34)';
-      context.stroke();
-      context.fillStyle = context.strokeStyle;
-      for (const endpoint of [from, to]) {
-        context.beginPath(); context.arc(endpoint.x, endpoint.y, 2, 0, Math.PI * 2); context.fill();
+      const path = edge.class === 'exploratory' ? exploratoryPath : attestedPath;
+      if (path) { path.moveTo(from.x, from.y); path.lineTo(to.x, to.y); }
+      else {
+        context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y);
+        context.lineWidth = Math.min(1.5, 0.55 + Math.log1p(edge.count) * 0.14);
+        context.strokeStyle = edge.class === 'exploratory' ? 'rgba(165, 159, 185, .45)' : 'rgba(199, 205, 214, .34)';
+        context.stroke();
+        context.fillStyle = context.strokeStyle;
+        for (const endpoint of [from, to]) {
+          context.beginPath(); context.arc(endpoint.x, endpoint.y, 2, 0, Math.PI * 2); context.fill();
+        }
       }
       evidenceDrawn++;
-      drawnEvidence.push(edge);
+      drawnEvidence.push({ edge, from, to });
       if (edge.count > 1) { evidenceBundles++; evidenceBundled += edge.count; }
     }
-    for (const rail of drawOrder) {
+    if (attestedPath) {
+      context.lineWidth = 0.65; context.strokeStyle = 'rgba(199, 205, 214, .34)'; context.stroke(attestedPath);
+      context.strokeStyle = 'rgba(165, 159, 185, .45)'; context.stroke(exploratoryPath!);
+    }
+    for (const rail of motionIds ? drawOrder.filter(rail => rail.address.length <= 10) : drawOrder) {
       if (rail.address === 'root') continue; // D081-P7d: no unlabeled terminal stem.
       if (!drawablePrefixes.has(rail.address)) continue;
       // Clipping a long 3D segment with either junction outside the clear canvas
@@ -475,7 +582,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
         && (ink !== SELECTED_INK || highlighted);
       context.strokeStyle = ink;
       context.lineCap = morphology === 'stellar' ? 'butt' : 'round';
-      if (morphology === 'neural' && smooth)
+      if (morphology === 'neural' && smooth && !motionIds)
         paintNeuralRail(context, controls.map(segment => ({ ...segment,
           c1: inside(segment.c1), c2: inside(segment.c2) })), context.lineWidth, ink);
       else if (morphology === 'mycelium' && smooth)
@@ -485,7 +592,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       for (const junction of [from, to]) {
         paintJunction(context, junction.x, junction.y,
           morphology === 'neural' ? 4.8 : morphology === 'stellar' ? 3.4 : 1.3,
-          morphology, ink, Math.atan2(to.y - from.y, to.x - from.x));
+          morphology, ink, Math.atan2(to.y - from.y, to.x - from.x), motionIds !== null);
       }
       drawn++;
       drawnRails.push(rail);
@@ -496,7 +603,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       if (canopyEndpointVisible(p, safe))
         paintJunction(context, p.x, p.y,
           morphology === 'neural' ? 7 : morphology === 'stellar' ? 5 : 2.5,
-          morphology, '#e8e8e8');
+          morphology, '#e8e8e8', 0, motionIds !== null);
     }
     const semantic = [...layout.positions.values()].filter(row => row.level <= 3 && currentIds.has(row.id));
     for (const row of semantic) {
@@ -509,9 +616,12 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
           ? row.level === 1 ? 5 : row.level === 2 ? 4.3 : 3.5
           : row.level === 1 ? 2.8 : row.level === 2 ? 2.3 : 1.7;
       paintJunction(context, p.x, p.y, radius,
-        morphology, row.level === 3 ? 'rgba(199, 205, 214, .88)' : '#e8e8e8');
+        morphology, row.level === 3 ? 'rgba(199, 205, 214, .88)' : '#e8e8e8', 0, motionIds !== null);
     }
-    for (const mark of currentMarks) {
+    // Completa's product layer already draws one pickable glyph per real ID.
+    // A second 10k-leaf canvas pass only overpaints those glyphs.
+    for (const mark of completeScene ? []
+      : motionIds ? currentMarks.filter(mark => motionIds!.has(mark.id)) : currentMarks) {
       const row = layout.positions.get(mark.id);
       if (!row || row.level < 4 || !currentIds.has(mark.id)) continue;
       const point = projection === '3d' ? row.point3d : row.point;
@@ -519,7 +629,17 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       if (!canopyEndpointVisible(p, safe)) continue;
       const rail = railByAddress.get(row.address);
       const parent = rail ? view.projectPoint!(projection === '3d' ? rail.from3d : rail.from) : p;
-      paintLeaf(context, p.x, p.y, morphology, Math.atan2(p.y - parent.y, p.x - parent.x));
+      paintLeaf(context, p.x, p.y, morphology, Math.atan2(p.y - parent.y, p.x - parent.x), motionIds !== null);
+    }
+    projectedNodeGrid = new Map();
+    for (const id of motionIds ?? currentIds) {
+      const row = layout.positions.get(id);
+      if (!row) continue;
+      const p = view.projectPoint!(projection === '3d' ? row.point3d : row.point);
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      const key = `${Math.floor(p.x / 20)}:${Math.floor(p.y / 20)}`;
+      const bucket = projectedNodeGrid.get(key) ?? [];
+      bucket.push(p); projectedNodeGrid.set(key, bucket);
     }
     context.font = '11px system-ui, sans-serif';
     const explanation = host.querySelector<HTMLElement>('#fractal-canopy-explanation');
@@ -536,7 +656,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
         bottom: measuredExplanation.bottom - hostBounds.top }
       : { left: safe.left + 8, top: safe.top + 8,
         right: safe.left + 280, bottom: safe.top + 140 };
-    const candidates = [...canopySemanticCandidates(layout, currentIds, point => view.projectPoint!(point),
+    const labelIds = completeScene ? new Set([...layout.positions.values()]
+      .filter(row => row.level <= 3).map(row => row.id)) : currentIds;
+    const candidates = [...canopySemanticCandidates(layout, labelIds, point => view.projectPoint!(point),
       projection, reading, label => context.measureText(label).width)];
     if (root) {
       const p = view.projectPoint!(projection === '3d' ? root.to3d : root.to);
@@ -612,34 +734,76 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       context.fillStyle = '#d7dbe2'; context.fillText(label, x + 4, y + 11);
     }
     context.restore();
+    if (!motionIds) paintedFull = true;
+    // D082-B1c BEGIN: a bounded phase mark for a PerformanceObserver.
+    performance.mark('d082-b1c:canopy-overlay-draw', { detail: {
+      durationMs: performance.now() - drawBegan, motion: motionIds !== null,
+      rails: drawn, evidence: evidenceDrawn, projection, morphology, triggers,
+      // D082-B-CANOPYN2 BEGIN: distinguish overlay junction work from the
+      // product soma cache in the existing mark capture.
+      junctionAreaHits: readCanopyJunctionAreaCacheStats().hits - junctionCacheBefore.hits,
+      junctionAreaMisses: readCanopyJunctionAreaCacheStats().misses - junctionCacheBefore.misses,
+      somaLobeHits: readNeuralShapeCacheStats().lobeHits - somaCacheBefore.lobeHits,
+      somaLobeMisses: readNeuralShapeCacheStats().lobeMisses - somaCacheBefore.lobeMisses,
+      // D082-B-CANOPYN2 END
+    } });
+    // D082-B1c END.
     onDraw?.();
-    if (performance.now() < activeUntil) frame = requestAnimationFrame(draw);
+    // D082-B-CANOPYN2 BEGIN: camera changes emit their own motion event. A
+    // complete scene has no time-based overlay animation to repaint at rest.
+    if (!completeScene && performance.now() < activeUntil) frame = requestAnimationFrame(draw);
+    // D082-B-CANOPYN2 END
   };
-  const schedule = (duration = 220) => {
-    activeUntil = Math.max(activeUntil, performance.now() + duration);
+  const schedule = (duration = 220, trigger = 'unspecified') => {
+    // D082-B-CANOPYN2 BEGIN
+    queuedDrawTriggers.add(trigger);
+    if (!completeScene) activeUntil = Math.max(activeUntil, performance.now() + duration);
+    // D082-B-CANOPYN2 END
     if (frame === null) frame = requestAnimationFrame(draw);
   };
+  // D082-B1c BEGIN: the product canvas warms cached somata in small tasks, then
+  // signals the overlay to publish the actual full-quality state.
+  // D082-B-CANOPYN2 BEGIN: readiness changes the status, not painted pixels.
+  const onSomataReady = () => { if (completeScene) {
+    if (paintedFull) onDraw?.(); else schedule(0, 'soma-ready');
+  } };
+  // D082-B-CANOPYN2 END
+  host.addEventListener('d082:canopy-soma-ready', onSomataReady);
+  // D082-B1c END.
   const onMotion = (event: Event) => {
     const interacting = event.type === 'wheel' || event.type === 'pointerdown'
       || event.type === 'pointerup' || event.type === 'keydown'
       || event instanceof PointerEvent && event.buttons !== 0;
+    const cameraMoving = event.type === 'd080-fractal-camera-motion';
     if (interacting) onInteraction?.();
-    schedule(interacting ? 460 : 220);
+    // D082-B1 BEGIN.
+    if ((interacting || cameraMoving) && completeScene) {
+      if (!motionIds) {
+        if (selected) motionSubset.add(selected);
+        const applied = view.updateVisibleSubset?.({ visibleNodeIds: motionSubset,
+          edges: [], containers: [], labelBudget: 0 });
+        if (applied !== false) { motionIds = motionSubset; paintedFull = false; }
+      }
+      if (motionIds) {
+        if (restoreTimer) clearTimeout(restoreTimer);
+        restoreTimer = setTimeout(restoreFull, 260);
+      }
+    }
+    // D082-B1 END.
+    // D082-B-CANOPYN2 BEGIN: passive hover reads the last painted rail grid.
+    if (interacting || cameraMoving) schedule(460, cameraMoving ? 'camera' : 'input');
+    // D082-B-CANOPYN2 END
     if (!(event instanceof PointerEvent)) return;
     const bounds = host.getBoundingClientRect();
     const x = event.clientX - bounds.left, y = event.clientY - bounds.top;
     if (event.type === 'pointermove' && onEvidenceHover) {
       let closest: CanopyEvidenceStroke | null = null, edgeDistance = 5;
-      const nearNode = [...currentIds].some(id => {
-        const row = layout.positions.get(id);
-        if (!row) return false;
-        const p = view.projectPoint!(projection === '3d' ? row.point3d : row.point);
-        return Math.hypot(x - p.x, y - p.y) < 9;
-      });
-      if (!nearNode) for (const edge of drawnEvidence) {
-        const a = layout.positions.get(edge.source)!, b = layout.positions.get(edge.target)!;
-        const from = view.projectPoint!(projection === '3d' ? a.point3d : a.point);
-        const to = view.projectPoint!(projection === '3d' ? b.point3d : b.point);
+      const gx = Math.floor(x / 20), gy = Math.floor(y / 20);
+      let nearNode = false;
+      for (let ix = gx - 1; ix <= gx + 1 && !nearNode; ix++)
+        for (let iy = gy - 1; iy <= gy + 1 && !nearNode; iy++)
+          nearNode = (projectedNodeGrid.get(`${ix}:${iy}`) ?? []).some(p => Math.hypot(x - p.x, y - p.y) < 9);
+      if (!nearNode) for (const { edge, from, to } of drawnEvidence) {
         const dx = to.x - from.x, dy = to.y - from.y;
         const t = Math.max(0, Math.min(1, ((x - from.x) * dx + (y - from.y) * dy)
           / Math.max(1, dx * dx + dy * dy)));
@@ -669,25 +833,48 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   };
   for (const type of ['wheel', 'pointermove', 'pointerdown', 'pointerup', 'keydown', 'd080-fractal-camera-motion'])
     host.addEventListener(type, onMotion, { passive: true });
-  const observer = new ResizeObserver(() => schedule());
+  // D082-B-CANOPYN2 BEGIN: the initial observer notification must not repaint
+  // an unchanged canvas after the mount's first draw.
+  const observer = new ResizeObserver(() => {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (canvas.width !== Math.round(Math.max(1, host.clientWidth) * dpr)
+      || canvas.height !== Math.round(Math.max(1, host.clientHeight) * dpr))
+      schedule(completeScene ? 0 : 220, 'resize');
+  });
+  // D082-B-CANOPYN2 END
   observer.observe(host);
-  schedule(900);
+  schedule(completeScene ? 0 : 900, 'mount');
   return {
     update(nextIds, nextSelected = selected, cap = initialCap, nextMarks = currentMarks,
       nextEvidence = currentEvidence) {
       if (nextIds === currentIds && nextSelected === selected && nextMarks === currentMarks
         && nextEvidence === currentEvidence) return;
       rails = visibleCanopyRails(layout, nextIds, cap);
+      railAudit = auditCanopyRails(rails);
       currentIds = nextIds; rebuildPrefixes(nextIds);
-      selected = nextSelected; currentMarks = nextMarks; currentEvidence = nextEvidence; schedule(460);
+      selected = nextSelected; currentMarks = nextMarks; currentEvidence = nextEvidence;
+      schedule(completeScene ? 0 : 460, 'update');
     },
-    setInsets(next) { currentInsets = next; schedule(120); },
+    setInsets(next) {
+      // D082-B-CANOPYN2 BEGIN
+      if (next.top === currentInsets.top && next.right === currentInsets.right
+        && next.bottom === currentInsets.bottom && next.left === currentInsets.left) return;
+      // D082-B-CANOPYN2 END
+      currentInsets = next; schedule(120, 'insets');
+    },
     stats: () => ({ drawn, evidenceDrawn, evidenceBundles, evidenceBundled,
-      labels, badges: badgeCount, ...auditCanopyRails(rails), paletteValid }),
+      submittedEdges: currentEvidence.length, motionNodes: motionIds?.size ?? null,
+      // D082-B1f BEGIN: 2D and 3D Neural both wait for the current product soma pass.
+      paintedFull: paintedFull && (morphology !== 'neural'
+        || !completeScene || host.hasAttribute('data-fractal-somata-ready')),
+      // D082-B1f END
+      labels, badges: badgeCount, ...railAudit, paletteValid }),
     destroy() {
       destroyed = true;
+      if (restoreTimer) clearTimeout(restoreTimer);
       if (frame !== null) cancelAnimationFrame(frame);
       observer.disconnect();
+      host.removeEventListener('d082:canopy-soma-ready', onSomataReady);
       host.removeAttribute('data-fractal-rails-active');
       for (const type of ['wheel', 'pointermove', 'pointerdown', 'pointerup', 'keydown', 'd080-fractal-camera-motion'])
         host.removeEventListener(type, onMotion);
@@ -714,9 +901,11 @@ export function appendCanopyExplanation(host: HTMLElement, layout: CanopyLayout,
   explanation.style.margin = '5px 0';
   const rail = document.createElement('p');
   rail.id = 'fractal-cross-domain-rail';
-  rail.textContent = ['Rail virtuale tra domini', `${layout.structuralCrossDomain} strutturali`,
+  // D082-B-NOTICE BEGIN: Italian caption; rendering and counts stay unchanged.
+  rail.textContent = ['Binario virtuale tra domini', `${layout.structuralCrossDomain} strutturali`,
     ...(reading === 'exploratory' ? [] : [`${layout.crossDomain.attested} attestate`]),
     ...(reading === 'attested' ? [] : [`${layout.crossDomain.exploratory} esplorative`])].join(' · ');
+  // D082-B-NOTICE END
   rail.style.margin = '0';
   overlay.append(title, explanation, rail);
   host.append(overlay);
