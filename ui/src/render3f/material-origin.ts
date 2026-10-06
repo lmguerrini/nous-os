@@ -102,6 +102,8 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#render-common/projection-visuals-layer.ts",
     "#render-common/container-canvas.ts",
     "#render3f/labels.tsx",
+    // D082-B-GPUFLOOR: the point floor is a numeric CSS-px size, carrying no colour, opacity or depth.
+    "#render3f/neural-point-floor.ts",
     "#render3f/node-material.ts",
     "#render3f/picking.ts",
     "#render3f/resources.ts",
@@ -110,6 +112,9 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#scene/contract.ts",
     "../projection/contract-types.ts",
   ])],
+  // D082-B-GPUFLOOR: the floor helper is itself a renderer module — material-independent (a numeric
+  // point floor in CSS px); its only import is the type-only Morphology, erased at compile time.
+  ["neural-point-floor.ts", new Set(["#engine/morphology.ts"])],
   ["node-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
   ["picking.ts", new Set(["#engine/contract.ts", "#scene/contract.ts", "../projection/contract-types.ts"])],
   ["resources.ts", new Set(["three", "#engine/renderer-handle.ts"])],
@@ -299,6 +304,8 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#render3f/distinct-overlay.ts", new Set(["mountDistinctOverlay"])],
     ["#render-common/projection-visuals-layer.ts", new Set(["createProjectionVisualsLayer", "ProjectionVisualsLayer", "ProjectionVisualsMorphology"])],
     ["#render3f/labels.tsx", new Set(["LabelOverlayController"])],
+    // D082-B-GPUFLOOR: only the pure floor function crosses — it returns a CSS-px number, never a material value.
+    ["#render3f/neural-point-floor.ts", new Set(["neural3dCompletaPointFloorCssPx"])],
     ["#render3f/node-material.ts", new Set([
       "createNodeRenderResources",
       "updateNodeProjectionUniforms",
@@ -315,6 +322,11 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#scene/index.ts", new Set(["buildScene"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_QUANTUM", "Scene", "SceneNode"])],
     ["../projection/contract-types.ts", new Set(["PickResult", "StyledProjection"])],
+  ])],
+  ["neural-point-floor.ts", new Map([
+    // D082-B-GPUFLOOR: the Morphology import is type-only, so no runtime visual policy reaches the
+    // numeric CSS-px point floor.
+    ["#engine/morphology.ts", new Set(["Morphology"])],
   ])],
   ["node-material.ts", new Map([
     ["three", new Set(["*"])],
