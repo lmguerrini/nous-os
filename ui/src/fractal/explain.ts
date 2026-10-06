@@ -202,7 +202,7 @@ export function explainFractalRefusal(input: FractalRefusalExplainInput): Explan
   return Object.freeze({
     elementId: input.elementId,
     elementKind: 'field',
-    summary: `Coordinate Fractal non disponibili: l’assegnazione dei settori è stata rifiutata con ${input.code} (${input.detail}); la ${dynamicsSummary(input.dynamics)} certificata non viene sostituita da una posizione decorativa.`,
+    summary: `Coordinate Canopy non disponibili: l’assegnazione dei settori è stata rifiutata con ${input.code} (${input.detail}); la ${dynamicsSummary(input.dynamics)} certificata non viene sostituita da una posizione decorativa.`,
     sourceIds: [],
     parameterIds: ['sector-locality-v2', 'fractal.p', 'fractal.c', 'fractal.N'],
     numericalWitness: Object.freeze({

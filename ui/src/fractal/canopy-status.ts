@@ -47,7 +47,7 @@ export function canopyGraphStatus(input: Readonly<{
       : elapsed < 400 || input.ready === false ? 'recupero' : 'completa',
     msSinceInteraction: elapsed, msToFullQuality: input.msToFullQuality,
     limit: input.edgeBudget !== undefined && input.eligibleEdges > input.edgeBudget
-      ? { kind: 'gruppi di archi Fractal', value: input.edgeBudget,
+      ? { kind: 'gruppi di archi Canopy', value: input.edgeBudget, // D084-W3-LABELS: selector name
           reason: 'Gli archi sono instradati in gruppi contati; ingrandisci per separarli.' }
       : null,
     hint: represented < input.totalNodes

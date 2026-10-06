@@ -289,3 +289,18 @@ test('the unflagged legacy organization fallback names Canopy in its visible not
   assert.equal(resolveExperimentalOrganization('fractal', new Set(['fractal'] as const)).notice, null);
 });
 // D084-W3-LABELS END
+
+// D084-W3-LABELS BEGIN: the public error and refusal
+// texts of the legacy organization key, the Canopy status limit and the Canopy explanation all name
+// the view «Canopy»; no user-facing string literal in these modules names «Fractal».
+test('public errors, refusals, the status limit and the explanation name Canopy, never Fractal', async () => {
+  const main = await readFile(new URL('../src/review/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /const viewLabel = \(organization: "fractal" \| "holographic"\) => organization === "fractal" \? "Canopy" : "Holographic";/);
+  for (const file of ['../src/review/main.ts', '../src/fractal/explain.ts', '../src/fractal/canopy-status.ts', '../src/review/view-contract.ts']) {
+    const source = await readFile(new URL(file, import.meta.url), 'utf8');
+    const code = source.split('\n').filter(line => !/^\s*(\/\/|\*|\/\*\*)/.test(line)).join('\n');
+    const literals = [...code.matchAll(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g)].map(match => match[0]);
+    assert.deepEqual(literals.filter(text => /\bFractal\b/.test(text)), [], file + ': no user-facing «Fractal»');
+  }
+});
+// D084-W3-LABELS END
