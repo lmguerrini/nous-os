@@ -282,20 +282,14 @@ test("M1b dust: only fillRect ops, no ink, and Stellar alone draws it", () => {
   }
 });
 
-test("M1b cluster glow: one composed fill per community, centre alpha within the 0.06 cap", () => {
+test("M1b cluster glow: a canvas without a composition layer omits the decorative disc", () => {
   const { geometry, style } = stellarScene();
   const clusters = stellarDustClusters(geometry.nodes, geometry.colonies);
   const { context, ops, gradients } = recordingContext();
   drawStellarClusterGlow(context, clusters, project, hubId => style.nodes.get(hubId)?.color, 900, 640);
-  const composed = ops.filter(op => op.op === "fill").length;
-  assert.ok(composed >= 1 && composed <= clusters.length, `${composed} fills for ${clusters.length} communities`);
-  assert.ok(gradients.length >= 1, "the sprite gradient is built once per colour");
-  for (const gradient of gradients) {
-    assert.equal(gradient.kind, "radial");
-    for (const stop of gradient.stops) {
-      assert.ok(alphaOf(stop.colour) <= 0.06 + 1e-9, `stop alpha ${stop.colour} above the 0.06 cap`);
-    }
-  }
+  assert.equal(ops.filter(op => op.op === "fill").length, 0,
+    "a context without drawImage cannot safely compose overlapping glows");
+  assert.equal(gradients.length, 0);
   assert.ok(STELLAR_CLUSTER_GLOW_ALPHA <= 0.06);
   for (const op of ops) assert.ok(op.op !== "fillText" && op.op !== "fillRect", "the glow is decoration: no ink, no data ops");
 });
