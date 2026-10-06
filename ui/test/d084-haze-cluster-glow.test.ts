@@ -5,9 +5,11 @@ import type { Coordinates } from "#engine/contract.ts";
 import type { ProjectedPoint } from "#render-common/morphology-canvas.ts";
 import type { StellarDustCluster } from "#render-common/starfield.ts";
 import {
-  drawStellarClusterGlow, resolveStellarClusterGlowDiscs, stellarClusterGlowFieldAt,
-  stellarClusterGlowProfile, STELLAR_CLUSTER_GLOW_ALPHA,
+  drawStellarClusterGlow, planStellarClusterGlowField, resolveStellarClusterGlowDiscs,
+  sampleStellarClusterGlowField, stellarClusterGlowFieldAt, stellarClusterGlowProfile,
+  STELLAR_CLUSTER_GLOW_ALPHA, STELLAR_CLUSTER_GLOW_WORK_BUDGET,
 } from "#render-common/morphology-canvas.ts";
+import type { StellarClusterGlowTiming } from "#render-common/morphology-canvas.ts";
 
 const project = (p: Coordinates): ProjectedPoint => ({ x: 400 + p.x, y: 300 + p.y, scale: 1 });
 const cluster = (id: string, x = 0, radius = 140): StellarDustCluster =>
@@ -68,12 +70,62 @@ test("D084-HAZE D-072 profile, small-disc gate and 3D fade remain", () => {
   assert.equal(resolveStellarClusterGlowDiscs([cluster("wide", 0, 1200)], project, colour, 800, 600, "3d").length, 0);
 });
 
-type Recording = { context: CanvasRenderingContext2D; canvas: { width: number; height: number };
+test("D084-HAZE disc-first raster matches the per-cell reference on seeded random scenes", () => {
+  let seed = 0x8492c;
+  const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 0x100000000);
+  for (let scene = 0; scene < 12; scene += 1) {
+    const width = 37 + scene * 3;
+    const height = 29 + scene * 2;
+    const discs = Array.from({ length: 3 + scene * 2 }, () => ({
+      x: random() * (width + 16) - 8,
+      y: random() * (height + 16) - 8,
+      radiusPx: 1 + random() * 26,
+      peakAlpha: 0.01 + random() * 0.08,
+      rgb: [Math.floor(random() * 256), Math.floor(random() * 256), Math.floor(random() * 256)] as const,
+    }));
+    if (scene % 2 === 0) discs.push({ ...discs[0]!, rgb: discs[0]!.rgb });
+    const plan = planStellarClusterGlowField(discs, width, height);
+    const sampled = sampleStellarClusterGlowField(discs, width, height, plan);
+    assert.ok(sampled.evaluations <= plan.plannedEvaluations);
+    for (let row = 0; row < plan.gridHeight; row += 1) for (let column = 0; column < plan.gridWidth; column += 1) {
+      const x = (column + 0.5) * width / plan.gridWidth;
+      const y = (row + 0.5) * height / plan.gridHeight;
+      const field = stellarClusterGlowFieldAt(discs, x, y);
+      const offset = (row * plan.gridWidth + column) * 4;
+      const expected = new Uint8ClampedArray([
+        Math.round(field.rgb[0]), Math.round(field.rgb[1]),
+        Math.round(field.rgb[2]), Math.round(field.alpha * 255),
+      ]);
+      for (let channel = 0; channel < 4; channel++) assert.ok(
+        Math.abs(sampled.data[offset + channel]! - expected[channel]!) <= 1,
+        `scene ${scene}, cell ${column},${row}, channel ${channel}`);
+    }
+  }
+});
+
+test("D084-HAZE 900 viewport discs fit the work budget, while typical scenes retain the 4 px grid", () => {
+  const wide = Array.from({ length: 900 }, () => ({
+    x: 720, y: 597, radiusPx: 1000, peakAlpha: 0.05, rgb: [230, 230, 230] as const,
+  }));
+  const worst = planStellarClusterGlowField(wide, 1440, 1194);
+  assert.ok(worst.plannedEvaluations <= STELLAR_CLUSTER_GLOW_WORK_BUDGET);
+  assert.ok(sampleStellarClusterGlowField(wide, 1440, 1194, worst).evaluations <=
+    worst.plannedEvaluations);
+  const typical = planStellarClusterGlowField(wide.slice(0, 60).map((d, i) => ({
+    ...d, x: 100 + i * 20, radiusPx: 80,
+  })), 1440, 1194);
+  assert.equal(typical.step, 3.8125);
+});
+
+type Recording = { context: CanvasRenderingContext2D; canvas: { width: number; height: number;
+  isConnected?: boolean; __morphRedraw?: () => void };
   draws: { source: unknown; alpha: number; composite: string; smoothing: boolean; transform: string }[];
+  rects: number[][];
   readonly fills: number };
 function recording(width = 1600, height = 1200): Recording {
   const canvas = { width, height };
   const draws: Recording["draws"] = [];
+  const rects: number[][] = [];
   let fills = 0; let alpha = 0.37; let composite = "multiply"; let smoothing = false;
   const transform = { a: 2, b: 0, c: 0, d: 2, e: 13, f: 17 };
   const context = {
@@ -83,9 +135,12 @@ function recording(width = 1600, height = 1200): Recording {
     get imageSmoothingEnabled() { return smoothing; }, set imageSmoothingEnabled(v: boolean) { smoothing = v; },
     getTransform() { return { ...transform }; },
     fill() { fills++; }, fillRect() { fills++; },
-    drawImage(source: unknown) { draws.push({ source, alpha, composite, smoothing, transform: JSON.stringify(transform) }); },
+    drawImage(source: unknown, ...rect: number[]) {
+      draws.push({ source, alpha, composite, smoothing, transform: JSON.stringify(transform) });
+      rects.push(rect);
+    },
   } as unknown as CanvasRenderingContext2D;
-  return { context, canvas, draws, get fills() { return fills; } };
+  return { context, canvas, draws, rects, get fills() { return fills; } };
 }
 
 function withGlobals(doc: unknown, run: () => void): void {
@@ -129,6 +184,7 @@ test("D084-HAZE no DOM, no offscreen, null getContext, ImageData, putImageData, 
   ]) withGlobals(fixture.doc, () => {
     const rec = recording(fixture.width);
     drawStellarClusterGlow(rec.context, [cluster("red"), cluster("green")], project, colour, 800, 600);
+    drawStellarClusterGlow(rec.context, [cluster("red"), cluster("green")], project, colour, 800, 600);
     assert.equal(rec.draws.length, 0);
     assert.equal(rec.fills, 0);
   });
@@ -147,6 +203,7 @@ test("D084-HAZE source-over draws translucent field under the CSS transform and 
   withGlobals(fixture.document, () => {
     const rec = recording();
     const transform = JSON.stringify(rec.context.getTransform());
+    drawStellarClusterGlow(rec.context, [cluster("red")], project, colour, 800, 600);
     drawStellarClusterGlow(rec.context, [cluster("red")], project, colour, 800, 600);
     assert.deepEqual(rec.draws, [{ source: fixture.layers[0]!.canvas, alpha: 1,
       composite: "source-over", smoothing: true, transform }]);
@@ -167,23 +224,101 @@ test("D084-HAZE cache invalidates on viewport size, DPR, disc set and palette", 
       drawStellarClusterGlow(rec.context, list, project, palette, width, 600);
     draw([cluster("red")]); draw([cluster("red")]);
     assert.equal(fixture.layers[0]!.puts, 1);
-    draw([cluster("red")], 801); assert.equal(fixture.layers[0]!.puts, 2);
+    draw([cluster("red")], 801); draw([cluster("red")], 801); assert.equal(fixture.layers[0]!.puts, 2);
+    drawStellarClusterGlow(rec.context, [cluster("red")], project, colour, 801, 601);
     drawStellarClusterGlow(rec.context, [cluster("red")], project, colour, 801, 601);
     assert.equal(fixture.layers[0]!.puts, 3);
     rec.canvas.width = 2000;
-    draw([cluster("red")], 801); assert.equal(fixture.layers[0]!.puts, 4);
+    draw([cluster("red")], 801); draw([cluster("red")], 801); assert.equal(fixture.layers[0]!.puts, 4);
     const target = globalThis as { devicePixelRatio?: number };
     const oldDpr = Object.getOwnPropertyDescriptor(target, "devicePixelRatio");
     try {
       Object.defineProperty(target, "devicePixelRatio", { configurable: true, value: 3 });
-      draw([cluster("red")], 801); assert.equal(fixture.layers[0]!.puts, 5);
+      draw([cluster("red")], 801); draw([cluster("red")], 801); assert.equal(fixture.layers[0]!.puts, 5);
     } finally {
       if (oldDpr) Object.defineProperty(target, "devicePixelRatio", oldDpr);
       else delete target.devicePixelRatio;
     }
+    draw([cluster("red"), cluster("green")], 801);
     draw([cluster("red"), cluster("green")], 801); assert.equal(fixture.layers[0]!.puts, 6);
+    draw([cluster("red")], 801, () => "rgb(0, 0, 255)");
     draw([cluster("red")], 801, () => "rgb(0, 0, 255)"); assert.equal(fixture.layers[0]!.puts, 7);
-    assert.equal(rec.draws.length, 8);
+    assert.equal(rec.draws.length, 7);
   });
+});
+
+test("D084-HAZE changing keys transform a finished field and schedule exactly one settled recompute", () => {
+  const fixture = layerDocument();
+  withGlobals(fixture.document, () => {
+    const rec = recording();
+    const clusters = [cluster("red", -100), cluster("green", 0), cluster("blue", 100)];
+    let now = 0, nextTimer = 0, redraws = 0;
+    const timers = new Map<number, () => void>();
+    const timing: StellarClusterGlowTiming = {
+      now: () => now,
+      schedule(callback) { const id = ++nextTimer; timers.set(id, callback); return id; },
+      cancel(handle) { timers.delete(handle as number); },
+      requestRedraw() { redraws++; draw(); },
+    };
+    let shift = 0, warp = 0;
+    const moved = (p: Coordinates): ProjectedPoint => ({
+      x: 400 + shift + p.x, y: 300 + p.y + warp * p.x * p.x / 100, scale: 1,
+    });
+    const draw = () => drawStellarClusterGlow(rec.context, clusters, moved, colour, 800, 600, "2d", timing);
+    rec.canvas.isConnected = true;
+    rec.canvas.__morphRedraw = draw;
+    draw(); assert.equal(fixture.layers.length, 0);
+    draw(); assert.equal(fixture.layers[0]!.puts, 1);
+    for (let frame = 1; frame <= 8; frame++) {
+      now = frame * 16; shift = frame * 3;
+      draw();
+      assert.equal(fixture.layers[0]!.puts, 1, `frame ${frame} sampled during motion`);
+      assert.deepEqual(rec.rects.at(-1), [shift, 0, 800, 600]);
+      assert.equal(timers.size, 1);
+    }
+    now += 120;
+    const callback = [...timers.values()][0]!;
+    timers.clear(); callback();
+    assert.equal(redraws, 1);
+    assert.equal(fixture.layers[0]!.puts, 2);
+    assert.deepEqual(rec.rects.at(-1), [0, 0, 800, 600]);
+    assert.equal(timers.size, 0);
+    draw(); assert.equal(fixture.layers[0]!.puts, 2);
+    warp = 0.1; now += 16;
+    const drawn = rec.draws.length;
+    draw();
+    assert.equal(rec.draws.length, drawn, "a non-similar orbit skips the cached glow");
+    assert.equal(fixture.layers[0]!.puts, 2);
+  });
+});
+
+// A settled callback must release its timer without presenting a dead owner.
+test("D084-HAZE settled glow ignores disconnected and hookless owners", () => {
+  for (const teardown of ["disconnect", "delete hook"] as const) {
+    const fixture = layerDocument();
+    withGlobals(fixture.document, () => {
+      const rec = recording();
+      let scheduled: (() => void) | undefined;
+      let redraws = 0;
+      const timing: StellarClusterGlowTiming = {
+        now: () => 0,
+        schedule(callback) { scheduled = callback; return 1; },
+        cancel() {},
+        requestRedraw() { redraws++; draw(); },
+      };
+      const draw = () => drawStellarClusterGlow(rec.context, [cluster("red")], project, colour,
+        800, 600, "2d", timing);
+      rec.canvas.isConnected = true;
+      rec.canvas.__morphRedraw = draw;
+      draw();
+      assert.ok(scheduled, `${teardown}: settled redraw was scheduled`);
+      if (teardown === "disconnect") rec.canvas.isConnected = false;
+      else delete rec.canvas.__morphRedraw;
+      scheduled();
+      assert.equal(redraws, 0, `${teardown}: dead owner requested a draw`);
+      assert.equal(fixture.layers.length, 0, `${teardown}: dead owner recomputed glow`);
+      assert.equal(rec.draws.length, 0, `${teardown}: dead owner painted glow`);
+    });
+  }
 });
 // D084-HAZE END

@@ -547,9 +547,163 @@ export function stellarClusterGlowFieldAt(
     : [0, 0, 0] };
 }
 
-/** Kept per destination context so a still camera reuses its finished, transparent field. */
-const stellarClusterGlowLayers = new WeakMap<CanvasRenderingContext2D,
-  { key: string; canvas: HTMLCanvasElement | OffscreenCanvas }>();
+/** Limit the first settled frame to roughly 200,000 disc-cell evaluations. The field is
+ * decorative and smooth, so exceptionally dense scenes can use a coarser smoothed grid. */
+export const STELLAR_CLUSTER_GLOW_WORK_BUDGET = 200_000;
+
+export type StellarClusterGlowPlan = {
+  readonly step: number;
+  readonly gridWidth: number;
+  readonly gridHeight: number;
+  readonly plannedEvaluations: number;
+};
+
+type GlowCellBox = { left: number; right: number; top: number; bottom: number };
+
+/** First cell centre greater than low, and first cell centre at least high. This uses the same
+ * cell-centre expression as raster sampling, including its floating-point boundary behaviour. */
+function glowCellRange(low: number, high: number, extent: number, count: number): readonly [number, number] {
+  const bound = (value: number, strict: boolean): number => {
+    let first = 0;
+    let last = count;
+    while (first < last) {
+      const middle = (first + last) >>> 1;
+      const centre = (middle + 0.5) * extent / count;
+      if (strict ? centre <= value : centre < value) first = middle + 1;
+      else last = middle;
+    }
+    return first;
+  };
+  return [bound(low, true), bound(high, false)];
+}
+
+function glowCellBox(disc: StellarClusterGlowDisc, width: number, height: number,
+  gridWidth: number, gridHeight: number): GlowCellBox {
+  const [left, right] = glowCellRange(disc.x - disc.radiusPx, disc.x + disc.radiusPx, width, gridWidth);
+  const [top, bottom] = glowCellRange(disc.y - disc.radiusPx, disc.y + disc.radiusPx, height, gridHeight);
+  return { left, right, top, bottom };
+}
+
+/** Pure plan for the existing ≤120,000-cell grid and its disc-bounding-box work. */
+export function planStellarClusterGlowField(
+  discs: readonly StellarClusterGlowDisc[], width: number, height: number,
+): StellarClusterGlowPlan {
+  if (!(width > 0) || !(height > 0)) return { step: 0, gridWidth: 0, gridHeight: 0, plannedEvaluations: 0 };
+  let step = Math.max(1, Math.ceil(Math.sqrt(width * height / 120000) * 16) / 16);
+  for (;;) {
+    const gridWidth = Math.ceil(width / step);
+    const gridHeight = Math.ceil(height / step);
+    if (gridWidth * gridHeight > 120000) {
+      step += 1 / 16;
+      continue;
+    }
+    let plannedEvaluations = 0;
+    for (const disc of discs) {
+      if (!(disc.radiusPx > 0)) continue;
+      const box = glowCellBox(disc, width, height, gridWidth, gridHeight);
+      plannedEvaluations += (box.right - box.left) * (box.bottom - box.top);
+    }
+    if (plannedEvaluations <= STELLAR_CLUSTER_GLOW_WORK_BUDGET) {
+      return { step, gridWidth, gridHeight, plannedEvaluations };
+    }
+    if (gridWidth === 1 && gridHeight === 1) {
+      throw new RangeError("Stellar cluster glow work exceeds budget at a one-cell grid");
+    }
+    // Jump close to the required spacing, then remeasure exact bounding-box counts.
+    step = Math.max(step + 1 / 16,
+      Math.ceil(step * Math.sqrt(plannedEvaluations / STELLAR_CLUSTER_GLOW_WORK_BUDGET) * 16) / 16);
+  }
+}
+
+/** Disc-first accumulation. Float64 preserves the reference's ordered sums before RGBA rounding. */
+export function sampleStellarClusterGlowField(
+  discs: readonly StellarClusterGlowDisc[], width: number, height: number, plan: StellarClusterGlowPlan,
+): { readonly data: Uint8ClampedArray; readonly evaluations: number } {
+  const { gridWidth, gridHeight } = plan;
+  const cells = gridWidth * gridHeight;
+  const alpha = new Float64Array(cells);
+  const sum = new Float64Array(cells);
+  const red = new Float64Array(cells);
+  const green = new Float64Array(cells);
+  const blue = new Float64Array(cells);
+  const maxRed = new Float64Array(cells);
+  const maxGreen = new Float64Array(cells);
+  const maxBlue = new Float64Array(cells);
+  const firstRed = new Float64Array(cells);
+  const firstGreen = new Float64Array(cells);
+  const firstBlue = new Float64Array(cells);
+  const monochrome = new Uint8Array(cells);
+  let evaluations = 0;
+  for (const disc of discs) {
+    const { x: centreX, y: centreY, radiusPx: radius, peakAlpha, rgb } = disc;
+    if (!(radius > 0)) continue;
+    const box = glowCellBox(disc, width, height, gridWidth, gridHeight);
+    for (let row = box.top; row < box.bottom; row += 1) {
+      const dy = (row + 0.5) * height / gridHeight - centreY;
+      const chordSquared = radius * radius - dy * dy;
+      if (chordSquared <= 0) continue;
+      const chord = Math.sqrt(chordSquared);
+      const [left, right] = glowCellRange(centreX - chord, centreX + chord, width, gridWidth);
+      for (let column = Math.max(box.left, left); column < Math.min(box.right, right); column += 1) {
+        evaluations += 1;
+        const x = (column + 0.5) * width / gridWidth;
+        const dx = x - centreX;
+        const t = Math.sqrt(dx * dx + dy * dy) / radius;
+        if (t >= 1) continue;
+        const a = stellarClusterGlowProfile(peakAlpha, t);
+        if (a <= 0) continue;
+        const index = row * gridWidth + column;
+        if (sum[index] === 0) {
+          firstRed[index] = rgb[0];
+          firstGreen[index] = rgb[1];
+          firstBlue[index] = rgb[2];
+          monochrome[index] = 1;
+        } else if (rgb[0] !== firstRed[index] || rgb[1] !== firstGreen[index]
+          || rgb[2] !== firstBlue[index]) monochrome[index] = 0;
+        alpha[index] = Math.max(alpha[index]!, a);
+        sum[index] = sum[index]! + a;
+        red[index] = red[index]! + a * rgb[0];
+        green[index] = green[index]! + a * rgb[1];
+        blue[index] = blue[index]! + a * rgb[2];
+        maxRed[index] = Math.max(maxRed[index]!, rgb[0]);
+        maxGreen[index] = Math.max(maxGreen[index]!, rgb[1]);
+        maxBlue[index] = Math.max(maxBlue[index]!, rgb[2]);
+      }
+    }
+  }
+  const data = new Uint8ClampedArray(cells * 4);
+  for (let index = 0; index < cells; index += 1) {
+    const offset = index * 4;
+    if (sum[index]! > 0) {
+      data[offset] = Math.round(monochrome[index] ? firstRed[index]! : Math.min(maxRed[index]!, red[index]! / sum[index]!));
+      data[offset + 1] = Math.round(monochrome[index] ? firstGreen[index]! : Math.min(maxGreen[index]!, green[index]! / sum[index]!));
+      data[offset + 2] = Math.round(monochrome[index] ? firstBlue[index]! : Math.min(maxBlue[index]!, blue[index]! / sum[index]!));
+    }
+    data[offset + 3] = Math.round(alpha[index]! * 255);
+  }
+  return { data, evaluations };
+}
+
+/** A single delayed callback asks the owning renderer to present its settled frame. */
+export type StellarClusterGlowTiming = {
+  now(): number;
+  schedule(callback: () => void, delay: number): unknown;
+  cancel(handle: unknown): void;
+  requestRedraw(): void;
+};
+
+type FinishedGlow = {
+  key: string;
+  canvas: HTMLCanvasElement | OffscreenCanvas;
+  discs: readonly StellarClusterGlowDisc[];
+  width: number;
+  height: number;
+  backingWidth: number;
+  backingHeight: number;
+  dpr: number;
+};
+type GlowCache = { key: string; since: number; consecutive: number; timer?: unknown; finished?: FinishedGlow };
+const stellarClusterGlowLayers = new WeakMap<CanvasRenderingContext2D, GlowCache>();
 
 function stellarClusterGlowCanvas(): HTMLCanvasElement | OffscreenCanvas | null {
   if (typeof document !== "undefined" && typeof document.createElement === "function") {
@@ -558,8 +712,39 @@ function stellarClusterGlowCanvas(): HTMLCanvasElement | OffscreenCanvas | null 
   return typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(1, 1) : null;
 }
 
+/** Fit current = scale * cached + translation over centres and radii. A 2D camera pan/zoom
+ * has zero residual; an orbit or a changed palette is not painted from stale pixels. */
+function glowSimilarity(from: readonly StellarClusterGlowDisc[], to: readonly StellarClusterGlowDisc[])
+  : { scale: number; x: number; y: number } | null {
+  if (from.length !== to.length || from.length === 0) return null;
+  let oldX = 0, oldY = 0, newX = 0, newY = 0;
+  for (let i = 0; i < from.length; i++) {
+    const a = from[i]!, b = to[i]!;
+    if (a.peakAlpha !== b.peakAlpha || a.rgb.some((v, channel) => v !== b.rgb[channel])) return null;
+    oldX += a.x; oldY += a.y; newX += b.x; newY += b.y;
+  }
+  oldX /= from.length; oldY /= from.length; newX /= to.length; newY /= to.length;
+  let numerator = 0, denominator = 0;
+  for (let i = 0; i < from.length; i++) {
+    const a = from[i]!, b = to[i]!;
+    numerator += (a.x - oldX) * (b.x - newX) + (a.y - oldY) * (b.y - newY) + a.radiusPx * b.radiusPx;
+    denominator += (a.x - oldX) ** 2 + (a.y - oldY) ** 2 + a.radiusPx ** 2;
+  }
+  const scale = numerator / denominator;
+  if (!(scale > 0) || !Number.isFinite(scale)) return null;
+  const x = newX - scale * oldX, y = newY - scale * oldY;
+  let squaredError = 0;
+  for (let i = 0; i < from.length; i++) {
+    const a = from[i]!, b = to[i]!;
+    squaredError += (scale * a.x + x - b.x) ** 2 + (scale * a.y + y - b.y) ** 2
+      + (scale * a.radiusPx - b.radiusPx) ** 2;
+  }
+  return Math.sqrt(squaredError / from.length) <= 1 ? { scale, x, y } : null;
+}
+
 function paintStellarClusterGlowComposed(
   context: CanvasRenderingContext2D, discs: readonly StellarClusterGlowDisc[], width: number, height: number,
+  timing?: StellarClusterGlowTiming,
 ): void {
   const destination = context.canvas;
   if (!(width > 0) || !(height > 0) || !destination || !(destination.width > 0)
@@ -571,41 +756,55 @@ function paintStellarClusterGlowComposed(
   const key = JSON.stringify([width, height, destination.width, destination.height, dpr,
     discs.map(disc => [quantise(disc.x), quantise(disc.y), quantise(disc.radiusPx),
       disc.peakAlpha, ...disc.rgb])]);
-  let cached = stellarClusterGlowLayers.get(context);
-  if (!cached || cached.key !== key) {
-    const canvas = cached?.canvas ?? stellarClusterGlowCanvas();
+  const redraw = (destination as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw;
+  const clock: StellarClusterGlowTiming = timing ?? {
+    now: () => performance.now(),
+    schedule: (callback, delay) => setTimeout(callback, delay),
+    cancel: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    requestRedraw: () => (destination as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw?.(),
+  };
+  const now = clock.now();
+  let cache = stellarClusterGlowLayers.get(context);
+  if (!cache) { cache = { key, since: now, consecutive: 1 }; stellarClusterGlowLayers.set(context, cache); }
+  else if (cache.key !== key) {
+    if (cache.timer !== undefined) clock.cancel(cache.timer);
+    cache.key = key; cache.since = now; cache.consecutive = 1; cache.timer = undefined;
+  } else cache.consecutive++;
+  const due = cache.consecutive >= 2 || now - cache.since >= 120;
+  if (cache.finished?.key !== key && due) {
+    if (cache.timer !== undefined) { clock.cancel(cache.timer); cache.timer = undefined; }
+    const canvas = cache.finished?.canvas ?? stellarClusterGlowCanvas();
     if (!canvas) return; // Decorative glow is omitted when safe composition is unavailable.
-    // Choose a CSS-pixel grid of at most 120,000 cells. A 1440 × 1194 viewport uses ~4 px cells.
-    let step = Math.max(1, Math.ceil(Math.sqrt(width * height / 120000) * 16) / 16);
-    let gridWidth = Math.ceil(width / step);
-    let gridHeight = Math.ceil(height / step);
-    while (gridWidth * gridHeight > 120000) {
-      step += 1 / 16;
-      gridWidth = Math.ceil(width / step);
-      gridHeight = Math.ceil(height / step);
-    }
+    const plan = planStellarClusterGlowField(discs, width, height);
+    const { gridWidth, gridHeight } = plan;
     canvas.width = gridWidth;
     canvas.height = gridHeight;
     const layer = canvas.getContext("2d") as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
     if (!layer || typeof layer.createImageData !== "function" || typeof layer.putImageData !== "function") return;
     const image = layer.createImageData(gridWidth, gridHeight);
     if (!image || !image.data) return;
-    for (let row = 0; row < gridHeight; row += 1) {
-      const y = (row + 0.5) * height / gridHeight;
-      for (let column = 0; column < gridWidth; column += 1) {
-        const x = (column + 0.5) * width / gridWidth;
-        const field = stellarClusterGlowFieldAt(discs, x, y);
-        const offset = (row * gridWidth + column) * 4;
-        image.data[offset] = Math.round(field.rgb[0]);
-        image.data[offset + 1] = Math.round(field.rgb[1]);
-        image.data[offset + 2] = Math.round(field.rgb[2]);
-        image.data[offset + 3] = Math.round(field.alpha * 255);
-      }
-    }
+    image.data.set(sampleStellarClusterGlowField(discs, width, height, plan).data);
     layer.putImageData(image, 0, 0);
-    cached = { key, canvas };
-    stellarClusterGlowLayers.set(context, cached);
+    cache.finished = { key, canvas, discs: [...discs], width, height,
+      backingWidth: destination.width, backingHeight: destination.height, dpr };
   }
+  if (cache.finished?.key !== key && cache.timer === undefined && (timing || redraw)) {
+    cache.timer = clock.schedule(() => {
+      cache!.timer = undefined;
+      // A removed or destroyed owner cannot present a settled frame.
+      if ((destination as HTMLCanvasElement).isConnected === false
+        || !(destination as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw) return;
+      // A newer key cancels this callback; the renderer owns the actual draw boundary.
+      clock.requestRedraw();
+    }, Math.max(0, 120 - (now - cache.since)));
+  }
+  const finished = cache.finished;
+  if (!finished) return;
+  const transform = finished.key === key ? { scale: 1, x: 0, y: 0 }
+    : finished.width === width && finished.height === height
+      && finished.backingWidth === destination.width && finished.backingHeight === destination.height
+      && finished.dpr === dpr ? glowSimilarity(finished.discs, discs) : null;
+  if (!transform) return;
   const priorAlpha = context.globalAlpha;
   const priorComposite = context.globalCompositeOperation;
   const priorSmoothing = context.imageSmoothingEnabled;
@@ -614,7 +813,8 @@ function paintStellarClusterGlowComposed(
     context.globalAlpha = 1;
     context.globalCompositeOperation = "source-over";
     context.imageSmoothingEnabled = true;
-    context.drawImage(cached.canvas, 0, 0, width, height);
+    context.drawImage(finished.canvas, transform.x, transform.y,
+      finished.width * transform.scale, finished.height * transform.scale);
   } finally {
     context.imageSmoothingEnabled = priorSmoothing;
     context.globalCompositeOperation = priorComposite;
@@ -628,9 +828,10 @@ function paintStellarClusterGlowComposed(
  * It is decorative and carries no identifier, label, witness, or hit-test surface. */
 export function drawStellarClusterGlow(context: CanvasRenderingContext2D, clusters: readonly StellarDustCluster[],
   project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
-  width: number, height: number, projection: "2d" | "3d" = "2d"): void {
+  width: number, height: number, projection: "2d" | "3d" = "2d",
+  timing?: StellarClusterGlowTiming): void {
   const discs = resolveStellarClusterGlowDiscs(clusters, project, nodeColour, width, height, projection);
-  if (discs.length > 0) paintStellarClusterGlowComposed(context, discs, width, height);
+  if (discs.length > 0) paintStellarClusterGlowComposed(context, discs, width, height, timing);
 }
 // D084-HAZE END
 

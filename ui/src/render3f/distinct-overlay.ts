@@ -115,6 +115,11 @@ export function mountDistinctOverlay(
       updateStyles();
       draw();
     },
-    destroy(): void { canvas.remove(); },
+    destroy(): void {
+      // D084-HAZE BEGIN: invalidate pending settled-glow redraws before unmount.
+      delete (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw;
+      // D084-HAZE END
+      canvas.remove();
+    },
   };
 }

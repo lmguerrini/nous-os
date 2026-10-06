@@ -970,6 +970,9 @@ function mountDistinctCanvas(
       });
       screenPaint.enabled = true;
       detached.forEach((item, index) => { item.style.display = previousDetachedDisplay[index] ?? ""; });
+      // D084-HAZE BEGIN: invalidate pending settled-glow redraws before unmount.
+      delete (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw;
+      // D084-HAZE END
       canvas.remove();
     },
   };
@@ -1917,6 +1920,9 @@ export function mountProjection2d(
       pickSettleTimer = setTimeout(() => { pickSettleTimer = undefined; rebuildPickIndex(); }, 2 ** (2 + 2 + 2 + 1));
     }
   };
+  // D084-HAZE BEGIN: let the settled glow request one normal presentation after camera motion.
+  (morphologyCanvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw = redraw;
+  // D084-HAZE END
   sigma.on('afterRender', redraw);
   drawMorphology();
   draw();
@@ -2076,6 +2082,9 @@ export function mountProjection2d(
         if (backing) { item.width = backing[0]; item.height = backing[1]; }
       });
       detached.forEach((item, index) => { item.style.display = previousDetachedDisplay[index] ?? ''; });
+      // D084-HAZE BEGIN: a pending settled-glow callback must not repaint a removed canvas.
+      delete (morphologyCanvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw;
+      // D084-HAZE END
       morphologyCanvas.remove();
       visuals.destroy();
       sigma.kill();
