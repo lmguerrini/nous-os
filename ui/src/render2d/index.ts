@@ -71,6 +71,7 @@ import type { PickResult, RenderVisibility, SemanticGraphSnapshot, StyledProject
 import { createProjectionVisualsLayer } from "#render-common/projection-visuals-layer.ts";
 import type { ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
 import { ALL_EDGES_QUALITY_STAGE, FULL_QUALITY_STAGE, QualityLadder, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+import { createPresentedPublisher } from "#render-common/presented-publisher.ts";
 // "D082-A-NODES BEGIN"
 import { denseNativeEdgeAlpha } from "#render-common/dense-node-scale.ts";
 // "D082-A-NODES END"
@@ -856,7 +857,7 @@ function mountDistinctCanvas(
   };
   recountPresented();
   let lastMorphologyCamera = JSON.stringify(sigma.getCamera().getState());
-  let presentationRevision = 0;
+  const publisher = createPresentedPublisher(presentRenderReadiness);
   const publishPresented = (): void => {
     const stage = ladder.state.stage;
     const nativeNodesCanvas = sigma.getCanvases().nodes;
@@ -887,10 +888,7 @@ function mountDistinctCanvas(
         glow: stage === FULL_QUALITY_STAGE, animation: true },
       decorApplicable: { animation: false },
     } as const;
-    const revision = ++presentationRevision;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (revision === presentationRevision) presentRenderReadiness(snapshot);
-    }));
+    publisher.publish(snapshot);
   };
   const ladder = new QualityLadder(({ stage, moving }) => {
     if (nativeTier) canvas.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
@@ -957,6 +955,7 @@ function mountDistinctCanvas(
       draw();
     },
     destroy(): void {
+      publisher.dispose();
       ladder.destroy();
       sigma.off("afterRender", draw);
       sigma.off("resize", collapseLayer);
@@ -1851,7 +1850,6 @@ export function mountProjection2d(
     nativeCountDirty = true;
   };
   recountMainEdges();
-  let presentationRevision = 0;
   // "D082-A-STALE BEGIN"
   const readinessSnapshot = () => {
     const stage = ladder.state.stage;
@@ -1885,12 +1883,9 @@ export function mountProjection2d(
       decorApplicable: { animation: false },
     } as const;
   };
+  const publisher = createPresentedPublisher(presentRenderReadiness);
   const publishPresented = (): void => {
-    const snapshot = readinessSnapshot();
-    const revision = ++presentationRevision;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (revision === presentationRevision) presentRenderReadiness(snapshot);
-    }));
+    publisher.publish(readinessSnapshot());
   };
   // "D082-A-STALE END"
   // Dense native glyphs remain visible while costly decorative canvases rest.
@@ -2050,7 +2045,7 @@ export function mountProjection2d(
     setDerivedMorphology: morphology => {
       visuals.setMorphology(morphology);
       // "D082-A-STALE BEGIN"
-      presentationRevision++;
+      publisher.invalidate();
       const snapshot = readinessSnapshot();
       presentRenderReadiness({ ...snapshot, quality: 'recupero', ladder: snapshot.ladder === FULL_QUALITY_STAGE ? ALL_EDGES_QUALITY_STAGE : snapshot.ladder,
         decor: { ...snapshot.decor, background: false } });
@@ -2058,6 +2053,7 @@ export function mountProjection2d(
       // "D082-A-STALE END"
     },
     destroy(): void {
+      publisher.dispose();
       ladder.destroy();
       if (pickSettleTimer !== undefined) clearTimeout(pickSettleTimer);
       hoverGate.destroy();
