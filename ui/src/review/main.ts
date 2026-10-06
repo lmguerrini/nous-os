@@ -55,7 +55,7 @@ import { TOPOLOGY_IDS, topologyLabel, topologyRowState, topologySupport } from '
 import type { TopologyId } from '../topology/contract.ts';
 // D082-B2 END
 // D082-B-NOTICE BEGIN
-import { showLabNotice } from './lab-notice.ts';
+import { dismissLabNotice, showLabNotice } from './lab-notice.ts';
 // D082-B-NOTICE END
 
 const get = <T extends Element>(id: string): T => {
@@ -187,7 +187,9 @@ function showExperimentalSuspensionNotice(): void {
 function showSelectedGeometryDescription(onlyIfNoNotice = false): void {
   if ((onlyIfNoNotice && experimentalSuspensionNotice) || 'mode' in geometry) return;
   const topology = lawTopology(geometry.topology);
-  if (topology === 'natural') return;
+  // D082-B-NOTICE BEGIN: the notice ends with its condition — back on Natural the lab
+  // description no longer applies, so any standing notice is dismissed at once.
+  if (topology === 'natural') { dismissLabNotice(); return; }
   showLabNotice(topology === 'canopy-ifs'
     ? 'Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica'
     : topologyLabel(topology, axes.projection));

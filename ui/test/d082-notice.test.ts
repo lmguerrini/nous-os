@@ -28,7 +28,11 @@ const header = element('review-toolbar');
 header.rect = { left: 0, top: 0, right: 1440, bottom: 149, width: 1440, height: 149 };
 const panel = element('details');
 panel.rect = { left: 1066, top: 173, right: 1426, bottom: 986, width: 360, height: 813 };
-const byId = new Map([host, message, close, viewport, header, panel].map(item => [item.id, item]));
+const focusControls = element('selection-focus-controls');
+const fullscreenBar = element('fullscreen-bar');
+const appearancePanel = element('appearance-panel');
+const byId = new Map([host, message, close, viewport, header, panel, focusControls, fullscreenBar, appearancePanel]
+  .map(item => [item.id, item]));
 const documentListeners = new Map<string, (event: { key?: string }) => void>();
 let resizeCallback: (() => void) | null = null;
 class ResizeObserverStub {
@@ -89,6 +93,80 @@ test('ordinary loads remain quiet and Escape dismisses the active notice', () =>
   showLabNotice('Fractal è una vista sperimentale: caricata Natural.');
   assert.equal(host.hidden, false);
   documentListeners.get('keydown')?.({ key: 'Escape' });
+  assert.equal(host.hidden, true);
+  assert.equal(message.textContent, '');
+});
+
+/** The notice's placed rectangle: centred on style.left, at most style.maxWidth wide,
+ * starting at style.top and extending downward with its content. */
+function noticeRect(): { left: number; right: number; top: number } {
+  const left = Number.parseFloat(host.style.left ?? '0');
+  const width = Number.parseFloat(host.style.maxWidth ?? '0');
+  return { left: left - width / 2, right: left + width / 2, top: Number.parseFloat(host.style.top ?? '0') };
+}
+/** A visible control (non-zero rect) never intersects the notice's rectangle. */
+function assertNoticeClear(...controls: TestElement[]): void {
+  const notice = noticeRect();
+  for (const control of controls) {
+    const rect = control.getBoundingClientRect();
+    assert.ok(rect.width <= 0 || rect.height <= 0 || rect.right <= notice.left || rect.left >= notice.right
+      || rect.bottom <= notice.top,
+      `the notice [x ${notice.left.toFixed(0)}..${notice.right.toFixed(0)}, from y ${notice.top.toFixed(0)}] `
+      + `intersects #${control.id} [x ${rect.left}..${rect.right}, to y ${rect.bottom}]`);
+  }
+}
+const zeroRect = () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 });
+
+test('fullscreen: the notice clears the visible focus controls and the fullscreen bar', () => {
+  // In fullscreen the toolbar is display:none, so its rect is zero; the centred focus controls
+  // and the top-right fullscreen bar are the visible overlays.
+  header.rect = zeroRect();
+  panel.rect = zeroRect();
+  appearancePanel.rect = zeroRect();
+  focusControls.rect = { left: 570, top: 10, right: 870, bottom: 42, width: 300, height: 32 };
+  fullscreenBar.rect = { left: 812, top: 8, right: 1432, bottom: 148, width: 620, height: 140 };
+  showLabNotice('Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica');
+  assert.equal(host.style.top, '50px');
+  assert.equal(host.style.left, '400px');
+  assert.equal(host.style.maxWidth, '776px');
+  assertNoticeClear(focusControls, fullscreenBar);
+});
+
+test('windowed: an open appearance panel narrows the notice instead of covering it', () => {
+  header.rect = { left: 0, top: 0, right: 1440, bottom: 149, width: 1440, height: 149 };
+  panel.rect = zeroRect();
+  focusControls.rect = zeroRect();
+  fullscreenBar.rect = zeroRect();
+  appearancePanel.rect = { left: 1078, top: 159, right: 1428, bottom: 600, width: 350, height: 441 };
+  showLabNotice('lull non supporta 3D: caricata la vista 2D per mantenere la topologia.');
+  assert.equal(host.style.top, '157px');
+  assert.equal(host.style.left, '533px');
+  assert.equal(host.style.maxWidth, '1042px');
+  assertNoticeClear(appearancePanel);
+});
+
+test('nothing in the way: the notice keeps its windowed placement below the toolbar', () => {
+  header.rect = { left: 0, top: 0, right: 1440, bottom: 149, width: 1440, height: 149 };
+  panel.rect = zeroRect();
+  focusControls.rect = zeroRect();
+  fullscreenBar.rect = zeroRect();
+  appearancePanel.rect = zeroRect();
+  showLabNotice('Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica');
+  assert.equal(host.style.top, '157px');
+  assert.equal(host.style.left, '720px');
+  assert.equal(host.style.maxWidth, '1416px');
+  assertNoticeClear(focusControls, fullscreenBar, appearancePanel, panel);
+});
+
+test('returning to Natural dismisses the standing lab notice', async () => {
+  const mainSource = await readFile(new URL('../src/review/main.ts', import.meta.url), 'utf8');
+  assert.match(mainSource, /import \{ dismissLabNotice, showLabNotice \} from '\.\/lab-notice\.ts';/);
+  // showSelectedGeometryDescription returns early for natural; that branch is the dismissal
+  // wiring under test (main.ts executes DOM boot at import, so the wiring is asserted on source).
+  assert.match(mainSource, /if \(topology === 'natural'\) \{ dismissLabNotice\(\); return; \}/);
+  showLabNotice('Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica');
+  assert.equal(host.hidden, false);
+  dismissLabNotice();
   assert.equal(host.hidden, true);
   assert.equal(message.textContent, '');
 });

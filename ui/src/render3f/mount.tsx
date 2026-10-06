@@ -63,6 +63,9 @@ import {
 import { ScenePicker } from "#render3f/picking.ts";
 import { TypedProjectionPicker } from "#render3f/picking.ts";
 import type { Render3fTypedInput, TypedProjectionGeometry } from "#render3f/picking.ts";
+// D082-B-GPUFLOOR BEGIN
+import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts";
+// D082-B-GPUFLOOR END
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
 import { QualityLadder, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
 
@@ -271,8 +274,19 @@ export function mount(
   setFilamentNeuralWidthPx(filamentResources.material, options.presentation?.appearance?.edgeWidth ?? 1);
   const nodeResources = createNodeRenderResources(live.buffers.nodes);
   // D082-A-N3D BEGIN: only the full Natural/Indra Neural 3D scene receives the point floor.
-  const denseNeuralCompleta = options.morphology === "neural"
-    && options.presentation?.morphologyLanguage === "distinct" && live.scene.nodes.length === 11_199;
+  // D082-B-GPUFLOOR BEGIN: a Canopy-family host is not that scene. The signal is the one the
+  // shared canvas renderer already uses (data-fractal-rails-active on the render container)
+  // plus the explicit preparedCanopy argument, so a prepared and an unprepared Canopy 3D
+  // Neural mount both keep the Canopy node policy (canopy-node-policy.ts, 0.5 px minimum).
+  const canopyMount = !!preparedCanopy || container.hasAttribute("data-fractal-rails-active");
+  const denseNeuralPointFloorCssPx = neural3dCompletaPointFloorCssPx({
+    morphology: options.morphology,
+    morphologyLanguage: options.presentation?.morphologyLanguage,
+    nodeCount: live.scene.nodes.length,
+    canopyMount,
+  });
+  const denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;
+  // D082-B-GPUFLOOR END
   // D082-A-N3D END
   registry.registerGeometry(aggregateResources.geometry);
   registry.registerGeometry(filamentResources.geometry);
@@ -331,6 +345,8 @@ export function mount(
       // D082-A-NCOMPLETA BEGIN
       if (neuralProfile instanceof THREE.InstancedBufferAttribute && live.buffers.filaments.neuralProfile[index * 4 + 3]! > 0.5)
         // D082-A-N3D BEGIN: reserve 3 + factor for the 3D full Neural ribbon floor.
+        // D082-B-GPUFLOOR: that tag is Natural/Indra-specific like the point floor — a Canopy
+        // host keeps 1 + factor, the ordinary veil-carrying value the shader reads unchanged.
         neuralProfile.setW(index, (denseNeuralCompleta ? 3 : 1) + factor);
         // D082-A-N3D END
       // D082-A-NCOMPLETA END
@@ -490,7 +506,7 @@ export function mount(
       nodeScaleCap: projection.nodeScaleCap,
       // End A1b outside-ownership bridge.
       // D082-A-N3D BEGIN
-      denseNeuralPointFloorCssPx: denseNeuralCompleta ? 0.9 : 0,
+      denseNeuralPointFloorCssPx,
       // D082-A-N3D END
     });
   };
