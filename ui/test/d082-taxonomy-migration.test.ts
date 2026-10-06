@@ -72,7 +72,7 @@ test('wire taxonomy and label gating follow law support', () => {
   assert.equal(lawTopology('circular-combinatorial'), 'lull');
   assert.equal(topologyLabel('julia', '2d'), 'Julia · coordinate esterne');
   // D082-B5 integration: the label follows the verified name gate of the implemented law.
-  assert.equal(topologyLabel('lull', '2d'), LULL_NAME_AUTHORISED ? 'Combinatoria lulliana' : 'Topologia circolare combinatoria');
+  assert.equal(topologyLabel('lull', '2d'), LULL_NAME_AUTHORISED ? 'Llull' : 'Topologia circolare combinatoria');
   assert.deepEqual(topologySupport('natural', '3d', true), { ok: true });
   const forbidden = topologySupport('lull', '3d', false);
   assert.equal(forbidden.ok, false);

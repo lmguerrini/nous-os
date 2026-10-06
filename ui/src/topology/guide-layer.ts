@@ -28,6 +28,22 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     context.lineWidth = 0.75;
     for (const guide of guides) {
       if (guide.points.length < 2) continue;
+      // D084-LLULL BEGIN: distinguish the outer rim and the radial hub without
+      // changing the appearance of guides belonging to any other topology.
+      if (guide.kind === 'lull-figure-a' || guide.kind === 'lull-letter') {
+        context.strokeStyle = 'rgba(205,215,230,.50)';
+        context.lineWidth = 1;
+      } else if (guide.kind === 'lull-hub' || guide.kind === 'lull-hub-spoke') {
+        context.strokeStyle = 'rgba(205,215,230,.34)';
+        context.lineWidth = 0.85;
+      } else if (guide.kind === 'lull-band' || guide.kind === 'lull-sector-ray') {
+        context.strokeStyle = 'rgba(180,190,210,.19)';
+        context.lineWidth = 0.65;
+      } else {
+        context.strokeStyle = 'rgba(180,190,210,.22)';
+        context.lineWidth = 0.75;
+      }
+      // D084-LLULL END
       context.beginPath();
       let started = false;
       for (const point of guide.points) {
@@ -36,7 +52,10 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
         if (!started) { context.moveTo(projected.x, projected.y); started = true; }
         else context.lineTo(projected.x, projected.y);
       }
+      // D084-LLULL BEGIN: stroke the hub circle and spokes without a fill;
+      // guides must leave the real chord ink beneath them visible.
       context.stroke();
+      // D084-LLULL END
     }
   };
   const schedule = () => {
