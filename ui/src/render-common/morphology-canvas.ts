@@ -456,16 +456,26 @@ export function stellarClusterGlowZoomOpacity(radiusPx: number, width: number, h
   return 1 - t * t * (3 - 2 * t);
 }
 
-/**
- * The optional, subtle cluster mass (D-072 M1b): one very faint large radial glow per community,
- * beneath the dust, so a cluster reads as gathered brightness rather than scattered points. One
- * cached unit gradient per (colour, quantised alpha) — one composed fill per community per frame,
- * deterministic, never data (no identifier leaves the decorative layer).
- */
-export function drawStellarClusterGlow(context: CanvasRenderingContext2D, clusters: readonly StellarDustCluster[],
-  project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
-  width: number, height: number, projection: "2d" | "3d" = "2d"): void {
-  const canTransform = canComposeTransform(context);
+// D084-HAZE BEGIN
+/** The D-072 community discs resolved in screen space, with the original extent, colour and
+ * quantised peak (including the 3D viewport fade). */
+export type StellarClusterGlowDisc = {
+  readonly x: number;
+  readonly y: number;
+  readonly radiusPx: number;
+  readonly peakAlpha: number;
+  readonly rgb: readonly [number, number, number];
+};
+
+export function resolveStellarClusterGlowDiscs(
+  clusters: readonly StellarDustCluster[],
+  project: (point: Coordinates) => ProjectedPoint,
+  nodeColour: (hubId: string) => string | undefined,
+  width: number,
+  height: number,
+  projection: "2d" | "3d" = "2d",
+): readonly StellarClusterGlowDisc[] {
+  const discs: StellarClusterGlowDisc[] = [];
   for (const cluster of clusters) {
     const centre = project(cluster.center);
     if (!Number.isFinite(centre.x) || !Number.isFinite(centre.y)) continue;
@@ -475,28 +485,154 @@ export function drawStellarClusterGlow(context: CanvasRenderingContext2D, cluste
     const zoomOpacity = projection === "3d" ? stellarClusterGlowZoomOpacity(radius, width, height) : 1;
     if (zoomOpacity <= 0) continue;
     if (centre.x + radius < 0 || centre.x - radius > width || centre.y + radius < 0 || centre.y - radius > height) continue;
-    const colour = nodeColour(cluster.hubId) ?? STELLAR_DUST_FALLBACK_COLOUR;
-    const channels = colourChannels(colour);
-    const alpha = quantisedAlpha(STELLAR_CLUSTER_GLOW_ALPHA * zoomOpacity);
-    const stops = [
-      { offset: 0, colour: rgbaChannels(channels, alpha) },
-      { offset: 0.55, colour: rgbaChannels(channels, alpha * 0.35) },
-      { offset: 1, colour: rgbaChannels(channels, 0) },
-    ];
-    const unit = canTransform ? cachedUnitRadial(context, `cluster-glow\u0000${colour}\u0000${alpha}`, 0, 0, 0, 1, stops) : null;
-    if (unit) {
-      fillUnitGradient(context, unit, centre.x, centre.y, radius);
-    } else if (typeof context.createRadialGradient === "function") {
-      const gradient = context.createRadialGradient(centre.x, centre.y, 0, centre.x, centre.y, radius);
-      for (const stop of stops) gradient.addColorStop(stop.offset, stop.colour);
-      context.fillStyle = gradient;
-      context.beginPath(); context.arc(centre.x, centre.y, radius, 0, Math.PI * 2); context.fill();
-    } else {
-      context.fillStyle = rgbaChannels(channels, alpha * 0.5);
-      context.beginPath(); context.arc(centre.x, centre.y, radius, 0, Math.PI * 2); context.fill();
+    discs.push({
+      x: centre.x,
+      y: centre.y,
+      radiusPx: radius,
+      peakAlpha: quantisedAlpha(STELLAR_CLUSTER_GLOW_ALPHA * zoomOpacity),
+      rgb: colourChannels(nodeColour(cluster.hubId) ?? STELLAR_DUST_FALLBACK_COLOUR),
+    });
+  }
+  return discs;
+}
+
+/** Original D-072 radial stops: centre 1, radius 0.55 at 0.35, rim 0. */
+export function stellarClusterGlowProfile(peakAlpha: number, radiusFraction: number): number {
+  const t = clamp(radiusFraction, 0, 1);
+  return peakAlpha * (t <= 0.55 ? 1 - (t / 0.55) * 0.65 : (0.35 * (1 - t)) / 0.45);
+}
+
+/** At every pixel p covered by glow discs i with alpha a_i(p) and colour c_i:
+ * alpha(p) = max_i a_i(p);
+ * colour(p) = Σ a_i(p)·c_i / Σ a_i(p);
+ * composited source-over with that alpha. One isolated disc therefore reproduces the D-072 paint
+ * exactly, and monochrome overlaps equal the strongest single disc. */
+export function stellarClusterGlowFieldAt(
+  discs: readonly StellarClusterGlowDisc[], x: number, y: number,
+): { readonly alpha: number; readonly rgb: readonly [number, number, number] } {
+  let alpha = 0;
+  let sum = 0;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  let maxRed = 0;
+  let maxGreen = 0;
+  let maxBlue = 0;
+  let firstRgb: readonly [number, number, number] | null = null;
+  let monochrome = true;
+  for (const disc of discs) {
+    if (!(disc.radiusPx > 0)) continue;
+    const dx = x - disc.x;
+    const dy = y - disc.y;
+    if (Math.abs(dx) >= disc.radiusPx || Math.abs(dy) >= disc.radiusPx) continue;
+    const t = Math.hypot(dx, dy) / disc.radiusPx;
+    if (t >= 1) continue;
+    const a = stellarClusterGlowProfile(disc.peakAlpha, t);
+    if (a <= 0) continue;
+    if (firstRgb === null) firstRgb = disc.rgb;
+    else if (disc.rgb[0] !== firstRgb[0] || disc.rgb[1] !== firstRgb[1]
+      || disc.rgb[2] !== firstRgb[2]) monochrome = false;
+    alpha = Math.max(alpha, a);
+    sum += a;
+    red += a * disc.rgb[0];
+    green += a * disc.rgb[1];
+    blue += a * disc.rgb[2];
+    maxRed = Math.max(maxRed, disc.rgb[0]);
+    maxGreen = Math.max(maxGreen, disc.rgb[1]);
+    maxBlue = Math.max(maxBlue, disc.rgb[2]);
+  }
+  // Clamp floating-point roundoff so the weighted mean cannot exceed any channel's coverage max.
+  return { alpha, rgb: sum > 0
+    ? monochrome ? firstRgb! : [Math.min(maxRed, red / sum), Math.min(maxGreen, green / sum), Math.min(maxBlue, blue / sum)]
+    : [0, 0, 0] };
+}
+
+/** Kept per destination context so a still camera reuses its finished, transparent field. */
+const stellarClusterGlowLayers = new WeakMap<CanvasRenderingContext2D,
+  { key: string; canvas: HTMLCanvasElement | OffscreenCanvas }>();
+
+function stellarClusterGlowCanvas(): HTMLCanvasElement | OffscreenCanvas | null {
+  if (typeof document !== "undefined" && typeof document.createElement === "function") {
+    return document.createElement("canvas");
+  }
+  return typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(1, 1) : null;
+}
+
+function paintStellarClusterGlowComposed(
+  context: CanvasRenderingContext2D, discs: readonly StellarClusterGlowDisc[], width: number, height: number,
+): void {
+  const destination = context.canvas;
+  if (!(width > 0) || !(height > 0) || !destination || !(destination.width > 0)
+    || !(destination.height > 0) || typeof context.drawImage !== "function") return;
+  // Quantise geometry to 1/64 CSS px for a stable key; backing dimensions also encode DPR.
+  const quantise = (value: number) => Math.round(value * 64);
+  const dpr = typeof devicePixelRatio === "number" && Number.isFinite(devicePixelRatio)
+    ? devicePixelRatio : destination.width / width;
+  const key = JSON.stringify([width, height, destination.width, destination.height, dpr,
+    discs.map(disc => [quantise(disc.x), quantise(disc.y), quantise(disc.radiusPx),
+      disc.peakAlpha, ...disc.rgb])]);
+  let cached = stellarClusterGlowLayers.get(context);
+  if (!cached || cached.key !== key) {
+    const canvas = cached?.canvas ?? stellarClusterGlowCanvas();
+    if (!canvas) return; // Decorative glow is omitted when safe composition is unavailable.
+    // Choose a CSS-pixel grid of at most 120,000 cells. A 1440 × 1194 viewport uses ~4 px cells.
+    let step = Math.max(1, Math.ceil(Math.sqrt(width * height / 120000) * 16) / 16);
+    let gridWidth = Math.ceil(width / step);
+    let gridHeight = Math.ceil(height / step);
+    while (gridWidth * gridHeight > 120000) {
+      step += 1 / 16;
+      gridWidth = Math.ceil(width / step);
+      gridHeight = Math.ceil(height / step);
     }
+    canvas.width = gridWidth;
+    canvas.height = gridHeight;
+    const layer = canvas.getContext("2d") as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+    if (!layer || typeof layer.createImageData !== "function" || typeof layer.putImageData !== "function") return;
+    const image = layer.createImageData(gridWidth, gridHeight);
+    if (!image || !image.data) return;
+    for (let row = 0; row < gridHeight; row += 1) {
+      const y = (row + 0.5) * height / gridHeight;
+      for (let column = 0; column < gridWidth; column += 1) {
+        const x = (column + 0.5) * width / gridWidth;
+        const field = stellarClusterGlowFieldAt(discs, x, y);
+        const offset = (row * gridWidth + column) * 4;
+        image.data[offset] = Math.round(field.rgb[0]);
+        image.data[offset + 1] = Math.round(field.rgb[1]);
+        image.data[offset + 2] = Math.round(field.rgb[2]);
+        image.data[offset + 3] = Math.round(field.alpha * 255);
+      }
+    }
+    layer.putImageData(image, 0, 0);
+    cached = { key, canvas };
+    stellarClusterGlowLayers.set(context, cached);
+  }
+  const priorAlpha = context.globalAlpha;
+  const priorComposite = context.globalCompositeOperation;
+  const priorSmoothing = context.imageSmoothingEnabled;
+  try {
+    // The caller's transform already maps CSS px to backing px. Keep it for this CSS-sized draw.
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+    context.imageSmoothingEnabled = true;
+    context.drawImage(cached.canvas, 0, 0, width, height);
+  } finally {
+    context.imageSmoothingEnabled = priorSmoothing;
+    context.globalCompositeOperation = priorComposite;
+    context.globalAlpha = priorAlpha;
   }
 }
+// D084-HAZE END
+
+// D084-HAZE BEGIN
+/** The optional D-072 cluster mass, composed into one translucent field beneath the dust.
+ * It is decorative and carries no identifier, label, witness, or hit-test surface. */
+export function drawStellarClusterGlow(context: CanvasRenderingContext2D, clusters: readonly StellarDustCluster[],
+  project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
+  width: number, height: number, projection: "2d" | "3d" = "2d"): void {
+  const discs = resolveStellarClusterGlowDiscs(clusters, project, nodeColour, width, height, projection);
+  if (discs.length > 0) paintStellarClusterGlowComposed(context, discs, width, height);
+}
+// D084-HAZE END
 
 /** D-072 V5: every Neural edge overlaps the drawn soma outline by about this much, so the dendrite
  * and the soma read as one body with no suspended-egg gap. */
