@@ -33,7 +33,7 @@ test('3D morphology handle revokes readiness synchronously and draws the changed
 test('2D morphology handle revokes readiness synchronously and requests a Sigma redraw', () => {
   const method = handleMethod(two, 'setDerivedMorphology: morphology =>', 'destroy(): void');
   assert.ok(method.indexOf('visuals.setMorphology(morphology)') < method.indexOf('presentRenderReadiness('));
-  assert.ok(method.indexOf('presentationRevision++') < method.indexOf('presentRenderReadiness('),
+  assert.ok(method.indexOf('publisher.invalidate();') < method.indexOf('presentRenderReadiness('),
     'pending pre-mutation rAF publications are superseded before recovery is reported');
   assert.ok(method.includes("quality: 'recupero'"));
   assert.ok(method.includes('background: false'));
