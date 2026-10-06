@@ -59,8 +59,11 @@ export function resolveExperimentalOrganization(value: ViewOrganization, flags: 
   readonly organization: ViewOrganization;
   readonly notice: string | null;
 } {
+  // D084-W3-LABELS BEGIN: the notice names the view as its selector does («Canopy»);
+  // `fractal` stays only the internal compatibility key of the opt-in.
   if ((value === "fractal" || value === "holographic") && !flags.has(value))
-    return { organization: "natural", notice: `${value === "fractal" ? "Fractal" : "Holographic"} è una vista sperimentale: caricata Natural. Per abilitarla usa #experimental=${value}.` };
+    return { organization: "natural", notice: `${value === "fractal" ? "Canopy" : "Holographic"} è una vista sperimentale: caricata Natural. Per abilitarla usa #experimental=${value}.` };
+  // D084-W3-LABELS END
   return { organization: value, notice: null };
 }
 

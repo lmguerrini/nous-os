@@ -888,14 +888,19 @@ export function appendCanopyExplanation(host: HTMLElement, layout: CanopyLayout,
   insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 }): void {
   const overlay = document.createElement('aside');
   overlay.id = 'fractal-canopy-explanation';
-  overlay.setAttribute('aria-label', 'Spiegazione della vista Fractal');
+  // D084-W3-LABELS BEGIN: the accessible name uses the selector-facing name (Canopy); the
+  // legacy «Fractal» identifier of the backing organization never reaches the user.
+  overlay.setAttribute('aria-label', 'Spiegazione della vista Canopy');
+  // D084-W3-LABELS END
   const safe = actualSafeRect(host, insets);
   Object.assign(overlay.style, { position: 'absolute', zIndex: '6', left: `${safe.left + 8}px`, top: `${safe.top + 8}px`,
     maxWidth: '240px', padding: '10px 12px', background: 'rgba(6, 7, 11, .82)',
     color: '#e8e8e8', borderLeft: '2px solid #b8b8b8', borderRadius: '4px',
     font: '12px/1.45 system-ui, sans-serif', pointerEvents: 'none' });
   const title = document.createElement('strong');
-  title.textContent = 'Fractal · canopy IFS';
+  // D084-W3 BEGIN: no «Fractal» grouping of the lab; the full classification stays as explanation.
+  title.textContent = 'Canopy — fractal tree generated through an Iterated Function System';
+  // D084-W3 END
   const explanation = document.createElement('p');
   explanation.textContent = 'Similitudini ricorsive r = 0,64, ±42°. Costruzione distinta dai raggi di F_c.';
   explanation.style.margin = '5px 0';

@@ -23,7 +23,9 @@ test('the ordinary selector keeps recursive Indra primary and exposes experiment
   assert.deepEqual([...axis.matchAll(/data-value="([a-z-]+)"/g)].map(match => match[1]), ['natural', 'indra', 'indra-pearls', 'fractal', 'holographic']);
   assert.match(axis, /<button data-value="indra-pearls" hidden[^>]*>Indra's Pearls · Möbius\/Schottky \(sperimentale\)/);
   // D081-P7 BEGIN: user-facing name for the flagged canopy entry.
-  assert.match(axis, /<button data-value="fractal" hidden[^>]*>Fractal · sperimentale/);
+  // D084-W3-LABELS: the flagged legacy control carries the selector-facing name and the
+  // classification sentence, never the legacy «Fractal» display name.
+  assert.match(axis, /<button data-value="fractal" hidden[^>]*title="Canopy · fractal tree generated through an Iterated Function System \(IFS\) · vista sperimentale">Canopy · sperimentale/);
   // D081-P7 END.
   assert.match(axis, /<button data-value="holographic" hidden/);
   assert.equal([...header.matchAll(/data-value="indra"/g)].length, 1, 'one Indra button in the header');

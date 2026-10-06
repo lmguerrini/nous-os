@@ -125,7 +125,7 @@ test('fullscreen: the notice clears the visible focus controls and the fullscree
   appearancePanel.rect = zeroRect();
   focusControls.rect = { left: 570, top: 10, right: 870, bottom: 42, width: 300, height: 32 };
   fullscreenBar.rect = { left: 812, top: 8, right: 1432, bottom: 148, width: 620, height: 140 };
-  showLabNotice('Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica');
+  showLabNotice('Canopy · sistema di funzioni iterate (IFS) sperimentale · geometria derivata, non semantica'); // D084-W3-LABELS: the notice text the canopy view shows now.
   assert.equal(host.style.top, '50px');
   assert.equal(host.style.left, '400px');
   assert.equal(host.style.maxWidth, '776px');
@@ -151,7 +151,7 @@ test('nothing in the way: the notice keeps its windowed placement below the tool
   focusControls.rect = zeroRect();
   fullscreenBar.rect = zeroRect();
   appearancePanel.rect = zeroRect();
-  showLabNotice('Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica');
+  showLabNotice('Canopy · sistema di funzioni iterate (IFS) sperimentale · geometria derivata, non semantica'); // D084-W3-LABELS: the notice text the canopy view shows now.
   assert.equal(host.style.top, '157px');
   assert.equal(host.style.left, '720px');
   assert.equal(host.style.maxWidth, '1416px');
@@ -164,7 +164,7 @@ test('returning to Natural dismisses the standing lab notice', async () => {
   // showSelectedGeometryDescription returns early for natural; that branch is the dismissal
   // wiring under test (main.ts executes DOM boot at import, so the wiring is asserted on source).
   assert.match(mainSource, /if \(topology === 'natural'\) \{ dismissLabNotice\(\); return; \}/);
-  showLabNotice('Vista Fractal · canopy IFS sperimentale · geometria derivata, non semantica');
+  showLabNotice('Canopy · sistema di funzioni iterate (IFS) sperimentale · geometria derivata, non semantica'); // D084-W3-LABELS: the notice text the canopy view shows now.
   assert.equal(host.hidden, false);
   dismissLabNotice();
   assert.equal(host.hidden, true);

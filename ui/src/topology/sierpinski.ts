@@ -470,8 +470,11 @@ function computeLayout(snapshot: TopologySnapshot, dimension: TopologyDimension)
 export const sierpinskiLaw: TopologyLaw = {
   id: 'sierpinski',
   version: SIERPINSKI_VERSION,
-  label: (dimension: TopologyDimension) =>
-    dimension === '2d' ? 'Sierpiński · gasket triangolare' : 'Sierpiński · polvere di tetraedro',
+  // D084-W3-LABELS BEGIN: the selector shows the short name; the extended technical names
+  // (gasket triangolare, polvere di tetraedro) stay explanation in the registry's
+  // tooltip/legend descriptions. The affine-IFS mathematics above is untouched.
+  label: () => 'Sierpiński',
+  // D084-W3-LABELS END
   supports: () => ({ ok: true }),
   layoutFull: (snapshot: TopologySnapshot, dimension: TopologyDimension): TopologyLayout => {
     const key = `${SIERPINSKI_VERSION}|${snapshot.digest}|${dimension}`;

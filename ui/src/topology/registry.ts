@@ -10,10 +10,48 @@ export const TOPOLOGY_LAWS: Readonly<Record<TopologyId, TopologyLaw | null>> = {
   natural: null, 'canopy-ifs': canopyLaw, julia: juliaLaw, sierpinski: sierpinskiLaw, lull: lullLaw,
 };
 export const TOPOLOGY_IDS: readonly TopologyId[] = ['natural', 'canopy-ifs', 'julia', 'sierpinski', 'lull'];
+// D084-W3-LABELS BEGIN: short selector names plus the full mathematical classification.
+/** The selector shows exactly these short names. The extended
+ * technical names stay in TOPOLOGY_DESCRIPTIONS as explanation only. Natural is named
+ * here; every lab law names itself, and Llull's name stays behind the law's verified name
+ * gate (`lull.ts`: «Llull» while the verified nine-domain rule holds, else the fallback). */
+const SELECTOR_LABELS: Readonly<Record<TopologyId, string>> = {
+  natural: 'Natural', 'canopy-ifs': 'Canopy', julia: 'Julia', sierpinski: 'Sierpiński', lull: 'Llull',
+};
+/** Full names and classification, kept for tooltips, the legend and documentation.
+ * Canopy is an IFS-generated fractal tree; Julia is a complex dynamical system and is
+ * deliberately not classified primarily as an IFS (inverse iteration is a technique it
+ * may use, not its family); Sierpiński is an affine IFS; Llull is a combinatorial
+ * topology — not a fractal and not an IFS. The lab therefore states that it holds
+ * topologies of different families instead of grouping them under «IFS» or «Fractal». */
+export const TOPOLOGY_DESCRIPTIONS: Readonly<Record<TopologyId, string>> = {
+  natural: 'Natural — disposizione classica della gerarchia primaria.',
+  'canopy-ifs': 'Canopy — fractal tree generated through an Iterated Function System (IFS).',
+  julia: 'Julia — complex dynamical system (not classified primarily as an IFS, even if it may use inverse iteration).',
+  sierpinski: 'Sierpiński — affine Iterated Function System (2D: gasket triangolare; 3D: polvere di tetraedro).',
+  lull: 'Llull — combinatorial topology governed by the verified Llullian nine-domain rule; not a fractal and not an IFS.',
+};
+/** The one container line: the lab holds mathematical topologies of different families. */
+export const LAB_CONTAINER_DESCRIPTION =
+  'Geometry Lab: topologie matematiche di famiglie differenti — sistemi di funzioni iterate (IFS), '
+  + 'sistema dinamico complesso, topologia combinatoria; nessuna etichetta unica le raggruppa.';
+/** Dimension-specific technical note, kept as explanation next to the classification. */
+function topologyNote(id: TopologyId, dimension: TopologyDimension): string {
+  if (id === 'julia' && dimension === '3d')
+    return ' In 3D la quota è il potenziale esterno G (sollevamento scalare), non un insieme di Julia 3D.';
+  return '';
+}
+/** Selector-facing label: the short name only. Natural is classic; Canopy, Julia, Sierpiński
+ * and Llull carry their short name in their law (Llull through its name gate). */
 export function topologyLabel(id: TopologyId, dimension: TopologyDimension): string {
-  if (id === 'natural') return 'Natural';
+  if (id === 'natural') return SELECTOR_LABELS[id];
   return TOPOLOGY_LAWS[id]!.label(dimension);
 }
+/** Selector-facing tooltip: the full name with its classification sentence. */
+export function topologyTooltip(id: TopologyId, dimension: TopologyDimension): string {
+  return `${TOPOLOGY_DESCRIPTIONS[id]}${topologyNote(id, dimension)}`;
+}
+// D084-W3-LABELS END
 export function topologySupport(id: TopologyId, dimension: TopologyDimension, indra: boolean): TopologySupport {
   if (id === 'natural') return { ok: true };
   const support = TOPOLOGY_LAWS[id]!.supports(dimension);

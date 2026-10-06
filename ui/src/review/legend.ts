@@ -12,6 +12,8 @@ import {
 } from "./presentation.ts";
 import type { FamilyId, Colour, Reading } from "./view-contract.ts";
 import type { PaletteValues } from "./palette.ts";
+import type { TopologyId } from "../topology/contract.ts";
+import { LAB_CONTAINER_DESCRIPTION, TOPOLOGY_DESCRIPTIONS } from "../topology/registry.ts";
 import type { PickResult, ProjectionResult, RenderVisibility, VisualContainer, VisualRelation } from "../projection/contract-types.ts";
 type StructuralVisualRelation = VisualRelation & Readonly<{ kind: 'co-membership' | 'synthetic-containment' }>;
 type StructuralPick = PickResult & Readonly<{ kind: 'visual-relation' | 'container'; visualId: string }>;
@@ -141,6 +143,30 @@ export function renderTypedStructuralLegend(
 const SVG_NS = "http://www.w3.org/2000/svg";
 export type LegendOrganization = "natural" | "indra";
 
+// D084-W3-LABELS BEGIN: the Geometry Lab classification block of the legend surfaces.
+/** The lab topologies whose classification the legend documents (Natural is the classic
+ * disposition and stays out; the legacy analytical view passes no topology at all). */
+const LAB_LEGEND_TOPOLOGIES: readonly TopologyId[] = ["canopy-ifs", "julia", "sierpinski", "lull"];
+/** The legend is a documentation surface: while a lab topology governs the
+ * view, the flow legend first states that the Geometry Lab holds mathematical topologies of
+ * different families and then carries each family's full classification sentence from the
+ * registry. Classic Natural, Indra and the legacy analytical view keep the plain flow legend, so
+ * their pixels do not move. */
+export function appendTopologyClassification(host: HTMLElement, topology: TopologyId | null): void {
+  if (topology === null || topology === "natural") return;
+  const add = (text: string, kind: "container" | TopologyId) => {
+    const entry = document.createElement("p");
+    entry.className = "flow-legend-entry";
+    entry.dataset.topologyClassification = kind;
+    entry.textContent = text;
+    entry.title = text;
+    host.append(entry);
+  };
+  add(LAB_CONTAINER_DESCRIPTION, "container");
+  for (const id of LAB_LEGEND_TOPOLOGIES) add(TOPOLOGY_DESCRIPTIONS[id], id);
+}
+// D084-W3-LABELS END
+
 /**
  * The four semantic line kinds every drawn relation must resolve to, rendered with a small drawn
  * sample each so the legend reads even before the graph is inspected. The samples use the same
@@ -148,8 +174,11 @@ export type LegendOrganization = "natural" | "indra";
  * the legend always matches the graph, preset or custom palette alike; the exploratory sample is
  * the same continuous line with a soft halo the canvas draws — one tone, no foreign accent.
  */
-export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, organization: LegendOrganization = "natural"): void {
+export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, organization: LegendOrganization = "natural",
+  // D084-W3-LABELS: the lab topology governing the view, or null outside the Geometry Lab.
+  topology: TopologyId | null = null): void {
   host.replaceChildren();
+  appendTopologyClassification(host, topology);
   const entry = (label: string, title: string, build: (svg: SVGSVGElement) => void): HTMLElement => {
     const row = document.createElement("p");
     row.className = "flow-legend-entry";
@@ -225,14 +254,16 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
 }
 
 /** A compact legend section appended to a panel; used by both the legacy and the v2 page. */
-export function appendFlowLegend(host: HTMLElement, palette: PaletteValues, organization: LegendOrganization = "natural"): void {
+export function appendFlowLegend(host: HTMLElement, palette: PaletteValues, organization: LegendOrganization = "natural",
+  // D084-W3-LABELS: the lab topology governing the view, or null outside the Geometry Lab.
+  topology: TopologyId | null = null): void {
   const section = document.createElement("section");
   section.id = "flow-legend-section";
   const heading = document.createElement("h3");
   heading.textContent = "Legenda";
   const box = document.createElement("div");
   box.className = "legend flow-legend";
-  renderFlowLegend(box, palette, organization);
+  renderFlowLegend(box, palette, organization, topology);
   section.append(heading, box);
   host.append(section);
 }

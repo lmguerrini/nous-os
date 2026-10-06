@@ -221,9 +221,12 @@ function layout(snapshot: TopologySnapshot, dimension: TopologyDimension): Topol
 
 export const juliaLaw: TopologyLaw = {
   id: 'julia', version: JULIA_VERSION,
-  label: dimension => dimension === '3d'
-    ? 'Julia · coordinate esterne · altezza = potenziale G (lift scalare)'
-    : 'Julia · coordinate esterne',
+  // D084-W3-LABELS BEGIN: the selector shows the short name. Julia stays a complex
+  // dynamical system — never labelled primarily as an IFS; the extended technical name
+  // («coordinate esterne», external rays) and the 3D scalar-lift note remain explanation
+  // in the registry's tooltip/legend descriptions.
+  label: () => 'Julia',
+  // D084-W3-LABELS END
   supports: () => ({ ok: true }),
   layoutFull(snapshot, dimension) {
     const key = `${snapshot.digest}/${JULIA_VERSION}/${dimension}`;

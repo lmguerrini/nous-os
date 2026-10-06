@@ -15,16 +15,24 @@ function layout(snapshot: TopologySnapshot, dimension: TopologyDimension): Topol
   const guides = canopy.rails.map(rail => ({ id: `guide:canopy:${rail.address}`, points: railPoints(rail),
     kind: 'ifs-rail', semantic: false as const }));
   const witnesses = new Map([...canopy.positions].map(([id, row]) => [id, {
-    law: 'Canopy IFS', address: row.address,
+    // D084-W3-LABELS BEGIN: the witness names the topology with the short selector name;
+    // the extended technical name stays in the explanation text («Perché qui»).
+    law: 'Canopy', address: row.address,
     values: { livello: row.level },
-    text: 'Indirizzo binario deterministico nella gerarchia; i binari guida non sono relazioni.',
+    text: 'Canopy: albero frattale generato tramite un sistema di funzioni iterate (IFS). '
+      + 'Indirizzo binario deterministico nella gerarchia; i binari guida non sono relazioni.',
   }]));
+  // D084-W3-LABELS END
   return { positions, guides, containers: [], witnesses, diagnostics: [] };
 }
 // D082-LAB-FIX4 END
 export const canopyLaw: TopologyLaw = {
   id: 'canopy-ifs', version: `local-${CANOPY_VERSION}`,
-  label: () => 'Canopy IFS',
+  // D084-W3-LABELS BEGIN: the selector shows the short name; the classification
+  // («fractal tree generated through an Iterated Function System») stays in the registry's
+  // tooltip/legend descriptions, never as a selector label.
+  label: () => 'Canopy',
+  // D084-W3-LABELS END
   // D082-LAB-FIX4 BEGIN: the certificate covers fixed orthogonal maps, contraction, address depth,
   // deterministic finite iterates and the conservative tail bound used by the spatial coordinates.
   supports: (_dimension: TopologyDimension) => ({ ok: true }),

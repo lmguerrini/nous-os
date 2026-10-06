@@ -18,6 +18,7 @@ import {
   sierpinskiLaw,
   SIERPINSKI_VERSION,
 } from '../src/topology/sierpinski.ts';
+import { topologyTooltip } from '../src/topology/registry.ts';
 
 interface SynthOptions {
   readonly parent?: string | null;
@@ -122,8 +123,12 @@ test('canonical b-ary codes: depth, padding and pinned words', () => {
 test('labels and support: both dimensions are real IFS, never simulated', () => {
   assert.equal(sierpinskiLaw.id, 'sierpinski');
   assert.equal(sierpinskiLaw.version, SIERPINSKI_VERSION);
-  assert.equal(sierpinskiLaw.label('2d'), 'Sierpiński · gasket triangolare');
-  assert.equal(sierpinskiLaw.label('3d'), 'Sierpiński · polvere di tetraedro');
+  // D084-W3-LABELS: the selector label is the short name in both dimensions; the extended
+  // technical names stay as explanation in the registry tooltip.
+  assert.equal(sierpinskiLaw.label('2d'), 'Sierpiński');
+  assert.equal(sierpinskiLaw.label('3d'), 'Sierpiński');
+  assert.match(topologyTooltip('sierpinski', '2d'), /gasket triangolare/);
+  assert.match(topologyTooltip('sierpinski', '3d'), /polvere di tetraedro/);
   assert.deepEqual(sierpinskiLaw.supports('2d'), { ok: true });
   assert.deepEqual(sierpinskiLaw.supports('3d'), { ok: true });
   assert.equal(sierpinskiFamily('2d').base, 3);

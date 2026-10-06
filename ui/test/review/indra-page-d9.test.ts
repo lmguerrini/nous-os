@@ -792,7 +792,8 @@ test('over a cloning message port the Fractal and Indra views, a level and a ref
   const fractal = resultOf(giant.page)!;
   assert.equal(fractal.determinism.algorithmId, 'fractal');
   assert.ok(Object.keys(fractal.positions2 ?? {}).length === NODE_COUNT);
-  assert.match(statusText(), /Vista Fractal/);
+  // D084-W3-LABELS: the mounted view's status line names «Canopy», the selector-facing name.
+  assert.match(statusText(), /Vista Canopy/);
 
   const { page, trace } = await typedPage({ client, axes: { organization: 'indra' } });
   const root = resultOf(page)!;
@@ -811,7 +812,7 @@ test('over a cloning message port the Fractal and Indra views, a level and a ref
   await refusing.page.setAxes({ organization: 'fractal' });
   assert.equal(resultOf(refusing.page), null);
   assert.equal(recordOf(refusing.page).refusal?.code, 'edge-locality-refusal');
-  assert.match(statusText(), /Vista Fractal · proiezione rifiutata \[edge-locality-refusal\]/);
+  assert.match(statusText(), /Vista Canopy · proiezione rifiutata \[edge-locality-refusal\]/);
   client.dispose();
 });
 
