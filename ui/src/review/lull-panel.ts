@@ -1,4 +1,4 @@
-/** Combinatoria lulliana — the optional inquiry table UI (D-082 P8, Build B).
+/** Llull — the optional inquiry table UI (D-082 P8, Build B).
  * A pure, testable model of the 36 pair compartments and 84 triple rows with
  * their exact real-relation evidence, plus a thin DOM render. The hypothesis
  * layer (combinations without evidence) is a separate labelled layer, OFF by
@@ -74,8 +74,10 @@ export function createLullPanel(inquiry: LullInquiry, options: Readonly<{ showHy
   const pairsWithEvidence = inquiry.pairs.filter(pair => !pair.hypothesis).length;
   const triplesSupported = inquiry.triples.filter(triple => !triple.hypothesis).length;
   return {
-    title: options.label ?? 'Combinatoria lulliana \u00b7 tavola d\u2019inchiesta',
-    limit: LULL_HISTORICAL_LIMIT,
+    // D084-LLULL BEGIN: short authorised name, with the exact classification disclosed.
+    title: options.label ?? 'Llull \u00b7 tavola d\u2019inchiesta',
+    limit: 'Llull — combinatorial topology governed by the verified Llullian nine-domain rule; not a fractal and not an IFS. ' + LULL_HISTORICAL_LIMIT,
+    // D084-LLULL END
     citation: LULL_SOURCE_CITATION,
     note: LULL_PANEL_HYPOTHESIS_NOTE,
     reading: inquiry.reading,

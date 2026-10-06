@@ -1,4 +1,5 @@
-/** Combinatoria lulliana — pair/triple inquiry model (D-082 P8, Build B).
+/** Llull — combinatorial topology governed by the verified Llullian nine-domain
+ * rule; not a fractal and not an IFS. Pair/triple inquiry model (D-082 P8).
  * Implements steps 1, 3 and 4 of the Llull rule:
  * the nine-letter alphabet from the
  * codepoint-sorted root domains, the 36 two-letter compartments with exact

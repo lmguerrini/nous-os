@@ -1,6 +1,6 @@
-/** Combinatoria lulliana — page mount of the inquiry table (D-082 P8, Build B).
+/** Llull — page mount of the inquiry table (D-082 P8, Build B).
  * The side panel offers the «Tabella delle combinazioni» section only while the
- * topology is «Combinatoria lulliana». The section is collapsed by default and
+ * topology is «Llull». The section is collapsed by default and
  * the inquiry is built lazily on its first opening, over the density's visible
  * set and the active reading. The hypothesis layer stays a separate, labelled,
  * OFF-by-default layer and never enters the graph-edge counts. Choosing a pair

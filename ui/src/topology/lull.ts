@@ -1,4 +1,5 @@
-/** Combinatoria lulliana — the circular combinatorial layout law (D-082 P8, Build B).
+/** Llull — combinatorial topology governed by the verified Llullian nine-domain rule;
+ * not a fractal and not an IFS. Circular combinatorial layout law (D-082 P8, D-084).
  * Implements steps 2 and 5 of the Llull rule
  * on top of the inquiry model in `lull-inquiry.ts`: the nine letters of Figure A as
  * guides on the outer circle, communities in inner ring/sector bands, real records in
@@ -7,46 +8,43 @@
  * ring/angle, real relation IDs and the historical limit. Chords are derived in
  * `lull-inquiry.ts` from real relations only; generated combinations never become edges.
  *
- * Ring policy `lull-rings-v1` (documented, versioned):
- * - The nine letters of Figure A anchor the outer circle (radius 940), one per root,
- *   in codepoint order of the root IDs, at the mid-angle of each domain's share of the
- *   total non-root population (with a minimum floor) — an equal nine-fold division
- *   cannot host 11,199 vertices with honest separation, so the letters stay guide
- *   marks while the bands below carry the population.
- * - Two bands inside the letter circle, in the same cyclic letter order from angle
- *   -π/2: the community band (levels 2–3) in [560, 862] and the record band
- *   (level ≥ 4) in [30, 532]. Each band tiles its own annulus with one contiguous arc
- *   per letter, proportional to that band's population per root (minimum span floor),
- *   because a domain can hold a very different share of communities than of records.
+ * D084-LLULL BEGIN — ring policy `lull-rings-v2`:
+ * - The nine real roots and their Figure A guides sit at exact 40° intervals on the
+ *   outer circle (radius 940), B at -90° and B–K clockwise in codepoint root order.
+ *   Each root owns the same 40° sector, less a narrow 0.018-radian boundary gap.
+ *   Sector angles never depend on populations or the active density/reading.
+ * - Communities (levels 2–3) occupy [760, 900] with separation 22; records
+ *   (levels ≥ 4) occupy [250, 735] with separation 6.5. Both bands retain each
+ *   root's equal sector. The centre inside radius 250 has no reference vertices;
+ *   real chords may cross it. Distinct rings disclose hierarchy without moving
+ *   a real ID between readings or densities.
  * - Each (band, sector) arc is a ladder of concentric arcs from the band's outer edge
- *   inward: radial step = slot separation (22 for the community band, 8 for the record
- *   mass), one slot every separation unit of arc, first slot at the arc's start angle
- *   plus half a slot. Community slots fill in the documented sort order with level
+ *   inward: radial step = slot separation, one slot every separation unit of arc,
+ *   occupied slots centred around the letter's mid-angle on each ring. Community
+ *   slots fill in the documented sort order with level
  *   first (communities outermost, their subgroups just inside), then primary-parent
  *   path, semantic kind, status, descending importance, codepoint ID.
- * - If a ladder exhausts its band, the documented fallback stacks the remaining
- *   vertices at the sector's mid-angle, stepping radially inward below the band and
- *   then drifting in angle at the disc centre (never reached on the reference snapshot).
+ * - If a community ladder exhausts its band, overflow compresses onto a distinct
+ *   inner arc inside the same community sector and annulus. Record overflow keeps
+ *   its inward fallback (neither is reached on the reference snapshot).
  * Positions depend only on the full snapshot: densities choose subsets and shared IDs
  * never move between Essenziale, Bilanciata and Completa. `layoutFull` caches per
- * (snapshot digest, law version, dimension) as TOPOLOGY-CONTRACT requires. */
+ * (snapshot digest, law version, dimension) as TOPOLOGY-CONTRACT requires.
+ * D084-LLULL END */
 import type { GuideCurve, TopologyDimension, TopologyLayout, TopologyLaw, TopologyNode, TopologySnapshot, TopologyWitness } from './contract.ts';
 import type { LayoutContainer, Point3 } from '../review/layout-v2.ts';
 import type { LullIndex } from './lull-inquiry.ts';
 import { LULL_LETTERS, LULL_SOURCE_CITATION, indexLullSnapshot } from './lull-inquiry.ts';
 
-export const LULL_RING_POLICY_VERSION = 'lull-rings-v1';
+export const LULL_RING_POLICY_VERSION = 'lull-rings-v2';
 /** Figure A outer circle: the nine letter guides and the nine root vertices. */
 export const LULL_OUTER_RADIUS = 940;
-export const LULL_BOUNDARY_GAP = 0.01;
-/** Minimum angular share (fraction of the circle) for a domain's total share. */
-export const LULL_MIN_SHARE = 0.008;
-/** Minimum arc (radians) reserved for a domain inside each band, sized so the
- * innermost ring of the band always offers at least one slot. */
+export const LULL_BOUNDARY_GAP = 0.018;
+/** Equal sectors reserve every root the same Figure A angle. */
 export const LULL_BANDS = {
   root: { inner: LULL_OUTER_RADIUS, outer: LULL_OUTER_RADIUS, separation: 22 },
-  community: { inner: 560, outer: 862, separation: 22, minSpan: 0.05 },
-  record: { inner: 30, outer: 532, separation: 8, minSpan: 0.045 },
+  community: { inner: 760, outer: 900, separation: 22 },
+  record: { inner: 250, outer: 735, separation: 6.5 },
 } as const;
 const TAU = Math.PI * 2;
 const cmp = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -54,42 +52,34 @@ const bandOf = (level: number): 'root' | 'community' | 'record' =>
   level <= 1 ? 'root' : level === 2 || level === 3 ? 'community' : 'record';
 const pairKey = (a: string, b: string) => [a, b].sort(cmp).join('');
 
-/** Name gate: the
- * authorised label may be exported only while the implementation passes the rule's
- * tests — nine roots mapped B–K, 36 pairs with exact evidence, 84 triples with the
- * Fourth Figure wheel positions, hypotheses OFF by default, and «Perché qui» carrying
- * the historical limitation. Otherwise keep the fallback label. */
+/** D084-LLULL BEGIN — name gate. The short selector name «Llull» supersedes the older naming line. Keep
+ * that name only while the verified rule passes: nine roots mapped B–K, 36 pairs with
+ * exact evidence, 84 triples with Fourth Figure positions, hypotheses OFF, and
+ * «Perché qui» carrying the historical limitation. Otherwise use the fallback. */
 export const LULL_NAME_AUTHORISED = true;
-export const LULL_LABEL_AUTHORISED = 'Combinatoria lulliana';
+export const LULL_LABEL_AUTHORISED = 'Llull';
 export const LULL_LABEL_FALLBACK = 'Topologia circolare combinatoria';
+// D084-LLULL END
 export const LULL_3D_REFUSAL = 'Non significativa in 3D: l\u2019estruzione della Quarta Figura non aggiunge operazioni combinatorie; serve una terza coordinata reversibile fondata sui dati e un nuovo controllo.';
 
 const LULL_LIMIT_COMPACT = 'Limite storico: le lettere indicano corpora documentali, non i principi predicabili di Llull; i conteggi non provano verità; le 84 triple sono classi deduplicate delle 252 camere della Quarta Figura (Ars brevis, 1308).';
 
 type SectorGeometry = Readonly<{ spans: readonly number[]; starts: readonly number[] }>;
-/** Deterministic arc partition of a band: one contiguous arc per letter, in
- * codepoint order from angle -π/2, proportional to the given per-root counts
- * with a minimum span floor and a gap between adjacent arcs. */
-export function lullSectorGeometry(counts: readonly number[], minSpan = LULL_MIN_SHARE * (Math.PI * 2 - 9 * LULL_BOUNDARY_GAP)): SectorGeometry {
+/** D084-LLULL BEGIN: Figure A's equal ninefold partition. Counts are accepted
+ * for the existing caller contract and checked, but cannot change an angle. */
+export function lullSectorGeometry(counts: readonly number[]): SectorGeometry {
   if (counts.length !== 9) throw new Error(`lull: nine sector counts required; found ${counts.length}`);
-  const total = counts.reduce((sum, c) => sum + c, 0);
-  const available = Math.PI * 2 - 9 * LULL_BOUNDARY_GAP;
-  const weights = counts.map(c => Math.max(c / Math.max(1, total) * available, minSpan));
-  const norm = weights.reduce((sum, w) => sum + w, 0);
-  const spans = weights.map(w => w / norm * available);
-  const starts: number[] = [];
-  let angle = -Math.PI / 2;
-  for (const span of spans) {
-    starts.push(angle);
-    angle += span + LULL_BOUNDARY_GAP;
-  }
+  const pitch = TAU / 9;
+  const spans = counts.map(() => pitch - LULL_BOUNDARY_GAP);
+  const starts = counts.map((_, index) => -Math.PI / 2 - pitch / 2 + index * pitch + LULL_BOUNDARY_GAP / 2);
   return { spans, starts };
 }
+// D084-LLULL END
 
 type Slot = Readonly<{ ring: number; slot: number; radius: number; angle: number }>;
 /** Fill one band's arc ladder for a sector: outermost ring first, one slot per
- * separation unit of arc, half-slot inset from the sector's start angle. */
-function ladder(count: number, span: number, startAngle: number, band: Readonly<{ inner: number; outer: number; separation: number }>): Slot[] {
+ * separation unit of arc, centred about the Figure A letter on each ring. */
+function ladder(count: number, span: number, startAngle: number, band: Readonly<{ inner: number; outer: number; separation: number }>, overflowPolicy: 'within-band' | 'inward' = 'inward'): Slot[] {
   const slots: Slot[] = [];
   const step = band.separation;
   let radius = band.outer - step / 2;
@@ -98,17 +88,30 @@ function ladder(count: number, span: number, startAngle: number, band: Readonly<
   while (remaining > 0 && radius >= band.inner + step / 2) {
     const capacity = Math.floor(span * radius / step);
     const taken = Math.min(capacity, remaining);
+    // D084-LLULL BEGIN: sparse rings stay centred beneath their real root.
     for (let s = 0; s < taken; s++) {
       const slotAngle = step / radius;
-      slots.push({ ring, slot: s, radius, angle: startAngle + slotAngle * (s + 0.5) });
+      slots.push({ ring, slot: s, radius, angle: startAngle + span / 2 + slotAngle * (s - (taken - 1) / 2) });
     }
+    // D084-LLULL END
     remaining -= taken;
     ring++;
     radius -= step;
   }
-  // Documented fallback (not reached on the reference snapshot): stack at the sector's
-  // mid-angle, stepping radially inward below the band; once clamped at the centre,
-  // drift in angle so every real vertex still gets a unique slot.
+  // D084-LLULL BEGIN: community overflow stays on a distinct inner arc of its
+  // annulus. Compression is unavoidable once the 22-unit ladder is full, but
+  // sector bounds and the gap to the record band remain intact. Record overflow
+  // retains the documented inward fallback. Neither occurs on the reference data.
+  if (overflowPolicy === 'within-band') {
+    const overflow = remaining;
+    const overflowRadius = band.inner + step / 4;
+    for (let i = 0; i < overflow; i++) {
+      slots.push({ ring, slot: i, radius: overflowRadius,
+        angle: startAngle + span * (i + 1) / (overflow + 1) });
+    }
+    return slots;
+  }
+  // D084-LLULL END
   let fallback = 0;
   while (remaining > 0) {
     const rawRadius = band.inner - step / 2 - fallback * step;
@@ -127,8 +130,18 @@ const polar = (radius: number, angle: number): Point3 => ({ x: radius * Math.cos
  * status, descending importance, codepoint ID. The primary domain is constant
  * within a sector and therefore not repeated here. */
 function sortKey(node: TopologyNode, pathOf: ReadonlyMap<string, string>): string {
-  return [pathOf.get(node.id) ?? '', node.kind, node.status ?? '', (-node.importance).toFixed(6), node.id].join('\0');
+  return [pathOf.get(node.id) ?? '', node.kind, node.status ?? '', `${node.importance.toFixed(6)} DESC`, node.id].join('\0');
 }
+// D084-LLULL BEGIN: compare importance numerically; its printed sort key is a
+// disclosure, never a lexical surrogate for descending numeric order.
+function compareInSector(a: TopologyNode, b: TopologyNode, pathOf: ReadonlyMap<string, string>): number {
+  return cmp(pathOf.get(a.id) ?? '', pathOf.get(b.id) ?? '')
+    || cmp(a.kind, b.kind)
+    || cmp(a.status ?? '', b.status ?? '')
+    || b.importance - a.importance
+    || cmp(a.id, b.id);
+}
+// D084-LLULL END
 
 /** Community path of each node: primary-parent chain from the root, root excluded,
  * as a deterministic codepoint key. */
@@ -157,8 +170,8 @@ function lullPlacements(snapshot: TopologySnapshot, index: LullIndex, pathOf: Re
   const communityCounts = sectors.map(list => list.filter(n => n.level === 2 || n.level === 3).length);
   const recordCounts = sectors.map(list => list.filter(n => n.level >= 4).length);
   const totalGeometry = lullSectorGeometry(totals);
-  const communityGeometry = lullSectorGeometry(communityCounts, LULL_BANDS.community.minSpan);
-  const recordGeometry = lullSectorGeometry(recordCounts, LULL_BANDS.record.minSpan);
+  const communityGeometry = lullSectorGeometry(communityCounts);
+  const recordGeometry = lullSectorGeometry(recordCounts);
   const placements = new Map<string, Placement>();
   for (const [rootIndex, root] of index.roots.entries()) {
     const span = totalGeometry.spans[rootIndex]!;
@@ -167,14 +180,14 @@ function lullPlacements(snapshot: TopologySnapshot, index: LullIndex, pathOf: Re
     placements.set(root.id, { point: polar(LULL_OUTER_RADIUS, mid), ring: 0, slot: rootIndex, radius: LULL_OUTER_RADIUS, angle: mid, band: 'community' });
     const members = sectors[rootIndex]!;
     const communityOfBand = members.filter(n => n.level === 2 || n.level === 3)
-      .sort((a, b) => cmp(`${a.level}\0${sortKey(a, pathOf)}`, `${b.level}\0${sortKey(b, pathOf)}`));
-    const communitySlots = ladder(communityOfBand.length, communityGeometry.spans[rootIndex]!, communityGeometry.starts[rootIndex]!, LULL_BANDS.community);
+      .sort((a, b) => a.level - b.level || compareInSector(a, b, pathOf));
+    const communitySlots = ladder(communityOfBand.length, communityGeometry.spans[rootIndex]!, communityGeometry.starts[rootIndex]!, LULL_BANDS.community, 'within-band');
     for (const [i, node] of communityOfBand.entries()) {
       const slot = communitySlots[i]!;
       placements.set(node.id, { point: polar(slot.radius, slot.angle), ring: slot.ring, slot: slot.slot, radius: slot.radius, angle: slot.angle, band: 'community' });
     }
     const recordsOfBand = members.filter(n => n.level >= 4)
-      .sort((a, b) => cmp(sortKey(a, pathOf), sortKey(b, pathOf)));
+      .sort((a, b) => compareInSector(a, b, pathOf));
     const recordSlots = ladder(recordsOfBand.length, recordGeometry.spans[rootIndex]!, recordGeometry.starts[rootIndex]!, LULL_BANDS.record);
     for (const [i, node] of recordsOfBand.entries()) {
       const slot = recordSlots[i]!;
@@ -226,10 +239,16 @@ function relationIndex(snapshot: TopologySnapshot, index: LullIndex): ReadonlyMa
 function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements: ReadonlyMap<string, Placement>, pathOf: ReadonlyMap<string, string>, relations: ReadonlyMap<string, RelationDegree>): ReadonlyMap<string, TopologyWitness> {
   const witnesses = new Map<string, TopologyWitness>();
   const rootTitles = new Map(index.roots.map(r => [r.id, r.title]));
+  // D084-LLULL BEGIN: expose the exact sector, sort and evidence mapping.
+  const geometry = lullSectorGeometry(index.roots.map(() => 1));
+  const sectorOf = new Map(index.roots.map((root, i) => [root.id, i]));
   for (const node of snapshot.nodes) {
     const placement = placements.get(node.id)!;
     const root = index.rootOf.get(node.id)!;
     const letter = index.letterOf.get(root)!;
+    const sectorIndex = sectorOf.get(root)!;
+    const sectorStart = geometry.starts[sectorIndex]!;
+    const sectorEnd = sectorStart + geometry.spans[sectorIndex]!;
     const rootTitle = rootTitles.get(root)!;
     const degree = relations.get(node.id);
     const shownIds = degree ? degree.ids.slice(0, 12).join(', ') : '';
@@ -240,6 +259,7 @@ function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements:
     const text = `Perch\u00e9 qui: vertice reale ${node.id} del dominio ${rootTitle} (lettera ${letter}; alfabeto B\u2013K dall'ordinamento codepoint dei nove domini radice). `
       + `Comunit\u00e0: ${pathText || '(sotto la radice)'}. Chiavi d'ordine: percorso primario, kind ${node.kind}, status ${node.status ?? 'assente'}, importanza ${node.importance.toFixed(3)} decrescente, id. `
       + `Posizione: ${isRoot ? 'cerchio esterno di Figura A' : `anello ${placement.ring} della fascia ${placement.band === 'community' ? 'comunit\u00e0' : 'record'} del settore ${letter}`}, angolo ${(placement.angle * 180 / Math.PI).toFixed(2)}\u00b0, raggio ${placement.radius.toFixed(1)}. `
+      + `Settore ${letter}: ${(sectorStart * 180 / Math.PI).toFixed(2)}\u00b0\u2013${(sectorEnd * 180 / Math.PI).toFixed(2)}\u00b0. `
       + `Relazioni reali: ${degree ? degree.ids.length : 0} (${degree ? degree.cross : 0} fra domini${shownIds ? `; id: ${shownIds}${moreIds > 0 ? ` \u2026 +${moreIds} nella tavola d'inchiesta` : ''}` : ''}). `
       + `Tipo di evidenza: ${degree ? degree.attested : 0} attestate, ${degree ? degree.exploratory : 0} esplorative, ${degree ? degree.structural : 0} strutturali (${degree ? degree.directedCount : 0} direzionali, ${degree ? degree.undirected : 0} senza direzione). `
       + `Lettura dei conteggi: tutte le relazioni del snapshot completo; la lettura attiva della vista filtra la tavola d'inchiesta, mai i vertici. `
@@ -251,6 +271,8 @@ function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements:
         letter, root, ring: isRoot ? 'figura-a' : String(placement.ring), slot: String(placement.slot),
         band: isRoot ? 'figura-a' : placement.band,
         angle: Number((placement.angle * 180 / Math.PI).toFixed(2)), radius: Number(placement.radius.toFixed(1)),
+        sector: letter, sectorStart: Number((sectorStart * 180 / Math.PI).toFixed(2)), sectorEnd: Number((sectorEnd * 180 / Math.PI).toFixed(2)),
+        sortPath: pathOf.get(node.id) ?? '', sortKey: sortKey(node, pathOf), relationIds: degree?.ids.join(', ') ?? '',
         relations: degree ? degree.ids.length : 0, crossDomainRelations: degree ? degree.cross : 0,
         evidenceAttested: degree ? degree.attested : 0, evidenceExploratory: degree ? degree.exploratory : 0,
         evidenceStructural: degree ? degree.structural : 0, evidenceDirected: degree ? degree.directedCount : 0,
@@ -260,6 +282,7 @@ function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements:
       text,
     });
   }
+  // D084-LLULL END
   return witnesses;
 }
 
@@ -324,7 +347,11 @@ function lullLayout2d(snapshot: TopologySnapshot): TopologyLayout {
   const placements = lullPlacements(snapshot, index, pathOf);
   const positions = new Map<string, Point3>();
   for (const [id, placement] of placements) positions.set(id, placement.point);
-  const guides: GuideCurve[] = [circleGuide('lull:guide:figure-a', 'lull-figure-a', LULL_OUTER_RADIUS)];
+  // D084-LLULL BEGIN: radial guide marks are nonsemantic, not relation edges.
+  const guides: GuideCurve[] = [
+    circleGuide('lull:guide:figure-a', 'lull-figure-a', LULL_OUTER_RADIUS),
+    circleGuide('lull:guide:hub', 'lull-hub', 205, 96),
+  ];
   const sectors = index.roots.map(root => snapshot.nodes.filter(n => index.rootOf.get(n.id) === root.id));
   const geometry = lullSectorGeometry(sectors.map(list => Math.max(0, list.length - 1)));
   for (const [rootIndex, root] of index.roots.entries()) {
@@ -333,9 +360,11 @@ function lullLayout2d(snapshot: TopologySnapshot): TopologyLayout {
     const start = geometry.starts[rootIndex]!;
     guides.push(rayGuide(`lull:guide:ray:${letter}:start`, 'lull-sector-ray', start - LULL_BOUNDARY_GAP / 2, 24, LULL_OUTER_RADIUS));
     guides.push(arcGuide(`lull:guide:letter:${letter}`, 'lull-letter', LULL_OUTER_RADIUS, start + span / 2 - 0.035, start + span / 2 + 0.035));
+    guides.push(rayGuide(`lull:guide:spoke:${letter}`, 'lull-hub-spoke', start + span / 2, 0, 205));
   }
   for (const radius of [LULL_BANDS.community.outer, LULL_BANDS.community.inner, LULL_BANDS.record.outer])
     guides.push(circleGuide(`lull:guide:band:${radius}`, 'lull-band', radius, 96));
+  // D084-LLULL END
   const witnesses = lullWitnesses(snapshot, index, placements, pathOf, relationIndex(snapshot, index));
   // Snapshot diagnostics (fixtures of this digest, not UI constants).
   const pairCounts = new Map<string, number>();
@@ -420,10 +449,14 @@ function lullLayoutLocal(children: readonly TopologyNode[], snapshot: TopologySn
   }
   const scale = 1 / LULL_OUTER_RADIUS;
   const unitBands = {
-    community: { inner: LULL_BANDS.community.inner * scale, outer: LULL_BANDS.community.outer * scale, separation: 22 * scale },
-    record: { inner: LULL_BANDS.record.inner * scale, outer: LULL_BANDS.record.outer * scale, separation: 8 * scale },
+    // D084-LLULL BEGIN: local ladders use the same versioned separation policy.
+    community: { inner: LULL_BANDS.community.inner * scale, outer: LULL_BANDS.community.outer * scale, separation: LULL_BANDS.community.separation * scale },
+    record: { inner: LULL_BANDS.record.inner * scale, outer: LULL_BANDS.record.outer * scale, separation: LULL_BANDS.record.separation * scale },
+    // D084-LLULL END
   } as const;
-  const ordered = [...children].sort((a, b) => cmp(`${bandOf(a.level)}\0${sortKey(a, pathOf)}`, `${bandOf(b.level)}\0${sortKey(b, pathOf)}`));
+  const ordered = [...children].sort((a, b) => cmp(bandOf(a.level), bandOf(b.level))
+    || (bandOf(a.level) === 'community' ? a.level - b.level : 0)
+    || compareInSector(a, b, pathOf));
   const positions = new Map<string, Point3>();
   // Level-1 children (a sector container may include its root) anchor on the unit
   // outer circle, mirroring Figure A of layoutFull; they never enter the bands.
@@ -433,7 +466,7 @@ function lullLayoutLocal(children: readonly TopologyNode[], snapshot: TopologySn
   for (const bandName of ['community', 'record'] as const) {
     const band = unitBands[bandName];
     const membersOfBand = ordered.filter(n => bandOf(n.level) === bandName);
-    const slots = ladder(membersOfBand.length, TAU, 0, band);
+    const slots = ladder(membersOfBand.length, TAU, 0, band, bandName === 'community' ? 'within-band' : 'inward');
     for (const [i, node] of membersOfBand.entries())
       positions.set(node.id, polar(slots[i]!.radius, slots[i]!.angle));
   }
