@@ -574,6 +574,14 @@ async function chooseTaxonomy(topology: TopologyId, indra = 'mode' in geometry ?
 }
 installTaxonomyControls();
 // D082-B2 END
+// D084-W6-TOOLBAR BEGIN: the toolbar's layout must be final before the graph load's first
+// camera fit, so the «Viste 3D» group starts from its projection-correct visibility instead
+// of appearing in every first paint and being hidden only after the load — a late layout
+// change that moved the visible rect and re-framed the camera once in every 2D view.
+// (Kept beside the toolbar wiring and outside the boot sections the d082 page-boot test
+// executes in its page-less vm: the assignment needs the live document.)
+get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";
+// D084-W6-TOOLBAR END
 const toolbarSections = new Map<HTMLElement, HTMLDetailsElement>();
 function installToolbarSections(): void {
   const labels = new Map<string, string>([
@@ -1675,6 +1683,19 @@ get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.s
 let density = geometry.density;
 // D082-B2 END
 const densityButtons = [...document.querySelectorAll<HTMLButtonElement>("#density-control button[data-density]")];
+// D084-W6-TOOLBAR BEGIN: the Relazioni and Densità groups are laid out from the first paint
+// and hold a disabled state until the distilled graph is ready, so installing their data can
+// no longer change the toolbar height after the first camera fit (with the D-084 short
+// selector names the pre-install toolbar was one row shorter and grew on readiness).
+function enableV2ToolbarControls(): void {
+  for (const button of densityButtons) button.disabled = false;
+  get<HTMLSelectElement>("v2-relation-detail").disabled = false;
+}
+function disableV2ToolbarControls(): void {
+  for (const button of densityButtons) button.disabled = true;
+  get<HTMLSelectElement>("v2-relation-detail").disabled = true;
+}
+// D084-W6-TOOLBAR END
 function syncDensity(): void {
   for (const button of densityButtons)
     button.setAttribute("aria-pressed", String(button.dataset.density === density));
@@ -1977,8 +1998,10 @@ async function load() {
     document.querySelectorAll<HTMLButtonElement>('[data-axis="organization"] button[data-value="indra-pearls"]')
       .forEach((button) => { button.hidden = !experimentalFlags.has("indra-pearls") || !v2!.supportsOrganization("indra"); });
     get<HTMLElement>("v2-controls-top").hidden = false;
-    get<HTMLElement>("density-control").hidden = false;
-    get<HTMLElement>("v2-relation-control").hidden = false;
+    // D084-W6-TOOLBAR BEGIN: the Relazioni/Densità groups are already laid out from the first
+    // paint; reaching readiness only re-enables their controls — never a toolbar layout change.
+    enableV2ToolbarControls();
+    // D084-W6-TOOLBAR END
     get<HTMLElement>("gizmo").hidden = axes.projection !== "3d";
     get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";
     syncCustomColours();
@@ -1998,6 +2021,12 @@ async function load() {
     return;
   }
   if (probe.status !== 404) throw new Error(`Manifest del grafo: HTTP ${probe.status}`);
+  // D084-W6-TOOLBAR BEGIN: the legacy export page never owns the distilled-graph groups, so
+  // the first-paint toolbar hands them back their hidden, disabled state.
+  get<HTMLElement>("v2-relation-control").hidden = true;
+  get<HTMLElement>("density-control").hidden = true;
+  disableV2ToolbarControls();
+  // D084-W6-TOOLBAR END
   const response = await fetch("/api/export.json");
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const payload: unknown = await response.json();
