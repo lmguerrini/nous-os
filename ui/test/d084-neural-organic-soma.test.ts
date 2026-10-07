@@ -5,14 +5,16 @@ import test from "node:test";
 // the base (D-082) code: its expectations are exactly the defect that was rejected
 // (free spindle elongation, long narrow teardrops, a mouth narrower or wider than the
 // body it leaves, and cosmetic filaments faking relations the graph does not draw).
-import { buildMorphologyGeometry, NEURAL_LEAF_BODY_SCALE, NEURAL_PROFILE_GLSL, NEURAL_PROFILE_TABLE, NEURAL_ROOT_ANCHOR_RADII, NEURAL_ROOT_FILLET_LENGTH_RADII, NEURAL_ROOT_FILLET_RADII, NEURAL_ROOT_LENGTH_RADII, NEURAL_ROOT_MOUTH_RADII, neuralEndpointBodyScale, neuralProfileTableAt, neuralRootCompactnessScale, neuralRootLengthPx,
+import { buildMorphologyGeometry, NEURAL_LEAF_BODY_SCALE, NEURAL_PROFILE_GLSL, NEURAL_PROFILE_TABLE, NEURAL_PROFILE_TEXTURE_BYTES, NEURAL_ROOT_ANCHOR_RADII, NEURAL_ROOT_FILLET_LENGTH_RADII, NEURAL_ROOT_FILLET_RADII, NEURAL_ROOT_LENGTH_RADII, NEURAL_ROOT_MOUTH_RADII, neuralEndpointBodyScale, neuralProfileTableAt, neuralRootCompactnessScale, neuralRootLengthPx,
   neuralRootProfileAt, neuralRootProfileAtLength, neuralVisibleRootLengthPx } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { NEURAL_EDGE_SOMA_OVERLAP_PX, drawNeuralProfile, neuralLeafRootWidthPx, neuralRibbonProfile, neuralRootInsideSoma, neuralSomaFrames,
   neuralSomaOutlineAlpha, somaOutlineRadiusAtAngle, type MorphologyCanvasStyle, type MorphologyEdgePaint, type NeuralSomaFrame } from "#render-common/morphology-canvas.ts";
 import { FILAMENT_FRAGMENT_SHADER, FILAMENT_VERTEX_SHADER, neuralRootCompactScaleQA } from "#render3f/filament-material.ts";
-import { FILAMENT_NEURAL_PROFILE_TABLE_3D } from "#render3f/filament-material.ts";
+// D084-W5-SHADER: the engine table reaches both GPU programs as texture bytes.
+import { NearestFilter } from "three";
+import { FILAMENT_NEURAL_PROFILE_TEXTURE_3D } from "#render3f/filament-material.ts";
 import { NODE_FRAGMENT_SHADER } from "#render3f/node-material.ts";
 import { buildNodeBuffers, buildSceneBuffers } from "#render3f/buffers.ts";
 import { buildScene } from "#scene/build.ts";
@@ -112,9 +114,11 @@ test("canvas sampling and both GPU uniforms use the one engine table", async () 
   Object.assign(globalThis, { WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3,
     SHORT: 4, UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 },
     WebGLRenderingContext: { TRIANGLES: 4, FLOAT: 8 } });
-  const { FILAMENT_NEURAL_PROFILE_TABLE_2D } = await import("#render2d/filament-program.ts");
-  assert.strictEqual(FILAMENT_NEURAL_PROFILE_TABLE_2D, NEURAL_PROFILE_TABLE);
-  assert.strictEqual(FILAMENT_NEURAL_PROFILE_TABLE_3D, NEURAL_PROFILE_TABLE);
+  const { FILAMENT_NEURAL_PROFILE_TEXTURE_2D } = await import("#render2d/filament-program.ts");
+  // D084-W5-SHADER: both GPU samplers read the same encoded engine bytes, unfiltered.
+  assert.strictEqual(FILAMENT_NEURAL_PROFILE_TEXTURE_2D, NEURAL_PROFILE_TEXTURE_BYTES);
+  assert.strictEqual(FILAMENT_NEURAL_PROFILE_TEXTURE_3D.image.data, NEURAL_PROFILE_TEXTURE_BYTES);
+  assert.equal(FILAMENT_NEURAL_PROFILE_TEXTURE_3D.magFilter, NearestFilter);
   assert.equal(NEURAL_PROFILE_TABLE.length, 64 * 4);
   for (const s of [0, 0.1, NEURAL_ROOT_FILLET_LENGTH_RADII, 0.5, 1.2, 2.5, 4, 6]) {
     const fromTable = neuralProfileTableAt(s);
@@ -457,7 +461,8 @@ test("dense WebGL, native 3D and canvas use the engine junction policy", () => {
   const programSource = readFileSync(new URL("../src/render2d/filament-program.ts", import.meta.url), "utf8");
   const modelSource = readFileSync(new URL("../src/render2d/model.ts", import.meta.url), "utf8");
   assert.ok(FILAMENT_FRAGMENT_SHADER.includes(NEURAL_PROFILE_GLSL));
-  assert.ok(programSource.includes("NEURAL_PROFILE_GLSL") && programSource.includes("NEURAL_PROFILE_TABLE"));
+  assert.ok(programSource.includes("NEURAL_PROFILE_GLSL") && programSource.includes("NEURAL_PROFILE_TABLE")
+    && programSource.includes("NEURAL_PROFILE_TEXTURE_BYTES"));
   assert.ok(FILAMENT_VERTEX_SHADER.includes(String(2 * NEURAL_PROFILE_TABLE[1]!)));
   assert.ok(programSource.includes('a_somaRadii", size: COLOR_CHANNEL_COUNT') && programSource.includes("a_somaRadii.zw")
     && modelSource.includes("neuralBodyScales"),

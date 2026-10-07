@@ -1,7 +1,9 @@
 import * as THREE from "three";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 // D084-W2-NEURAL-R3 BEGIN: both GPU shaders use the engine's junction geometry.
-import { NEURAL_PROFILE_GLSL, NEURAL_PROFILE_TABLE, NEURAL_ROOT_ANCHOR_RADII } from "#engine/morphology-geometry.ts";
+// D084-W5-SHADER BEGIN: the junction table reaches this material as texture bytes.
+import { NEURAL_PROFILE_GLSL, NEURAL_PROFILE_SAMPLES, NEURAL_PROFILE_TABLE, NEURAL_PROFILE_TEXTURE_BYTES, NEURAL_ROOT_ANCHOR_RADII } from "#engine/morphology-geometry.ts";
+// D084-W5-SHADER END
 // D084-W2-NEURAL-R3 END
 
 // D081-P1F BEGIN: software reconstruction of the shader's longitudinal alpha for numeric QA.
@@ -22,8 +24,20 @@ export function neuralRootCompactScaleQA(somaRadiusPx: number, ordinaryPx: numbe
 import type { FilamentBuffers } from "#render3f/buffers.ts";
 
 const FILAMENT_RENDER_ORDER = 2;
-// D084-W2-NEURAL-R4: the exact array bound in the native Three material.
-export const FILAMENT_NEURAL_PROFILE_TABLE_3D = NEURAL_PROFILE_TABLE;
+// D084-W5-SHADER BEGIN: the exact engine table this material samples per fragment,
+// as one nearest-filtered RGBA texture row-set instead of a uniform array with a
+// per-fragment branch tree.
+export const FILAMENT_NEURAL_PROFILE_TEXTURE_3D = neuralProfileTexture();
+function neuralProfileTexture(): THREE.DataTexture {
+  const texture = new THREE.DataTexture(NEURAL_PROFILE_TEXTURE_BYTES, NEURAL_PROFILE_SAMPLES, 1,
+    THREE.RGBAFormat, THREE.UnsignedByteType);
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
+}
+// D084-W5-SHADER END
 const RADIANS_PER_TURN = Math.PI * 2;
 
 /** This names the filament shader's live viewport inputs and does not choose their values. */
@@ -228,7 +242,10 @@ void main() {
 }`;
 
 /** This analytically anti-aliases a layered luminous curve and does not assign relation meaning to luminance. */
-export const FILAMENT_FRAGMENT_SHADER = `precision highp float;
+// D084-W5-SHADER: GLSL ES 3.00 renames the texture fetch; the shared engine block
+// is written in the WebGL1 spelling so both GPU programs compile identical text.
+export const FILAMENT_FRAGMENT_SHADER = `#define texture2D texture
+precision highp float;
 flat in vec3 v_color;
 flat in vec3 v_hotColor;
 flat in vec4 v_somaStartColor;
@@ -477,7 +494,8 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
       u_devicePixelRatio: { value: scalarCount() },
       u_sizeScale: { value: scalarCount() },
       u_neuralWidthPx: { value: 1 },
-      u_neuralProfileTable: { value: FILAMENT_NEURAL_PROFILE_TABLE_3D },
+      // D084-W5-SHADER: the engine table arrives as one texture, not a vec4 array.
+      u_neuralProfileTexture: { value: FILAMENT_NEURAL_PROFILE_TEXTURE_3D },
       u_flowElapsedMs: { value: 0 },
       u_isPerspective: { value: 0 },
       u_referenceViewDepth: { value: 1 },
