@@ -43,13 +43,25 @@ test("measured Completa overlap narrows the root and dims the edge without overr
   const base = recordProfile();
   const dense = recordProfile(factor);
   assert.ok(dense[0]!.width < base[0]!.width * 0.5);
-  // D084-W2-NEURAL-R6 BEGIN: only a dense factor in the soma's own paint dims its root.
-  assert.equal(dense[0]!.rootAlpha, base[0]!.rootAlpha);
-  assert.ok(recordProfile(factor, 0.9 * factor)[0]!.rootAlpha < base[0]!.rootAlpha * 0.1);
-  // D084-W2-NEURAL-R6 END
+  // D084-W7-DENSE BEGIN: the edge's measured Completa veil dims its root too —
+  // a factor below zero point one must cut the root alpha below a tenth of base.
+  assert.ok(dense[0]!.rootAlpha < base[0]!.rootAlpha * 0.1);
+  // Released to one, the root starts exactly at its attached soma's alpha (R6).
+  assert.equal(recordProfile(1, 0.9)[0]!.rootAlpha, base[0]!.rootAlpha);
+  // D084-W7-DENSE END
   assert.ok(neuralDenseHaloFactor(4, 0.5) < neuralDenseHaloFactor(1, 0.5));
   assert.match(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth \*= max\(0\.22, sqrt\(denseFactor\)\)/);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /rootSomaOpacity \* longitudinal \* radial, rootSomaMix/);
+  // D084-W7-DENSE BEGIN: the veil factor multiplies the root alpha in the native shader.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /rootSomaOpacity \* longitudinal \* radial \* denseRootFactor, rootSomaMix/);
+  // D084-W7-DENSE END
+  // D084-W7-DENSE BEGIN: the native veil writer must guard the attributes it actually writes.
+  // Its former a_opacityPermille guard named an attribute the filament geometry no longer
+  // carries, so neither the shaft's packed alpha nor the profile's dense tag was ever
+  // written and every factor above stayed starved at one.
+  const mountSource = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(mountSource, /getAttribute\("a_opacityPermille"\)/);
+  assert.match(mountSource, /hotColor\.setW\(index, Math\.round\(\(baseAlpha\.get\(id\) \?\? 0\) \* factor\)\)/);
+  // D084-W7-DENSE END
 });
 
 test("six zoom bands restore the exact A-INT12 Neural ribbon geometry and mouth alpha", () => {
@@ -120,10 +132,11 @@ test('first 2D Completa scene has density factors before a renderer or gesture e
   assert.match(source, /firstNeuralScreen\?\.edgeDensities[\s\S]*?const presentation = \{/);
   assert.match(source, /initialScene = \{ \.\.\.draft, geometry \}/);
   const shader = readFileSync(new URL('../src/render2d/filament-program.ts', import.meta.url), 'utf8');
-  // D084-W2-NEURAL-R6 BEGIN: the edge veil does not dim its attached node's alpha.
-  assert.match(shader, /rootSomaColor\.a \* bodyCoverage, rootSomaMix/);
+  // D084-W7-DENSE BEGIN: the dense veil factor multiplies the root alpha in the dense
+  // 2D program; the factor-one identity keeps R6's soma-to-root continuity.
+  assert.match(shader, /rootSomaColor\.a \* clamp\(v_materialVariation\.z, 0\.0, 1\.0\) \* bodyCoverage, rootSomaMix/);
   assert.doesNotMatch(shader, /rootSomaColor\.a \* \(v_materialVariation\.z < 1\.0/);
-  // D084-W2-NEURAL-R6 END
+  // D084-W7-DENSE END
 });
 
 test('jsdom first-scene viewport supplies dense factors without a pan', { skip: !JSDOM }, () => {

@@ -546,9 +546,13 @@ void main(void) {
       // Polish-III neural BEGIN: the attached node supplies the fillet tone.
       gradientColor.rgb = mix(v_color.rgb, rootSomaColor.rgb, rootSomaMix);
       // D084-W2-NEURAL-R6 BEGIN: the endpoint node attribute already contains
-      // its own painted alpha; the edge's dense factor belongs to the shaft.
+      // its own painted alpha.
+      // Polish-III dense veil BEGIN: the root is also edge material — the Completa
+      // veil the shaft already carries multiplies the soma's own alpha, releasing
+      // to one outside Completa and once the zoom returns the close-up paint.
       gradientColor.a = mix(gradientColor.a,
-        rootSomaColor.a * bodyCoverage, rootSomaMix);
+        rootSomaColor.a * clamp(v_materialVariation.z, 0.0, 1.0) * bodyCoverage, rootSomaMix);
+      // Polish-III dense veil END
       // Polish-III neural END
       // D084-W2-NEURAL-R6 END
     }

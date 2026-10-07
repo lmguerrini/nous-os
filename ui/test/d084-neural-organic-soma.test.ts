@@ -201,9 +201,12 @@ test("dense 2D packs endpoint node alpha independently of edge alpha and veil", 
     assert.ok(Math.abs(edgeAlpha + (somaAlpha - edgeAlpha) * 1 - somaAlpha) < 1e-9);
     assert.ok(Math.abs(edgeAlpha + (somaAlpha - edgeAlpha) * fade - edgeAlpha) < 1e-9);
   }
+  // D084-W7-DENSE BEGIN: the packed endpoint alpha stays the soma's own; the
+  // root line now multiplies it by the edge's clamped Completa veil factor.
   assert.match(FILAMENT_PROGRAM_FRAGMENT_SOURCE,
-    /gradientColor\.a = mix\(gradientColor\.a,\s*rootSomaColor\.a \* bodyCoverage, rootSomaMix\)/);
+    /gradientColor\.a = mix\(gradientColor\.a,\s*rootSomaColor\.a \* clamp\(v_materialVariation\.z, 0\.0, 1\.0\) \* bodyCoverage, rootSomaMix\)/);
   assert.doesNotMatch(FILAMENT_PROGRAM_FRAGMENT_SOURCE, /rootSomaColor\.a \* v_materialVariation\.z/);
+  // D084-W7-DENSE END
 });
 
 test("native 3D node and filament inputs retain the independent soma alpha", () => {
@@ -231,8 +234,11 @@ test("native 3D node and filament inputs retain the independent soma alpha", () 
   }
   assert.match(NODE_FRAGMENT_SHADER, /float alpha = \(coreAlpha \+ haloAlpha\) \* v_opacity;/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /rootSomaOpacity = somaTone\.a \/ u_permilleScale;/);
+  // D084-W7-DENSE BEGIN: the root keeps the soma's opacity as its base and carries
+  // the same Completa veil factor the shaft receives through v_opacity.
   assert.match(FILAMENT_FRAGMENT_SHADER,
-    /alpha = mix\(alpha, rootSomaOpacity \* longitudinal \* radial, rootSomaMix\)/);
+    /alpha = mix\(alpha, rootSomaOpacity \* longitudinal \* radial \* denseRootFactor, rootSomaMix\)/);
+  // D084-W7-DENSE END
 });
 // D084-W2-NEURAL-R6 END
 // D084-W2-NEURAL-R4 END
