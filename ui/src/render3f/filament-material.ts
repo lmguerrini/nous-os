@@ -334,6 +334,10 @@ void main() {
   // D082-A-N3D BEGIN
   float denseWidthFloorActive = 0.0;
   // D082-A-N3D END
+  // D084-W7-DENSE BEGIN: the Completa veil factor must survive past the profile
+  // block so the root alpha below can carry the same veil as the shaft.
+  float denseRootFactor = 1.0;
+  // D084-W7-DENSE END
   float rootSomaMix = 0.0;
   vec3 rootSomaColor = v_color;
   float rootSomaOpacity = v_opacity;
@@ -371,6 +375,9 @@ void main() {
       ? clamp(v_neuralProfile.w - 3.0, 0.0, 1.0)
       : v_neuralProfile.w > 1.0001 ? clamp(v_neuralProfile.w - 1.0, 0.0, 1.0) : 1.0;
     // D082-A-N3D END
+    // D084-W7-DENSE BEGIN: keep the decoded veil available to the root alpha.
+    denseRootFactor = denseFactor;
+    // D084-W7-DENSE END
     bodyHalfWidth *= max(0.22, sqrt(denseFactor));
     // D082-A-N3D BEGIN: opacity still carries the screen-cell veil; width never breaks into dots.
     if (v_neuralProfile.w >= 3.0 && bodyHalfWidth < 0.75) {
@@ -422,9 +429,11 @@ void main() {
     float alpha = clamp(v_opacity * radial * longitudinal
       * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
     // D082-A-NEURAL: match the pure root profile, including opacity and white-to-edge colour.
-    // D084-W2-NEURAL-R6 BEGIN: the edge veil is already in v_opacity; it must
-    // not dim the attached soma's independently painted endpoint.
-    alpha = mix(alpha, rootSomaOpacity * longitudinal * radial, rootSomaMix);
+    // D084-W2-NEURAL-R6 BEGIN: the endpoint input is the soma's own opacity.
+    // D084-W7-DENSE BEGIN: the shaft carries the veil in v_opacity; the root must
+    // carry the same factor on top of the soma's independently painted opacity.
+    alpha = mix(alpha, rootSomaOpacity * longitudinal * radial * denseRootFactor, rootSomaMix);
+    // D084-W7-DENSE END
     // D084-W2-NEURAL-R6 END
     if (alpha <= 0.0) discard;
     vec3 color = mix(v_color, v_hotColor, clamp(hot * 0.35, 0.0, 0.35));

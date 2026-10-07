@@ -332,18 +332,29 @@ export function mount(
     .map(([id, edge]) => [id, edge.denseVeilFactor ?? 1]));
   const applyNativeEdgeVeil = () => {
     if (!distinct || live.scene.nodes.length < DENSE_SCENE_THRESHOLD || !nativeEdgeVeilById.size) return;
-    const attribute = filamentResources.geometry.getAttribute("a_opacityPermille");
-    if (!(attribute instanceof THREE.InstancedBufferAttribute)) return;
     // D082-A-NCOMPLETA BEGIN: the Neural profile's spare flag range carries the same
     // measured veil to its root alpha and width in the fragment material.
     const neuralProfile = filamentResources.geometry.getAttribute("a_neuralProfile");
     // D082-A-NCOMPLETA END
+    // D084-W7-DENSE BEGIN: the edge alpha moved into a_hotColor's own packed spare channel
+    // (D084-W2-NEURAL-R5), so the former a_opacityPermille guard named an attribute the
+    // filament geometry no longer carries and this whole writer silently stopped — the shaft
+    // veil, the width narrowing and the root factor all lost their measured input. Guard the
+    // two attributes this function actually writes.
+    const hotColor = filamentResources.geometry.getAttribute("a_hotColor");
+    if (!(neuralProfile instanceof THREE.InstancedBufferAttribute)
+      || !(hotColor instanceof THREE.InstancedBufferAttribute)) return;
+    // D084-W7-DENSE END
     const baseAlpha = new Map(live.scene.edges.map(edge => [edge.id, edge.opacityPermille]));
     for (const [index, id] of live.buffers.filaments.edgeIds.entries()) {
       const factor = currentState.selectedId === id || currentState.focusedId === id ? 1 : nativeEdgeVeilById.get(id) ?? 1;
-      attribute.setX(index, Math.round((baseAlpha.get(id) ?? 0) * factor));
+      // D084-W7-DENSE BEGIN: the shaft's veiled alpha rides the packed hot colour's fourth
+      // component, the one v_opacity reads; at factor one this writes the packed base back
+      // unchanged, so the released view keeps its exact bytes.
+      hotColor.setW(index, Math.round((baseAlpha.get(id) ?? 0) * factor));
+      // D084-W7-DENSE END
       // D082-A-NCOMPLETA BEGIN
-      if (neuralProfile instanceof THREE.InstancedBufferAttribute && live.buffers.filaments.neuralProfile[index * 4 + 3]! > 0.5)
+      if (live.buffers.filaments.neuralProfile[index * 4 + 3]! > 0.5)
         // D082-A-N3D BEGIN: reserve 3 + factor for the 3D full Neural ribbon floor.
         // D082-B-GPUFLOOR: that tag is Natural/Indra-specific like the point floor — a Canopy
         // host keeps 1 + factor, the ordinary veil-carrying value the shader reads unchanged.
@@ -351,9 +362,11 @@ export function mount(
         // D082-A-N3D END
       // D082-A-NCOMPLETA END
     }
-    attribute.needsUpdate = true;
+    // D084-W7-DENSE BEGIN: both rewritten attributes upload their instances on the next frame.
+    hotColor.needsUpdate = true;
+    // D084-W7-DENSE END
     // D082-A-NCOMPLETA BEGIN
-    if (neuralProfile instanceof THREE.InstancedBufferAttribute) neuralProfile.needsUpdate = true;
+    neuralProfile.needsUpdate = true;
     // D082-A-NCOMPLETA END
   };
   applyNativeEdgeVeil();

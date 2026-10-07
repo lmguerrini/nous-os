@@ -1965,6 +1965,12 @@ function flowModulation(paint: MorphologyEdgePaint, now: number, speed: number, 
 }
 function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   modulation: EdgeModulation, alpha: number, outerRoot = false): CanvasGradient {
+  // D084-W7-DENSE BEGIN: the root inherits the attached soma's drawn alpha times
+  // this edge's own Completa veil — the shaft stops of this same gradient already
+  // carry the factor through paint.alpha. One outside Completa and after the zoom
+  // release keeps the R6 soma-to-root continuity exactly.
+  const denseRootFactor = paint.neuralDenseFactor ?? 1;
+  // D084-W7-DENSE END
   const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
   const first = paint.cumulative[0]!, last = paint.cumulative[paint.cumulative.length - 1]!;
   const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
@@ -1992,11 +1998,13 @@ function edgeLightGradient(context: CanvasRenderingContext2D, paint: MorphologyE
     if (paint.rootStart && distance < paint.rootStart.outlinePx + paint.rootStart.lengthPx + paint.rootStart.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) {
       somaChannels = colourChannels(paint.rootStart.somaColor);
       ramp = neuralRootProfileAtLength(distance - paint.rootStart.outlinePx, paint.rootStart.radiusPx, 1, alpha,
-        paint.rootStart.ratio, paint.rootStart.lengthPx, 1, outerRoot ? paint.rootStart.somaAlpha : 0);
+        paint.rootStart.ratio, paint.rootStart.lengthPx, 1,
+        outerRoot ? clamp(paint.rootStart.somaAlpha * denseRootFactor, 0, 1) : 0);
     } else if (paint.rootEnd && distance > paint.rootEnd.outlinePx - paint.rootEnd.lengthPx - paint.rootEnd.radiusPx * NEURAL_ROOT_FILLET_LENGTH_RADII) {
       somaChannels = colourChannels(paint.rootEnd.somaColor);
       ramp = neuralRootProfileAtLength(paint.rootEnd.outlinePx - distance, paint.rootEnd.radiusPx, 1, alpha,
-        paint.rootEnd.ratio, paint.rootEnd.lengthPx, 1, outerRoot ? paint.rootEnd.somaAlpha : 0);
+        paint.rootEnd.ratio, paint.rootEnd.lengthPx, 1,
+        outerRoot ? clamp(paint.rootEnd.somaAlpha * denseRootFactor, 0, 1) : 0);
     }
     const edgeChannels = colourChannels(paint.color);
     const channels: readonly [number, number, number] = [
