@@ -65,7 +65,8 @@ test("D-080 reference geometry: real-bundle silhouettes and joined monotone root
       taperMonotone: true, seamWidthDeltaPx, overlapPx: +overlapPx.toFixed(3) };
   });
   // D084-W2-NEURAL-R4: the engine table owns the concave mouth and thick process.
-  assert.match(FILAMENT_FRAGMENT_SHADER, /uniform vec4 u_neuralProfileTable\[64\]/);
+  // D084-W5-SHADER: the table reaches the shader as one sampled texture, not an array.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /uniform sampler2D u_neuralProfileTexture/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /mix\(ordinary, 2\.0 \* startRadius \* startProfile\.x/);
   assert.match(NODE_FRAGMENT_SHADER, /irregularity \* 1\.6/);
   mkdirSync("dist/evidence", { recursive: true });

@@ -159,32 +159,48 @@ export function neuralProfileTableAt(sRadii: number): { halfWidthRadii: number; 
     somaMix: Math.max(0, Math.min(1, neuralProfileHermite(NEURAL_PROFILE_TABLE[before + 2]!, NEURAL_PROFILE_TABLE[offset + 2]!,
       neuralProfileMixSlope(low), neuralProfileMixSlope(high), t, span))) };
 }
-// WebGL1 requires constant uniform-array indexes. Build a balanced lookup tree
-// from the same engine table so both GPU languages interpolate identical entries.
-function neuralProfileGlslMixSlope(i: number): string {
-  return i === 0 || i === NEURAL_PROFILE_SAMPLES - 1 ? "0.0"
-    : `(u_neuralProfileTable[${i + 1}].z - u_neuralProfileTable[${i - 1}].z)
-      / (u_neuralProfileTable[${i + 1}].x - u_neuralProfileTable[${i - 1}].x)`;
+// D084-W5-SHADER BEGIN: the GLSL lookup used to be a balanced if/else tree with one
+// Hermite leaf per table interval (63 leaves), evaluated per fragment in both GPU
+// programs. Divergent branches made neighbouring fragments execute many leaves, and
+// under software WebGL the dense Neural views stopped finishing a frame. The table
+// now travels as one RGBA texture row-set sampled with two constant texel fetches;
+// the engine float table remains the single source of truth and the canvas keeps
+// reading it directly.
+/** Fillet-grid step in radii: the first table section is uniform. */
+export const NEURAL_PROFILE_FILLET_STEP = NEURAL_ROOT_FILLET_LENGTH_RADII / (NEURAL_PROFILE_FILLET_SAMPLES - 1);
+/** Process-grid step in radii: the second table section is uniform. */
+export const NEURAL_PROFILE_PROCESS_STEP = NEURAL_ROOT_LENGTH_RADII / (NEURAL_PROFILE_SAMPLES - NEURAL_PROFILE_FILLET_SAMPLES);
+/** Documented byte encoding: half-width and soma mix are stored directly in [0, 1];
+ * both slope columns are stored as `slope / NEURAL_PROFILE_SLOPE_SCALE + NEURAL_PROFILE_SLOPE_BIAS`
+ * so every quantised byte stays inside the unorm range. */
+export const NEURAL_PROFILE_SLOPE_SCALE = 4;
+export const NEURAL_PROFILE_SLOPE_BIAS = 0.5;
+/** One RGBA byte texel per table row — (half-width, soma mix, mix slope, half-width
+ * slope) — encoded from NEURAL_PROFILE_TABLE, including the central-difference mix
+ * slope the branch tree used to recompute per fragment. */
+export const NEURAL_PROFILE_TEXTURE_BYTES = (() => {
+  const bytes = new Uint8Array(NEURAL_PROFILE_SAMPLES * 4);
+  const quantise = (value: number) => Math.round(255 * Math.max(0, Math.min(1, value)));
+  for (let i = 0; i < NEURAL_PROFILE_SAMPLES; i++) {
+    bytes.set([quantise(NEURAL_PROFILE_TABLE[i * 4 + 1]!), quantise(NEURAL_PROFILE_TABLE[i * 4 + 2]!),
+      quantise(neuralProfileMixSlope(i) / NEURAL_PROFILE_SLOPE_SCALE + NEURAL_PROFILE_SLOPE_BIAS),
+      quantise(NEURAL_PROFILE_TABLE[i * 4 + 3]! / NEURAL_PROFILE_SLOPE_SCALE + NEURAL_PROFILE_SLOPE_BIAS)], i * 4);
+  }
+  return bytes;
+})();
+/** Decode one texture row for numeric QA; the shader performs the identical arithmetic. */
+export function neuralProfileTextureTexel(row: number): { halfWidthRadii: number; somaMix: number; mixSlope: number; halfSlope: number } {
+  const channel = (offset: number) => NEURAL_PROFILE_TEXTURE_BYTES[row * 4 + offset]! / 255;
+  return { halfWidthRadii: channel(0), somaMix: channel(1),
+    mixSlope: (channel(2) - NEURAL_PROFILE_SLOPE_BIAS) * NEURAL_PROFILE_SLOPE_SCALE,
+    halfSlope: (channel(3) - NEURAL_PROFILE_SLOPE_BIAS) * NEURAL_PROFILE_SLOPE_SCALE };
 }
-function neuralProfileGlslBranch(first: number, last: number): string {
-  if (first === last) return `{
-    vec4 a = u_neuralProfileTable[${first - 1}];
-    vec4 b = u_neuralProfileTable[${first}];
-    float span = max(b.x - a.x, 0.000001);
-    float t = clamp((s - a.x) / span, 0.0, 1.0);
-    return vec2(neuralHermite(a.y, b.y, a.w, b.w, t, span),
-      clamp(neuralHermite(a.z, b.z, ${neuralProfileGlslMixSlope(first - 1)},
-        ${neuralProfileGlslMixSlope(first)}, t, span), 0.0, 1.0));
-  }`;
-  const middle = (first + last) >> 1;
-  return `if (s <= u_neuralProfileTable[${middle}].x) {
-    ${neuralProfileGlslBranch(first, middle)}
-  } else {
-    ${neuralProfileGlslBranch(middle + 1, last)}
-  }`;
-}
+// The table's distance grid is two uniform sections (fillet, then process), so the
+// bracketing texel pair is computed analytically — no per-fragment branch tree.
+// GLSL ES 3.00 renames the fetch, so the native 3D fragment shader maps texture2D
+// onto texture with a define before including this block.
 export const NEURAL_PROFILE_GLSL = `
-uniform vec4 u_neuralProfileTable[${NEURAL_PROFILE_SAMPLES}];
+uniform sampler2D u_neuralProfileTexture;
 float neuralHermite(float a, float b, float ma, float mb, float t, float span) {
   float t2 = t * t;
   float t3 = t2 * t;
@@ -210,8 +226,27 @@ float neuralProfileDistance(float distance, float radius, float processLength) {
     ? process / max(radius, 0.000001)
     : 5.0 + (process - five) / max(processLength - five, 0.000001) * 4.0);
 }
+vec4 neuralProfileTexel(float index) {
+  return texture2D(u_neuralProfileTexture, vec2((index + 0.5) / ${NEURAL_PROFILE_SAMPLES}.0, 0.5));
+}
 vec2 neuralProfileSample(float s) {
-  ${neuralProfileGlslBranch(1, NEURAL_PROFILE_SAMPLES - 1)}
+  float filletLength = ${NEURAL_ROOT_FILLET_LENGTH_RADII};
+  float clamped = clamp(s, 0.0, filletLength + ${NEURAL_ROOT_LENGTH_RADII}.0);
+  float inFillet = step(clamped, filletLength);
+  float filletIndex = floor(clamped / ${NEURAL_PROFILE_FILLET_STEP});
+  float processIndex = ${NEURAL_PROFILE_FILLET_SAMPLES - 1}.0
+    + floor((clamped - filletLength) / ${NEURAL_PROFILE_PROCESS_STEP});
+  float index = clamp(mix(processIndex, filletIndex, inFillet), 0.0, ${NEURAL_PROFILE_SAMPLES - 2}.0);
+  float span = mix(${NEURAL_PROFILE_PROCESS_STEP}, ${NEURAL_PROFILE_FILLET_STEP}, inFillet);
+  float start = mix(filletLength + (index - ${NEURAL_PROFILE_FILLET_SAMPLES - 1}.0) * ${NEURAL_PROFILE_PROCESS_STEP},
+    index * ${NEURAL_PROFILE_FILLET_STEP}, inFillet);
+  float t = clamp((clamped - start) / span, 0.0, 1.0);
+  vec4 lower = neuralProfileTexel(index);
+  vec4 upper = neuralProfileTexel(index + 1.0);
+  vec2 lowerSlope = (lower.zw - ${NEURAL_PROFILE_SLOPE_BIAS}) * ${NEURAL_PROFILE_SLOPE_SCALE}.0;
+  vec2 upperSlope = (upper.zw - ${NEURAL_PROFILE_SLOPE_BIAS}) * ${NEURAL_PROFILE_SLOPE_SCALE}.0;
+  return vec2(neuralHermite(lower.x, upper.x, lowerSlope.y, upperSlope.y, t, span),
+    clamp(neuralHermite(lower.y, upper.y, lowerSlope.x, upperSlope.x, t, span), 0.0, 1.0));
 }`;
 // D084-W2-NEURAL-R4 END
 /** Degree-one bodies are compact so their single broad root reads as the tail of one cell. */

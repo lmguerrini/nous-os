@@ -48,12 +48,13 @@ test("fit and hub zoom keep hub and secondary roots above the screen-space ratio
     }
   }
   // D084-W2-NEURAL-R4: the fillet and downstream thickness use the engine table.
-  assert.match(FILAMENT_FRAGMENT_SHADER, /uniform vec4 u_neuralProfileTable\[64\]/);
+  // D084-W5-SHADER: the same table now reaches both programs as one sampled texture.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /uniform sampler2D u_neuralProfileTexture/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /neuralProfileSample\(neuralProfileDistance\(startDistance/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /mix\(ordinary, 2\.0 \* startRadius \* startProfile\.x/);
   const shader2d = await readFile(new URL("../src/render2d/filament-program.ts", import.meta.url), "utf8");
   assert.match(shader2d, /NEURAL_PROFILE_GLSL/);
-  assert.match(shader2d, /uniform4fv\(programInfo\.uniformLocations\.u_neuralProfileTable/);
+  assert.match(shader2d, /bindNeuralProfileTexture\(gl, programInfo\.uniformLocations\.u_neuralProfileTexture\)/);
   assert.match(shader2d, /mix\(v_thickness, 2\.0 \* v_somaRadii\.x \* startProfile\.x/);
   assert.match(shader2d, /NEURAL_ROOT_ANCHOR_RADII/);
   assert.match(NODE_FRAGMENT_SHADER, /smoothstep\(v_coreRadiusDevicePx - fwidth\(somaDistance\)/);

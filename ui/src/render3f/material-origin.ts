@@ -211,7 +211,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
     ["#render3f/buffers.ts", new Set(["FilamentBuffers"])],
     // D084-W2-NEURAL-R3 BEGIN
-    ["#engine/morphology-geometry.ts", new Set(["NEURAL_PROFILE_GLSL", "NEURAL_PROFILE_TABLE", "NEURAL_ROOT_ANCHOR_RADII"])],
+    // D084-W5-SHADER BEGIN: the shader geometry table is uploaded as texture bytes.
+    ["#engine/morphology-geometry.ts", new Set(["NEURAL_PROFILE_GLSL", "NEURAL_PROFILE_SAMPLES", "NEURAL_PROFILE_TABLE", "NEURAL_PROFILE_TEXTURE_BYTES", "NEURAL_ROOT_ANCHOR_RADII"])],
+    // D084-W5-SHADER END
     // D084-W2-NEURAL-R3 END
   ])],
   ["label-collision.ts", new Map([

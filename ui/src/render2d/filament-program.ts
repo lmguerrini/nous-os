@@ -3,13 +3,42 @@ import { floatColor, parseColor } from "sigma/utils";
 import type { EdgeDisplayData, NodeDisplayData, RenderParams } from "sigma/types";
 import type { InstancedProgramDefinition, ProgramInfo } from "sigma/rendering";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import { NEURAL_PROFILE_GLSL, NEURAL_PROFILE_TABLE, NEURAL_ROOT_ANCHOR_RADII, neuralRootCompactnessScale, neuralRootRatio } from "#engine/morphology-geometry.ts";
+// "D084-W5-SHADER BEGIN": the engine table reaches the dense edge program as
+// nearest-filtered texture bytes, not a uniform array re-sent every frame.
+import { NEURAL_PROFILE_GLSL, NEURAL_PROFILE_SAMPLES, NEURAL_PROFILE_TABLE, NEURAL_PROFILE_TEXTURE_BYTES, NEURAL_ROOT_ANCHOR_RADII, neuralRootCompactnessScale, neuralRootRatio } from "#engine/morphology-geometry.ts";
+// "D084-W5-SHADER END"
 import { liveFilamentGeometry } from "#render2d/geometry.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 
 const FILAMENT_VERTEX_DATA = [[0, 1], [0, -1], [1, 1], [0, -1], [1, 1], [1, -1]];
-// Polish-III neural: the exact array uploaded by Sigma's uniform setter.
-export const FILAMENT_NEURAL_PROFILE_TABLE_2D = NEURAL_PROFILE_TABLE;
+// Polish-III neural: the exact engine table this program samples through one
+// single-row RGBA texture.
+export const FILAMENT_NEURAL_PROFILE_TEXTURE_2D = NEURAL_PROFILE_TEXTURE_BYTES;
+// "D084-W5-SHADER BEGIN": the table texture is built once per WebGL context and
+// bound on the texture unit before either pass draws. A restored context loses
+// the handle, so the guard rebuilds and re-uploads the same engine bytes. The
+// lookup itself stays branch-free: the composed shader reads two texels and
+// runs the shared Hermite blend, with no per-sample selection tree.
+const neuralProfileTextures = new WeakMap<WebGLRenderingContext, WebGLTexture>();
+function bindNeuralProfileTexture(gl: WebGLRenderingContext, location: WebGLUniformLocation | null): void {
+  gl.activeTexture(gl.TEXTURE0);
+  let texture = neuralProfileTextures.get(gl);
+  if (texture === undefined || !gl.isTexture(texture)) {
+    texture = gl.createTexture();
+    if (texture === null) throw new TypeError("the Neural profile texture is unavailable");
+    neuralProfileTextures.set(gl, texture);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, NEURAL_PROFILE_SAMPLES, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, NEURAL_PROFILE_TEXTURE_BYTES);
+  } else {
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+  }
+  gl.uniform1i(location, 0);
+}
+// "D084-W5-SHADER END"
 const FILAMENT_VERTEX_COUNT = FILAMENT_VERTEX_DATA.length;
 const MATERIAL_VARIATION_COMPONENT_COUNT = ["phase", "hotCore", "neuralDenseFactor"].length;
 const FILAMENT_UNIFORMS = [
@@ -31,7 +60,7 @@ const FILAMENT_UNIFORMS = [
   "u_hotColor",
   "u_neuralProfile",
   "u_neuralWidthPx",
-  "u_neuralProfileTable",
+  "u_neuralProfileTexture",
 ] as const;
 const COLOR_CHANNEL_COUNT = ["red", "green", "blue", "alpha"].length;
 const COLOR_BYTE_MAXIMUM = Number("255");
@@ -225,8 +254,9 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     gl.uniform1f(programInfo.uniformLocations.u_neuralProfile,
       (uniformMaterial.neuralProfile ?? uniformMaterial.hotMix > 0) ? 1 : 0);
     gl.uniform1f(programInfo.uniformLocations.u_neuralWidthPx, uniformMaterial.neuralWidthPx ?? 1);
-    // Polish-III neural: both GPU paths receive the engine's exact packed table.
-    gl.uniform4fv(programInfo.uniformLocations.u_neuralProfileTable, FILAMENT_NEURAL_PROFILE_TABLE_2D);
+    // "D084-W5-SHADER BEGIN": both GPU passes sample the engine's exact table bytes.
+    bindNeuralProfileTexture(gl, programInfo.uniformLocations.u_neuralProfileTexture);
+    // "D084-W5-SHADER END"
     if (!programInfo.isPicking) {
       gl.uniform1f(programInfo.uniformLocations.u_sheathAlpha, uniformMaterial.sheathAlpha);
       gl.uniform1f(programInfo.uniformLocations.u_coreScale, uniformMaterial.coreScale);
