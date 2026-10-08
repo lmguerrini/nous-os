@@ -660,6 +660,8 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   if (v2) {
     const committed = v2.committedViewAxes;
     axes = appliedAxes({ projection: committed.projection, organization: committed.organization,
+      morphology: committed.morphology, reading: committed.reading,
+      colour: committed.colour, labels: committed.labels,
       ...(committed.brain !== undefined ? { brain: committed.brain } : {}) });
   } else axes = appliedAxes({ organization });
   if (v2) density = v2.densitySetting ?? density;
@@ -1270,6 +1272,8 @@ function syncCommittedPageGeometry(): void {
   // D085-S1 BEGIN: retain main's resolved Natural arrangement across page remounts.
   const mounted = v2.committedViewAxes;
   axes = appliedAxes({ projection: mounted.projection, organization: mounted.organization,
+    morphology: mounted.morphology, reading: mounted.reading,
+    colour: mounted.colour, labels: mounted.labels,
     ...(mounted.brain !== undefined ? { brain: mounted.brain } : {}) });
   // D085-S1 END
   density = v2.densitySetting ?? density;
@@ -1278,6 +1282,13 @@ function syncCommittedPageGeometry(): void {
   syncBrainControls();
   syncTaxonomyControls();
   syncLoadedAxisButtons();
+  // D085-S1 BEGIN: restore controls that the axis-button sync does not cover.
+  document.getElementById('labels')?.setAttribute('aria-pressed', String(axes.labels));
+  const palette = document.getElementById('palette') as HTMLSelectElement | null;
+  if (palette) palette.value = axes.colour;
+  const fullscreenPalette = document.getElementById('fullscreen-palette') as HTMLSelectElement | null;
+  if (fullscreenPalette) fullscreenPalette.value = axes.colour;
+  // D085-S1 END
   syncDensity();
   syncToolbarSummary();
 }
@@ -1416,7 +1427,8 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
       // D085-S1 BEGIN: the restored target supplies Natural's resolved arrangement.
       const committed = v2.committedViewAxes;
       axes = appliedAxes({ ...targetAxes, projection: committed.projection,
-        organization: committed.organization,
+        organization: committed.organization, morphology: committed.morphology,
+        reading: committed.reading, colour: committed.colour, labels: committed.labels,
         ...(committed.brain !== undefined ? { brain: committed.brain } : {}) });
       // D085-S1 END
       density = v2.densitySetting ?? density;
@@ -1425,6 +1437,13 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
       syncDensity();
       syncTaxonomyControls();
       syncLoadedAxisButtons();
+      // D085-S1 BEGIN: location presentation includes the labels and both palettes.
+      document.getElementById('labels')?.setAttribute('aria-pressed', String(axes.labels));
+      const palette = document.getElementById('palette') as HTMLSelectElement | null;
+      if (palette) palette.value = axes.colour;
+      const fullscreenPalette = document.getElementById('fullscreen-palette') as HTMLSelectElement | null;
+      if (fullscreenPalette) fullscreenPalette.value = axes.colour;
+      // D085-S1 END
       syncToolbarSummary();
       if (support.notice) showExperimentalSuspensionNotice();
     } finally { v2.confirmTaxonomyPresentation(targetTopology, targetIndra); }

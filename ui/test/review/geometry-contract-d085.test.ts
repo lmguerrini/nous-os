@@ -64,6 +64,32 @@ for (const successor of ['topology', 'density', 'indra', 'axis'] as const) {
   });
 }
 
+// D085-S1 BEGIN: a cancelled non-projection mount must not leak its optimistic axis into main.
+for (const [axis, requested] of [
+  ['morphology', 'neural'], ['reading', 'exploratory'], ['colour', 'warm'], ['labels', false],
+] as const) {
+  for (const successor of ['topology', 'density', 'indra'] as const) {
+    test(`dropped ${axis} request followed by ${successor} restores the mounted axis`, async () => {
+      const page = makePage(environment.mod);
+      const main = await makeMain(environment.mod, environment.mainSource, page);
+      const committed = page.mountedAxes[axis];
+      const first = main.setAxes({ [axis]: requested });
+      for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+      assert.equal(page.mounts.length, 1, `${axis} request reached the mount`);
+      assert.equal(main.state.axes[axis], requested, 'main applied the provisional value');
+      const second = successor === 'topology' ? main.chooseTaxonomy('julia')
+        : successor === 'indra' ? main.chooseTaxonomy('natural', true)
+          : (main.applyDensity('essential'), main.lane.enqueue(async () => {}));
+      await drain(page, main, [first, second]);
+      assert.equal(page.mounts[0].interrupted, true, 'first mount was dropped');
+      consistent(page, main);
+      assert.equal(main.state.axes[axis], committed);
+      assert.equal(main.state.geometry[axis], committed, 'persisted view follows the mount');
+    });
+  }
+}
+// D085-S1 END
+
 test('a superseded request already displayed resynchronizes main to the page commit', async () => {
   const page = makePage(environment.mod);
   const main = await makeMain(environment.mod, environment.mainSource, page);
@@ -271,6 +297,9 @@ test('seeded transition chains settle with toolbar, URL, witness and mount align
   let seed = 0x085c0de;
   const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
   const topologies = ['natural', 'canopy-ifs', 'julia', 'sierpinski', 'lull'];
+  // D085-S1 BEGIN: the seeded chains must actually exercise every newly included axis.
+  const axisClicks = { morphology: 0, reading: 0, colour: 0, labels: 0 };
+  // D085-S1 END
   for (let run = 0; run < 48; run++) {
     const page = makePage(environment.mod);
     const main = await makeMain(environment.mod, environment.mainSource, page);
@@ -281,21 +310,29 @@ test('seeded transition chains settle with toolbar, URL, witness and mount align
       const topology = environment.mod.lawTopology(state.geometry.topology);
       const indra = state.geometry.indra === 'on';
       const choice = random();
-      if (choice < 0.28) {
+      if (choice < 0.24) {
         const next = topologies[Math.floor(random() * topologies.length)];
         if (environment.mod.topologySupport(next, state.axes.projection, indra).ok)
           requests.push(main.chooseTaxonomy(next));
-      } else if (choice < 0.48) {
+      } else if (choice < 0.42) {
         const next = random() < 0.5;
         if (environment.mod.topologySupport(topology, state.axes.projection, next).ok)
           requests.push(main.chooseTaxonomy(topology, next));
-      } else if (choice < 0.70) {
+      } else if (choice < 0.58) {
         const next = random() < 0.5 ? '2d' : '3d';
         if (environment.mod.topologySupport(topology, next, indra).ok)
           requests.push(main.setAxes({ projection: next }));
-      } else if (choice < 0.88) {
+      } else if (choice < 0.72) {
         main.applyDensity(['essential', 'balanced', 'complete'][Math.floor(random() * 3)]);
         requests.push(main.lane.enqueue(async () => {}));
+      } else if (choice < 0.95) {
+        const axis = (['morphology', 'reading', 'colour', 'labels'] as const)[Math.floor(random() * 4)]!;
+        axisClicks[axis]++;
+        const value = axis === 'morphology' ? ['stellar', 'neural', 'mycelium'][Math.floor(random() * 3)]
+          : axis === 'reading' ? ['attested', 'exploratory', 'combined'][Math.floor(random() * 3)]
+            : axis === 'colour' ? ['bw', 'warm', 'semantic'][Math.floor(random() * 3)]
+              : random() < 0.5;
+        requests.push(main.setAxes({ [axis]: value }));
       } else requests.push(page.setRelationDetail(random() < 0.5 ? 'all' : 'essential'));
       if (random() < 0.5) await tick(1 + Math.floor(random() * 5));
     }
@@ -303,5 +340,6 @@ test('seeded transition chains settle with toolbar, URL, witness and mount align
     consistent(page, main);
     assert.equal(main.errors.length, 0, `run ${run}`);
   }
+  for (const [axis, count] of Object.entries(axisClicks)) assert.ok(count > 0, `${axis} was clicked`);
 });
 // D085-S1 END
