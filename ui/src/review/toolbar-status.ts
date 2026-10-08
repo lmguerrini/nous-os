@@ -1,3 +1,6 @@
+// D085-S7 BEGIN
+import type { RelationDetailCounts } from './relation-routing.ts';
+// D085-S7 END
 export type GraphToolbarCounts = {
   visibleNodes: number; totalNodes: number; levels: string | null; cap: string;
   visibleEdges?: number | null; totalEdges?: number | null;
@@ -12,7 +15,10 @@ export type D081GraphStatus = {
     passing: number; share: number; reason: string | null }>;
   // D085-S5 END
   nodes: { visible: number; represented: number; total: number; eligible: number; aggregated: number; aggregates: number };
-  edges: { drawn: number; bundled: number; bundles: number; eligible: number; total: number };
+  // D085-S7 BEGIN
+  edges: { drawn: number; bundled: number; bundles: number; eligible: number; total: number;
+    detail?: RelationDetailCounts };
+  // D085-S7 END
   depth: { level: number; label: string };
   quality: "movimento" | "recupero" | "completa";
   msSinceInteraction: number;
@@ -39,10 +45,16 @@ export function preserveRenderProgress(line: string, current: string): string {
 /** Contract-backed status used by the toolbar and its expanded explanation panel. */
 export function formatD081GraphStatus(status: D081GraphStatus): { line: string; details: [string, string, string, string, string, string, string] } {
   const { nodes, edges, depth, quality, limit, hint } = status;
-  const line = `Nodi ${count(nodes.visible)} visibili · ${count(nodes.represented)} rappresentati / ${count(nodes.total)} totali; Archi ${count(edges.drawn)} disegnati / ${count(edges.eligible)} eleggibili / ${count(edges.total)} totali`;
+  // D085-S7 BEGIN
+  const detail = edges.detail;
+  const detailText = detail ? ` · Rel. Essenziali: ${count(detail.essentialRepresented)}; Tutte: ${count(detail.availableRepresented)}` : '';
+  const line = `Nodi ${count(nodes.visible)} visibili · ${count(nodes.represented)} rappresentati / ${count(nodes.total)} totali; Archi ${count(edges.drawn)} disegnati / ${count(edges.eligible)} eleggibili / ${count(edges.total)} totali${detailText}`;
+  // D085-S7 END
   const details: [string, string, string, string, string, string, string] = [
     `Nodi: ${count(nodes.visible)} visibili, ${count(nodes.represented)} rappresentati su ${count(nodes.total)} totali (${count(nodes.eligible)} eleggibili).`,
-    `Archi: ${count(edges.drawn)} disegnati, ${count(edges.eligible)} eleggibili su ${count(edges.total)} totali${edges.bundles > 0 ? `; ${count(edges.bundled)} in ${count(edges.bundles)} fasci contati` : ""}.`,
+    // D085-S7 BEGIN
+    `Archi: ${count(edges.drawn)} disegnati, ${count(edges.eligible)} eleggibili su ${count(edges.total)} totali${edges.bundles > 0 ? `; ${count(edges.bundled)} in ${count(edges.bundles)} fasci contati` : ""}${detail ? `; dettaglio ${detail.setting === 'essential' ? 'Essenziali' : 'Tutte'}: ${count(detail.represented)} relazioni sorgente e ${count(detail.guideDrawn)} guide strutturali; Essenziali ${count(detail.essentialDrawn)} tracciati / ${count(detail.essentialRepresented)} relazioni, Tutte ${count(detail.availableDrawn)} tracciati / ${count(detail.availableRepresented)} relazioni; ${count(detail.additionalDrawn)} tracciati esclusivi di Tutte` : ''}.`,
+    // D085-S7 END
     `Profondità: ${depth.label || `livello ${depth.level}`}.`,
     `Aggregati: ${count(nodes.aggregates)} gruppi con ${count(nodes.aggregated)} elementi rappresentati.`,
     `Qualità: ${{ movimento: "Movimento", recupero: "Recupero", completa: "Completa" }[quality]}.`,
