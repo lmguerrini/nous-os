@@ -17,7 +17,10 @@ export type D081GraphStatus = {
   nodes: { visible: number; represented: number; total: number; eligible: number; aggregated: number; aggregates: number };
   // D085-S7 BEGIN
   edges: { drawn: number; bundled: number; bundles: number; eligible: number; total: number;
-    detail?: RelationDetailCounts };
+    detail?: RelationDetailCounts;
+    // D085-S4 BEGIN: the Llull overview's aggregated share of the drawn edges (0 where no fold is active).
+    aggregatedIntoBundles?: number; aggregatedRelationsIntoBundles?: number; lullBundleCount?: number };
+    // D085-S4 END
   // D085-S7 END
   depth: { level: number; label: string };
   quality: "movimento" | "recupero" | "completa";

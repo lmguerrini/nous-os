@@ -100,6 +100,15 @@ import { createGeometryTransitionQueue } from './geometry-view2.ts';
 // D085-S1 END
 // D082-LAB-FIX2 END
 import { mountTopologyGuides } from '../topology/guide-layer.ts';
+// D085-S4 BEGIN: the Llull overview fold — while the camera is
+// in the overview band the relation routing folds its cross-sector strokes into the
+// pair bundles instead of drawing them one by one under the guides.
+import { lullOverviewMode } from '../topology/guide-layer.ts';
+import { lullFoldOverviewRelations, lullOverviewBudget, lullRouteExempt,
+    type LullOverviewFold } from '../topology/lull-overview.ts';
+import { indexLullSnapshot, type LullIndex } from '../topology/lull-inquiry.ts';
+import type { LullBundleGuide } from '../topology/lull.ts';
+// D085-S4 END
 // D082-B2 END.
 // D082-LAB-LULL-UI BEGIN: the Lullian inquiry table mounts in the side panel (P8, Build B).
 import { LullInquiryMount, lullReadingLabel } from './lull-inquiry-mount.ts';
@@ -665,6 +674,27 @@ export class V2Page {
     private readonly lawSnapshot: TopologySnapshot;
     private lawLayout: TopologyLayout | null = null;
     private guideLayer: { destroy(): void } | null = null;
+    // D085-S4 BEGIN: the state of the Llull overview fold.
+    // `lullOverviewFolded` starts true — a freshly mounted view sits at its fitted
+    // camera, which is the overview band — and only `refresh()` ever writes it,
+    // from the same projected-scale curve the guide layer fades the bundles with.
+    // `lullIndex` is the immutable letter/root index of the law snapshot (built
+    // once); `lullOverviewFold` carries the last fold's exact per-pair ids for the
+    // witnesses; `lullOverviewRecord` is the visibility-witness view of the fold.
+    private lullOverviewFolded = true;
+    private lullIndex: LullIndex | null = null;
+    private lullOverviewFold: LullOverviewFold | null = null;
+    private lullOverviewRecord: Readonly<{
+        phase: 'aggregated' | 'individual';
+        drawnEdges: number;
+        foldedEdges: number;
+        foldedRelations: number;
+        pairs: readonly Readonly<{ letters: string; roots: readonly [string, string];
+            drawnEdgeIds: readonly string[]; relationIds: readonly string[] }>[];
+        layoutBundles: readonly Readonly<{ scope: 'full-snapshot'; letters: string; weight: number;
+            relationIds: readonly string[] }>[];
+    }> | null = null;
+    // D085-S4 END
     // D085-S1 BEGIN: only two completed laws may remain resident, within a byte cap.
     private readonly lawCache = new PageResultCache<TopologyLayout>(2, 24 * 1024 * 1024);
     // D085-S1 END
@@ -793,9 +823,11 @@ export class V2Page {
     // D081-P3 BEGIN status contract
     private d081Metrics = {
         nodes: { visible: 0, represented: 0, total: 0, eligible: 0, aggregated: 0, aggregates: 0 },
-        // D085-S7 BEGIN
-        edges: { drawn: 0, bundled: 0, bundles: 0, eligible: 0, total: 0 } as D081GraphStatus['edges'],
-        // D085-S7 END
+        // D085-S7 BEGIN / D085-S4 BEGIN: visual strokes and source relations stay separate;
+        // the Llull overview fields are additive, 0 everywhere the fold is not active.
+        edges: { drawn: 0, bundled: 0, bundles: 0, eligible: 0, total: 0,
+            aggregatedIntoBundles: 0, aggregatedRelationsIntoBundles: 0, lullBundleCount: 0 } as D081GraphStatus['edges'],
+        // D085-S7 END / D085-S4 END
         depth: { level: 1, label: 'Panoramica' },
         limit: null as null | { kind: string; value: number; reason: string },
         hint: null as string | null,
@@ -946,11 +978,15 @@ export class V2Page {
         this.d081Metrics = {
             nodes: { visible, represented, total: this.datasetNodeCount, eligible: eligibleNodes,
                 aggregated, aggregates: aggregated === 0 ? 0 : declaredAggregateGroups },
-            // D085-S7 BEGIN
+            // D085-S7 BEGIN / D085-S4 BEGIN: relation detail counts, and the Llull overview's
+            // aggregated share of the drawn edges — the counter's «archi» and these fields partition exactly.
             edges: { drawn: route.drawn.length, ...bundleCounts, eligible: eligibleEdges,
                 total: this.index.edges.length + this.index.nodes.filter(node => node.parent !== null).length,
-                ...(route.detail ? { detail: route.detail } : {}) },
-            // D085-S7 END
+                ...(route.detail ? { detail: route.detail } : {}),
+                aggregatedIntoBundles: this.lullOverviewFold ? this.lullOverviewFold.foldedEdges : 0,
+                aggregatedRelationsIntoBundles: this.lullOverviewFold ? this.lullOverviewFold.foldedRelations : 0,
+                lullBundleCount: this.lullOverviewFold?.pairs.filter(pair => pair.relationIds.length).length ?? 0 },
+            // D085-S7 END / D085-S4 END
             depth: { level: this.lod === 'far' ? 1 : this.lod === 'intermediate' ? 2 : 3,
                 label: this.lod === 'far' ? 'Panoramica' : this.lod === 'intermediate' ? 'Intermedia' : 'Ravvicinata' },
             // D081-P3b BEGIN: typed Indra's full domain has no projection cap.
@@ -994,7 +1030,11 @@ export class V2Page {
         }
         // D082-A-DENSITY END
         const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
-        if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.datasetNodeCount)} rappresentati · ${formatCount(route.drawn.length)} archi`;
+        // D085-S4 BEGIN: at the Llull overview the folded strokes are named as
+        // such — «in fasci» — instead of silently disappearing from the drawn count.
+        const lullFolded = this.lullOverviewFold ? this.lullOverviewFold.foldedEdges : 0;
+        if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.datasetNodeCount)} rappresentati · ${formatCount(route.drawn.length)} archi${lullFolded > 0 ? ` (${formatCount(lullFolded)} tratti / ${formatCount(this.lullOverviewFold!.foldedRelations)} relazioni in ${formatCount(this.lullOverviewFold!.pairs.length)} fasci Llull)` : ''}`;
+        // D085-S4 END
         if (this.d081Quality !== 'movimento' && this.d081LastInteraction) this.d081FinishIfReady();
         else if (!this.d081LastInteraction) this.d081Quality = 'completa';
         this.d081Emit();
@@ -4216,6 +4256,60 @@ export class V2Page {
                         * (edge.type === 'contains' && canopy.lineageIds.includes(edge.to.id) ? 1.8 : 1)
                         : Math.max(0.65, Math.sqrt(edge.count)) };
             });
+            // D085-S4 BEGIN: the Llull overview aggregation. While the
+            // camera is in the overview band (`lullOverviewAggregated`, hysteresis over the
+            // same projected-scale curve the guide layer fades the bundles with), the
+            // cross-sector strokes are NOT drawn one by one: each folds into its pair
+            // bundle — the guide carrying the compartment's full-snapshot relation ids —
+            // and the route reports the folded ids under 'lull-overview-aggregate', so the
+            // reveal witness keeps the exact drawn-vs-aggregated partition. Pinned edges,
+            // and any pair whose two root glyphs are not both drawn, keep their individual
+            // strokes; same-sector relations are untouched at every zoom.
+            if (!canopy && this.topology === 'lull' && this.lawActive() && organization === 'natural' && lawResult) {
+                this.lullIndex ??= indexLullSnapshot(this.lawSnapshot);
+                const lullView = this.view;
+                const lullHost = document.getElementById('render-root');
+                // D085-S4 BEGIN: disabling semantic zoom releases the route and
+                // clears the active guide bundles in this same refresh.
+                this.lullOverviewFolded = this.zoomOn && (lullView?.projectPoint && lullHost
+                    ? lullOverviewMode(true, lullView, lullHost.clientWidth,
+                        lullHost.clientHeight, this.lullOverviewFolded) : true);
+                // D085-S4 END
+                if (this.lullOverviewFolded) {
+                    const pinnedArcIdsNow = this.pinnedArcIds(tiers);
+                    const fold = lullFoldOverviewRelations(shown, this.lullIndex,
+                        rootId => renderedIds.has(rootId), edge => lullRouteExempt(edge, pinnedArcIdsNow));
+                    const foldedIds = new Set(fold.pairs.flatMap(pair => pair.drawnEdgeIds));
+                    if (foldedIds.size) {
+                        shown = [...fold.edges];
+                        route = { ...route,
+                            drawn: route.drawn.filter(edge => !foldedIds.has(edge.id)),
+                            suppressed: [...route.suppressed,
+                                ...[...foldedIds].sort().map(id => ({ id, cause: 'lull-overview-aggregate' as const }))] };
+                    }
+                    this.lullOverviewFold = fold;
+                } else this.lullOverviewFold = null;
+                this.lullOverviewRecord = {
+                    phase: this.lullOverviewFolded ? 'aggregated' : 'individual',
+                    drawnEdges: shown.length,
+                    foldedEdges: this.lullOverviewFold?.foldedEdges ?? 0,
+                    foldedRelations: this.lullOverviewFold?.foldedRelations ?? 0,
+                    pairs: this.lullOverviewFold?.pairs ?? [],
+                    layoutBundles: lawResult.guides
+                        .filter(guide => guide.kind === 'lull-pair-bundle')
+                        .map(guide => {
+                            const bundle = guide as LullBundleGuide;
+                            return { scope: 'full-snapshot' as const,
+                                letters: bundle.id.slice('lull:bundle:'.length),
+                                weight: bundle.weight, relationIds: bundle.relationIds };
+                        }),
+                };
+            } else {
+                this.lullOverviewFolded = true;
+                this.lullOverviewFold = null;
+                this.lullOverviewRecord = null;
+            }
+            // D085-S4 END
             this.restoreNeighbourhood = false;
             // D085-S2 BEGIN (fix 3): the per-topology, per-dimension budget record —
             // requested, visible, aggregated, excluded and the reason, for nodes and edges —
@@ -4264,11 +4358,17 @@ export class V2Page {
                         // aggregation is a separate, possibly overlapping measurement.
                         excluded: Math.max(0, totalNodes - renderedIds.size),
                         reason: `${nodeReason} Base esclusi: ${totalNodes} nodi dello snapshot; esclusi = base − visibili. Aggregati è un conteggio separato dei membri rappresentati.` },
-                    edges: { requested: this.density === 'complete' ? availableArcs.total : budget.arcs, drawn: shown.length,
-                        aggregated: route.aggregates.length,
-                        excluded: Math.max(0, eligibleRelations - shown.length),
-                        reason: `${edgeReason} Base esclusi: ${eligibleRelations} relazioni eleggibili dello snapshot completo per questa lettura; esclusi = base − disegnati. Aggregati è un conteggio separato.` },
-                    // D085-S2 END
+                    // D085-S4 BEGIN: Llull partitions eligible source IDs into individual, visibly bundled
+                    // and excluded relations; every other view keeps the D085-S2 uniform basis.
+                    edges: this.lullOverviewRecord
+                        ? { requested: this.density === 'complete' ? availableArcs.total : budget.arcs,
+                            ...lullOverviewBudget(availableArcs.total, route.drawn, this.lullOverviewFold),
+                            reason: `${edgeReason} I fasci Llull aggregano relazioni reali per coppia; i conteggi dei tratti visivi sono separati. Base esclusi: ${availableArcs.total} relazioni disponibili per questa vista; esclusi = base − disegnate − aggregate.` }
+                        : { requested: this.density === 'complete' ? availableArcs.total : budget.arcs, drawn: shown.length,
+                            aggregated: route.aggregates.length,
+                            excluded: Math.max(0, eligibleRelations - shown.length),
+                            reason: `${edgeReason} Base esclusi: ${eligibleRelations} relazioni eleggibili dello snapshot completo per questa lettura; esclusi = base − disegnati. Aggregati è un conteggio separato.` },
+                    // D085-S4 END
                     // D085-S2 END
                 };
             }
@@ -4554,7 +4654,13 @@ export class V2Page {
                 // D085-S1 END
                 // D081-P7b END.
                 // D082-B2 BEGIN: guide IDs are visual only, never counted as source edges.
-                if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides);
+                // D085-S4 BEGIN: only the committed fold's exact active pairs
+                // contribute visible bundle ink, including after camera motion.
+                const committedLullPairs = this.lullOverviewFold?.pairs ?? [];
+                if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides,
+                    this.topology === 'lull' && organization === 'natural'
+                        ? () => committedLullPairs : undefined);
+                // D085-S4 END
                 // D082-B2 END
                 if (canopy) {
                     // D081-P7b BEGIN: one measured viewport owns labels, evidence, and status.
@@ -5453,6 +5559,10 @@ export class V2Page {
             this.lastRevealSampleKey = '';
             void this.refresh();
         }
+        // D085-S4 BEGIN: re-enable the overview fold at the current camera.
+        else if (this.topology === 'lull' && this.lawActive() && this.axes.organization === 'natural')
+            void this.refresh();
+        // D085-S4 END
     }
     get semanticZoomEnabled() { return this.zoomOn; }
     /** After an automatic refit, check once that every visible node landed in view (the panel and insets can settle
@@ -5528,6 +5638,24 @@ export class V2Page {
             return;
         }
         // D082-B1 END.
+        // D085-S4 BEGIN: the Llull overview flip — the same settle
+        // discipline as the LOD bands. The tick only notes the crossing while the camera
+        // still moves; once it has been still for the LOD idle window and the projected
+        // wheel scale crossed the fold's hysteresis, the refresh applies the fold (or the
+        // return of the individual relations) in place — same host, same camera. Only
+        // `refresh()` writes the state, so this never fights the drawn frame.
+        if (this.topology === 'lull' && this.lawActive() && this.axes.organization === 'natural') {
+            const lullView = this.view;
+            const lullHost = document.getElementById('render-root');
+            if (lullView?.projectPoint && lullHost) {
+                const lullSettled = lodRefreshDue({ nowMs: performance.now(), pending: true,
+                    lastCameraChangeMs: this.cameraChangedAt });
+                const aggregatedNow = lullOverviewMode(this.zoomOn, lullView, lullHost.clientWidth,
+                    lullHost.clientHeight, this.lullOverviewFolded);
+                if (lullSettled && aggregatedNow !== this.lullOverviewFolded) void this.refresh();
+            }
+        }
+        // D085-S4 END
         // D081-P3 BEGIN complete camera path: all glyphs and bundles are already resident.
         if (this.density === 'complete') {
             const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
@@ -5658,7 +5786,11 @@ export class V2Page {
                 ...coMembership(this.index.nodes, new Set(this.index.nodes.filter(node => node.level === 1).map(node => node.id)))
                     .map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
                         class: 'structural' as const, type: 'co_membership' })),
-            ], drawnSourceIds, reading: this.axes.reading, relationDetail: this.relationDetail,
+            ], drawnSourceIds,
+            // D085-S4 BEGIN: aggregated source IDs are visible in the guide layer.
+            aggregatedSourceIds: new Set(this.lullOverviewFold?.pairs.flatMap(pair => pair.relationIds) ?? []),
+            // D085-S4 END
+            reading: this.axes.reading, relationDetail: this.relationDetail,
             organization: this.axes.organization as Axes['organization'], activeId: this.selected,
             // D085-S7 BEGIN
             detailFilteredSourceIds: new Set(this.revealRoute?.detailFilteredSourceIds ?? []),
@@ -5687,6 +5819,11 @@ export class V2Page {
             // D085-S7 BEGIN
             ...(this.revealRoute?.detail ? { relationCounts: this.revealRoute.detail } : {}),
             // D085-S7 END
+            // D085-S4 BEGIN: the Llull overview fold record — phase, exact
+            // drawn vs aggregated counts, and per-pair ids both of the fold and of the
+            // full-snapshot layout bundles it is verified against.
+            ...(this.lullOverviewRecord ? { lullOverview: this.lullOverviewRecord } : {}),
+            // D085-S4 END
         }) : undefined;
         // D082-A-READINGS BEGIN
         if (visibility && this.density !== 'complete' &&

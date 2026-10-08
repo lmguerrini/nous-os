@@ -4,9 +4,11 @@ import { relationVisible, type RelationClass } from './reading.ts';
 import type { RevealBand, RevealSource } from './reveal-controller.ts';
 
 export type RouteChannel = 'semantic' | 'lifted' | 'visual';
-// D085-S7 BEGIN
-export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-budget' | 'fan-degree' | 'reading-filter' | 'detail-filter';
-// D085-S7 END
+// D085-S7 BEGIN / D085-S4 BEGIN: the relation detail filter (S7) and the Llull overview fold (S4)
+// are separate suppression causes; the fold names the drawn edge id so the aggregated set stays auditable.
+export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-budget' | 'fan-degree' | 'reading-filter'
+  | 'detail-filter' | 'lull-overview-aggregate';
+// D085-S7 END / D085-S4 END
 export type RouteNode = Readonly<{ id: string; parent: string | null; level: 1 | 2 | 3 | 4 | 5; passageCount?: number }>;
 export type RouteRelation = Readonly<{
   id: string; channel: RouteChannel; source: string; target: string;

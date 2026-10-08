@@ -9,6 +9,18 @@ import { LULL_HISTORICAL_LIMIT, LULL_SOURCE_CITATION } from '../topology/lull-in
 
 export const LULL_PANEL_HYPOTHESIS_NOTE = 'Le combinazioni senza evidenza sono ipotesi: un livello derivato, separato e disattivato per default. Non sono spigoli del grafo, non entrano nei conteggi e non aggiungono vertici.';
 
+// D085-S4 BEGIN (fix 2): the note tying the figure's dashed pair chords to the
+// compartments listed in this table — the panel and the view explain each other.
+// D085-S4: the same note now names the overview
+// bundles truthfully: at distance the cross-sector relations are not drawn one by
+// one — each evidenced row below is exactly one bundle in the figure, its relation
+// count is the bundle's weight, and its relation ids are the bundle's ids; on
+// approach the routing redraws the exact individual relations as the bundle fades.
+// D085-S4 BEGIN: distinguish the full inquiry audit from the active routed fold.
+export const LULL_PANEL_GUIDE_NOTE = 'Nella figura: le 36 corde tratteggiate fra le lettere del cerchio esterno sono i compartimenti binari elencati qui sotto (guide strutturali della Terza Figura, non relazioni); le relazioni reali restano le linee continue. A distanza d’insieme le relazioni attive fra due settori non vengono disegnate una per una: possono essere sostituite da un fascio spesso fra le lettere. I numeri e gli id qui sotto descrivono lo snapshot completo; il peso del fascio visibile segue solo le relazioni effettivamente aggregate nella densità e lettura attive, registrate nel witness. Avvicinando la vista ogni relazione singola torna al suo posto.';
+// D085-S4 END
+// D085-S4 END
+
 /** Ninth-of-a-turn wheel offsets rendered as human-readable alignments. */
 export function formatLullWheelPosition(position: LullWheelPosition): string {
   return `fisso ${position.outer}, ruote ${position.innerOne}(+${position.innerOneOffset}/9) e ${position.innerTwo}(+${position.innerTwoOffset}/9)`;
@@ -123,10 +135,15 @@ export function renderLullPanel(host: HTMLElement, model: LullPanelModel): void 
   // D085-S6 BEGIN: the control's user-visible name is Connessione.
   reading.textContent = `Connessione attiva: ${model.reading}.`;
   // D085-S6 END
+  // D085-S4 BEGIN (fix 2): the figure's dashed pair chords point at this table.
+  const guideNote = doc.createElement('p');
+  guideNote.className = 'lull-panel__guides';
+  guideNote.textContent = LULL_PANEL_GUIDE_NOTE;
+  // D085-S4 END
   const note = doc.createElement('p');
   note.className = 'lull-panel__note';
   note.textContent = `${model.note} Livello ipotesi: ${model.hypothesesShown ? 'visibile' : 'nascosto (default)'}.`;
-  host.append(heading, limit, citation, summary, reading, note);
+  host.append(heading, limit, citation, summary, reading, guideNote, note);
   // D082-LAB-FIX3 BEGIN: nested evidence bodies are materialized on first open.
   const onFirstOpen = (item: HTMLDetailsElement, populate: () => void): void => {
     let populated = false;

@@ -1,9 +1,75 @@
 /** Non-semantic law guides, projected with the active classic camera only when it changes. */
 import type { GuideCurve } from './contract.ts';
 import type { ProductView } from '../review/view-contract.ts';
+import { LULL_OUTER_RADIUS } from './lull.ts';
+// D085-S4 BEGIN: a drawn bundle uses the exact active routed fold.
+import type { LullOverviewPairFold } from './lull-overview.ts';
+// D085-S4 END
+
+// D085-S4 BEGIN: the Llull semantic zoom is now real
+// aggregation. While the camera is in the overview band the page's relation
+// routing does not draw the cross-sector strokes one by one — they are folded
+// into these pair bundles, which are the visible aggregates — and on approach
+// the exact individual relations return when the settled fold releases. The
+// earlier veil is gone. Bundle ink follows the committed fold so a moving
+// camera never fades it before the individual relations return.
+type LullWeightedGuide = GuideCurve & Readonly<{ weight: number }>;
+// D085-S4 BEGIN: the active visual weights are taken only from replaced sources.
+export function lullVisibleBundleWeights(pairs: readonly LullOverviewPairFold[]): ReadonlyMap<string, number> {
+  return new Map(pairs.filter(pair => pair.relationIds.length)
+    .map(pair => [pair.letters, pair.relationIds.length]));
+}
+// D085-S4 END
+const LULL_ZOOM_FADE_BEGIN = 2.15;
+const LULL_ZOOM_FADE_END = 2.5;
+/** The fitted-wheel scale of the current camera: the projected wheel diameter
+ * over the viewport's smaller side (≈ 1 when the wheel exactly fits). 0 when the
+ * camera cannot be projected — callers must treat that as "not overview". */
+function lullOverviewFactor(view: ProductView, width: number, height: number): number {
+  const origin = view.projectPoint!({ x: 0, y: 0, z: 0 });
+  const east = view.projectPoint!({ x: 1000, y: 0, z: 0 });
+  if (!Number.isFinite(origin.x) || !Number.isFinite(origin.y)
+    || !Number.isFinite(east.x) || !Number.isFinite(east.y)) return 0;
+  const scale = Math.hypot(east.x - origin.x, east.y - origin.y) / 1000;
+  if (!(scale > 0)) return 0;
+  return scale * 2 * LULL_OUTER_RADIUS / Math.max(1, Math.min(width, height));
+}
+/** Diagnostic overview share of the projected scale: full while the wheel is seen from up to
+ * LULL_ZOOM_FADE_BEGIN times its fitted size, easing to 0 by LULL_ZOOM_FADE_END —
+ * the same window in which the settled fold releases. The mounted layer uses
+ * its committed active pairs for visibility to avoid hiding edges during a
+ * camera gesture. Unprojectable cameras give 0. */
+export function lullOverviewFade(view: ProductView, width: number, height: number): number {
+  const factor = lullOverviewFactor(view, width, height);
+  if (factor <= 0) return 0;
+  if (factor <= LULL_ZOOM_FADE_BEGIN) return 1;
+  if (factor >= LULL_ZOOM_FADE_END) return 0;
+  return (LULL_ZOOM_FADE_END - factor) / (LULL_ZOOM_FADE_END - LULL_ZOOM_FADE_BEGIN);
+}
+/** Whether the relation routing must fold the cross-sector strokes into the
+ * pair bundles for this camera. Hysteresis like the LOD bands (the previous
+ * state decides inside the gap) so a camera parked at the threshold cannot
+ * oscillate: aggregated while the fitted wheel is at or under 2.2×, individual
+ * above 2.4× — inside the fade window, where both inks cross-fade. */
+export function lullOverviewAggregated(view: ProductView, width: number, height: number,
+  previous: boolean): boolean {
+  const factor = lullOverviewFactor(view, width, height);
+  if (factor <= 0) return previous;
+  if (factor <= 2.2) return true;
+  if (factor >= 2.4) return false;
+  return previous;
+}
+// D085-S4 BEGIN: disabling semantic zoom releases every folded stroke at the
+// next refresh; the guide layer then has no active bundle ink at any scale.
+export function lullOverviewMode(semanticZoom: boolean, view: ProductView,
+  width: number, height: number, previous: boolean): boolean {
+  return semanticZoom && lullOverviewAggregated(view, width, height, previous);
+}
+// D085-S4 END
+// D085-S4 END
 
 export function mountTopologyGuides(host: HTMLElement, view: ProductView,
-  guides: readonly GuideCurve[]): { destroy(): void } {
+  guides: readonly GuideCurve[], activeLullPairs?: () => readonly LullOverviewPairFold[]): { destroy(): void } {
   if (!guides.length || !view.projectPoint) return { destroy() {} };
   if (guides.some(guide => guide.semantic !== false || !guide.id))
     throw new Error('Topology guide must be non-semantic');
@@ -37,6 +103,29 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, width, height);
+    // D085-S4 BEGIN: the committed share of the Llull semantic zoom, the
+    // heaviest bundle (which sets the width/opacity scale of all of them) and whether
+    // this is the flat view — the flat bundles sit at z=0, the lifted ones at their
+    // offset-class tables, so the lifted view styles its bundles lighter and keeps
+    // its four tables readable.
+    const lullZoom = guides.some(guide => guide.kind === 'lull-pair-bundle');
+    // D085-S4 BEGIN: the route's committed fold owns bundle visibility. A camera
+    // move cannot fade an aggregate before its source strokes are released.
+    const activePairs = activeLullPairs?.() ?? [];
+    const activeWeights = lullVisibleBundleWeights(activePairs);
+    const overview = activeLullPairs ? (activePairs.length ? 1 : 0)
+      : lullZoom ? lullOverviewFade(view, width, height) : 0;
+    // D085-S4 END
+    const flatView = guides.some(guide => guide.kind === 'lull-pair-bundle'
+      && guide.points.every(point => !point.z));
+    let bundleMax = 0;
+    for (const guide of guides)
+      if (guide.kind === 'lull-pair-bundle') {
+        const active = activeWeights.get(guide.id.slice('lull:bundle:'.length));
+        bundleMax = Math.max(bundleMax, activeLullPairs ? active ?? 0
+          : (guide as LullWeightedGuide).weight);
+      }
+    // D085-S4 END
     context.strokeStyle = 'rgba(180,190,210,.22)';
     context.lineWidth = 0.75;
     // D085-S5 BEGIN: route hints have no eligibility token at this surface; never
@@ -56,6 +145,13 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       const selected = budget >= drawableGuides.length
         || Math.floor((index + 1) * budget / drawableGuides.length) > Math.floor(index * budget / drawableGuides.length);
       if (!selected && !guide.id.startsWith('indra-root:')) { suppressed++; continue; }
+      // D085-S4 BEGIN: zero active source IDs means no bundle is drawn. The
+      // full-snapshot guide remains a geometry/provenance template only.
+      if (guide.kind === 'lull-pair-bundle' && activeLullPairs
+        && !activeWeights.has(guide.id.slice('lull:bundle:'.length))) {
+        suppressed++; continue;
+      }
+      // D085-S4 END
       // D085-S5 END
       // D085-S5 END
       // D085-S5 BEGIN: every requested guide must be either drawn or suppressed.
@@ -72,6 +168,48 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       } else if (guide.kind === 'lull-band' || guide.kind === 'lull-sector-ray') {
         context.strokeStyle = 'rgba(180,190,210,.19)';
         context.lineWidth = 0.65;
+      // D085-S4 BEGIN (fix 2): the Third Figure's 36 pair compartments are dashed
+      // chords. The dash pattern is the primary distinguishability channel against the
+      // solid real relations; width and alpha sit between the faint band marks and the
+      // rim so the hierarchy stays guides < real relations < roots. The dash is reset
+      // after every stroke below, so no other guide inherits it.
+      } else if (guide.kind === 'lull-pair-chord') {
+        context.strokeStyle = 'rgba(205,215,230,.42)';
+        context.lineWidth = 1.25;
+        context.setLineDash([7, 6]);
+      } else if (guide.kind === 'lull-riser') {
+        // D085-S4 BEGIN (fix 5): the lifted view's letter risers — the faintest marks,
+        // under the chords, so the four tables stay anchored to Figure A without
+        // competing with the relation ink.
+        context.strokeStyle = 'rgba(205,215,230,.26)';
+        context.lineWidth = 0.8;
+        // D085-S4 END
+      // D085-S4 BEGIN: a pair bundle — the aggregate that replaces one
+      // compartment's individual strokes while the camera is in the overview band.
+      // Width and opacity follow the square root of the active folded weight's
+      // share of the heaviest bundle. Once the route releases the individuals,
+      // the bundle share is zero. The stroke is solid and much thicker
+      // than any relation line, so the rosette of the overview reads as its own ink.
+      } else if (guide.kind === 'lull-pair-bundle') {
+        const weight = activeLullPairs
+          ? activeWeights.get(guide.id.slice('lull:bundle:'.length))!
+          : (guide as LullWeightedGuide).weight;
+        const share = bundleMax > 0 ? Math.sqrt(weight / bundleMax) : 0;
+        // Two aggregate inks, one per view. Flat: a solid core chord, wider and
+        // brighter for heavier compartments — the rosette of the overview. Lifted:
+        // the same weight as a soft translucent halo along the table chord, in the
+        // halo language the exploratory relations already use; a solid core seen
+        // from an orbit angle would cross the four heights as one flat star and
+        // hide the tables the aggregates belong to.
+        if (flatView) {
+          context.strokeStyle = `rgba(196,212,236,${((0.38 + 0.42 * share) * overview).toFixed(3)})`;
+          context.lineWidth = 1.75 + 5.25 * share;
+        } else {
+          context.strokeStyle = `rgba(196,212,236,${((0.12 + 0.22 * share) * overview).toFixed(3)})`;
+          context.lineWidth = 4 + 10 * share;
+        }
+      // D085-S4 END
+      // D085-S4 END
       } else {
         context.strokeStyle = 'rgba(180,190,210,.22)';
         context.lineWidth = 0.75;
@@ -91,6 +229,10 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       if (segments) { context.stroke(); drawn++; }
       else suppressed++;
       // D084-LLULL END
+      // D085-S4 BEGIN (fix 2): reset the dash after each guide so only the pair
+      // chords are dashed.
+      context.setLineDash([]);
+      // D085-S4 END
     }
     // D085-S5 BEGIN
     canvas.dataset.guideDrawn = String(drawn);

@@ -232,6 +232,35 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
   // D085-S6 END
     svg.append(line(2, 7, 24, 7, palette.container, 0.8, 0.5));
   });
+  // D085-S4 BEGIN (fix 2): the Llull Figure A guides get their own legend entry with a
+  // dashed sample, so the structural pair compartments are told apart from the real
+  // relations on the legend surface too (hierarchy: guide < relazioni reali < radici).
+  // Only the Llull topology carries it; every other topology keeps its pixels.
+  if (topology === "lull") {
+    entry("Guida Figura A · coppia", "Terza Figura: le 36 corde tratteggiate fra le nove lettere del cerchio esterno (domini reali a 40° esatti) sono compartimenti strutturali, non relazioni; non entrano nei conteggi. Le relazioni reali sono le linee continue più luminose; le radici restano i segni più intensi. In 3D le stesse corde salgono alle quattro tavole d'offset d=1–4 e i record si sollevano della classe massima attestata dalle loro relazioni reali fra domini.", (svg) => {
+      const sample = line(2, 7, 24, 7, "rgba(205,215,230,.55)", 1.25);
+      sample.setAttribute("stroke-dasharray", "7 6");
+      svg.append(sample);
+    });
+  }
+  // D085-S4 END
+  // D085-S4 BEGIN: the overview bundles get their own
+  // entry, so the aggregate ink is told apart from the dashed compartments and from the
+  // single real relations on the legend surface too. It states the mechanism
+  // truthfully: at distance the cross-sector strokes are not drawn at all — the routing
+  // folds them into these bundles, which carry the compartment's relation ids — and on
+  // approach the exact individual relations return as the bundles fade. No veil: the
+  // retained marks keep their true ink. Llull-only, like the guides.
+  if (topology === "lull") {
+    // D085-S4 BEGIN: active aggregate IDs are in the visibility witness; the
+    // inquiry table deliberately describes the entire immutable snapshot.
+    entry("Fascio d’insieme · coppia", "Zoom semantico: a distanza d’insieme le relazioni attive fra due settori non vengono disegnate una per una: sono ritirate e sostituite da un fascio spesso fra le loro lettere. Il fascio rappresenta esattamente gli id aggregati nella vista corrente (witness Llull); larghezza e opacità seguono quel conteggio. La tavola d’inchiesta elenca invece gli id dello snapshot completo. I compartimenti senza relazioni attive non disegnano nulla; le relazioni dentro lo stesso settore restano disegnate e nulla viene mai oscurato. Avvicinando la vista le relazioni singole tornano al loro posto; con zoom semantico disattivato restano solo le relazioni singole. In 3D i fasci siedono alle quattro tavole d’offset d=1–4.", (svg) => {
+    // D085-S4 END
+      svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.16)", 6));
+      svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.8)", 2.6));
+    });
+  }
+  // D085-S4 END
   const detailNote = document.createElement("p");
   detailNote.className = "flow-legend-entry";
   detailNote.textContent = "Relazioni: essenziali/tutte è un filtro di dettaglio separato dalla lettura epistemica.";

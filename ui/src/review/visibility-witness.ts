@@ -1,6 +1,9 @@
 import type { Reading, Axes } from './view-contract.ts';
 import type { RelationClass } from './reading.ts';
 import { relationVisible } from './reading.ts';
+// D085-S4 BEGIN: source relation IDs of active Llull aggregate bundles.
+import type { LullOverviewPairFold } from '../topology/lull-overview.ts';
+// D085-S4 END
 // D085-S5 BEGIN: composition accounting is kept separate from semantic edge totals.
 import type { LayoutContainer } from './layout-v2.ts';
 import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
@@ -31,9 +34,20 @@ export type VisibilityBudgetRecord = Readonly<{
   policy: string; topology: string; dimension: string; density: string;
   nodes: VisibilityBudgetSide; edges: Readonly<{
     requested: number; drawn: number; aggregated: number; excluded: number; reason: string;
+    // D085-S4 BEGIN: source counts above; exact visual counts below when Llull folds.
+    drawnVisualEdges?: number; aggregatedVisualEdges?: number; aggregateBundles?: number;
+    // D085-S4 END
   }>;
 }>;
 // D085-S2 END
+// D085-S4 BEGIN: active fold provenance is distinct from the full law snapshot.
+export type LullOverviewVisibility = Readonly<{
+  phase: 'aggregated' | 'individual'; drawnEdges: number; foldedEdges: number;
+  foldedRelations: number; pairs: readonly LullOverviewPairFold[];
+  layoutBundles: readonly Readonly<{ scope: 'full-snapshot'; letters: string; weight: number;
+    relationIds: readonly string[] }>[];
+}>;
+// D085-S4 END
 export type VisibilityWitnessInput = Readonly<{
   axes: Axes; relationDetail: 'essential' | 'all'; density: string;
   nodes: readonly VisibilityNode[]; renderedNodeIds: ReadonlySet<string>;
@@ -46,6 +60,9 @@ export type VisibilityWitnessInput = Readonly<{
   // D085-S7 BEGIN
   relationCounts?: RelationDetailCounts;
   // D085-S7 END
+  // D085-S4 BEGIN
+  lullOverview?: LullOverviewVisibility;
+  // D085-S4 END
 }>;
 
 /** Hidden records belong to their nearest drawn ancestor, counted once across nested pearls. */
@@ -72,6 +89,9 @@ export function countExcludedRelations(input: Readonly<{
   // D085-S7 BEGIN
   detailFilteredSourceIds?: ReadonlySet<string>;
   // D085-S7 END
+  // D085-S4 BEGIN: visible aggregation is a separate cause, never an omission.
+  aggregatedSourceIds?: ReadonlySet<string>;
+  // D085-S4 END
 }>) {
   const byId = new Map(input.nodes.map(node => [node.id, node]));
   const nearest = (id: string): string | null => {
@@ -84,7 +104,7 @@ export function countExcludedRelations(input: Readonly<{
   };
   const counts = { budget: 0, hiddenEndpoint: 0, readingFilter: 0, detailFilter: 0 };
   for (const edge of input.relations) {
-    if (input.drawnSourceIds.has(edge.id)) continue;
+    if (input.drawnSourceIds.has(edge.id) || input.aggregatedSourceIds?.has(edge.id)) continue;
     if (!relationVisible(edge.class, input.reading)) counts.readingFilter++;
     // D085-S7 BEGIN: classify only source records actually removed by the detail selector.
     else if (input.detailFilteredSourceIds?.has(edge.id) || (!input.detailFilteredSourceIds
@@ -144,5 +164,13 @@ export function buildVisibilityWitness(input: VisibilityWitnessInput) {
     // D085-S2 BEGIN: present exactly when the page recorded the budget it applied.
     ...(input.budgetRecord ? { densityBudget: input.budgetRecord } : {}),
     // D085-S2 END
+    // D085-S4 BEGIN: output-level witness contract for the active fold.
+    ...(input.lullOverview ? { lullOverview: input.lullOverview,
+      relationAggregates: { cause: 'lull-overview-aggregate' as const,
+        bundles: input.lullOverview.pairs.filter(pair => pair.relationIds.length).length,
+        visualEdges: input.lullOverview.foldedEdges,
+        relations: input.lullOverview.foldedRelations,
+        ids: input.lullOverview.pairs.flatMap(pair => pair.relationIds).sort() } } : {}),
+    // D085-S4 END
   };
 }
