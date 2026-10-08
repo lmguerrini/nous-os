@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createGeometryTransitionQueue } from '../../src/review/geometry-view2.ts';
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
+// D085-S1 BEGIN: execute main's transition body with a mounted page and observable controls.
+import { runInNewContext } from 'node:vm';
+// D085-S1 END
 import { cancelPendingTopologyLayouts, computeLullInquiryAsync, computeTopologyLayoutAsync } from '../../src/topology/page-bridge.ts';
 
 // D085-S1 BEGIN: a later click must read the axes left by the preceding committed view.
@@ -213,7 +216,7 @@ test('superseded Canopy, 3D, then refused Llull leaves URL, toolbar and witness 
   assert.deepEqual(page.committedTaxonomy, { topology: 'natural', indra: true });
   assert.equal(page.axes.projection, '3d');
   const mainSource = await readFile(fileURLToPath(new URL('../../src/review/main.ts', import.meta.url)), 'utf8');
-  assert.match(mainSource, /await v2\?\.setTaxonomy\(topology, indra\);[\s\S]*?persistView\(\)/);
+  assert.match(mainSource, /await v2\?\.setTaxonomy\(topology, indra, true\);[\s\S]*?persistView\(\)/);
   assert.match(mainSource, /if \(error instanceof GeometrySupersededError\) return/);
   assert.match(mainSource, /if \(await v2\?\.setDensity\(value\) === 'superseded'\) return;[\s\S]*?persistView\(\)/);
   assert.match(mainSource, /if \(result === 'superseded'\) throw new GeometrySupersededError\(\)/);
@@ -280,6 +283,77 @@ test('inquiry-only topology worker is terminated and its pending promise aborts'
     cancelPendingTopologyLayouts();
     (globalThis as Record<string, unknown>).Worker = oldWorker;
     (globalThis as Record<string, unknown>).__PROJECTION_WORKER_SOURCE__ = oldSource;
+  }
+});
+// D085-S1 END
+
+// D085-S1 BEGIN: a mounted law is not reported complete ahead of its toolbar and URL.
+test('Lab with Indra and Julia 3D complete each mount once and present matching witness and buttons', async () => {
+  const pageSource = await readFile(fileURLToPath(new URL('../../src/review/v2-page.ts', import.meta.url)), 'utf8');
+  const bundled = await build({ entryPoints: [fileURLToPath(new URL('../../src/review/v2-page.ts', import.meta.url))],
+    bundle: true, platform: 'node', format: 'esm', target: 'es2022', write: false });
+  const directory = await mkdtemp(join(tmpdir(), 'd085-present-'));
+  const source = join(directory, 'page.mjs');
+  await writeFile(source, bundled.outputFiles[0]!.text);
+  Object.assign(globalThis, { WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3,
+    SHORT: 4, UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 },
+    WebGLRenderingContext: { TRIANGLES: 1 } });
+  const { V2Page } = await import(pathToFileURL(source).href);
+  await rm(directory, { recursive: true, force: true });
+  assert.match(pageSource, /taxonomy: this\.taxonomyWitness\(\)/);
+
+  const mainSource = await readFile(fileURLToPath(new URL('../../src/review/main.ts', import.meta.url)), 'utf8');
+  const start = mainSource.indexOf('async function applyTaxonomy(');
+  const end = mainSource.indexOf('\n// D085-S1 END', start);
+  assert.ok(start > 0 && end > start);
+  const executable = (await transform(mainSource.slice(start, end), { loader: 'ts', target: 'es2022' })).code;
+
+  for (const scenario of [
+    { topology: 'canopy-ifs', indra: true, projection: '2d', density: 'balanced', organization: 'indra' },
+    { topology: 'julia', indra: false, projection: '3d', density: 'complete', organization: 'natural' },
+  ] as const) {
+    const page = Object.create(V2Page.prototype) as Record<string, any>;
+    page.transitions = createGeometryTransitionQueue(); page.geometryIntent = 0; page.projectionEpoch = 0;
+    page.axes = { projection: scenario.projection, organization: 'natural' };
+    page.topology = 'natural'; page.topologyIndra = false; page.legacyIndra = false;
+    page.taxonomyExplicit = false; page.committedTaxonomy = { topology: 'natural', indra: false };
+    page.taxonomyPresentationPending = false; page.view = {};
+    page.cancelProjectionWork = () => {};
+    const mounts: string[] = [];
+    page.applyAxes = async (value: { organization: string }) => {
+      mounts.push(value.organization);
+      page.axes = { ...page.axes, ...value };
+      page.committedTaxonomy = { topology: page.topology, indra: page.topologyIndra };
+    };
+    const state: Record<string, any> = {
+      v2: page, axes: { projection: scenario.projection, organization: 'natural', morphology: 'stellar',
+        reading: 'combined', colour: 'bw', labels: true },
+      geometry: { topology: 'natural', indra: 'off' }, density: scenario.density,
+      view2WriteAllowed: false, taxonomyErrorShown: false,
+      topologySupport: () => ({ ok: true }),
+      appliedAxes(partial: Record<string, unknown>) { return { ...state.axes, ...partial }; },
+      wireTopology: (value: string) => value,
+      persistView() {
+        assert.equal(page.taxonomyWitness().phase, 'transition');
+        state.url = `${state.geometry.topology}/${state.geometry.indra}/${state.axes.projection}/${state.density}`;
+      },
+      updateButtons() {
+        assert.equal(page.taxonomyWitness().phase, 'transition');
+        state.pressedTopology = state.geometry.topology;
+        state.pressedIndra = state.geometry.indra;
+      },
+      syncToolbarSummary() {}, refreshFlowLegends() {}, showSelectedGeometryDescription() {},
+      get: () => ({ hidden: true }),
+    };
+    const apply = runInNewContext(`${executable}\napplyTaxonomy`, state) as (topology: string, indra: boolean) => Promise<void>;
+    await apply(scenario.topology, scenario.indra);
+    const witness = page.taxonomyWitness();
+    assert.deepEqual(mounts, [scenario.organization]);
+    assert.equal(witness.phase, 'complete');
+    assert.equal(witness.topology, state.pressedTopology);
+    assert.equal(witness.indra, state.pressedIndra === 'on');
+    assert.equal(state.url, `${witness.topology}/${state.pressedIndra}/${scenario.projection}/${scenario.density}`);
+    assert.equal(page.axes.organization, scenario.organization);
   }
 });
 // D085-S1 END

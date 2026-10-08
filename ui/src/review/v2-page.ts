@@ -627,6 +627,13 @@ export class V2Page {
     private topologyIndra = false;
     // D085-S1 BEGIN: witness the last presented law while another selection is preparing.
     private committedTaxonomy: { topology: TopologyId; indra: boolean } = { topology: 'natural', indra: false };
+    // D085-S1 BEGIN: a toolbar transition is complete only after main presents its committed law.
+    private taxonomyPresentationPending = false;
+    confirmTaxonomyPresentation(topology: TopologyId, indra: boolean): void {
+        if (this.committedTaxonomy.topology === topology && this.committedTaxonomy.indra === indra)
+            this.taxonomyPresentationPending = false;
+    }
+    // D085-S1 END
     // D085-S1 END
     private taxonomyExplicit = false;
     // D085-S1 BEGIN
@@ -642,6 +649,9 @@ export class V2Page {
     /** A new request interrupts projection work even while its predecessor owns the mutation lane. */
     supersedeGeometry(): void {
         this.geometryIntent++;
+        // D085-S1 BEGIN
+        this.taxonomyPresentationPending = false;
+        // D085-S1 END
         this.projectionEpoch++;
         this.interruptMount();
         this.cancelProjectionWork();
@@ -5070,14 +5080,21 @@ export class V2Page {
     }
     // D082-B2 BEGIN: validate the requested row before changing either taxonomy axis.
     // D085-S1 BEGIN: queue the whole mutation/refresh/commit, not merely the worker response.
-    setTaxonomy(topology: TopologyId, indra: boolean): Promise<void> {
+    setTaxonomy(topology: TopologyId, indra: boolean, requirePresentation = false): Promise<void> {
         this.supersedeGeometry();
         const intent = this.geometryIntent;
+        // D085-S1 BEGIN: keep the witness in transition until main updates URL and controls.
+        this.taxonomyPresentationPending = requirePresentation;
+        // D085-S1 END
         // D085-S1 BEGIN: a dropped task has a distinct outcome for URL and toolbar callers.
         return this.transitions.enqueue(async () => {
             if (intent !== this.geometryIntent) throw new GeometrySupersededError();
             this.geometryTransitionActive = true;
             try { await this.applyTaxonomy(topology, indra, intent); }
+            catch (error) {
+                if (intent === this.geometryIntent) this.taxonomyPresentationPending = false;
+                throw error;
+            }
             finally { this.geometryTransitionActive = false; }
         });
         // D085-S1 END
@@ -5098,8 +5115,9 @@ export class V2Page {
         this.topologyIndra = indra;
         this.taxonomyExplicit = true;
         if (topology === 'natural') this.legacyIndra = true;
-        const organization = topology === 'canopy-ifs' && !indra ? 'fractal'
-            : topology === 'natural' && indra ? 'indra' : 'natural';
+        // D085-S1 BEGIN: compose the selected law inside Indra in this single mount.
+        const organization = indra ? 'indra' : topology === 'canopy-ifs' ? 'fractal' : 'natural';
+        // D085-S1 END
         try {
             await this.applyAxes({ organization });
             // D085-S1 BEGIN: cancellation can resolve refresh() before a mount commits.
@@ -5485,6 +5503,15 @@ export class V2Page {
     dataset() {
         return { mode: 'v2', digest: this.manifest.digest, counts: this.manifest.counts };
     }
+    // D085-S1 BEGIN: use the same presentation gate for diagnostics and the public witness.
+    private taxonomyWitness() {
+        return { ...this.committedTaxonomy,
+            phase: this.topology === this.committedTaxonomy.topology
+                && this.topologyIndra === this.committedTaxonomy.indra
+                && !this.taxonomyPresentationPending ? 'complete' : 'transition',
+            requested: { topology: this.topology, indra: this.topologyIndra } };
+    }
+    // D085-S1 END
     witness() {
         const members = this.selected ? this.focusMembers(this.selected) : new Set<string>();
         const arcs = focusArcs(members, [...this.renderedRelations.values()], communityResolver(this.index.nodes));
@@ -5544,10 +5571,7 @@ export class V2Page {
         return {
             ...viewWitness,
             // D085-S1 BEGIN: this is the mounted topology, not a later queued click.
-            taxonomy: { ...this.committedTaxonomy,
-                phase: this.topology === this.committedTaxonomy.topology
-                    && this.topologyIndra === this.committedTaxonomy.indra ? 'complete' : 'transition',
-                requested: { topology: this.topology, indra: this.topologyIndra } },
+            taxonomy: this.taxonomyWitness(),
             // D085-S1 END
             ...(visibility ? { visibility } : {}),
             // The typed page keeps its own axes record; there is no product view to ask.

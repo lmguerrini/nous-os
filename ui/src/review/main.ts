@@ -618,12 +618,10 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   // D085-S5 BEGIN: keep the organization axis aligned with the Indra control.
   const organization = topology === 'canopy-ifs' && !indra ? 'fractal' : indra ? 'indra' : 'natural';
   // D085-S5 END
-  await v2?.setTaxonomy(topology, indra);
-  // D085-S5 BEGIN: V2Page's legacy taxonomy mapper still selects Natural internally;
-  // restore the actual Indra organization after its law transition completes.
-  if (indra && topology !== 'natural' && await v2?.setAxes({ organization: 'indra' }) === 'superseded')
-    throw new GeometrySupersededError();
-  // D085-S5 END
+  // D085-S1 BEGIN: the page mounts the final law and organization once; defer completion
+  // until the controls and URL have been presented below.
+  await v2?.setTaxonomy(topology, indra, true);
+  // D085-S1 END
   axes = appliedAxes({ organization });
   geometry = { schema: 2, rendering: axes.projection, topology: wireTopology(topology), indra: indra ? 'on' : 'off',
     morphology: axes.morphology, density, reading: axes.reading, colour: axes.colour, labels: axes.labels,
@@ -641,6 +639,9 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   // D082-B-NOTICE BEGIN
   showSelectedGeometryDescription();
   // D082-B-NOTICE END
+  // D085-S1 BEGIN
+  v2?.confirmTaxonomyPresentation(topology, indra);
+  // D085-S1 END
 }
 // D085-S1 END
 installTaxonomyControls();
