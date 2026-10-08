@@ -1824,9 +1824,13 @@ export class V2Page {
         // D085-X9b END
     }
     // D082-A-DENSITY BEGIN: D072 reveal priority for the paths that still follow the
-    // camera (Completa and the small capped graphs). D082 A-DENSITYc: the lower
-    // densities no longer call this — their sets are pure in explicit state only.
-    private focusedRenderPriority(disclosed: readonly V2Node[]): string[] {
+    // camera (Completa and the small capped graphs). D082 A-DENSITYc: the classic
+    // lower densities use explicit state only; fixed laws retain live zoom admissions.
+    // D086-F2 BEGIN: fixed laws use only current zoom admissions, never the last
+    // scene's rendered set or a focus cluster left by a toolbar visit.
+    private focusedRenderPriority(disclosed: readonly V2Node[], stableLaw = false): string[] {
+        if (stableLaw && !this.revealState.admissions.length) return [];
+    // D086-F2 END
         const cluster = this.revealState.focusClusterId;
         if (!cluster) return [];
         // D085-X9b BEGIN
@@ -1837,9 +1841,12 @@ export class V2Page {
         const parentId = this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId;
         const count = parentId ? this.history.state.pages.get(parentId) ?? this.autoPageCounts.get(parentId) ?? V2_PAGE : 0;
         const newest = recentDisclosedPage(disclosed, parentId, count, V2_PAGE);
-        return [...newest, ...this.rendered].filter(id => eligible.has(id)).concat(
-            [...eligible].filter(id => !this.rendered.has(id)).sort((a, b) =>
+        // D086-F2 BEGIN
+        const prior = stableLaw ? new Set(newest) : this.rendered;
+        return [...newest, ...(stableLaw ? [] : this.rendered)].filter(id => eligible.has(id)).concat(
+            [...eligible].filter(id => !prior.has(id)).sort((a, b) =>
                 (byId.get(a)?.level ?? 0) - (byId.get(b)?.level ?? 0) || a.localeCompare(b)));
+        // D086-F2 END
     }
     // D082-A-DENSITY END
     private publishReveal(route: RouteResult, rendered: ReadonlySet<string>,
@@ -4226,9 +4233,12 @@ export class V2Page {
             // camera/disclosure state — a density switch must not inherit them, or
             // E → B → C → E cannot return the same set. Completa and the small capped
             // graphs keep the D-072 behaviour.
+            // D086-F2 BEGIN: current zoom admissions stay priority candidates;
+            // prior drawn representatives cannot become selection inputs.
             const priority = [...tiers.priorityChildren,
-                ...(densityPolicy ? [] : this.focusedRenderPriority(disclosed.nodes)),
+                ...(densityPolicy ? [] : this.focusedRenderPriority(disclosed.nodes, this.lawActive())),
                 ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
+            // D086-F2 END
             // D082-A-DENSITY END
             // D085-S7 BEGIN
             const selection = this.density === 'complete'
@@ -4300,9 +4310,12 @@ export class V2Page {
                 const seedPinned = this.pinnedNodeIds(seedTiers);
                 const seedByImportance = new Map(seedInfos.map(node => [node.id, node.importance]));
                 const seedFocus = this.selected ? this.focusMembers(this.selected, seedPool.nodes) : null;
+                // D086-F2 BEGIN: the Bilanciata seed replays the current admission
+                // priority in the same order as Essenziale.
                 const seedPriority = [...seedTiers.priorityChildren,
-                    ...this.focusedRenderPriority(seedPool.nodes),
+                    ...this.focusedRenderPriority(seedPool.nodes, true),
                     ...[...(seedFocus ?? [])].sort((a, b) => (seedByImportance.get(b) ?? 0) - (seedByImportance.get(a) ?? 0) || a.localeCompare(b))];
+                // D086-F2 END
                 const seed = this.selectLod({ nodes: seedInfos, level: this.lod,
                     // D085-S2 BEGIN: Canopy + Indra draws Essenziale with the Canopy row.
                     // Reuse that exact row for the Bilanciata seed to preserve E ⊂ B.
