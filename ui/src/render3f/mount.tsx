@@ -1001,22 +1001,26 @@ export function mount(
     });
     finishLabels();
   };
-  const renderFrame = (): void => {
+  // D085-X8 BEGIN: the native beam repaints an existing view; it does not move the camera or
+  // invalidate the label pass. Keep those frames out of the readiness revision stream too.
+  const renderFrame = (beamOnly = nativeBeamForceQuiet): void => {
     if (destroyed) {
       return;
     }
     if (perfMarksEnabled) performance.mark('d082:render3d:start');
     updateProjection();
     if (typedPicker && typedLayer.group.parent !== threeScene) threeScene.add(typedLayer.group);
-    if (labelTimer !== undefined) clearTimeout(labelTimer);
-    if (ladder.state.stage === 4) labelTimer = setTimeout(() => {
-      labelTimer = undefined;
-      if (!destroyed) {
-        updateLabels();
-        window.dispatchEvent(new CustomEvent("d081:labels-settled"));
-        publishPresentedFrame();
-      }
-    }, 160);
+    if (!beamOnly) {
+      if (labelTimer !== undefined) clearTimeout(labelTimer);
+      if (ladder.state.stage === 4) labelTimer = setTimeout(() => {
+        labelTimer = undefined;
+        if (!destroyed) {
+          updateLabels();
+          window.dispatchEvent(new CustomEvent("d081:labels-settled"));
+          publishPresentedFrame();
+        }
+      }, 160);
+    }
     // D085-S3 BEGIN: optional per-layer CPU submission marks for performance traces.
     if (perfMarksEnabled) performance.mark('d085:webgl:start');
     renderer.render(threeScene, rig.camera);
@@ -1060,9 +1064,10 @@ export function mount(
     if (perfMarksEnabled) { performance.mark('d085:overlays:end');
       performance.measure('d085:overlays', 'd085:overlays:start', 'd085:overlays:end'); }
     // D085-S3 END
-    publishPresentedFrame();
+    if (!beamOnly) publishPresentedFrame();
     if (perfMarksEnabled) { performance.mark('d082:render3d:end'); performance.measure('d082:render3d', 'd082:render3d:start', 'd082:render3d:end'); }
   };
+  // D085-X8 END
   let presentationRevision = 0;
   // D082-A-STALE BEGIN
   const readinessSnapshot = () => {
@@ -1242,7 +1247,8 @@ export function mount(
   const nativeBeamDriver = createNativeBeamDriver({
     eligible: nativeBeamPreconditions,
     sample: sampleNativeBeam,
-    render: renderFrame,
+    // D085-X8 BEGIN: a pulse draw cannot postpone the full label pass or its readiness report.
+    render: () => renderFrame(true),
     onRetire: () => {
       const lastRenderedLive = nativeBeamLastRenderedLive;
       nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;
@@ -1257,6 +1263,7 @@ export function mount(
         },
       });
     },
+    // D085-X8 END
     now: () => performance.now(),
     schedule: (tick, delay) => setTimeout(tick, delay),
     cancel: timer => clearTimeout(timer),
