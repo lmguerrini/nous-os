@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { QualityLadder, labDrawPolicy, labMainSegmentRanges, labPixelRatio } from '../src/render-common/quality-ladder.ts';
+import { QualityLadder, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, nativeLabSkeleton } from '../src/render-common/quality-ladder.ts';
+import { readFileSync } from 'node:fs';
 import { currentRenderReadiness, renderPercent, reportRenderReadiness } from '../src/review/render-readiness.ts';
 import { preserveRenderProgress, withRenderProgress } from '../src/review/toolbar-status.ts';
 import { formatHud, hudMeasurementActive } from '../src/review/perf-hud.ts';
@@ -10,6 +11,41 @@ import { updateFilamentProjectionUniforms } from '../src/render3f/filament-mater
 import { updateNodeProjectionUniforms } from '../src/render3f/node-material.ts';
 
 // D085-S3 BEGIN
+test('every committed Lab law, including Indra compositions, reaches the native 3D ladder', () => {
+  for (const topology of ['julia', 'sierpinski', 'lull', 'canopy-ifs'])
+    assert.equal(labInteractionEnabled(topology), true);
+  assert.equal(labInteractionEnabled('natural'), false);
+  assert.equal(labInteractionEnabled(undefined), false);
+  const page = readFileSync(new URL('../src/review/v2-page.ts', import.meta.url), 'utf8');
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.match(page, /labTopology = this\.topology;[\s\S]*labIndra = this\.topologyIndra;/);
+  assert.match(page, /this\.createView\(\{[^\n]*labTopology, labIndra/);
+  assert.match(page, /mount3f\(host, emptyTypedVisualGraph\(\),[\s\S]*labTopology: page\.topology, labIndra: page\.topologyIndra/);
+  assert.match(product, /labTopology: input\.labTopology, labIndra: input\.labIndra/);
+  assert.match(mount, /const nativeLab = labInteractionEnabled\(options\.labTopology\)/);
+  assert.match(mount, /typedPicker \|\| nativeLab \? labPixelRatio/);
+  assert.match(mount, /applyNativeLabPolicy\(stage\)/);
+  assert.match(mount, /nativeProxy\.visible = reduced;[\s\S]*nodeResources\.mesh\.visible = stage !== 1;[\s\S]*filamentResources\.mesh\.visible = !reduced;/);
+});
+
+test('native Lab skeleton contains only mounted real IDs and preserves relation endpoints', () => {
+  const nodes = [
+    { id: 'domain-a', kind: 'domain' }, { id: 'hub-b', kind: 'hub' },
+    { id: 'leaf-c', kind: 'concept' }, { id: 'leaf-d', kind: 'concept' },
+  ];
+  const edges = [
+    { id: 'real-main', source: 'domain-a', target: 'hub-b' },
+    { id: 'real-secondary', source: 'leaf-c', target: 'leaf-d' },
+    { id: 'missing-endpoint', source: 'domain-a', target: 'invented' },
+  ];
+  const skeleton = nativeLabSkeleton(nodes, edges);
+  assert.deepEqual(skeleton.nodeIds, new Set(['domain-a', 'hub-b']));
+  assert.deepEqual(skeleton.edgeIds, new Set(['real-main']));
+  assert.deepEqual(nativeLabSkeleton([{ id: 'only-real', kind: 'concept' }], []).nodeIds,
+    new Set(['only-real']));
+});
+
 test('Lab 3D stages retain anchor and real structural ribbons before progressively restoring all geometry', () => {
   assert.deepEqual(labDrawPolicy(1), { nodes: 'anchors', semanticEdges: 'main', visualEdges: false, decor: false });
   assert.deepEqual(labDrawPolicy(2), { nodes: 'all', semanticEdges: 'main', visualEdges: false, decor: false });

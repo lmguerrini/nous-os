@@ -3381,6 +3381,9 @@ export class V2Page {
                         handle = mount3f(host, emptyTypedVisualGraph(),
                             { morphology: 'stellar', organization: 'natural', palette: 'monochrome',
                                 temperature: 'balanced', theme: 'dark', lodBand: 'micro',
+                                // D085-S3 BEGIN: the typed mount also carries its declared Lab taxonomy.
+                                labTopology: page.topology, labIndra: page.topologyIndra,
+                                // D085-S3 END
                                 reducedMotion: true, elapsedMilliseconds: 0 },
                             frame, undefined, undefined, input);
                         fittedCamera = handle.readCameraState();
@@ -4379,7 +4382,10 @@ export class V2Page {
             // D082-A-PLUSN END
             try {
                 // D081-FRACTAL-MERGE BEGIN: canopy owns its edge and title layers.
-                const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                // D085-S3 BEGIN: this topology is the one prepared for the mount and committed on success.
+                const labTopology = this.topology;
+                const labIndra = this.topologyIndra;
+                const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, labTopology, labIndra, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -4396,6 +4402,7 @@ export class V2Page {
                             if (this.hoverRefreshTimer) clearTimeout(this.hoverRefreshTimer);
                         } }
                 });
+                // D085-S3 END
                 const interrupted = new Promise<null>(resolve => { cancelMount = () => resolve(null); });
                 this.cancelActiveMount = cancelMount;
                 const preparedMount = await Promise.race([preparingMount, interrupted]);

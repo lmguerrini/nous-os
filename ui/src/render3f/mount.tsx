@@ -79,7 +79,7 @@ import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts
 // D082-B-GPUFLOOR END
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
 // D085-S3 BEGIN
-import { QualityLadder, labDrawPolicy, labMainSegmentRanges, labPixelRatio, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+import { QualityLadder, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, mainRelation, nativeLabSkeleton, presentRenderReadiness } from "#render-common/quality-ladder.ts";
 // D085-S3 END
 
 /** How long the camera must be still before the derived geometry returns to full quality. */
@@ -102,6 +102,10 @@ export type PreparedCanopyNeural3dMount = {
 export type Render3fOptions = {
   readonly morphology: Morphology;
   readonly organization: Organization;
+  // D085-S3 BEGIN: page-committed Geometry Lab topology, independent of renderer organization.
+  readonly labTopology?: 'natural' | 'canopy-ifs' | 'julia' | 'sierpinski' | 'lull';
+  readonly labIndra?: boolean;
+  // D085-S3 END
   readonly palette?: Palette;
   readonly temperature: Temperature;
   readonly theme: Theme;
@@ -773,6 +777,66 @@ export function mount(
       else if (child.name === 'typed-semantic-morphology') child.visible = !reduced;
     }
   };
+  // Native law scenes have no typed picker. Copy only selected real instances once per
+  // scene revision; keep the original meshes and materials for an exact full restore.
+  const nativeLab = labInteractionEnabled(options.labTopology) && typedPicker === null;
+  const nativeProxy = new THREE.Group();
+  nativeProxy.visible = false;
+  world.add(nativeProxy);
+  let nativeProxyNodes = 0, nativeProxyEdges = 0;
+  const subsetInstances = (source: THREE.InstancedBufferGeometry, indices: readonly number[]): THREE.InstancedBufferGeometry => {
+    const geometry = new THREE.InstancedBufferGeometry();
+    for (const [name, attribute] of Object.entries(source.attributes)) {
+      if (attribute instanceof THREE.InstancedBufferAttribute) {
+        const values = new Float32Array(indices.length * attribute.itemSize);
+        for (let output = 0; output < indices.length; output++)
+          for (let component = 0; component < attribute.itemSize; component++)
+            values[output * attribute.itemSize + component] = attribute.getComponent(indices[output]!, component);
+        geometry.setAttribute(name, new THREE.InstancedBufferAttribute(values, attribute.itemSize,
+          attribute.normalized, attribute.meshPerAttribute));
+      } else geometry.setAttribute(name, attribute.clone());
+    }
+    geometry.instanceCount = indices.length;
+    return geometry;
+  };
+  const clearNativeProxy = (): void => {
+    for (const child of [...nativeProxy.children]) {
+      nativeProxy.remove(child);
+      if (child instanceof THREE.Mesh) child.geometry.dispose();
+    }
+    nativeProxyNodes = nativeProxyEdges = 0;
+  };
+  const rebuildNativeProxy = (): void => {
+    clearNativeProxy();
+    if (!nativeLab || typedPicker || live.scene.nodes.length < DENSE_SCENE_THRESHOLD) return;
+    const skeleton = nativeLabSkeleton(live.scene.nodes, live.scene.edges);
+    const nodeIndices = live.buffers.nodes.ids.flatMap((id, index) => skeleton.nodeIds.has(id) ? [index] : []);
+    const edgeIndices = live.buffers.filaments.edgeIds.flatMap((id, index) => skeleton.edgeIds.has(id) ? [index] : []);
+    if (nodeIndices.length === 0) return;
+    const nodes = new THREE.Mesh(subsetInstances(nodeResources.geometry, nodeIndices), nodeResources.material);
+    nodes.frustumCulled = false;
+    nodes.renderOrder = nodeResources.mesh.renderOrder;
+    nativeProxy.add(nodes);
+    nativeProxyNodes = nodeIndices.length;
+    if (edgeIndices.length) {
+      const edges = new THREE.Mesh(subsetInstances(filamentResources.geometry, edgeIndices), filamentResources.material);
+      edges.frustumCulled = false;
+      edges.renderOrder = filamentResources.mesh.renderOrder;
+      nativeProxy.add(edges);
+      nativeProxyEdges = edgeIndices.length;
+    }
+  };
+  const applyNativeLabPolicy = (stage: 1 | 2 | 3 | 4): void => {
+    if (!nativeLab || typedPicker || nativeProxyNodes === 0) return;
+    const reduced = stage < 3;
+    nativeProxy.visible = reduced;
+    const [nodes, edges] = nativeProxy.children;
+    if (nodes) nodes.visible = stage === 1;
+    if (edges) edges.visible = reduced;
+    nodeResources.mesh.visible = stage !== 1;
+    filamentResources.mesh.visible = !reduced;
+  };
+  rebuildNativeProxy();
   // D085-S3 END
   let destroyed = false;
   const perfMarksEnabled = new URLSearchParams(location.search).has('perfmarks');
@@ -955,10 +1019,13 @@ export function mount(
     const prepared = typedPicker ? typedLayer.preparedCounts() : null;
     // D085-S3 BEGIN: the typed layer does not own the resident interaction proxies.
     const proxyActive = labDense() && labProxyReady && labProxy.visible;
+    const nativeProxyActive = nativeLab && nativeProxy.visible;
     const drawnNodes = submitted ? submitted.nodes + (proxyActive && stage === 1 ? labProxyNodes : 0)
+      : nativeProxyActive ? stage === 1 ? nativeProxyNodes : requestedNodes
       : world.visible && (nodeResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedNodes, nodeResources.mesh.visible ? nodeResources.geometry.instanceCount : requestedNodes) : 0;
     const drawnSemantic = submitted ? submitted.semanticEdges + (proxyActive ? labProxyEdges : 0)
+      : nativeProxyActive ? nativeProxyEdges
       : world.visible && (filamentResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedSemanticEdges, filamentResources.mesh.visible ? filamentResources.geometry.instanceCount : requestedSemanticEdges) : 0;
     // D085-S3 END
@@ -970,7 +1037,9 @@ export function mount(
       && drawnVisual >= requestedVisualEdges && labelTimer === undefined
       && activePixelRatio === fullRenderDpr;
     return {
-      view: `${options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
+      view: `${options.labTopology && options.labTopology !== 'natural'
+        ? `lab/${options.labTopology}${options.labIndra ? '+indra' : ''}`
+        : options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
       quality: ladder.state.moving ? 'movimento' : stage === 4 && allDrawn ? 'completa' : 'recupero',
       ladder: stage,
       pixelRatio: activePixelRatio,
@@ -1021,7 +1090,7 @@ export function mount(
   // next draw. The ratio change shares that draw and schedules no extra frame.
   const syncDrawingBuffer = (width: number, height: number): void => {
     fullRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
-    const ratio = typedPicker ? labPixelRatio(ladder.state.stage, fullRenderDpr) : fullRenderDpr;
+    const ratio = typedPicker || nativeLab ? labPixelRatio(ladder.state.stage, fullRenderDpr) : fullRenderDpr;
     const ratioChanged = ratio !== renderer.getPixelRatio();
     const sizeChanged = width !== renderWidth || height !== renderHeight;
     if (!ratioChanged && !sizeChanged) return;
@@ -1046,6 +1115,7 @@ export function mount(
     typedLayer.setQuality(labDense() ? stage === 4 ? 'full' : stage === 3 ? 'main' : 'moving'
       : stage >= 3 ? "full" : stage >= 2 ? "main" : "moving");
     applyLabPolicy(stage);
+    applyNativeLabPolicy(stage);
     // D085-S3 END
     visuals?.setQuality(stage >= 4 ? "full" : "moving", false);
     // D085-S3 BEGIN: a hidden projected layer must not retain a full-screen
@@ -1268,6 +1338,10 @@ export function mount(
       // D082-A-NODES BEGIN
       applyNativeEdgeVeil();
       // D082-A-NODES END
+      // D085-S3 BEGIN: the scene revision replaces native source attributes.
+      rebuildNativeProxy();
+      applyNativeLabPolicy(ladder.state.stage);
+      // D085-S3 END
     }
     if (!typedPicker) distinct?.setScene(live.scene);
     rig.setWorldFramingSubjects(sceneCameraFramingSubjects(live.scene));
@@ -1357,12 +1431,20 @@ export function mount(
             denseNodeRadii.set(id, { radius: entry.radiusPx, halo: entry.haloRadiusPx ?? entry.radiusPx });
           }
           core.needsUpdate = halo.needsUpdate = gap.needsUpdate = floor.needsUpdate = true;
+          // D085-S3 BEGIN: keep resident real-ID anchors in the current size revision.
+          rebuildNativeProxy();
+          applyNativeLabPolicy(ladder.state.stage);
+          // D085-S3 END
           renderFrame();
         }
         if (nativeEdgeVeilById.size) {
           for (const [id, entry] of update.edgeEntries) if (entry.presentation)
             nativeEdgeVeilById.set(id, entry.presentation.denseVeilFactor ?? 1);
           applyNativeEdgeVeil();
+          // D085-S3 BEGIN: the moving skeleton must use the same relation visibility.
+          rebuildNativeProxy();
+          applyNativeLabPolicy(ladder.state.stage);
+          // D085-S3 END
           renderFrame();
         }
         // D082-A-NODES END
@@ -1599,6 +1681,8 @@ export function mount(
       // D085-S3 BEGIN
       clearLabProxy();
       labProxy.removeFromParent();
+      clearNativeProxy();
+      nativeProxy.removeFromParent();
       // D085-S3 END
       typedLayer.dispose();
       brainEnvelope?.dispose();

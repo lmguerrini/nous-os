@@ -1893,6 +1893,9 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-B1f END
     morphology: axes.morphology,
     organization: input.v2Prepared ? "natural" as const : axes.organization,
+    // D085-S3 BEGIN: preserve the page's Lab law across Natural/Indra renderer organization.
+    ...(input.labTopology ? { labTopology: input.labTopology, labIndra: input.labIndra ?? false } : {}),
+    // D085-S3 END
     reducedMotion: input.reducedMotion,
     brain: brainRendererEnabled(axes, input.brain),
     presentation: { ...scene.presentation, morphologyInput: scene.morphologyInput,
