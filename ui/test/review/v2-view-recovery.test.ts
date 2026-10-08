@@ -35,7 +35,7 @@ const bundled = await build({
     resolveDir: dirname(fileURLToPath(pageSource)),
     sourcefile: "d072-r1-v2-page-entry.ts",
     loader: "ts",
-    contents: `import { V2Page, resetMountFailureLog, confirmFitDue, revealPointInRoot } from ${JSON.stringify(fileURLToPath(pageSource))};\nexport { V2Page, resetMountFailureLog, confirmFitDue, revealPointInRoot };`,
+    contents: `import { V2Page, resetMountFailureLog, confirmFitDue, revealPointInRoot, ownDisplayedRemount } from ${JSON.stringify(fileURLToPath(pageSource))};\nexport { V2Page, resetMountFailureLog, confirmFitDue, revealPointInRoot, ownDisplayedRemount };`,
   },
 });
 writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
@@ -91,7 +91,7 @@ Object.assign(globalThis, {
   HTMLInputElement: class HTMLInputElement {},
   HTMLTextAreaElement: class HTMLTextAreaElement {},
 });
-const { V2Page: V2PageClass, resetMountFailureLog, confirmFitDue, revealPointInRoot } =
+const { V2Page: V2PageClass, resetMountFailureLog, confirmFitDue, revealPointInRoot, ownDisplayedRemount } =
   await import(pathToFileURL(bundlePath).href) as typeof import("../../src/review/v2-page.ts");
 
 test("fit confirmation only runs for the camera intent that scheduled it", () => {
@@ -168,11 +168,15 @@ let mountCount = 0;
 let mountAttempts = 0;
 let destroyCount = 0;
 let failMounts = false;
+// D085-S5 BEGIN: retain the real page callbacks installed on the working fake view.
+let mountedEvents: Parameters<CreateProductView>[0]['events'] | null = null;
+// D085-S5 END
 const labelCountFor = (mount: number) => 7 + mount * 2;
-const fakeCreateView: CreateProductView = async () => {
+const fakeCreateView: CreateProductView = async input => {
   mountAttempts += 1;
   if (failMounts)
     throw new Error("mount exploded (invented)");
+  mountedEvents = input.events;
   mountCount += 1;
   const mount = mountCount;
   const camera = { ratio: 1, mount };
@@ -392,6 +396,64 @@ test("a failing mount keeps the old view and shows the error region", async () =
   await muteErrorLog(() => assert.rejects(page.setDensity('complete'), /resta l’ultima vista valida/));
   assert.equal(page.densitySetting, 'balanced');
   assert.deepEqual((page as unknown as { d081Status(): unknown }).d081Status(), statusBefore);
+});
+// D085-S5 END
+
+// D085-S5 BEGIN: a failed remount remains visible without leaking a rejected UI callback.
+test("failing remounts from page clicks and view picks have owned promises", async () => {
+  resetMountFailureLog();
+  mountCount = 0; mountAttempts = 0; destroyCount = 0; failMounts = false;
+  const page = makePage();
+  await page.refresh();
+  const kept = view(page);
+  const events = mountedEvents!;
+  const details = elements.get('details')!;
+  const find = (predicate: (item: ReturnType<typeof fakeElement>) => boolean): ReturnType<typeof fakeElement> | undefined => {
+    const visit = (item: ReturnType<typeof fakeElement>): ReturnType<typeof fakeElement> | undefined => {
+      if (predicate(item)) return item;
+      for (const child of item.children) {
+        if (child && typeof child === 'object' && 'children' in child) {
+          const found = visit(child as ReturnType<typeof fakeElement>);
+          if (found) return found;
+        }
+      }
+      return undefined;
+    };
+    return visit(details);
+  };
+  const overview = find(item => item.id === 'v2-overview')!;
+  const controls = find(item => item.id === 'v2-controls')!;
+  const overviewButton = overview.children.find(item => item && typeof item === 'object' &&
+    'onclick' in item && item.onclick !== null) as ReturnType<typeof fakeElement>;
+  const control = (label: string) => controls.children.find(item => item && typeof item === 'object' &&
+    'textContent' in item && item.textContent === label) as ReturnType<typeof fakeElement>;
+  // The preceding test proves that a real rejected mount keeps the view and shows its
+  // error. Inject the same rejected refresh seam here so every callback must own it.
+  let rejectedRefreshes = 0;
+  (page as unknown as { refresh(): Promise<void> }).refresh = async () => {
+    rejectedRefreshes++;
+    elements.get('error')!.hidden = false;
+    throw new Error('resta l’ultima vista valida: mount exploded (invented)');
+  };
+  for (const [label, invoke] of [
+      ['overview selection', () => overviewButton.onclick?.()],
+      ['undo', () => control('Annulla').onclick?.()],
+      ['redo', () => control('Ripeti').onclick?.()],
+      ['double pick expansion', () => events.onDoublePick?.({ id: 'domain:beta', kind: 'node' } as never)],
+      ['neighbourhood control', () => ownDisplayedRemount(page.setNeighbourhood(1))],
+      ['palette control', () => ownDisplayedRemount(page.setPalette(PALETTE))],
+      ['canvas focus exit', () => events.onPick(null)],
+      ['provenance selection', () => (page as unknown as { openProvenanceSource(id: string): void }).openProvenanceSource('project:beta:0')],
+    ] as const) {
+      const attempts = rejectedRefreshes;
+      await muteErrorLog(async () => {
+        invoke();
+        await new Promise<void>(resolve => setImmediate(resolve));
+      });
+      assert.ok(rejectedRefreshes > attempts, `${label} reached the failing remount`);
+      assert.equal(view(page), kept, `${label} kept the working view`);
+      assert.equal(elements.get('error')!.hidden, false, `${label} left the error visible`);
+  }
 });
 // D085-S5 END
 

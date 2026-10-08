@@ -634,6 +634,10 @@ export class GeometrySupersededError extends Error {
 }
 // D085-S1 END
 
+// D085-S5 BEGIN: the page has already displayed a failed remount before this task rejects.
+export function ownDisplayedRemount(task: Promise<unknown> | undefined): void { void task?.catch(() => { }); }
+// D085-S5 END
+
 export class V2Page {
     // D082-B2 BEGIN: fixed full snapshot; density only selects draw IDs from its law coordinates.
     private topology: TopologyId = 'natural';
@@ -663,6 +667,9 @@ export class V2Page {
     // D085-S1 BEGIN: unrelated refreshes wait for the accepted geometry mount.
     private geometryTransitionActive = false;
     // D085-S1 END
+    // D085-S5 BEGIN: remount errors are already shown by refresh; UI callbacks own their promises.
+    private ownDisplayedFailure(task: Promise<unknown>): void { ownDisplayedRemount(task); }
+    // D085-S5 END
     // D085-S1 BEGIN: a slow renderer mount must not hold the geometry lane after supersession.
     private cancelActiveMount: (() => void) | null = null;
     private interruptMount(): void { this.cancelActiveMount?.(); }
@@ -3227,7 +3234,9 @@ export class V2Page {
         const pick: PickResult | null = result === null ? null
             : result.loadedNodeIds.includes(sourceId) ? { kind: 'node', id: sourceId }
                 : result.domainEdgeIds.includes(sourceId) ? { kind: 'semantic-edge', id: sourceId } : null;
-        if (pick === null || !this.isVisibleProjectionPick(pick)) { void this.select(sourceId, false); return; }
+        // D085-S5 BEGIN
+        if (pick === null || !this.isVisibleProjectionPick(pick)) { this.ownDisplayedFailure(this.select(sourceId, false)); return; }
+        // D085-S5 END
         this.typedSelection = pick;
         this.selected = sourceId;
         this.renderPanel();
@@ -4188,15 +4197,16 @@ export class V2Page {
             // (class, endpoint importance, id), so the arc budget, never the mark selection,
             // decides how many real relations the branches carry. Essenziale is untouched.
             if (canopy && this.density === 'balanced') {
+                // The textual \0 escape preserves the NUL-separated runtime pair key.
                 const liftedPairs = new Set(availableArcs.edges.map(edge =>
-                    `${edge.source < edge.target ? edge.source : edge.target} ${
-                        edge.source < edge.target ? edge.target : edge.source} ${edge.class}`));
+                    `${edge.source < edge.target ? edge.source : edge.target}\0${
+                        edge.source < edge.target ? edge.target : edge.source}\0${edge.class}`));
                 for (const edge of rankedCanopyEvidence(this.canopyDatasetNodes, this.canopyEvidenceCandidates)) {
                     if (routedInput.length >= budget.arcs) break;
                     if (!relationVisible(edge.class === 'exploratory' ? 'exploratory' : 'attested', this.axes.reading)) continue;
                     if (!renderedIds.has(edge.source) || !renderedIds.has(edge.target)) continue;
-                    const key = `${edge.source < edge.target ? edge.source : edge.target} ${
-                        edge.source < edge.target ? edge.target : edge.source} ${edge.class}`;
+                    const key = `${edge.source < edge.target ? edge.source : edge.target}\0${
+                        edge.source < edge.target ? edge.target : edge.source}\0${edge.class}`;
                     if (liftedPairs.has(key)) continue;
                     liftedPairs.add(key);
                     const raw = rawById.get(edge.id)!;
@@ -4677,8 +4687,11 @@ export class V2Page {
                             }
                             else
                                 this.selectPicked(target.id);
-                        } else void this.exitFocus(); }, onDoublePick: target => { if (target)
-                            void this.expand(target.id).then(() => this.select(target.id, false)); }, onHover: target => {
+                        // D085-S5 BEGIN
+                        } else this.ownDisplayedFailure(this.exitFocus()); }, onDoublePick: target => { if (target)
+                            this.ownDisplayedFailure(this.expand(target.id).then(() => this.select(target.id, false))); },
+                        // D085-S5 END
+                        onHover: target => {
                             const node = target?.kind === 'node' ? target.id : null;
                             const edge = target?.kind === 'edge' ? target.id : null;
                             this.hovered = node;
@@ -6190,7 +6203,9 @@ export class V2Page {
             count.className = 'v2-overview-count';
             count.textContent = ` · ${conversations} conversazioni`;
             button.replaceChildren(name, count);
-            button.onclick = () => { void this.select(domain.id); };
+            // D085-S5 BEGIN
+            button.onclick = () => { this.ownDisplayedFailure(this.select(domain.id)); };
+            // D085-S5 END
             overview.append(button);
         }
         host.append(overview);
@@ -6233,7 +6248,9 @@ export class V2Page {
             const button = document.createElement('button');
             button.textContent = label;
             button.disabled = disabled;
-            button.onclick = () => { void action(); };
+            // D085-S5 BEGIN
+            button.onclick = () => { this.ownDisplayedFailure(action()); };
+            // D085-S5 END
             controls.append(button);
         }
         if (this.indraOpen !== null && this.projectionResult?.determinism.algorithmId === 'indras-pearls') {
@@ -6326,7 +6343,9 @@ export class V2Page {
         }
         const n = byId.get(this.selected), e = this.renderedRelations.get(this.selected) ?? this.index.edges.find(e => e.id === this.selected) ?? (this.selected.startsWith('contains:') ? (() => { const child = byId.get(this.selected.slice(9)); return child?.parent ? { id: this.selected, source: child.parent, target: child.id, class: 'structural' as const, type: 'contains', directed: true, evidence: [], count: 1, underlying: [], lifted: false, width: 0.65 } : undefined; })() : undefined);
         if (n) {
-            renderSelection(host, buildNodePanel(n, this.detailCache.get(n.id), this.index.edges, byId, createEvidenceResolver(byId)), id => { void this.select(id); });
+            // D085-S5 BEGIN
+            renderSelection(host, buildNodePanel(n, this.detailCache.get(n.id), this.index.edges, byId, createEvidenceResolver(byId)), id => { this.ownDisplayedFailure(this.select(id)); });
+            // D085-S5 END
             // D082-B2 BEGIN: keep the mathematical placement witness beside the source card.
             const witnessInfo = this.topologyWitness(n.id);
             if (witnessInfo) {
@@ -6344,7 +6363,9 @@ export class V2Page {
             if (n.counts.children || n.counts.passages) {
                 const button = document.createElement('button');
                 button.textContent = this.history.state.expanded.has(n.id) ? 'Comprimi' : 'Espandi';
-                button.onclick = () => { void (this.history.state.expanded.has(n.id) ? this.collapse(n.id) : this.expand(n.id)); };
+                // D085-S5 BEGIN
+                button.onclick = () => { this.ownDisplayedFailure(this.history.state.expanded.has(n.id) ? this.collapse(n.id) : this.expand(n.id)); };
+                // D085-S5 END
                 host.append(button);
             }
             if (shown.hidden.has(n.id) && this.history.state.expanded.has(n.id) &&
@@ -6353,11 +6374,15 @@ export class V2Page {
                 (n.level === 3 || n.level === 4)) {
                 const button = document.createElement('button');
                 button.textContent = `Mostra altri ${Math.min(V2_PAGE, shown.hidden.get(n.id)!)}`;
-                button.onclick = () => { void this.more(n.id); };
+                // D085-S5 BEGIN
+                button.onclick = () => { this.ownDisplayedFailure(this.more(n.id)); };
+                // D085-S5 END
                 host.append(button);
             }
         } else if (e) {
-            renderSelection(host, buildRelationPanel(e, byId, createEvidenceResolver(byId)), id => { void this.select(id); });
+            // D085-S5 BEGIN
+            renderSelection(host, buildRelationPanel(e, byId, createEvidenceResolver(byId)), id => { this.ownDisplayedFailure(this.select(id)); });
+            // D085-S5 END
         }
         if (this.typedActive() && this.typedWhyResult?.steps.length && this.projectionResult && this.projectionSnapshot) {
             const path = document.createElement('section'); path.className = 'selection-section';
@@ -6390,7 +6415,9 @@ export class V2Page {
                 const relation = 'id' in edge ? edge : { ...edge, id: `contains:${edge.target}`, directed: true, evidence: [] };
                 const button = document.createElement('button'); button.className = 'relation';
                 button.textContent = buildRelationPanel(relation, byId).title;
-                button.onclick = () => { void this.select(relation.id); };
+                // D085-S5 BEGIN
+                button.onclick = () => { this.ownDisplayedFailure(this.select(relation.id)); };
+                // D085-S5 END
                 path.append(button);
             }
             host.append(path);
