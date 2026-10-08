@@ -237,6 +237,41 @@ export const juliaLaw: TopologyLaw = {
     if (cache.size > 4) cache.delete(cache.keys().next().value!);
     return result;
   },
+  // D085-S5 BEGIN: the chart reuses the one global certificate and original coordinates.
+  layoutChart(children, snapshot, dimension) {
+    const full = this.layoutFull(snapshot, dimension);
+    const positions = new Map(children.map(node => [node.id, full.positions.get(node.id)!]));
+    const witnesses = new Map(children.map(node => [node.id, full.witnesses.get(node.id)!]));
+    const points = [...positions.values()];
+    const minX = Math.min(...points.map(p => p.x)), maxX = Math.max(...points.map(p => p.x));
+    const minY = Math.min(...points.map(p => p.y)), maxY = Math.max(...points.map(p => p.y));
+    const pad = Math.max(maxX - minX, maxY - minY) * 0.1;
+    // D085-S5 BEGIN: clip each global guide segment to this data-space window;
+    // the composer then applies the same similarity as it does to real children.
+    const guides = full.guides.flatMap(guide => guide.points.slice(1).flatMap((b, i) => {
+      const a = guide.points[i]!;
+      let lo = 0, hi = 1;
+      const bounds: readonly [number, number][] = [
+        [-(b.x - a.x), a.x - (minX - pad)],
+        [b.x - a.x, (maxX + pad) - a.x],
+        [-(b.y - a.y), a.y - (minY - pad)],
+        [b.y - a.y, (maxY + pad) - a.y],
+      ];
+      for (const [p, q] of bounds) {
+        if (Math.abs(p) < 1e-12) { if (q < 0) return []; continue; }
+        const t = q / p;
+        if (p < 0) lo = Math.max(lo, t); else hi = Math.min(hi, t);
+      }
+      if (lo >= hi) return [];
+      const point = (t: number) => ({ x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t });
+      return [{ id: `${guide.id}:chart:${i}`, kind: guide.kind, semantic: false as const,
+        points: [point(lo), point(hi)] }];
+    }));
+    // D085-S5 END
+    return { positions, witnesses, guides, containers: [], diagnostics: [] };
+  },
+  // D085-S5 END
   // D082-LAB-FIX2 BEGIN: one global certificate and inverse solve serve every Indra frame.
   // Restriction preserves each real node's certified external coordinate and witness.
   layoutLocal(children, snapshot, dimension) {

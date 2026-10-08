@@ -35,6 +35,14 @@ export const TOPOLOGY_DESCRIPTIONS: Readonly<Record<TopologyId, string>> = {
 export const LAB_CONTAINER_DESCRIPTION =
   'Geometry Lab: topologie matematiche di famiglie differenti — sistemi di funzioni iterate (IFS), '
   + 'sistema dinamico complesso, topologia combinatoria; nessuna etichetta unica le raggruppa.';
+// D085-S5 BEGIN: snapshot-derived Julia legibility refusals are shared by toolbar controls.
+export const JULIA_INDRA_REFUSAL = 'Julia con Indra non è disponibile: alla scala adattata le perle non mostrano abbastanza figli reali separati e curve guida leggibili. Usa Julia senza Indra.';
+export const LULL_INDRA_3D_REFUSAL = 'Llull con Indra in 3D non è disponibile: la regola verificata assegna ai nove domini lettere e posizioni sul cerchio, ma non una terza coordinata ai nodi reali. Ruotare o estrudere il diagramma non rappresenterebbe una nuova operazione combinatoria. Usa Llull con Indra in 2D.';
+const juliaIndraGate = new Map<TopologyDimension, boolean>();
+export function setJuliaIndraLegibility(dimension: TopologyDimension, ok: boolean): void {
+  juliaIndraGate.set(dimension, ok);
+}
+// D085-S5 END
 /** Dimension-specific technical note, kept as explanation next to the classification. */
 function topologyNote(id: TopologyId, dimension: TopologyDimension): string {
   if (id === 'julia' && dimension === '3d')
@@ -53,6 +61,11 @@ export function topologyTooltip(id: TopologyId, dimension: TopologyDimension): s
 }
 // D084-W3-LABELS END
 export function topologySupport(id: TopologyId, dimension: TopologyDimension, indra: boolean): TopologySupport {
+  // D085-S5 BEGIN
+  if (id === 'lull' && dimension === '3d' && indra) return { ok: false, reason: LULL_INDRA_3D_REFUSAL };
+  if (id === 'julia' && indra && juliaIndraGate.get(dimension) !== true)
+    return { ok: false, reason: JULIA_INDRA_REFUSAL };
+  // D085-S5 END
   if (id === 'natural') return { ok: true };
   const support = TOPOLOGY_LAWS[id]!.supports(dimension);
   if (!support.ok) return support;

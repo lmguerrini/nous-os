@@ -46,7 +46,7 @@ import { PALETTES, hexRgb, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
 import type { RelationClass } from "./reading.ts";
-import { buildVisibilityWitness, countAggregateRepresentation } from './visibility-witness.ts';
+import { buildVisibilityWitness, countAggregateRepresentation, indraCompositionCounts } from './visibility-witness.ts';
 import { PerfRecord } from './perf-record.ts';
 import { cachedStarfieldStars } from '../render-common/starfield.ts';
 import type { ReviewEdge } from "./model.ts";
@@ -1609,9 +1609,11 @@ export const createProductView: CreateProductView = async (input) => {
   // D082-A-NODES END
   ) {
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
+    // D085-S5 BEGIN: Lab containers use the same approved Indra shell path.
     const openContainers = new Set(input.v2Prepared && axes.organization === "indra"
       ? (state.containers ?? []).filter((container) => container.open !== false).map((container) => container.id) : []);
     const containers = state.containers && axes.organization === "indra" ? state.containers : undefined;
+    // D085-S5 END
     // D082-A-NODES BEGIN
     // Completa's full reference dataset is the only view that receives the drawing-only radius and
     // dense-edge policy. Position and relation collections remain byte-for-byte the same.
@@ -2848,6 +2850,15 @@ export const createProductView: CreateProductView = async (input) => {
         starCount: axes.morphology === 'stellar' && appearance.starfieldBrightness > 0
           ? cachedStarfieldStars(r.width, r.height, appearance.starfieldDensity).length : 0,
       });
+      // D085-S5 BEGIN: the mounted view reports submitted pearls and guide strokes;
+      // a null drawn-shell count avoids claiming an unmeasured Indra LOD result.
+      const guideLayer = container.querySelector<HTMLCanvasElement>('canvas[data-topology-guides]');
+      const indraComposition = axes.organization === 'indra' && layoutContainers
+        ? indraCompositionCounts(layoutContainers, {
+          requested: Number(guideLayer?.dataset.guideRequested ?? 0),
+          drawn: Number(guideLayer?.dataset.guideDrawn ?? 0),
+          suppressed: Number(guideLayer?.dataset.guideSuppressed ?? 0) }) : null;
+      // D085-S5 END
       return {
         axes,
         cameraKind: handle.cameraKind,
@@ -2877,6 +2888,9 @@ export const createProductView: CreateProductView = async (input) => {
               : "engine-flat",
         palette: "monochrome",
         visibility,
+        // D085-S5 BEGIN
+        ...(indraComposition ? { indraComposition } : {}),
+        // D085-S5 END
       };
     },
     destroy() {

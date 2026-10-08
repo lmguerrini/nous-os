@@ -235,6 +235,21 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
   entry("Contenimento Indra", "Contorno che racchiude una perla o un livello ricorsivo.", (svg) => {
     svg.append(circle(13, 7, 5.5, palette.container, 1.3));
   });
+  // D085-S5 BEGIN: explain the composition without reclassifying guides as edges.
+  if (organization === 'indra' && topology && topology !== 'natural') {
+    const descriptions: Partial<Record<TopologyId, string>> = {
+      'canopy-ifs': 'Ogni perla ripete un grafico Canopy locale: i rami IFS sono guide, non relazioni.',
+      julia: 'Ogni perla mostra una finestra affine sulle coordinate esterne Julia certificate: curve e raggi sono guide, non un nuovo insieme di Julia né relazioni. In 3D la quota è il potenziale G.',
+      sierpinski: 'Ogni perla ripete celle Sierpiński locali: triangoli o tetraedri sono guide, non relazioni.',
+      lull: 'Le nove perle radice sono i nove domini reali B–K sul cerchio di Figura A; le perle interne seguono la gerarchia primaria. Cerchio e raggi sono guide combinatorie, non relazioni.',
+    };
+    const note = document.createElement('p');
+    note.className = 'flow-legend-entry';
+    note.dataset.indraComposition = topology;
+    note.textContent = `Perla = nodo reale e discendenti primari. ${descriptions[topology] ?? ''} Le linee di connessione conservano solo relazioni reali idonee. La quota delle perle radice in 3D segue una convenzione di visualizzazione deterministica.`;
+    host.append(note);
+  }
+  // D085-S5 END
   if (organization === "indra") {
     const explanation = document.createElement("p");
     explanation.className = "flow-legend-entry";

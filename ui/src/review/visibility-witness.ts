@@ -1,6 +1,18 @@
 import type { Reading, Axes } from './view-contract.ts';
 import type { RelationClass } from './reading.ts';
 import { relationVisible } from './reading.ts';
+// D085-S5 BEGIN: composition accounting is kept separate from semantic edge totals.
+import type { LayoutContainer } from './layout-v2.ts';
+import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
+export function indraCompositionCounts(containers: readonly LayoutContainer[],
+  guideLayer: Readonly<{ requested: number; drawn: number; suppressed: number }>) {
+  const realPearls = containers.filter(shell => shell.id !== ABSOLUTE_CONTAINER_ID);
+  return { pearlShellsSubmitted: realPearls.length, pearlShellsDrawn: null,
+    guidesRequested: guideLayer.requested, guidesDrawn: guideLayer.drawn,
+    guidesSuppressed: guideLayer.suppressed, eligibleRealEdgeRoutes: 0,
+    guideStrokesCountAsRelations: false as const };
+}
+// D085-S5 END
 
 export type VisibilityEdge = Readonly<{ id: string; source: string; target: string; class: RelationClass }>;
 export type VisibilityNode = Readonly<{ id: string; level?: number | undefined; kind?: string | undefined; parent?: string | null | undefined }>;

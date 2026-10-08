@@ -169,8 +169,10 @@ export function resolveGeometryView2(search: string, hash: string, storedView: s
   return { value: defaultGeometryView2(density), source: 'default' };
 }
 export function geometryToLegacyAxes(value: SavedGeometryView2): PageAxes {
+  // D085-S5 BEGIN: a Lab law keeps Indra's approved shell renderer when Indra is on.
   const organization = 'mode' in value ? 'holographic' : value.topology === 'canopy-ifs' && value.indra === 'off' ? 'fractal' :
-    value.topology === 'natural' && value.indra === 'on' ? 'indra' : 'natural';
+    value.indra === 'on' ? 'indra' : 'natural';
+  // D085-S5 END
   return { projection: value.rendering, morphology: value.morphology, organization,
     colour: value.colour, labels: value.labels, reading: value.reading,
     ...(value.brain !== undefined ? { brain: value.brain } : {}),

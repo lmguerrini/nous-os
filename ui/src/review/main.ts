@@ -578,8 +578,14 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   const indra = requestedIndra ?? ('mode' in geometry ? false : geometry.indra === 'on');
   const support = topologySupport(topology, axes.projection, indra);
   if (!support.ok) return;
-  const organization = topology === 'canopy-ifs' && !indra ? 'fractal' : topology === 'natural' && indra ? 'indra' : 'natural';
+  // D085-S5 BEGIN: keep the organization axis aligned with the Indra control.
+  const organization = topology === 'canopy-ifs' && !indra ? 'fractal' : indra ? 'indra' : 'natural';
+  // D085-S5 END
   await v2?.setTaxonomy(topology, indra);
+  // D085-S5 BEGIN: V2Page's legacy taxonomy mapper still selects Natural internally;
+  // restore the actual Indra organization after its law transition completes.
+  if (indra && topology !== 'natural') await v2?.setAxes({ organization: 'indra' });
+  // D085-S5 END
   axes = appliedAxes({ organization });
   geometry = { schema: 2, rendering: axes.projection, topology: wireTopology(topology), indra: indra ? 'on' : 'off',
     morphology: axes.morphology, density, reading: axes.reading, colour: axes.colour, labels: axes.labels,
