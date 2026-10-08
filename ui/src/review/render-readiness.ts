@@ -1,5 +1,8 @@
 // D082-A-PERF BEGIN: renderer presentation reports enter the A-HUD contract through this sink.
 import { installRenderReadinessSink } from '#render-common/render-readiness-producer.ts';
+// D085-S3 BEGIN: preserve the anchor-policy breakdown in the public renderer witness.
+import type { PresentedRenderReadiness } from '#render-common/render-readiness-producer.ts';
+// D085-S3 END
 // D082-A-PERF END
 // D082-B1f BEGIN
 import { capUnpresentedCanopySomata } from '../fractal/canopy-soma-readiness.ts';
@@ -22,7 +25,7 @@ export type RenderReadiness = {
   // D085-S3 BEGIN
   readonly pixelRatio?: number;
   readonly fullPixelRatio?: number;
-  readonly skeleton?: { readonly anchors: number; readonly mainRelations: number };
+  readonly skeleton?: PresentedRenderReadiness['skeleton'];
   // D085-S3 END
   readonly nodes: StageCounts;
   readonly mainEdges: StageCounts;

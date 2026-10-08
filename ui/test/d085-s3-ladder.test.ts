@@ -78,7 +78,10 @@ test('moving readiness reports the actual submitted anchor and main relation cou
   const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
   assert.match(mount, /const skeletonAnchors = proxyActive && stage === 1 \? labProxyNodes/);
   assert.match(mount, /const skeletonMainRelations = proxyActive \? labProxyEdges : nativeProxyActive \? nativeProxyEdges : 0/);
-  assert.match(mount, /skeleton: \{ anchors: skeletonAnchors, mainRelations: skeletonMainRelations \}/);
+  assert.match(mount, /skeleton: \{ anchors: skeletonAnchors, mainRelations: skeletonMainRelations,/);
+  assert.match(mount, /nativeProxyActive && stage === 1 \? \{ anchorRules: nativeAnchorRules \} : \{\}/);
+  assert.match(mount, /requestedMainEdges = nativeMainIds\.size/);
+  assert.match(mount, /drawn: nativeProxyActive \? nativeProxyMainEdges/);
 });
 
 test('native Lab skeleton contains only mounted real IDs and preserves relation endpoints', () => {
@@ -114,7 +117,7 @@ test('a native law moving tier submits its real upper levels and every required 
     assert.ok(skeleton.nodeIds.has(edge.target));
   }
   const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
-  assert.match(mount, /nativeLabSkeleton\(live\.scene\.nodes, live\.scene\.edges,\s*nativeLevels, emphasisIds \?\? new Set\(\), true\)/);
+  assert.match(mount, /nativeLabSkeleton\(live\.scene\.nodes, live\.scene\.edges,\s*nativeLevels, emphasisIds \?\? new Set\(\), true, nativeRelationRanks\)/);
   assert.match(mount, /const nativeProxyActive = typedPicker === null && world\.visible && nativeProxy\.visible/);
   assert.match(mount, /nativeProxyEdges = edgeIndices\.length/);
 });
@@ -127,6 +130,58 @@ test('native law hubs are selected by degree and ID, independent of node order o
   assert.ok(nativeLabSkeleton(nodes, edges).nodeIds.has('a'));
   assert.deepEqual(nativeLabSkeleton(nodes, edges).edgeIds, new Set(['e-a', 'e-z']));
   assert.deepEqual(nativeLabSkeleton([...nodes].reverse(), edges).edgeIds, new Set(['e-a', 'e-z']));
+});
+
+test('plain law views deliver layout levels and relation evidence without drawing Indra shells', () => {
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.match(product, /const containers = state\.containers && axes\.organization === "indra" \? state\.containers : undefined/);
+  assert.match(product, /const level = \(node\.v2 as \{ level\?: number \} \| undefined\)\?\.level/);
+  assert.match(product, /const nativeLawLevels = \(containers: typeof layoutContainers\) =>/);
+  assert.match(product, /labLevels: nativeLawLevels\(layoutContainers\)/);
+  assert.match(product, /labLevels: nativeLawLevels\(nextContainers\)/);
+  assert.match(product, /labRelationRanks: new Map\(nextEdges\.map/);
+  assert.match(mount, /options\.labLevels \?\? options\.presentation\?\.containers/);
+  assert.match(mount, /update\.labLevels \?\? update\.input\.containers/);
+  const isolated = nativeLabSkeleton([{ id: 'upper', kind: 'subject' }], [], new Map([['upper', 2]]));
+  assert.deepEqual(isolated.nodeIds, new Set(['upper']));
+  assert.equal(isolated.anchorRules.level, 1);
+  assert.equal(Object.values(isolated.anchorRules).reduce((sum, n) => sum + n, 0), isolated.nodeIds.size);
+});
+
+test('density level changes use one shared reference gate and a size-independent proxy fallback', () => {
+  const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.match(mount, /const updatesNativeNodeAttributes = live\.scene\.nodes\.length === 11_199 && update\.nodeEntries\.size > 0/);
+  assert.match(mount, /if \(!updatesNativeNodeAttributes && nativeEdgeVeilById\.size === 0\)/);
+  assert.match(mount, /if \(updatesNativeNodeAttributes\) \{/);
+  assert.equal((mount.match(/live\.scene\.nodes\.length === 11_199 && update\.nodeEntries\.size/g) ?? []).length, 1);
+});
+
+test('above the relation cap, domain incidence then evidence and class outrank edge ID', () => {
+  const nodes = [{ id: 'root', kind: 'subject' }, { id: 'hub', kind: 'subject' },
+    { id: 'classified-domain', kind: 'domain' }, { id: 'classified-hub', kind: 'hub' },
+    ...Array.from({ length: 1030 }, (_, i) => ({ id: `leaf-${i}`, kind: 'subject' }))];
+  const edges = Array.from({ length: 1030 }, (_, i) => ({
+    id: `a-${String(i).padStart(4, '0')}`, source: 'hub', target: `leaf-${i}`,
+  }));
+  edges.push({ id: 'z-root', source: 'root', target: 'hub' });
+  edges.push({ id: 'z-evidence', source: 'hub', target: 'leaf-1029' });
+  edges.push({ id: 'z-attested', source: 'hub', target: 'leaf-1028' });
+  edges.push({ id: 'classified-main', source: 'classified-domain', target: 'classified-hub' });
+  const ranks = new Map([
+    ['z-evidence', { evidenceCount: 7, relationClass: 'exploratory' as const }],
+    ['z-attested', { evidenceCount: 0, relationClass: 'attested' as const }],
+  ]);
+  const levels = new Map([['root', 1], ['hub', 2]]);
+  const first = nativeLabSkeleton(nodes, edges, levels, new Set(), true, ranks);
+  const reversed = nativeLabSkeleton([...nodes].reverse(), [...edges].reverse(), levels, new Set(), true, ranks);
+  assert.equal(first.edgeIds.size, 1024);
+  assert.ok(first.edgeIds.has('z-root'));
+  assert.ok(first.edgeIds.has('classified-main'));
+  assert.ok(first.edgeIds.has('z-evidence'));
+  assert.ok(first.edgeIds.has('z-attested'));
+  assert.ok(!first.edgeIds.has('a-1023'));
+  assert.deepEqual(first.edgeIds, reversed.edgeIds);
 });
 
 test('Lab 3D stages retain anchor and real structural ribbons before progressively restoring all geometry', () => {

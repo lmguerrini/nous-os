@@ -98,6 +98,11 @@ export function focusArcOpacity(
 export type DistinctSubsetUpdate = {
   readonly input: MorphologyInput;
   readonly geometry: MorphologyGeometry;
+  // D085-S3 BEGIN: renderer-only law hierarchy and relation rank follow in-place density revisions.
+  readonly labLevels?: readonly { readonly id: string; readonly level: number }[];
+  readonly labRelationRanks?: ReadonlyMap<string, Readonly<{ evidenceCount: number;
+    relationClass: 'attested' | 'exploratory' | 'structural' }>>;
+  // D085-S3 END
   // D082-A-NODES BEGIN
   readonly nodeEntries: ReadonlyMap<string, { readonly glyph?: NodeGlyph | undefined;
     readonly radiusPx?: number | undefined; readonly haloRadiusPx?: number | undefined }>;

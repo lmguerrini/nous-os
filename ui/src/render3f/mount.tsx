@@ -80,6 +80,7 @@ import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
 // D085-S3 BEGIN
 import { QualityLadder, labAnchorInstanceIndices, labDenseInteraction, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, mainRelation, nativeLabSkeleton, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+import type { NativeAnchorRules, NativeRelationRank } from "#render-common/quality-ladder.ts";
 // D085-S3 END
 
 /** How long the camera must be still before the derived geometry returns to full quality. */
@@ -105,6 +106,8 @@ export type Render3fOptions = {
   // D085-S3 BEGIN: page-committed Geometry Lab topology, independent of renderer organization.
   readonly labTopology?: 'natural' | 'canopy-ifs' | 'julia' | 'sierpinski' | 'lull';
   readonly labIndra?: boolean;
+  readonly labLevels?: readonly { readonly id: string; readonly level: number }[];
+  readonly labRelationRanks?: ReadonlyMap<string, NativeRelationRank>;
   // D085-S3 END
   readonly palette?: Palette;
   readonly temperature: Temperature;
@@ -648,8 +651,13 @@ export function mount(
   }
   let emphasisIds = options.presentation?.emphasisIds ?? null;
   // D085-S3 BEGIN: native law levels arrive as identity-bearing container IDs.
-  const nativeLevels = new Map(options.presentation?.containers?.map(container =>
+  const nativeLevels = new Map((options.labLevels ?? options.presentation?.containers)?.map(container =>
     [container.id, container.level] as const) ?? []);
+  let nativeRelationRanks = options.labRelationRanks ?? new Map<string, NativeRelationRank>();
+  let nativeAnchorRules: NativeAnchorRules = { kind: 0, level: 0, emphasis: 0,
+    degree: 0, relationEndpoint: 0, fallback: 0 };
+  let nativeProxyMainEdges = 0;
+  let nativeMainIds = new Set<string>();
   // D085-S3 END
   // D082-A-PERF BEGIN: count the prepared scene once per revision, never in a camera frame.
   let requestedNodes = live.buffers.nodes.ids.length;
@@ -682,21 +690,17 @@ export function mount(
       requestedNodes = live.buffers.nodes.ids.length;
       requestedSemanticEdges = live.buffers.filaments.edgeIds.length;
       requestedVisualEdges = 0;
-      // D085-S3 BEGIN: the required main-relation census uses the same real-ID
-      // selection as the resident moving proxy.
-      if (labInteractionEnabled(options.labTopology))
-        requestedMainEdges = nativeLabSkeleton(live.scene.nodes, live.scene.edges,
-          nativeLevels, emphasisIds ?? new Set(), true).edgeIds.size;
-      else {
-        const byId = new Map(live.scene.nodes.map(node => [node.id, node]));
-        requestedMainEdges = live.scene.edges.filter(edge => {
-          const sourceMark = byId.get(edge.source), targetMark = byId.get(edge.target);
-          return mainRelation({ attested: true,
-            selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
-            sourceHub: sourceMark?.kind === 'hub', targetHub: targetMark?.kind === 'hub',
-            sourceDomain: sourceMark?.kind === 'domain', targetDomain: targetMark?.kind === 'domain' });
-        }).length;
-      }
+      // D085-S3 BEGIN: the original classifier census is independent of the
+      // moving proxy's submitted relation budget.
+      const byId = new Map(live.scene.nodes.map(node => [node.id, node]));
+      nativeMainIds = new Set(live.scene.edges.filter(edge => {
+        const sourceMark = byId.get(edge.source), targetMark = byId.get(edge.target);
+        return mainRelation({ attested: true,
+          selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
+          sourceHub: sourceMark?.kind === 'hub', targetHub: targetMark?.kind === 'hub',
+          sourceDomain: sourceMark?.kind === 'domain', targetDomain: targetMark?.kind === 'domain' });
+      }).map(edge => edge.id));
+      requestedMainEdges = nativeMainIds.size;
       // D085-S3 END
     }
   };
@@ -841,13 +845,15 @@ export function mount(
       if (child instanceof THREE.Mesh) child.geometry.dispose();
     }
     nativeProxyNodes = nativeProxyEdges = 0;
+    nativeProxyMainEdges = 0;
   };
   const rebuildNativeProxy = (): void => {
     clearNativeProxy();
     if (!nativeLab || typedPicker || !labDenseInteraction(options.labTopology,
       live.scene.nodes.length, DENSE_SCENE_THRESHOLD)) return;
     const skeleton = nativeLabSkeleton(live.scene.nodes, live.scene.edges,
-      nativeLevels, emphasisIds ?? new Set(), true);
+      nativeLevels, emphasisIds ?? new Set(), true, nativeRelationRanks);
+    nativeAnchorRules = skeleton.anchorRules;
     const nodeIndices = live.buffers.nodes.ids.flatMap((id, index) => skeleton.nodeIds.has(id) ? [index] : []);
     const edgeIndices = live.buffers.filaments.edgeIds.flatMap((id, index) => skeleton.edgeIds.has(id) ? [index] : []);
     if (nodeIndices.length === 0) return;
@@ -862,6 +868,8 @@ export function mount(
       edges.renderOrder = filamentResources.mesh.renderOrder;
       nativeProxy.add(edges);
       nativeProxyEdges = edgeIndices.length;
+      nativeProxyMainEdges = live.buffers.filaments.edgeIds.filter(id =>
+        skeleton.edgeIds.has(id) && nativeMainIds.has(id)).length;
     }
   };
   const applyNativeLabPolicy = (stage: 1 | 2 | 3 | 4): void => {
@@ -1091,10 +1099,11 @@ export function mount(
       ladder: stage,
       pixelRatio: activePixelRatio,
       fullPixelRatio: fullRenderDpr,
-      skeleton: { anchors: skeletonAnchors, mainRelations: skeletonMainRelations },
+      skeleton: { anchors: skeletonAnchors, mainRelations: skeletonMainRelations,
+        ...(nativeProxyActive && stage === 1 ? { anchorRules: nativeAnchorRules } : {}) },
       nodes: { required: requestedNodes, loaded: prepared?.nodes ?? requestedNodes, drawn: drawnNodes },
       mainEdges: { required: requestedMainEdges, loaded: Math.min(requestedMainEdges, prepared?.semanticEdges ?? requestedMainEdges),
-        drawn: Math.min(requestedMainEdges, drawnSemantic) },
+        drawn: nativeProxyActive ? nativeProxyMainEdges : Math.min(requestedMainEdges, drawnSemantic) },
       allEdges: { required: requestedSemanticEdges + requestedVisualEdges,
         loaded: prepared ? prepared.semanticEdges + prepared.visualEdges : requestedSemanticEdges + requestedVisualEdges,
         drawn: drawnSemantic + drawnVisual },
@@ -1489,18 +1498,24 @@ export function mount(
       if (!("styled" in update)) {
         if (typedPicker) throw new TypeError("Legacy subset cannot replace typed 3D visibility");
         distinct?.updateVisibleSubset(update);
+        // D085-S3 BEGIN: reuse the existing node-attribute update decision when
+        // deciding whether this revision will rebuild the native proxy below.
+        const updatesNativeNodeAttributes = live.scene.nodes.length === 11_199 && update.nodeEntries.size > 0;
+        // D085-S3 END
         // D085-S3 BEGIN: an in-place density slice can change the mounted
         // hierarchy without changing the native scene or its materials.
-        const nextLevels = new Map(update.input.containers.map(container =>
+        const nextLevels = new Map((update.labLevels ?? update.input.containers).map(container =>
           [container.id, container.level] as const));
+        const ranksChanged = update.labRelationRanks !== undefined
+          && update.labRelationRanks !== nativeRelationRanks;
+        if (update.labRelationRanks) nativeRelationRanks = update.labRelationRanks;
         const levelsChanged = nextLevels.size !== nativeLevels.size
           || [...nextLevels].some(([id, level]) => nativeLevels.get(id) !== level);
-        if (levelsChanged) {
+        if (levelsChanged || ranksChanged) {
           nativeLevels.clear();
           for (const [id, level] of nextLevels) nativeLevels.set(id, level);
           refreshPresentedCounts();
-          if (!(live.scene.nodes.length === 11_199 && update.nodeEntries.size)
-            && nativeEdgeVeilById.size === 0) {
+          if (!updatesNativeNodeAttributes && nativeEdgeVeilById.size === 0) {
             rebuildNativeProxy();
             applyNativeLabPolicy(ladder.state.stage);
             renderFrame();
@@ -1508,7 +1523,9 @@ export function mount(
         }
         // D085-S3 END
         // D082-A-NODES BEGIN
-        if (live.scene.nodes.length === 11_199 && update.nodeEntries.size) {
+        // D085-S3 BEGIN: share the one reference-size gate with the proxy rebuild decision.
+        if (updatesNativeNodeAttributes) {
+        // D085-S3 END
           const indexById = new Map(live.buffers.nodes.ids.map((id, nodeIndex) => [id, nodeIndex] as const));
           const core = nodeResources.geometry.getAttribute("a_coreRadiusPx") as THREE.InstancedBufferAttribute;
           const halo = nodeResources.geometry.getAttribute("a_haloRadiusPx") as THREE.InstancedBufferAttribute;

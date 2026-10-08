@@ -11,7 +11,11 @@ export type PresentedRenderReadiness = {
   // D085-S3 BEGIN: these describe the submitted drawing buffer, not window DPR.
   readonly pixelRatio?: number;
   readonly fullPixelRatio?: number;
-  readonly skeleton?: { readonly anchors: number; readonly mainRelations: number };
+  readonly skeleton?: { readonly anchors: number; readonly mainRelations: number;
+    /** Exclusive causes for anchors; relation endpoints are counted after the priority rules. */
+    readonly anchorRules?: { readonly kind: number; readonly level: number;
+      readonly emphasis: number; readonly degree: number; readonly relationEndpoint: number;
+      readonly fallback: number } };
   // D085-S3 END
   readonly nodes: PresentedStageCounts;
   readonly mainEdges: PresentedStageCounts;

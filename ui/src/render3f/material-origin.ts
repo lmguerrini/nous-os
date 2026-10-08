@@ -303,7 +303,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     // D085-S6 END
     // D082-A-PERF BEGIN
     // D085-S3 BEGIN: exact Lab stage and complete-segment selectors are material-independent.
-    ["#render-common/quality-ladder.ts", new Set(["QualityLadder", "labAnchorInstanceIndices", "labDenseInteraction", "labDrawPolicy", "labInteractionEnabled", "labMainSegmentRanges", "labPixelRatio", "mainRelation", "nativeLabSkeleton", "presentRenderReadiness"])],
+    ["#render-common/quality-ladder.ts", new Set(["NativeAnchorRules", "NativeRelationRank", "QualityLadder", "labAnchorInstanceIndices", "labDenseInteraction", "labDrawPolicy", "labInteractionEnabled", "labMainSegmentRanges", "labPixelRatio", "mainRelation", "nativeLabSkeleton", "presentRenderReadiness"])],
     // D085-S3 END
     // D082-A-PERF END
     ["#render3f/camera.tsx", new Set([
