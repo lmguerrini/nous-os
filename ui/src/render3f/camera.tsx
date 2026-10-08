@@ -165,6 +165,16 @@ export class CameraRig {
     this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
       this.worldFramingSubjects.map((subject) => subject.position),
     ));
+    // D085-S5 BEGIN: sparse Indra disclosures can have a deep volume but narrow XY
+    // bounds. Keep every node in front of the opening camera with room for its
+    // perspective-scaled device extent; ordinary XY-dominant scenes retain ratio.
+    if (kind !== ORTHOGRAPHIC && !validFramingTangent(this.stateValue.framingTangent)) {
+      this.stateValue = { ...this.stateValue, ratio: perspectiveOpeningRatio(
+        this.stateValue, this.worldCenterZ, this.worldFramingSubjects,
+        this.widthCssPx, this.heightCssPx,
+      ) };
+    }
+    // D085-S5 END
     this.framingTangentValue = this.deriveFramingTangent();
     this.updateCameras();
   }
@@ -533,6 +543,10 @@ export class CameraRig {
       verticalHalfSpan,
       this.worldCenterZ,
       this.worldFramingSubjects,
+      // D085-S5 BEGIN: only the depth-adjusted default opening moves the
+      // framing reference; an explicitly supplied dolly keeps the old view.
+      this.requestValue.ratio === 1 ? Math.max(1, state.ratio) : 1,
+      // D085-S5 END
       this.widthCssPx,
       this.heightCssPx,
     );
@@ -787,11 +801,16 @@ function perspectiveDefaultHalfAngleTangent(
   verticalHalfSpan: number,
   worldCenterZ: number,
   worldFramingSubjects: readonly CameraFramingSubject[],
+  // D085-S5 BEGIN
+  referenceRatio: number,
+  // D085-S5 END
   widthCssPx: number,
   heightCssPx: number,
 ): number {
   const target = perspectiveBoundsCenter(state, worldCenterZ);
-  const position = target.clone().addScaledVector(openingDirection(), span * Math.SQRT2);
+  // D085-S5 BEGIN: measure the field of view at the actual opening dolly.
+  const position = target.clone().addScaledVector(openingDirection(), span * referenceRatio * Math.SQRT2);
+  // D085-S5 END
   const matrixWorld = new THREE.Matrix4().lookAt(position, target, new THREE.Vector3(0, scalarCount(), 0));
   matrixWorld.setPosition(position);
   const matrixWorldInverse = matrixWorld.invert();
@@ -811,6 +830,34 @@ function perspectiveDefaultHalfAngleTangent(
   const requiredTangent = requiredPerspectiveFramingTangent(samples, widthCssPx, heightCssPx);
   return quantizeCameraFramingUpperBound(Math.max(verticalHalfSpan / targetDistance, requiredTangent));
 }
+
+// D085-S5 BEGIN: only forward depth can put a node against the perspective
+// camera. A lower bound on depth/eye distance also bounds screen-sized marks.
+export function perspectiveOpeningRatio(
+  state: VisualStateCamera, worldCenterZ: number,
+  subjects: readonly CameraFramingSubject[], widthCssPx: number, heightCssPx: number,
+): number {
+  const span = Math.max(state.bounds.x[1] - state.bounds.x[0], state.bounds.y[1] - state.bounds.y[0]);
+  // D085-S5 BEGIN: a caller-supplied dolly is a navigation intent, not a fresh fit.
+  if (state.ratio !== 1 || !(span > 0) || !subjects.length) return state.ratio;
+  // D085-S5 END
+  const center = perspectiveBoundsCenter(state, worldCenterZ);
+  const direction = openingDirection();
+  let farthestForward = 0;
+  let largestNodeExtent = 0;
+  for (const subject of subjects) {
+    const point = subject.position;
+    farthestForward = Math.max(farthestForward,
+      (point.x - center.x) * direction.x + (point.y - center.y) * direction.y
+        + (point.z - center.z) * direction.z);
+    if (subject.sizeMode === "node") largestNodeExtent = Math.max(largestNodeExtent, subject.extentCssPx);
+  }
+  const minimumViewport = Math.min(widthCssPx, heightCssPx);
+  const reserve = Math.min(0.8, Math.max(0.1, 2 * largestNodeExtent / minimumViewport + 0.02));
+  const required = farthestForward / ((1 - reserve) * span * Math.SQRT2);
+  return Math.max(state.ratio, required * 1.001);
+}
+// D085-S5 END
 
 function perspectiveTarget(state: VisualStateCamera, worldCenterZ: number): THREE.Vector3 {
   const normalise = createNormalizationFunction(copyMutableBounds(state.bounds));
