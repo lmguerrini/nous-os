@@ -619,10 +619,15 @@ export class V2Page {
     // D085-S1 BEGIN
     private readonly transitions = createGeometryTransitionQueue();
     private geometryIntent = 0;
+    // D085-S1 BEGIN: a slow renderer mount must not hold the geometry lane after supersession.
+    private cancelActiveMount: (() => void) | null = null;
+    private interruptMount(): void { this.cancelActiveMount?.(); }
+    // D085-S1 END
     /** A new request interrupts projection work even while its predecessor owns the mutation lane. */
     supersedeGeometry(): void {
         this.geometryIntent++;
         this.projectionEpoch++;
+        this.interruptMount();
         this.cancelProjectionWork();
         cancelPendingTopologyLayouts();
     }
@@ -3465,7 +3470,10 @@ export class V2Page {
         // D082-A-HUD BEGIN: publish the requested scene as in recovery while its new view is pending.
         this.d081Emit();
         // D082-A-HUD END
+        // D085-S1 BEGIN: every replacement refresh releases a renderer still preparing.
+        this.interruptMount();
         const projectionEpoch = ++this.projectionEpoch;
+        // D085-S1 END
         this.cancelProjectionWork();
         return this.run(async () => {
             // D085-S1 BEGIN: an invalidated job never reads the next request's mutable axes.
@@ -4126,6 +4134,9 @@ export class V2Page {
             // D081-P3c END
             let mounted!: ProductView;
             let nextRailLayer: CanopyRailLayer | null = null;
+            // D085-S1 BEGIN: the cancelled request stops owning the transition lane.
+            let cancelMount: (() => void) | null = null;
+            // D085-S1 END
             // D082-B2 BEGIN
             let nextGuideLayer: { destroy(): void } | null = null;
             // D082-B2 END
@@ -4135,7 +4146,7 @@ export class V2Page {
             // D082-A-PLUSN END
             try {
                 // D081-FRACTAL-MERGE BEGIN: canopy owns its edge and title layers.
-                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -4152,6 +4163,22 @@ export class V2Page {
                             if (this.hoverRefreshTimer) clearTimeout(this.hoverRefreshTimer);
                         } }
                 });
+                const interrupted = new Promise<null>(resolve => { cancelMount = () => resolve(null); });
+                this.cancelActiveMount = cancelMount;
+                const preparedMount = await Promise.race([preparingMount, interrupted]);
+                if (this.cancelActiveMount === cancelMount) this.cancelActiveMount = null;
+                if (preparedMount === null) {
+                    void preparingMount.then(late => late.destroy(), () => {});
+                    this.indraLabelHiddenCounts = previousHiddenCounts;
+                    nextHost.remove();
+                    return;
+                }
+                mounted = preparedMount;
+                if (projectionEpoch !== this.projectionEpoch) {
+                    mounted.destroy(); this.indraLabelHiddenCounts = previousHiddenCounts;
+                    nextHost.remove(); return;
+                }
+                // D085-S1 END
                 // D081-P7b END.
                 // D082-B2 BEGIN: guide IDs are visual only, never counted as source edges.
                 if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides);
@@ -4177,6 +4204,9 @@ export class V2Page {
                 }
             }
             catch (error) {
+                // D085-S1 BEGIN
+                if (this.cancelActiveMount === cancelMount) this.cancelActiveMount = null;
+                // D085-S1 END
                 // D085-S1 BEGIN: a later overlay failure cannot strand the new renderer.
                 mounted?.destroy();
                 nextRailLayer?.destroy();
@@ -4790,6 +4820,12 @@ export class V2Page {
         const previousAxes = this.axes;
         const previous = { topology: this.topology, indra: this.topologyIndra,
             legacyIndra: this.legacyIndra, explicit: this.taxonomyExplicit };
+        // D085-S1 BEGIN: a cancelled provisional taxonomy cannot outlive its task.
+        const restore = () => {
+            this.axes = previousAxes; this.topology = previous.topology; this.topologyIndra = previous.indra;
+            this.legacyIndra = previous.legacyIndra; this.taxonomyExplicit = previous.explicit;
+        };
+        // D085-S1 END
         this.topology = topology;
         this.topologyIndra = indra;
         this.taxonomyExplicit = true;
@@ -4798,16 +4834,28 @@ export class V2Page {
             : topology === 'natural' && indra ? 'indra' : 'natural';
         try {
             await this.applyAxes({ organization });
-            if (intent !== this.geometryIntent) return;
+            // D085-S1 BEGIN: cancellation can resolve refresh() before a mount commits.
+            if (intent !== this.geometryIntent) {
+                if (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra) restore();
+                return;
+            }
+            // D085-S1 END
             // D085-S1 BEGIN: a protected mount can keep the last good view and resolve refresh().
             // That is a refusal, never a successful topology selection for the toolbar to persist.
             if (this.view && (this.committedTaxonomy.topology !== topology || this.committedTaxonomy.indra !== indra))
                 throw new Error(`${topology}: la nuova vista non è stata montata`);
             // D085-S1 END
         }
-        catch (error) { if (intent !== this.geometryIntent) return;
-            this.axes = previousAxes; this.topology = previous.topology; this.topologyIndra = previous.indra;
-            this.legacyIndra = previous.legacyIndra; this.taxonomyExplicit = previous.explicit; throw error; }
+        catch (error) {
+            // D085-S1 BEGIN
+            if (intent !== this.geometryIntent) {
+                if (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra) restore();
+                return;
+            }
+            restore();
+            // D085-S1 END
+            throw error;
+        }
     }
     // D082-B2 END
     setAxes(value: AxesInput): Promise<void> {
