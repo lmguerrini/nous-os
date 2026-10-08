@@ -1586,17 +1586,29 @@ export class V2Page {
         await page.refresh();
         return page;
     }
+    // D085-S5 BEGIN: only a committed view clears an error owned by this page.
+    private pageErrorShown = false;
+    private clearPageErrorAfterCommit(): void {
+        if (!this.pageErrorShown) return;
+        element('error').hidden = true;
+        element('error').replaceChildren();
+        this.pageErrorShown = false;
+    }
+    // D085-S5 END
     private run(action: () => Promise<void>): Promise<void> {
         const task = this.pending.then(action);
         this.pending = task.catch(() => { });
         return task.catch(e => {
             const message = e instanceof Error ? e.message : String(e);
             element('status').textContent = `Errore: ${message}`;
+            // D085-S5 BEGIN: the retry reloads the kept view, and owns its rejection.
+            this.pageErrorShown = true;
             element('error').hidden = false;
             element('error').replaceChildren(document.createTextNode(message));
             const retry = document.createElement('button');
-            retry.textContent = 'Riprova';
-            retry.onclick = () => { void this.refresh(); };
+            retry.textContent = this.view || this.projectionRenderer ? 'Ricarica vista attuale' : 'Riprova il caricamento';
+            retry.onclick = () => { void this.refresh().catch(() => { }); };
+            // D085-S5 END
             element('error').append(retry);
             throw e;
         });
@@ -1883,7 +1895,9 @@ export class V2Page {
                 this.revealReleased = after.released;
                 this.autoPageCounts = new Map(after.auto);
                 this.auto = new Set(after.auto.keys());
-                void this.refresh();
+                // D085-S5 BEGIN: run() has already rendered any remount error.
+                void this.refresh().catch(() => { });
+                // D085-S5 END
             });
         // D081-P6c END.
         return changed;
@@ -2200,6 +2214,7 @@ export class V2Page {
         this.committedAxes = { ...this.axes };
         // D085-S5 BEGIN
         this.committedDensity = this.density;
+        this.clearPageErrorAfterCommit();
         // D085-S5 END
         // D085-S1 END
         this.projectionSnapshot = snapshot;
@@ -4502,6 +4517,7 @@ export class V2Page {
                     this.committedAxes = { ...this.axes };
                     // D085-S5 BEGIN
                     this.committedDensity = this.density;
+                    this.clearPageErrorAfterCommit();
                     // D085-S5 END
                     // D085-S1 END
                     // The same commit a successful mount makes, minus everything a remount owns
@@ -4767,6 +4783,7 @@ export class V2Page {
             this.committedAxes = { ...this.axes };
             // D085-S5 BEGIN
             this.committedDensity = this.density;
+            this.clearPageErrorAfterCommit();
             // D085-S5 END
             // D085-S1 END
             this.viewHost = nextHost;
@@ -5692,11 +5709,15 @@ export class V2Page {
             this.autoPageCounts.clear();
             this.revealState = emptyRevealState(this.revealCamera.zoom);
             this.lastRevealSampleKey = '';
-            void this.refresh().then(() => this.guideLayer?.invalidate());
+            // D085-S5 BEGIN: a background fold must own a failed remount.
+            void this.refresh().then(() => this.guideLayer?.invalidate()).catch(() => { });
+            // D085-S5 END
         }
         // D085-S4 BEGIN: re-enable the overview fold at the current camera.
         else if (this.topology === 'lull' && this.lawActive() && this.axes.organization === 'natural')
-            void this.refresh().then(() => this.guideLayer?.invalidate());
+            // D085-S5 BEGIN
+            void this.refresh().then(() => this.guideLayer?.invalidate()).catch(() => { });
+            // D085-S5 END
         // D085-S4 END
     }
     get semanticZoomEnabled() { return this.zoomOn; }
@@ -5787,7 +5808,9 @@ export class V2Page {
                     lastCameraChangeMs: this.cameraChangedAt });
                 const aggregatedNow = lullOverviewMode(this.zoomOn, lullView, lullHost.clientWidth,
                     lullHost.clientHeight, this.lullOverviewFolded);
-                if (lullSettled && aggregatedNow !== this.lullOverviewFolded) void this.refresh();
+                // D085-S5 BEGIN
+                if (lullSettled && aggregatedNow !== this.lullOverviewFolded) void this.refresh().catch(() => { });
+                // D085-S5 END
             }
         }
         // D085-S4 END
@@ -5803,7 +5826,9 @@ export class V2Page {
                 this.d081Emit();
                 // D081-P3b BEGIN: the complete resident scene stays visible while a
                 // semantic zoom revision splits or rejoins counted parallel lines.
-                if (this.indraPearlsView()) void this.refresh();
+                // D085-S5 BEGIN
+                if (this.indraPearlsView()) void this.refresh().catch(() => { });
+                // D085-S5 END
                 // D081-P3b END
             }
             return;
@@ -5822,7 +5847,9 @@ export class V2Page {
             // D081-P7d BEGIN.
             if (this.canopyActive()) this.canopyDetailStep = canopyZoomStep(zoom);
             // D081-P7d END.
-            void this.refresh();
+            // D085-S5 BEGIN
+            void this.refresh().catch(() => { });
+            // D085-S5 END
             return;
         }
         // D081-P7d BEGIN: refresh representative marks at settled half-octave steps,
@@ -5830,7 +5857,9 @@ export class V2Page {
         const detailStep = this.canopyActive() ? canopyZoomStep(zoom) : 0;
         const canopyChanged = settled && this.canopyActive() && detailStep !== this.canopyDetailStep;
         if (canopyChanged) this.canopyDetailStep = detailStep;
-        if (changed || canopyChanged) void this.refresh();
+        // D085-S5 BEGIN
+        if (changed || canopyChanged) void this.refresh().catch(() => { });
+        // D085-S5 END
         // D081-P7d END.
     }
     /** D-073 C4: the typed pipeline's share of `tickZoom`. The mounted renderer reports the live
@@ -5867,10 +5896,14 @@ export class V2Page {
         if (this.pendingLod !== null && settled) {
             this.lod = this.pendingLod;
             this.pendingLod = null;
-            void this.refresh();
+            // D085-S5 BEGIN
+            void this.refresh().catch(() => { });
+            // D085-S5 END
             return;
         }
-        if (changed) void this.refresh();
+        // D085-S5 BEGIN
+        if (changed) void this.refresh().catch(() => { });
+        // D085-S5 END
     }
     disclosure() {
         const shown = this.visible();

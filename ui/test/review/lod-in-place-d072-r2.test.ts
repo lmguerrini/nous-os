@@ -232,6 +232,35 @@ test("a band crossing lands in place once the camera has been still", async () =
   finally { mockNow = null; }
 });
 
+// D085-S5 BEGIN: a wheel-driven LOD remount failure is shown without an unhandled rejection.
+test("a failed background LOD remount keeps the drawn view and handles rejection", async () => {
+  resetRecording();
+  const page = makePage(true);
+  await page.refresh();
+  const before = page.witness().lod.nodes.rendered;
+  try {
+    mockNow = 300_000;
+    (page as unknown as { overviewRatio: number | null }).overviewRatio = 1;
+    cameraRatio = 1;
+    tick(page);
+    refuseUpdates = true;
+    failReplacementMount = true;
+    cameraRatio = 0.25;
+    mockNow = 300_050;
+    tick(page);
+    mockNow = 300_400;
+    tick(page);
+    await settled(page);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(mountCount, 2, 'the replacement mount was attempted');
+    assert.equal(destroyCount, 0, 'the drawn view was kept');
+    assert.equal(page.witness().lod.nodes.rendered, before);
+    assert.equal(elements.get('error')!.hidden, false, 'the page shows the failed remount');
+  }
+  finally { mockNow = null; }
+});
+// D085-S5 END
+
 test("a zoom back inside the band before stillness cancels the level change", async () => {
   resetRecording();
   const page = makePage(true);
@@ -302,7 +331,9 @@ test("a renderer throw followed by a failed replacement keeps the last rendered 
   };
   throwAfterFirstRenderer = true;
   failReplacementMount = true;
-  await page.setDensity("essential");
+  // D085-S5 BEGIN: the kept view is a visible, rejected transition.
+  await assert.rejects(page.setDensity("essential"), /resta l’ultima vista valida/);
+  // D085-S5 END
   assert.equal(firstRendererChanged, true, "the injected failure followed an actual overlay mutation");
   assert.equal(mountCount, 2, "replacement was attempted");
   assert.equal(destroyCount, 0, "the last good view was kept");

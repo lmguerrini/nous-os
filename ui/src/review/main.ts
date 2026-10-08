@@ -1980,7 +1980,9 @@ for (const button of densityButtons)
 syncDensity();
 get<HTMLSelectElement>("v2-relation-detail").addEventListener("change", event => {
   syncToolbarSummary();
-  void v2?.setRelationDetail((event.target as HTMLSelectElement).value as "essential" | "all");
+  // D085-S5 BEGIN: the page renders a failed remount; the event owns its rejection.
+  void v2?.setRelationDetail((event.target as HTMLSelectElement).value as "essential" | "all").catch(() => { });
+  // D085-S5 END
 });
 get<HTMLButtonElement>("v2-undo").addEventListener("click", () => { void v2?.undo(); });
 get<HTMLButtonElement>("v2-redo").addEventListener("click", () => { void v2?.redo(); });

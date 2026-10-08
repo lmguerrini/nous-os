@@ -395,6 +395,49 @@ test("a failing mount keeps the old view and shows the error region", async () =
 });
 // D085-S5 END
 
+// D085-S5 BEGIN: a new commit clears the old page error and background failures stay handled.
+test("a healthy morphology click clears a failed projection click's error", async () => {
+  resetMountFailureLog();
+  mountCount = 0; mountAttempts = 0; destroyCount = 0; failMounts = false;
+  const page = makePage();
+  await page.refresh();
+  const kept = view(page);
+  failMounts = true;
+  await muteErrorLog(() => assert.rejects(page.setAxes({ projection: '3d' }), /resta l’ultima vista valida/));
+  assert.equal(view(page), kept);
+  assert.equal(elements.get('error')!.hidden, false);
+  const retry = elements.get('error')!.children[1] as { textContent: string; onclick: () => void };
+  assert.equal(retry.textContent, 'Ricarica vista attuale', 'retry explains what will reload');
+  retry.onclick();
+  await (page as unknown as { pending: Promise<void> }).pending;
+  assert.equal(elements.get('error')!.hidden, false, 'a failed retry leaves the error visible');
+  failMounts = false;
+  await page.setAxes({ morphology: 'neural' });
+  assert.equal(page.committedViewAxes.morphology, 'neural');
+  assert.equal(elements.get('error')!.hidden, true, 'the successful commit clears the stale error');
+  assert.deepEqual(elements.get('error')!.children, []);
+  assert.equal(elements.get('status')!.textContent, 'Grafo pronto');
+});
+
+test("a failed background semantic zoom refresh owns its rejection", async () => {
+  resetMountFailureLog();
+  mountCount = 0; mountAttempts = 0; destroyCount = 0; failMounts = false;
+  const page = makePage();
+  await page.refresh();
+  const kept = view(page);
+  failMounts = true;
+  await muteErrorLog(async () => {
+    page.setSemanticZoom(false);
+    await (page as unknown as { pending: Promise<void> }).pending;
+    await new Promise<void>(resolve => setImmediate(resolve));
+  });
+  assert.equal(view(page), kept);
+  assert.equal(elements.get('error')!.hidden, false);
+  assert.match(elements.get('status')!.textContent, /resta l’ultima vista valida/);
+  failMounts = false;
+});
+// D085-S5 END
+
 test("a successful mount swaps and destroys the old view exactly once, camera restored on the same scene", async () => {
   resetMountFailureLog();
   mountCount = 0; mountAttempts = 0; destroyCount = 0; failMounts = false;
