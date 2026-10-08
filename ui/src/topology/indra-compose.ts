@@ -9,7 +9,7 @@ import { LULL_LETTERS } from './lull-inquiry.ts';
 // D085-S5 END
 
 // D085-S5 BEGIN: chart and root-ring layouts require a fresh cache key.
-export const INDRA_COMPOSE_VERSION = '4';
+export const INDRA_COMPOSE_VERSION = '5';
 // D085-S5 END
 const cache = new Map<string, TopologyLayout>();
 const cmp = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -69,8 +69,16 @@ function locate(
   if (law.id === 'lull') {
     const gap = Math.max(7, frames.reduce((sum, frame) => sum + frame.radius, 0) / frames.length * 0.08);
     const packed = packDiscs(frames.map(frame => ({ id: frame.node.id, radius: frame.radius })), gap);
-    const offsets = new Map(frames.map(frame => { const p = packed.get(frame.node.id)!;
+    const offsets = new Map<string, Point3>(frames.map(frame => { const p = packed.get(frame.node.id)!;
       return [frame.node.id, { x: p.x, y: p.y, z: 0 }] as const; }));
+    // D085-S5 BEGIN: a unary Llull container needs the same visible contains
+    // separation as every other law; classic packing alone puts it at the origin.
+    if (frames.length === 1) {
+      const frame = frames[0]!;
+      const angle = depthOf(frame.node.id) * Math.PI;
+      offsets.set(frame.node.id, times({ x: Math.cos(angle), y: Math.sin(angle), z: 0 }, frame.radius + gap));
+    }
+    // D085-S5 END
     const radius = Math.max(...frames.map(frame => length(offsets.get(frame.node.id)!) + frame.radius + gap)) / 0.94;
     const witnesses = new Map(frames.map(frame => [frame.node.id, { law: 'Llull',
       values: { localPacking: 'Indra' }, text: 'Posizione interna: perla della gerarchia primaria; la legge delle nove lettere vale fra le perle radice.' }] as const));
@@ -90,7 +98,11 @@ function locate(
     return law.layoutFull(localSnapshot, dim);
   })());
   // D082-LAB-FIX2 END
-  const points = law.layoutLocal?.(nodes, snapshot, dim) ?? local!.positions;
+  // D085-S5 BEGIN: a chart already computed the restricted coordinates. Reuse
+  // them instead of running Canopy's same restricted layout a second time.
+  const points = local?.positions ?? law.layoutLocal?.(nodes, snapshot, dim);
+  if (!points) throw new Error('indra-compose: missing local positions');
+  // D085-S5 END
   if (points.size !== nodes.length) throw new Error('indra-compose: local law must place every real ID exactly once');
   for (const node of nodes)
     if (!valid(points.get(node.id), dim)) throw new Error('indra-compose: invalid local point for ' + node.id);
