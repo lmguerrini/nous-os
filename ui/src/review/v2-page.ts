@@ -1140,6 +1140,10 @@ export class V2Page {
     // topology and dimension. Both are pure functions of the immutable index.
     private readonly canopyEvidenceCandidates: readonly CanopyEvidenceCandidate[];
     private densityBudgetRecord: VisibilityBudgetRecord | null = null;
+    // D085-S2 BEGIN: the excluded-edge denominator is the immutable full scene
+    // for each reading, even when Canopy admits evidence after projection.
+    private readonly eligibleRelationTotals = new Map<Reading, number>();
+    // D085-S2 END
     // D085-S2 END
     private canopyActive(): boolean {
         // D082-B2 BEGIN: the explicit Canopy topology is no longer a legacy experimental flag.
@@ -3968,7 +3972,10 @@ export class V2Page {
                     ...this.focusedRenderPriority(seedPool.nodes),
                     ...[...(seedFocus ?? [])].sort((a, b) => (seedByImportance.get(b) ?? 0) - (seedByImportance.get(a) ?? 0) || a.localeCompare(b))];
                 const seed = this.selectLod({ nodes: seedInfos, level: this.lod,
-                    budget: DENSITY_BUDGETS.essential.nodes, reserveStructure: false,
+                    // D085-S2 BEGIN: Canopy + Indra draws Essenziale with the Canopy row.
+                    // Reuse that exact row for the Bilanciata seed to preserve E ⊂ B.
+                    budget: densityBudget('essential', this.budgetTopologyOf()).nodes, reserveStructure: false,
+                    // D085-S2 END
                     pinned: seedPinned, focus: active, priority: seedPriority,
                     adjacency: adjacencyOf(seedPool.nodes, this.index.edges), communityOf }, null).rendered;
                 const scores = lawSelectionScores(
@@ -4101,6 +4108,15 @@ export class V2Page {
             {
                 const budgetTopology = this.budgetTopologyOf();
                 const totalNodes = canopy ? this.canopyDatasetNodes.length : this.index.nodes.length;
+                // D085-S2 BEGIN: all topology rows account against the same kind of pool:
+                // the full snapshot's eligible source/containment relations for this reading.
+                // Cache its total because Complete constructs the pool only once per reading.
+                let eligibleRelations = this.eligibleRelationTotals.get(this.axes.reading);
+                if (eligibleRelations === undefined) {
+                    eligibleRelations = completeRelations(this.index, this.axes.reading).total;
+                    this.eligibleRelationTotals.set(this.axes.reading, eligibleRelations);
+                }
+                // D085-S2 END
                 const isLaw = !canopy && this.lawActive();
                 // D085-S2 BEGIN: describe the density actually drawn, including Complete.
                 const nodeReason = this.density === 'complete'
@@ -4110,7 +4126,7 @@ export class V2Page {
                     : canopy
                     ? 'Prefisso strutturale (livelli ≤ 3), poi gli estremi delle relazioni di evidenza più forti; ancore di fit e focus sempre incluse.'
                     : isLaw
-                        ? 'Bilanciata campiona la geometria della legge per bande radiali (l\'Essenziale resta il seme); l\'importanza decide solo dentro ogni banda.'
+                        ? `Bilanciata include il seme Essenziale (fino a ${densityBudget('essential', budgetTopology).nodes} nodi) e campiona altre posizioni per bande radiali; gli ID sovrapposti al seme non sono contati due volte, quindi il visibile può essere inferiore al richiesto.`
                         : 'Bilanciata estende il pool semantico condiviso: scaffold strutturale, percorsi dei focali, resto per importanza.';
                 const edgeReason = this.density === 'complete'
                     ? 'Completa richiede tutte le relazioni eleggibili per la lettura corrente.'
@@ -4129,10 +4145,15 @@ export class V2Page {
                     // bounded-path budget entry retained for other callers.
                     nodes: { requested: this.density === 'complete' ? totalNodes : budget.nodes, visible: renderedIds.size,
                         aggregated: canopy ? canopyViewMarks.reduce((sum, mark) => sum + mark.memberCount - 1, 0) : 0,
-                        excluded: Math.max(0, totalNodes - renderedIds.size), reason: nodeReason },
+                        // D085-S2 BEGIN: disclose the accounting universe and the fact that
+                        // aggregation is a separate, possibly overlapping measurement.
+                        excluded: Math.max(0, totalNodes - renderedIds.size),
+                        reason: `${nodeReason} Base esclusi: ${totalNodes} nodi dello snapshot; esclusi = base − visibili. Aggregati è un conteggio separato dei membri rappresentati.` },
                     edges: { requested: this.density === 'complete' ? availableArcs.total : budget.arcs, drawn: shown.length,
                         aggregated: route.aggregates.length,
-                        excluded: Math.max(0, availableArcs.total - shown.length), reason: edgeReason },
+                        excluded: Math.max(0, eligibleRelations - shown.length),
+                        reason: `${edgeReason} Base esclusi: ${eligibleRelations} relazioni eleggibili dello snapshot completo per questa lettura; esclusi = base − disegnati. Aggregati è un conteggio separato.` },
+                    // D085-S2 END
                     // D085-S2 END
                 };
             }
