@@ -157,6 +157,9 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
   readBrainEnvelopeFramingSphere(): { readonly center: Coordinates; readonly radius: number } | null;
+  // D085-S6 BEGIN: the product motion control synchronizes the native beam without a remount.
+  syncNativeBeamMotion(): void;
+  // D085-S6 END
   setEmphasis(ids: ReadonlySet<string> | null): void;
   setAppearance(options: AppearanceOptions): void;
   /** Appearance of the derived geometry (containers, curves, field rings) of a typed projection; never moves it. */
@@ -248,6 +251,14 @@ export function nativeBeamVisibleEdgeCount(
       || (i < boundaries.length - 1 && inside((t + boundaries[i + 1]!) / 2)))) visible += 1;
   }
   return visible;
+}
+
+export function renderNativeBeamQuietOnRetire(input: {
+  readonly lastRenderedLive: boolean;
+  readonly visible: boolean;
+  readonly renderQuiet: () => void;
+}): void {
+  if (input.lastRenderedLive && input.visible) input.renderQuiet();
 }
 
 export function createNativeBeamDriver(input: {
@@ -406,8 +417,14 @@ export function mount(
   let nativeBeamClockMs = 0;
   let nativeBeamLiveUntilWallMs = 0;
   let nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;
+  let nativeBeamLastRenderedLive = false;
+  let nativeBeamForceQuiet = false;
   const nativeBeamCameraMoving = (): boolean => ladder.state.moving;
   const sampleNativeBeam = (): number => {
+    if (nativeBeamForceQuiet) {
+      nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;
+      return NATIVE_BEAM_SUSPENDED_MS;
+    }
     const sample = nativeBeamElapsedSample({
       clockMs: flowNow(),
       wallMs: performance.now(),
@@ -910,6 +927,12 @@ export function mount(
     // D085-S3 BEGIN: optional per-layer CPU submission marks for performance traces.
     if (perfMarksEnabled) performance.mark('d085:webgl:start');
     renderer.render(threeScene, rig.camera);
+    // D085-S6 BEGIN: the watchdog samples the clock without drawing. Record the phase of the
+    // submitted WebGL frame so retirement can correct a pulse that is actually on screen.
+    nativeBeamLastRenderedLive = nativeBeamLastSampleMs !== NATIVE_BEAM_SUSPENDED_MS
+      && !nativeBeamVisibilityDirty && nativeBeamVisibleEdges > 0
+      && !typedPicker && world.visible && filamentResources.mesh.visible;
+    // D085-S6 END
     if (perfMarksEnabled) { performance.mark('d085:webgl:end');
       performance.measure('d085:webgl', 'd085:webgl:start', 'd085:webgl:end'); }
     if (perfMarksEnabled) performance.mark('d085:overlays:start');
@@ -1108,7 +1131,20 @@ export function mount(
     eligible: nativeBeamPreconditions,
     sample: sampleNativeBeam,
     render: renderFrame,
-    onRetire: () => { nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS; },
+    onRetire: () => {
+      const lastRenderedLive = nativeBeamLastRenderedLive;
+      nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;
+      nativeBeamLastRenderedLive = false;
+      renderNativeBeamQuietOnRetire({
+        lastRenderedLive,
+        visible: !nativeBeamVisibilityDirty && nativeBeamVisibleEdges > 0
+          && !document.hidden && !destroyed,
+        renderQuiet: () => {
+          nativeBeamForceQuiet = true;
+          try { renderFrame(); } finally { nativeBeamForceQuiet = false; }
+        },
+      });
+    },
     now: () => performance.now(),
     schedule: (tick, delay) => setTimeout(tick, delay),
     cancel: timer => clearTimeout(timer),
@@ -1312,6 +1348,12 @@ export function mount(
   // D085-S6 END
   return {
     readPlacedLabelIds(): readonly string[] { return typedLabelOverlay?.readLabelIds() ?? []; },
+    // D085-S6 BEGIN: the page has already claimed the shared motion state before calling this.
+    syncNativeBeamMotion(): void {
+      if (flowMotionAllowedNow()) wakeNativeBeam();
+      else nativeBeamDriver.retire();
+    },
+    // D085-S6 END
     setAppearance(appearance: AppearanceOptions): void {
       setFilamentNeuralWidthPx(filamentResources.material, appearance.edgeWidth);
       distinct?.setAppearance(appearance);
@@ -1581,6 +1623,7 @@ export function mount(
     destroy(): void {
       if (labelTimer !== undefined) clearTimeout(labelTimer);
       // D085-S6 BEGIN: retire the native beam driver with the mount — no timer outlives the view.
+      nativeBeamLastRenderedLive = false;
       nativeBeamDriver.retire();
       document.removeEventListener("visibilitychange", onNativeBeamVisibility);
       // D085-S6 END

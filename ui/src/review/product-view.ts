@@ -918,6 +918,10 @@ export const createProductView: CreateProductView = async (input) => {
     if (destroyed) return;
     const allowed = flowAnimatesNow();
     claimFlowMotion(flowOwner, allowed);
+    // D085-S6 BEGIN: changing Movimento must retire a live 3D pulse immediately and wake the
+    // native driver when motion resumes, without requiring a camera event or a remount.
+    three?.syncNativeBeamMotion();
+    // D085-S6 END
     if (allowed !== flowFlag) {
       // The base pass flips between the overlay-owned highlights and the static cue: repaint it
       // once so an exploratory reading never shows both or neither.

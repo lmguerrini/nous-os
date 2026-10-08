@@ -11,7 +11,8 @@ import {
   FLOW_LAYER_FRAME_MS, NATIVE_BEAM_WATCH_BUDGET_MS, NATIVE_BEAM_WATCH_MS,
 } from "#render-common/flow.ts";
 import type { createNativeBeamDriver as DriverFactory,
-  nativeBeamVisibleEdgeCount as VisibleEdgeCounter } from "#render3f/mount.tsx";
+  nativeBeamVisibleEdgeCount as VisibleEdgeCounter,
+  renderNativeBeamQuietOnRetire as QuietRetire } from "#render3f/mount.tsx";
 // Node strips .ts but cannot execute .tsx. Compile only the exact pure beam block from mount in
 // memory; the actual browser mount uses these same exported functions without test substitutes.
 const mountSource = readFileSync(new URL("../src/render3f/mount.tsx", import.meta.url), "utf8");
@@ -27,6 +28,16 @@ new Function("module", "THREE", "NATIVE_BEAM_SUSPENDED_MS", "FLOW_LAYER_FRAME_MS
   NATIVE_BEAM_WATCH_BUDGET_MS, NATIVE_BEAM_WATCH_MS);
 const nativeBeamVisibleEdgeCount = beamModule.exports.nativeBeamVisibleEdgeCount as typeof VisibleEdgeCounter;
 const createNativeBeamDriver = beamModule.exports.createNativeBeamDriver as typeof DriverFactory;
+const renderNativeBeamQuietOnRetire = beamModule.exports.renderNativeBeamQuietOnRetire as typeof QuietRetire;
+const productSource = readFileSync(new URL("../src/review/product-view.ts", import.meta.url), "utf8");
+// Scope each source assertion to its call site; a later matching call cannot satisfy it.
+const between = (source: string, start: string, end: string): string => {
+  const first = source.indexOf(start);
+  assert.ok(first >= 0, `${start} exists`);
+  const last = source.indexOf(end, first + start.length);
+  assert.ok(last > first, `${end} follows ${start}`);
+  return source.slice(first, last);
+};
 // D085-S6 END
 import {
   FILAMENT_FRAGMENT_SHADER,
@@ -247,15 +258,78 @@ test("D085-S6 native driver retires offscreen, schedules no idle frame, and re-a
   assert.ok(retired >= 2);
 });
 
+// D085-S6 BEGIN: retirement corrects only a live pulse that is still on screen.
+test("D085-S6 retirement submits one quiet frame after a live onscreen sample", () => {
+  let allowed = true, visible = true, lastRenderedLive = false, frames = 0, nextId = 0;
+  const scheduled = new Map<number, () => void>();
+  const driver = createNativeBeamDriver({
+    eligible: () => allowed && visible,
+    sample: () => 1_000,
+    render: () => { frames += 1; lastRenderedLive = true; },
+    onRetire: () => {
+      const wasLive = lastRenderedLive;
+      lastRenderedLive = false;
+      renderNativeBeamQuietOnRetire({ lastRenderedLive: wasLive, visible,
+        renderQuiet: () => { frames += 1; } });
+    },
+    now: () => 1_000,
+    schedule: tick => { const id = ++nextId; scheduled.set(id, tick); return id as unknown as ReturnType<typeof setTimeout>; },
+    cancel: timer => { scheduled.delete(timer as unknown as number); },
+  });
+  const tick = () => { const [id, run] = scheduled.entries().next().value!; scheduled.delete(id); run(); };
+  driver.wake(); tick();
+  assert.equal(frames, 1, "the first live sample draws once");
+  allowed = false;
+  driver.retire();
+  assert.equal(frames, 2, "turning motion off corrects the visible pulse once");
+  driver.retire();
+  assert.equal(frames, 2, "already quiet retirement draws nothing");
+  allowed = true;
+  driver.wake(); tick();
+  assert.equal(frames, 3);
+  visible = false;
+  tick();
+  assert.equal(frames, 3, "offscreen retirement draws nothing");
+  assert.equal(scheduled.size, 0, "no idle timer remains offscreen");
+});
+
+test("D085-S6 retirement callback forces the corrective WebGL frame after resetting the sample", () => {
+  const callback = between(mountSource, "    onRetire: () => {", "    now: () => performance.now()");
+  assert.match(callback, /const lastRenderedLive = nativeBeamLastRenderedLive;/);
+  assert.match(callback, /nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;\s*nativeBeamLastRenderedLive = false;/);
+  assert.match(callback, /renderNativeBeamQuietOnRetire\(\{[\s\S]*?visible: !nativeBeamVisibilityDirty && nativeBeamVisibleEdges > 0[\s\S]*?renderQuiet: \(\) => \{[\s\S]*?nativeBeamForceQuiet = true;[\s\S]*?renderFrame\(\);/);
+  assert.match(between(mountSource, "  const sampleNativeBeam = ", "  const filamentResources = "),
+    /if \(nativeBeamForceQuiet\) \{\s*nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;\s*return NATIVE_BEAM_SUSPENDED_MS;/);
+  assert.match(between(mountSource, "  const renderFrame = ", "  let presentationRevision = "),
+    /renderer\.render\(threeScene, rig\.camera\);[\s\S]{0,300}?nativeBeamLastRenderedLive = nativeBeamLastSampleMs !== NATIVE_BEAM_SUSPENDED_MS/);
+});
+
+test("D085-S6 Movimento changes immediately synchronize the mounted native driver", () => {
+  const sync = between(productSource, "  const syncFlowLoop = ", "  const onVisibilityChange = ");
+  assert.match(sync, /claimFlowMotion\(flowOwner, allowed\);[\s\S]{0,300}?three\?\.syncNativeBeamMotion\(\);/);
+  assert.match(between(mountSource, "    syncNativeBeamMotion(): void {", "    setAppearance(appearance: AppearanceOptions): void {"),
+    /if \(flowMotionAllowedNow\(\)\) wakeNativeBeam\(\);\s*else nativeBeamDriver\.retire\(\);/);
+  assert.match(productSource, /setFlowMotion\(enabled\) \{ flowMotion = enabled; syncFlowLoop\(\); \}/);
+});
+
 test("D085-S6 the mounted driver invalidates visibility on camera and native-pass changes", () => {
-  assert.match(mountSource, /const syncCameraState = \(\): void => \{[\s\S]*?invalidateNativeBeamVisibility\(\);[\s\S]*?ladder\.touch\(\)/);
+  const camera = between(mountSource, "  const syncCameraState = ", "  const detachInteractions = ");
+  assert.match(camera, /invalidateNativeBeamVisibility\(\);[\s\S]*?ladder\.touch\(\)/);
   // Integration with the S3 ladder: the resize observer now resizes through syncDrawingBuffer (which calls rig.resize);
   // the guarantee is unchanged — beam visibility is invalidated after every drawing-buffer resize.
-  assert.match(mountSource, /syncDrawingBuffer\(next\.width, next\.height\);[\s\S]*?invalidateNativeBeamVisibility\(\)/);
-  assert.match(mountSource, /const syncDrawingBuffer = [\s\S]*?rig\.resize\(width, height, ratio\);/);
-  assert.match(mountSource, /world\.visible = false;[\s\S]{0,300}?invalidateNativeBeamVisibility\(\)/);
-  assert.match(mountSource, /const refreshNativeBeamVisibility = \(\): void => \{\s*if \(!nativeBeamVisibilityDirty\) return;/);
-  assert.match(mountSource, /nativeBeamVisibleEdgeCount\(live\.buffers\.filaments, nativeBeamEdgeIds, rig\.camera\)/);
+  assert.match(between(mountSource, "  const resizeObserver = ", "  resizeObserver.observe(container);"),
+    /syncDrawingBuffer\(next\.width, next\.height\);[\s\S]*?invalidateNativeBeamVisibility\(\);/);
+  assert.match(between(mountSource, "  const syncDrawingBuffer = ", "  // D085-S3 END"), /rig\.resize\(width, height, ratio\);/);
+  assert.match(between(mountSource, "    updateVisibleSubset(update: DistinctSubsetUpdate | Render3fTypedInput): void {", "    pickAtPosition("),
+    /world\.visible = false;[\s\S]{0,300}?invalidateNativeBeamVisibility\(\)/);
+  const refresh = between(mountSource, "  const refreshNativeBeamVisibility = ", "  const nativeBeamPreconditions = ");
+  assert.match(refresh, /if \(!nativeBeamVisibilityDirty\) return;/);
+  assert.match(refresh, /!document\.hidden && !typedPicker && world\.visible && filamentResources\.mesh\.visible/);
+  assert.match(refresh, /nativeBeamVisibleEdgeCount\(live\.buffers\.filaments, nativeBeamEdgeIds, rig\.camera\)/);
+  assert.match(between(mountSource, "  const applyMaterialState = ", "  const brainProof = "),
+    /invalidateNativeBeamVisibility\(\);\s*refreshNativeBeamVisibility\(\);\s*(?:\/\/[^\n]*\n)*\s*renderFrame\(\);/);
+  assert.match(between(mountSource, "  const ladder = new QualityLadder(", "  // D082-A-PERF END"),
+    /if \(!moving\) \{[\s\S]*?refreshNativeBeamVisibility\(\);[\s\S]*?renderFrame\(\);[\s\S]*?publishPresentedFrame\(\);/);
   assert.match(mountSource, /visibleExploratory: nativeBeamVisibilityDirty \? null : nativeBeamVisibleEdges/,
     "an invalidated camera must not publish zero as a measured visible count");
 });
