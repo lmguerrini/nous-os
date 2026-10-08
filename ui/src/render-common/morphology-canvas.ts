@@ -39,6 +39,12 @@ import {
   FLOW_HALO_ALPHA,
   FLOW_HALO_WIDTH_MULTIPLIER,
   FLOW_WAVE_MAX_ALPHA,
+  // D086-F5 BEGIN
+  FLOW_BEAM_WHITE_MIX,
+  flowBeamEnvelope,
+  flowBeamWidthsPx,
+  flowHeadAlpha,
+  // D086-F5 END
   // D082-A-PERF BEGIN
   FLOW_ANIMATED_EDGE_BUDGET,
   // D082-A-PERF END
@@ -1502,15 +1508,23 @@ export function neuralCompletaPointRadius(radiusPx: number, fitProjectionScale: 
 export function clipEdgePaint(paint: MorphologyEdgePaint, width: number, height: number): MorphologyEdgePaint[] {
   const lastIndex = paint.points.length - 1;
   // A wide soma root can still touch the canvas while its centreline is outside it.
-  const margin = Math.max(32, paint.widthAt(0) * 0.5 + 4,
-    paint.widthAt(lastIndex * 0.5) * 0.5 + 4, paint.widthAt(lastIndex) * 0.5 + 4);
+  // D086-F5 BEGIN: a sample with no finite projection has no width either; the margin is measured
+  // from the finite ones, because one NaN would turn every clip bound into NaN and the segment
+  // loop below would read a point that does not exist.
+  const margin = Math.max(32, ...[0, lastIndex * 0.5, lastIndex].map(index => paint.widthAt(index) * 0.5 + 4)
+    .filter(Number.isFinite));
+  // D086-F5 END
   const box = [-margin, width + margin, -margin, height + margin] as const;
   const runs: { point: ProjectedPoint; index: number; distance: number }[][] = [];
   let run: { point: ProjectedPoint; index: number; distance: number }[] = [];
   const append = (index: number) => {
     const low = Math.floor(index), fraction = index - low;
-    const a = paint.points[low]!, b = paint.points[Math.min(low + 1, paint.points.length - 1)]!;
-    const distance = paint.cumulative[low]! + (paint.cumulative[Math.min(low + 1, paint.points.length - 1)]! - paint.cumulative[low]!) * fraction;
+    // D086-F5 BEGIN: a sample at a whole index is that sample; a neighbour that never projected
+    // must not leak NaN into it through a zero-weight interpolation.
+    const next = fraction === 0 ? low : Math.min(low + 1, paint.points.length - 1);
+    const a = paint.points[low]!, b = paint.points[next]!;
+    const distance = paint.cumulative[low]! + (paint.cumulative[next]! - paint.cumulative[low]!) * fraction;
+    // D086-F5 END
     const item = { point: { x: a.x + (b.x - a.x) * fraction, y: a.y + (b.y - a.y) * fraction,
       scale: a.scale + (b.scale - a.scale) * fraction }, index, distance };
     if (run.at(-1)?.index !== index) run.push(item);
@@ -2114,9 +2128,34 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
 // D084-W2-NEURAL: the former close-up pass (one cosmetic offshoot per visible endpoint)
 // is removed — a decorative filament may not fake a relation the graph does not draw.
 
+// D086-F5 BEGIN: the separate flow layer draws the beam as light of its own: one near-white fill on
+// the edge's continuous outline, never narrower than the legibility floor, carrying a single
+// gradient along the edge exactly as the profile light does.
+function drawBeamLight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
+  modulation: EdgeModulation, intensity: number): void {
+  if (!pulseVisible(paint, modulation)) return;
+  const floorPx = flowBeamWidthsPx(neuralProfileWidth(paint)).core;
+  const light = { ...paint, color: rgbaChannels(brightenChannels(colourChannels(paint.color), FLOW_BEAM_WHITE_MIX), 1) };
+  const envelope = Object.assign((distance: number) => flowBeamEnvelope(modulation(distance), intensity),
+    { centre: modulation.centre!, radius: modulation.radius! });
+  context.fillStyle = edgeLightGradient(context, light, envelope, flowHeadAlpha(intensity));
+  fillRibbon(context, paint.points, i => Math.max(paint.widthAt(i), floorPx));
+}
+// D086-F5 END
+
 function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: readonly MorphologyEdgePaint[],
-  now: number, speed: number, intensity: number): void {
+  now: number, speed: number, intensity: number,
+  // D086-F5 BEGIN
+  beam = false,
+  // D086-F5 END
+): void {
   for (const paint of paints) {
+    // D086-F5 BEGIN
+    if (beam && typeof context.createLinearGradient === "function") {
+      drawBeamLight(context, paint, flowModulation(paint, now, speed, intensity), intensity);
+      continue;
+    }
+    // D086-F5 END
     if (paint.neural) {
       if (typeof context.createLinearGradient === "function")
         drawNeuralLight(context, paint, flowModulation(paint, now, speed, intensity));
@@ -2803,6 +2842,8 @@ export function drawFlowLayer(context: CanvasRenderingContext2D, geometry: Morph
   context.globalCompositeOperation = "lighter";
   context.lineCap = "round";
   context.lineJoin = "round";
-  drawTravellingHighlights(context, cache.paints, now, appearance.flowSpeed, appearance.flowIntensity);
+  // D086-F5 BEGIN
+  drawTravellingHighlights(context, cache.paints, now, appearance.flowSpeed, appearance.flowIntensity, true);
+  // D086-F5 END
   context.globalCompositeOperation = previousComposite;
 }

@@ -296,6 +296,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
       "NATIVE_BEAM_SUSPENDED_MS",
       "NATIVE_BEAM_WATCH_BUDGET_MS",
       "NATIVE_BEAM_WATCH_MS",
+      // D086-F5 BEGIN: the frame-paced scheduler of the beam driver; it carries no material value.
+      "createPacedFrameScheduler",
+      // D086-F5 END
       "flowMotionAllowedNow",
       "flowNow",
       "nativeBeamElapsedSample",

@@ -255,6 +255,61 @@ export function nativeBeamElapsedSample(input: {
 }
 // D085-S6 END
 
+// D086-F5 BEGIN: the restored beam is light, not a darker copy of the edge. Its core is a near-white
+// tone mixed from the edge colour and its width never falls under the legibility floor; the
+// envelope and the speed stay the ones above.
+/** Share of white mixed into the edge colour for the beam core. */
+export const FLOW_BEAM_WHITE_MIX = 0.72;
+/** The beam envelope as a share of its peak: the pulse alpha divided by the peak the intensity allows. */
+export function flowBeamEnvelope(pulseAlpha: number, intensity: number): number {
+  const peak = FLOW_WAVE_MAX_ALPHA * Math.min(1, Math.max(0, intensity) / 0.6);
+  return peak > 0 ? Math.min(1, Math.max(0, pulseAlpha / peak)) : 0;
+}
+
+/** A paced animation-frame scheduler: the wait between frames runs on a timer, the work itself runs
+ * inside the browser's frame callback, and `flowLayerFrameDue` caps the cadence. Nothing is queued
+ * once a handle is cancelled, so a resting page holds no timer and no frame request. */
+export type PacedFrameHost = {
+  readonly requestFrame: (callback: (frameMs: number) => void) => number;
+  readonly cancelFrame: (frame: number) => void;
+  readonly setTimer: (callback: () => void, delayMs: number) => unknown;
+  readonly clearTimer: (timer: unknown) => void;
+};
+export type PacedFrameHandle = { cancelled: boolean; timer: unknown; frame: number };
+export function createPacedFrameScheduler(host: PacedFrameHost, minIntervalMs: number = FLOW_LAYER_FRAME_MS) {
+  let lastFrameMs = Number.NEGATIVE_INFINITY;
+  return {
+    schedule(tick: () => void, delayMs: number): PacedFrameHandle {
+      const handle: PacedFrameHandle = { cancelled: false, timer: undefined, frame: 0 };
+      const request = (): void => {
+        handle.timer = undefined;
+        if (!handle.cancelled) handle.frame = host.requestFrame(run);
+      };
+      const run = (frameMs: number): void => {
+        handle.frame = 0;
+        if (handle.cancelled) return;
+        if (!flowLayerFrameDue(frameMs, lastFrameMs, minIntervalMs)) {
+          handle.timer = host.setTimer(request, Math.max(1, minIntervalMs - (frameMs - lastFrameMs)));
+          return;
+        }
+        lastFrameMs = frameMs;
+        tick();
+      };
+      if (delayMs > 0) handle.timer = host.setTimer(request, delayMs);
+      else request();
+      return handle;
+    },
+    cancel(handle: PacedFrameHandle): void {
+      handle.cancelled = true;
+      if (handle.timer !== undefined) host.clearTimer(handle.timer);
+      handle.timer = undefined;
+      if (handle.frame) host.cancelFrame(handle.frame);
+      handle.frame = 0;
+    },
+  };
+}
+// D086-F5 END
+
 // Module clock: driven by the product view's animation loop, read by the morphology canvas while it
 // draws. Kept here so both the 2D and 3D canvas layers share one time source without adding renderer
 // imports, and so the canvas can draw the static fallback when the loop is intentionally stopped.
