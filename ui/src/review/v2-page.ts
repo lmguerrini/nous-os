@@ -5895,7 +5895,12 @@ export class V2Page {
         this.autoPageCounts = new Map(compacted.auto);
         this.auto = new Set(compacted.auto.keys());
         this.lastRevealSampleKey = '';
-        // D086-F2 BEGIN
+        // D086-F2 BEGIN: Adatta can refresh without changing the settings key,
+        // so invalidate an off-graph law hover before routing the far scene.
+        if (this.lawActive() && this.cursor === null) {
+            this.hovered = null;
+            this.hoveredEdge = null;
+        }
         if (changed || lodChanged) await this.refresh();
         // D086-F2 END
         if (request !== this.fitRequestEpoch) return;
