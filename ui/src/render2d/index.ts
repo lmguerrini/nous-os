@@ -72,6 +72,9 @@ import { createProjectionVisualsLayer } from "#render-common/projection-visuals-
 import type { ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
 import { ALL_EDGES_QUALITY_STAGE, FULL_QUALITY_STAGE, QualityLadder, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
 import { createPresentedPublisher } from "#render-common/presented-publisher.ts";
+// Size-fix BEGIN
+import { canvasNodeFloorPx, createNativeSizeLaw, geometryDegrees } from "#render-common/native-node-law.ts";
+// Size-fix END
 // "D082-A-NODES BEGIN"
 import { denseNativeEdgeAlpha } from "#render-common/dense-node-scale.ts";
 // "D082-A-NODES END"
@@ -471,7 +474,30 @@ export function mount(
   let handlePickIndex: ScreenPickIndex;
   let handlePickFrame = '';
   let handlePickSettleTimer: ReturnType<typeof setTimeout> | undefined;
+  // Size-fix BEGIN: a dense Lab scene draws its GPU discs at the radius the morphology
+  // canvas gives the same node, so the density never changes a node's size. The canvas keeps
+  // reading the encoded radius; only Sigma's size attribute follows the settled camera scale.
+  const nativeSizeLaw = model.graph.order >= DENSE_SCENE_THRESHOLD
+    ? createNativeSizeLaw({
+      morphology: activeOptions.morphology,
+      active: activeOptions.presentation?.nativeNodeSizeLaw === true,
+      given: new Map([...baseNodeAttributes].map(([id, attributes]) => [id, attributes.size] as const)),
+      degree: geometryDegrees(activeOptions.presentation?.morphologyGeometry),
+      projectedScale: () => sigma.scaleSize(1),
+      floorPx: () => canvasNodeFloorPx(activeOptions.morphology, sigma.getContainer().closest('[data-fractal-rails-active]') !== null),
+      write: sizes => {
+        for (const [id, size] of sizes) {
+          const base = baseNodeAttributes.get(id);
+          if (base) baseNodeAttributes.set(id, { ...base, size });
+        }
+        applyVisualStateAppearance();
+      },
+    }) : null;
+  // Size-fix END
   const rebuildHandlePickIndex = () => {
+    // Size-fix BEGIN
+    nativeSizeLaw?.settle();
+    // Size-fix END
     if (handlePickSettleTimer !== undefined) { clearTimeout(handlePickSettleTimer); handlePickSettleTimer = undefined; }
     const dimensions = sigma.getDimensions();
     const discs = model.graph.nodes().sort((a, b) => model.graph.getNodeAttribute(a, 'zIndex') - model.graph.getNodeAttribute(b, 'zIndex'))
@@ -515,6 +541,10 @@ export function mount(
     },
     updateVisibleSubset(update: DistinctSubsetUpdate): void {
       distinct?.updateVisibleSubset(update);
+      // Size-fix BEGIN
+      nativeSizeLaw?.retarget(update.nativeNodeSizeLaw === true, new Map([...update.nodeEntries].flatMap(([id, entry]) =>
+        entry.radiusPx === undefined ? [] : [[id, entry.radiusPx] as const])), geometryDegrees(update.geometry));
+      // Size-fix END
       // "D082-A-NCOMPLETA2 BEGIN": the settled fit arrives after Sigma's prepared model.
       // Keep its native node tier and the visual-state baseline on the same radii as
       // the distinct canvas; a graph write after refresh leaves the old discs on screen.
