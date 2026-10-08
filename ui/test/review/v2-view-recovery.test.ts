@@ -427,14 +427,16 @@ test("failing remounts from page clicks and view picks have owned promises", asy
     'onclick' in item && item.onclick !== null) as ReturnType<typeof fakeElement>;
   const control = (label: string) => controls.children.find(item => item && typeof item === 'object' &&
     'textContent' in item && item.textContent === label) as ReturnType<typeof fakeElement>;
-  // The preceding test proves that a real rejected mount keeps the view and shows its
-  // error. Inject the same rejected refresh seam here so every callback must own it.
+  // D085-S5 BEGIN: drive the displayed-failure owner through run(), as a failed
+  // refresh does; a manually shown banner no longer makes a rejection owned.
   let rejectedRefreshes = 0;
   (page as unknown as { refresh(): Promise<void> }).refresh = async () => {
     rejectedRefreshes++;
-    elements.get('error')!.hidden = false;
-    throw new Error('resta l’ultima vista valida: mount exploded (invented)');
+    return (page as unknown as { run(action: () => Promise<void>): Promise<void> }).run(async () => {
+      throw new Error('resta l’ultima vista valida: mount exploded (invented)');
+    });
   };
+  // D085-S5 END
   for (const [label, invoke] of [
       ['overview selection', () => overviewButton.onclick?.()],
       ['undo', () => control('Annulla').onclick?.()],
