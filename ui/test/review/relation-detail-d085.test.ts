@@ -96,12 +96,15 @@ test('Lab detail reports independently routed D-084 sets without changing their 
 
 test('classic Indra retains the established essential routing cap', () => {
   const page = readFileSync(new URL('../../src/review/v2-page.ts', import.meta.url), 'utf8');
-  assert.match(page, /organization === 'indra' && this\.relationDetail === 'essential'\s*\? Math\.min\(budget\.arcs, INDRA_ESSENTIAL_ARC_CAP\)/);
+  assert.match(page, /!lab && organization === 'indra' && this\.relationDetail === 'essential'\s*\? Math\.min\(budget\.arcs, INDRA_ESSENTIAL_ARC_CAP\)/);
 });
 
 test('Lab pages route the requested detail before measuring and preserve Complete Canopy', () => {
   const page = readFileSync(new URL('../../src/review/v2-page.ts', import.meta.url), 'utf8');
-  assert.match(page, /organization === 'natural' \|\| organization === 'indra' \? 'all' : this\.relationDetail/);
+  assert.match(page, /this\.topology === 'natural' \? 'all' : this\.relationDetail/);
+  assert.match(page, /const selectedRoute: RouteResult = this\.topology === 'natural'\s*\? selectRelationDetail\(typedCandidate/);
+  assert.match(page, /const lab = this\.topology !== 'natural'/);
+  assert.match(page, /const canopyDetailInput = lab && canopy && this\.relationDetail === 'essential'/);
   assert.match(page, /const canopyArcs = canopy \? this\.density === 'complete'\s*\? projectedArcs\.edges : canopyEvidenceArcs\(projectedArcs\.edges\)/);
   assert.match(page, /let route = lab \? measureRelationDetail\(/);
 });

@@ -3027,7 +3027,7 @@ export class V2Page {
         // D085-S7 BEGIN
         const typedCandidate: RouteResult = { ...routed, drawn,
             suppressed: [...routed.suppressed, ...droppedByClass.map(id => ({ id, cause: 'line-budget' as const }))] };
-        const selectedRoute: RouteResult = this.axes.organization === 'natural' || this.axes.organization === 'indra'
+        const selectedRoute: RouteResult = this.topology === 'natural'
             ? selectRelationDetail(typedCandidate, this.relationDetail)
             : measureRelationDetail(typedCandidate, typedCandidate, this.relationDetail);
         const selectedIds = new Set(selectedRoute.drawn.map(edge => edge.id));
@@ -3887,7 +3887,7 @@ export class V2Page {
                 // D082-A-SWITCH END
                 // D085-S7 BEGIN
                 : projectRelations(this.index.nodes, this.index.edges, ids, this.axes.reading,
-                    organization, organization === 'natural' || organization === 'indra' ? 'all' : this.relationDetail, active);
+                    organization, this.topology === 'natural' ? 'all' : this.relationDetail, active);
                 // D085-S7 END
             // D082-B1c END.
             // D085-S7 BEGIN: preserve the approved Complete Canopy route verbatim.
@@ -4089,20 +4089,22 @@ export class V2Page {
                 && renderedIds.size === this.canopyDatasetNodes.length
                 ? this.canopyCompleteRoutes.get(this.axes.reading) : undefined;
             // D085-S7 BEGIN
+            const lab = this.topology !== 'natural';
+            const canopyDetailInput = lab && canopy && this.relationDetail === 'essential'
+                ? routedInput.slice(0, routedInput.length - canopyBalancedSources.length) : routedInput;
             const candidateRoute = this.density === 'complete'
                 ? cachedCanopyRoute ?? completeRoute(availableArcs.edges, renderedIds, !!canopy)
                 : densityPolicy ? completeRoute(densityEdges, renderedIds, true)
                     : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
-                        renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
+                        renderedNodeIds: renderedIds, relations: canopyDetailInput, reading: this.axes.reading,
                         // D085-S2 BEGIN: Canopy's evidence-arc budget is the topology-aware
                         // one at every LOD — the former far cap of 300 never bound anything
                         // (the mark selection was the constraint). Indra's essential-detail
                         // cap is S7 territory and stays.
-                        budget: organization === 'indra' && this.relationDetail === 'essential'
+                        budget: !lab && organization === 'indra' && this.relationDetail === 'essential'
                             ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                         // D085-S2 END
                         focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
-            const lab = organization !== 'natural' && organization !== 'indra';
             const otherArcs = lab && this.density !== 'complete'
                 ? projectRelations(this.index.nodes, this.index.edges, ids, this.axes.reading,
                     organization, this.relationDetail === 'essential' ? 'all' : 'essential', active) : null;
