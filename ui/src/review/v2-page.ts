@@ -2,7 +2,7 @@ import { styleProjection } from '../render-common/projection-style.ts';
 import { cameraRevealZoom, emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
 import type { RevealDecision, RevealState } from './reveal-controller.ts';
 // D085-S7 BEGIN
-import { buildRevealWitness, routeRelationsAfterLOD, selectRelationDetail } from './relation-routing.ts';
+import { buildRevealWitness, measureRelationDetail, routeRelationsAfterLOD, selectRelationDetail } from './relation-routing.ts';
 // D085-S7 END
 import { COMPLETE_IDLE_MS, completeQuality, completeRelations, completeRoute, completeVisible } from './completa.ts';
 import { completeIndraOverlay } from './completa-indra.ts';
@@ -23,7 +23,7 @@ import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, vol
 import type { Expansion } from './volume.ts';
 import { adaptV2 } from './v2-adapter.ts';
 // D085-S7 BEGIN
-import { coMembership, projectLayoutRelations, projectRelations, projectTypedRelations } from './v2-relations.ts';
+import { INDRA_ESSENTIAL_ARC_CAP, coMembership, projectLayoutRelations, projectRelations, projectTypedRelations } from './v2-relations.ts';
 // D085-S7 END
 import { relationVisible } from './reading.ts';
 import { buildVisibilityWitness, countAggregateRepresentation, countExcludedRelations } from './visibility-witness.ts';
@@ -2906,8 +2906,11 @@ export class V2Page {
             return true;
         });
         // D085-S7 BEGIN
-        const selectedRoute: RouteResult = selectRelationDetail({ ...routed, drawn,
-            suppressed: [...routed.suppressed, ...droppedByClass.map(id => ({ id, cause: 'line-budget' as const }))] }, this.relationDetail);
+        const typedCandidate: RouteResult = { ...routed, drawn,
+            suppressed: [...routed.suppressed, ...droppedByClass.map(id => ({ id, cause: 'line-budget' as const }))] };
+        const selectedRoute: RouteResult = this.axes.organization === 'natural' || this.axes.organization === 'indra'
+            ? selectRelationDetail(typedCandidate, this.relationDetail)
+            : measureRelationDetail(typedCandidate, typedCandidate, this.relationDetail);
         const selectedIds = new Set(selectedRoute.drawn.map(edge => edge.id));
         const detailFilteredSourceIds = [...new Set(drawn.filter(edge => !selectedIds.has(edge.id))
             .flatMap(edge => edge.sourceRelationIds.flatMap(id => {
@@ -3740,12 +3743,12 @@ export class V2Page {
                 // D082-A-SWITCH END
                 // D085-S7 BEGIN
                 : projectRelations(this.index.nodes, this.index.edges, ids, this.axes.reading,
-                    organization, 'all', active);
+                    organization, organization === 'natural' || organization === 'indra' ? 'all' : this.relationDetail, active);
                 // D085-S7 END
             // D082-B1c END.
-            // D085-S7 BEGIN: the rail is already the containment guide. Evidence strokes
-            // in every density must have source provenance, including Completa.
-            const canopyArcs = canopy ? canopyEvidenceArcs(projectedArcs.edges) : null;
+            // D085-S7 BEGIN: preserve the approved Complete Canopy route verbatim.
+            const canopyArcs = canopy ? this.density === 'complete'
+                ? projectedArcs.edges : canopyEvidenceArcs(projectedArcs.edges) : null;
             // D085-S7 END
             const availableArcs = canopyArcs ? { ...projectedArcs,
                 edges: canopyArcs, total: canopyArcs.length } : projectedArcs;
@@ -3877,24 +3880,29 @@ export class V2Page {
                     : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
                         renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
                         budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs)
-                            : budget.arcs,
+                            : organization === 'indra' && this.relationDetail === 'essential'
+                                ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                         focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
-            // Canopy's earlier Essenziali policy omits unfocused mentions.
-            // Preserve that sparse source-backed set within the full route.
-            const canopyEssentialIds = canopy && this.density !== 'complete' ? new Set(
-                routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
-                    renderedNodeIds: renderedIds,
-                    relations: canopyEvidenceArcs(projectRelations(this.index.nodes, this.index.edges,
-                        ids, this.axes.reading, organization, 'essential', active).edges).map(edge => ({
-                            id: edge.id, channel: 'lifted' as const, source: edge.source, target: edge.target,
-                            class: edge.class, type: edge.type, count: edge.count,
-                            sourceEdgeIds: edge.underlying.map(item => item.id),
-                        })),
-                    reading: this.axes.reading,
-                    budget: this.lod === 'far' ? Math.min(300, budget.arcs) : budget.arcs,
-                    focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers),
-                }).drawn.map(edge => edge.id)) : undefined;
-            let route = selectRelationDetail(candidateRoute, this.relationDetail, canopyEssentialIds);
+            const lab = organization !== 'natural' && organization !== 'indra';
+            const otherArcs = lab && this.density !== 'complete'
+                ? projectRelations(this.index.nodes, this.index.edges, ids, this.axes.reading,
+                    organization, this.relationDetail === 'essential' ? 'all' : 'essential', active) : null;
+            const otherEvidence = otherArcs && canopy ? canopyEvidenceArcs(otherArcs.edges) : otherArcs?.edges;
+            const otherAvailable = otherArcs && otherEvidence ? { ...otherArcs,
+                edges: otherEvidence, byId: new Map(otherEvidence.map(edge => [edge.id, edge])) } : null;
+            const otherRoute = otherAvailable ? routeRelationsAfterLOD({ nodes: this.routeNodes(),
+                disclosedIds: ids, renderedNodeIds: renderedIds,
+                relations: otherAvailable.edges.map(edge => ({ id: edge.id, channel: 'lifted' as const,
+                    source: edge.source, target: edge.target, class: edge.class, type: edge.type,
+                    count: edge.count, sourceEdgeIds: edge.underlying.map(item => item.id) })),
+                reading: this.axes.reading,
+                budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs) : budget.arcs,
+                focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers),
+            }) : candidateRoute;
+            const allRoute = lab && this.relationDetail === 'essential' ? otherRoute : candidateRoute;
+            let route = lab ? measureRelationDetail(
+                this.relationDetail === 'essential' ? candidateRoute : otherRoute, allRoute, this.relationDetail)
+                : selectRelationDetail(candidateRoute, this.relationDetail);
             // D085-S7 END
             // D082-A-DENSITY END
             // D082-B1c BEGIN: a full route is deterministic for the fixed Canopy
@@ -3911,10 +3919,12 @@ export class V2Page {
                 ? availableArcs.byId : new Map(availableArcs.edges.map(edge => [edge.id, edge]));
             // D085-S7 BEGIN: retain the exact source IDs hidden by this detail setting.
             const selectedRouteIds = new Set(route.drawn.map(edge => edge.id));
-            route = { ...route, detailFilteredSourceIds: [...new Set(candidateRoute.drawn
+            const allRelationById = lab && this.relationDetail === 'essential' && otherAvailable
+                ? otherAvailable.byId : relationById;
+            route = { ...route, detailFilteredSourceIds: [...new Set(allRoute.drawn
                 .filter(edge => !selectedRouteIds.has(edge.id))
                 .flatMap(edge => edge.sourceRelationIds.flatMap(id =>
-                    relationById.get(id)?.underlying.map(source => source.id) ?? [])))].sort() };
+                    allRelationById.get(id)?.underlying.map(source => source.id) ?? [])))].sort() };
             // D085-S7 END
             // D082-B1c END.
             let shown: LiftedRelation[] = route.drawn.map(edge => {
@@ -5398,7 +5408,7 @@ export class V2Page {
         line(controls, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili · ${formatCount(this.lodCounts.arcs.pinned)} fissati`);
         // D085-S7 BEGIN
         const detail = this.revealRoute?.detail;
-        if (detail) line(controls, 'Relazioni', `${detail.setting === 'essential' ? 'Essenziali' : 'Tutte'} · ${formatCount(detail.represented)} sorgente + ${formatCount(detail.guideDrawn)} guide in ${formatCount(detail.drawn)} tracciati ammessi${detail.additionalDrawn ? ` · +${formatCount(detail.additionalDrawn)} tracciati / +${formatCount(detail.additionalRepresented)} relazioni in Tutte` : ''}`);
+        if (detail) line(controls, 'Relazioni', `${detail.setting === 'essential' ? 'Essenziali' : 'Tutte'} · Essenziali ${formatCount(detail.essentialDrawn)} tracciati / ${formatCount(detail.essentialRepresented)} relazioni · Tutte ${formatCount(detail.availableDrawn)} tracciati / ${formatCount(detail.availableRepresented)} relazioni · ${formatCount(detail.guideDrawn)} guide ora`);
         // D085-S7 END
         // D081-FRACTAL-MERGE BEGIN: the canvas canopy owns 44 title slots.
         line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), this.canopyActive() ? 44 : labelBudgetOf(this.density)));

@@ -1,7 +1,8 @@
 // D085-S7 BEGIN
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { checkRouteInvariant, selectRelationDetail } from '../../src/review/relation-routing.ts';
+import { checkRouteInvariant, measureRelationDetail, selectRelationDetail } from '../../src/review/relation-routing.ts';
+import { readFileSync } from 'node:fs';
 import type { RouteResult, RoutedEdge } from '../../src/review/relation-routing.ts';
 import { formatD081GraphStatus } from '../../src/review/toolbar-status.ts';
 import { countExcludedRelations } from '../../src/review/visibility-witness.ts';
@@ -38,6 +39,10 @@ test('Essenziali keeps real high-count coverage; Tutte adds deterministic admitt
   assert.equal(essential.detail?.represented, essential.drawn.filter(item => item.type !== 'contains')
     .reduce((sum, item) => sum + item.count, 0));
   assert.equal(essential.detail?.guideDrawn, 1);
+  assert.deepEqual(essential.detail?.classes.attested, {
+    essentialDrawn: 2, allDrawn: 4, essentialRepresented: 9,
+    allRepresented: 13, additionalDrawn: 2, additionalRepresented: 4,
+  });
   assert.equal(essential.invariant.ok, true);
   assert.deepEqual(selectRelationDetail(route, 'essential'), essential);
   assert.deepEqual(selectRelationDetail(route, 'all'), all);
@@ -74,6 +79,33 @@ test('a view can keep its earlier sparse source-backed Essenziali route as a sub
   assert.equal(selected.invariant.ok, true);
 });
 
+test('Lab detail reports independently routed D-084 sets without changing their IDs', () => {
+  const first: RouteResult = { ...route, drawn: [edge('lab-essential', 'a', 'b', 2)] };
+  const complete: RouteResult = { ...route, drawn: [edge('lab-all', 'a', 'c', 3),
+    edge('lab-extra', 'b', 'd', 1)] };
+  const essential = measureRelationDetail(first, complete, 'essential');
+  const all = measureRelationDetail(first, complete, 'all');
+  assert.deepEqual(essential.drawn.map(item => item.id), ['lab-essential']);
+  assert.deepEqual(all.drawn.map(item => item.id), ['lab-all', 'lab-extra']);
+  assert.equal(essential.detail?.essentialDrawn, 1);
+  assert.equal(essential.detail?.availableDrawn, 2);
+  assert.equal(essential.detail?.additionalDrawn, 2);
+  assert.equal(all.detail?.essentialRepresented, 2);
+  assert.equal(all.detail?.availableRepresented, 4);
+});
+
+test('classic Indra retains the established essential routing cap', () => {
+  const page = readFileSync(new URL('../../src/review/v2-page.ts', import.meta.url), 'utf8');
+  assert.match(page, /organization === 'indra' && this\.relationDetail === 'essential'\s*\? Math\.min\(budget\.arcs, INDRA_ESSENTIAL_ARC_CAP\)/);
+});
+
+test('Lab pages route the requested detail before measuring and preserve Complete Canopy', () => {
+  const page = readFileSync(new URL('../../src/review/v2-page.ts', import.meta.url), 'utf8');
+  assert.match(page, /organization === 'natural' \|\| organization === 'indra' \? 'all' : this\.relationDetail/);
+  assert.match(page, /const canopyArcs = canopy \? this\.density === 'complete'\s*\? projectedArcs\.edges : canopyEvidenceArcs\(projectedArcs\.edges\)/);
+  assert.match(page, /let route = lab \? measureRelationDetail\(/);
+});
+
 test('lifted endpoints retain only the aggregates used by drawn detail and the status separates guides', () => {
   const lifted: RoutedEdge = { ...edge('lifted', 'a', 'c', 4),
     from: { id: 'a', kind: 'aggregate' }, to: { id: 'c', kind: 'node' } };
@@ -96,8 +128,8 @@ test('lifted endpoints retain only the aggregates used by drawn detail and the s
     depth: { level: 1, label: 'Panoramica' }, quality: 'completa', msSinceInteraction: 0,
     msToFullQuality: 0, limit: null, hint: null,
   });
-  assert.match(formatted.line, /Rel\. Essenziali: 4 \(\+1 in Tutte\)/);
-  assert.match(formatted.details[1], /4 relazioni sorgente e 0 guide strutturali/);
+  assert.match(formatted.line, /Rel\. Essenziali: 4; Tutte: 5/);
+  assert.match(formatted.details[1], /Essenziali 1 tracciati \/ 4 relazioni, Tutte 2 tracciati \/ 5 relazioni/);
 });
 
 test('witness attributes only actually removed source records to detail', () => {

@@ -1,6 +1,9 @@
 import type { Reading, Axes } from './view-contract.ts';
 import type { RelationClass } from './reading.ts';
 import { relationVisible } from './reading.ts';
+// D085-S7 BEGIN
+import type { RelationDetailCounts } from './relation-routing.ts';
+// D085-S7 END
 
 export type VisibilityEdge = Readonly<{ id: string; source: string; target: string; class: RelationClass }>;
 export type VisibilityNode = Readonly<{ id: string; level?: number | undefined; kind?: string | undefined; parent?: string | null | undefined }>;
@@ -12,10 +15,7 @@ export type VisibilityWitnessInput = Readonly<{
   labels: number; aggregateCount: number; representedCount: number; starCount: number;
   excluded?: Partial<Record<VisibilityCause, number>>;
   // D085-S7 BEGIN
-  relationCounts?: Readonly<{ setting: 'essential' | 'all'; drawn: number; represented: number;
-    availableDrawn: number; availableRepresented: number; additionalDrawn: number;
-    additionalRepresented: number; guideDrawn: number; guideRepresented: number;
-    bundles: number; bundled: number }>;
+  relationCounts?: RelationDetailCounts;
   // D085-S7 END
 }>;
 

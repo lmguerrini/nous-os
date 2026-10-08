@@ -1,14 +1,15 @@
 import { currentRenderReadiness, renderPercent } from "./render-readiness.ts";
 import type { RenderReadiness } from "./render-readiness.ts";
+// D085-S7 BEGIN
+import type { RelationDetailCounts } from './relation-routing.ts';
+// D085-S7 END
 
 /** Discreet, opt-in D-081 performance HUD. No sampling work runs while closed. */
 export type D081Status = {
   nodes?: { visible?: number; represented?: number; total?: number; eligible?: number; aggregated?: number };
   // D085-S7 BEGIN
   edges?: { drawn?: number; bundled?: number; eligible?: number; total?: number;
-    detail?: { setting: 'essential' | 'all'; represented: number; availableDrawn: number;
-      availableRepresented: number; additionalDrawn: number; additionalRepresented: number;
-      guideDrawn: number; guideRepresented: number } };
+    detail?: RelationDetailCounts };
   // D085-S7 END
   depth?: { level?: number; label?: string };
   quality?: "movimento" | "recupero" | "completa" | string;
@@ -94,7 +95,7 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
     <dt>Nodi visibili / rappr.</dt><dd>${nodeDrawn} / ${nodes?.represented ?? nodeDrawn} · ${nodeEligible} elegg. / ${nodeTotal} tot. · +${nodes?.aggregated ?? 0}</dd>
     <dt>Archi / bundle</dt><dd>${edgeDrawn} / ${edges?.bundled ?? 0} · ${edgeEligible} elegg. / ${edgeTotal} tot.</dd>
     <!-- D085-S7 BEGIN -->
-    ${edges?.detail ? `<dt>Relazioni ${edges.detail.setting === 'essential' ? 'Essenziali' : 'Tutte'}</dt><dd>${edges.detail.represented} sorgente · ${edges.detail.guideDrawn} guide · ${edges.detail.availableDrawn - edges.detail.additionalDrawn} tracciati ammessi · +${edges.detail.additionalRepresented} relazioni in Tutte</dd>` : ''}
+    ${edges?.detail ? `<dt>Relazioni ${edges.detail.setting === 'essential' ? 'Essenziali' : 'Tutte'}</dt><dd>Essenziali ${edges.detail.essentialDrawn} tracciati / ${edges.detail.essentialRepresented} relazioni · Tutte ${edges.detail.availableDrawn} tracciati / ${edges.detail.availableRepresented} relazioni · ${edges.detail.guideDrawn} guide ora</dd>` : ''}
     <!-- D085-S7 END -->
     <dt>Qualità · LOD</dt><dd>${quality} · ${depth}</dd>
     <dt>Ultima interazione</dt><dd>${formatDuration(status?.msSinceInteraction)} fa</dd>
