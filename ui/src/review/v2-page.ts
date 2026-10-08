@@ -83,7 +83,7 @@ import type { D081GraphStatus } from './toolbar-status.ts';
 import type { TopologyId, TopologyLayout, TopologySnapshot, TopologyWitness } from '../topology/contract.ts';
 import { TOPOLOGY_LAWS, topologySupport } from '../topology/registry.ts';
 // D082-LAB-FIX2 BEGIN
-import { computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
+import { cancelPendingTopologyLayouts, computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
 // D085-S1 BEGIN: serialize page axes before any asynchronous renderer refresh reads them.
 import { createGeometryTransitionQueue } from './geometry-view2.ts';
 // D085-S1 END
@@ -618,11 +618,21 @@ export class V2Page {
     private taxonomyExplicit = false;
     // D085-S1 BEGIN
     private readonly transitions = createGeometryTransitionQueue();
+    private geometryIntent = 0;
+    /** A new request interrupts projection work even while its predecessor owns the mutation lane. */
+    supersedeGeometry(): void {
+        this.geometryIntent++;
+        this.projectionEpoch++;
+        this.cancelProjectionWork();
+        cancelPendingTopologyLayouts();
+    }
     // D085-S1 END
     private readonly lawSnapshot: TopologySnapshot;
     private lawLayout: TopologyLayout | null = null;
     private guideLayer: { destroy(): void } | null = null;
-    private readonly lawCache = new Map<string, TopologyLayout>();
+    // D085-S1 BEGIN: only two completed laws may remain resident, within a byte cap.
+    private readonly lawCache = new PageResultCache<TopologyLayout>(2, 24 * 1024 * 1024);
+    // D085-S1 END
     private lawActive(): boolean { return this.topology !== 'natural' &&
         (this.topology !== 'canopy-ifs' || this.topologyIndra); }
     topologyWitness(id: string): { witness: TopologyWitness; path: readonly string[] } | null {
@@ -1980,13 +1990,19 @@ export class V2Page {
             host.className = 'view-host';
             Object.assign(host.style, { position: 'absolute', inset: '0' });
             element('render-root').append(host);
-            let renderer: ProjectionPageRenderer;
+            let renderer!: ProjectionPageRenderer;
             try {
                 renderer = input.createRenderer(host, dimension);
                 renderer.onPick((pick, shiftKey) => this.handleProjectionPick(pick, shiftKey));
                 renderer.onHover((pick, x, y) => this.projectionTooltip(pick, x, y));
                 renderer.mount(lod.displayStyled, visibility);
-            } catch (error) { host.remove(); throw error; }
+            } catch (error) {
+                // D085-S1 BEGIN: a renderer that mounted partly still owns GPU resources.
+                renderer?.destroy();
+                host.remove();
+                // D085-S1 END
+                throw error;
+            }
             this.projectionRenderer?.destroy();
             this.projectionHost?.remove();
             this.projectionRenderer = renderer;
@@ -3452,6 +3468,9 @@ export class V2Page {
         const projectionEpoch = ++this.projectionEpoch;
         this.cancelProjectionWork();
         return this.run(async () => {
+            // D085-S1 BEGIN: an invalidated job never reads the next request's mutable axes.
+            if (projectionEpoch !== this.projectionEpoch) return;
+            // D085-S1 END
             if (this.typedActive()) { await this.refreshProjection(projectionEpoch); return; }
             // Back on the product view: the typed renderer a Fractal view left behind is retired.
             this.retireTypedRenderer();
@@ -3627,14 +3646,26 @@ export class V2Page {
             this.projectionCacheOutcome = reused ? 'hit' : 'miss';
             // D081-P3c BEGIN: large classic layouts run in the embedded worker.
             // D082-LAB-FIX2 BEGIN: compute the certified full law and Indra composition in the worker.
-            const lawResult = lawKey ? this.lawCache.get(lawKey) ?? await computeTopologyLayoutAsync(
-                this.topology as Exclude<TopologyId, 'natural'>, this.lawSnapshot, projection, this.topologyIndra) : null;
+            // D085-S1 BEGIN: a cancelled worker response cannot populate a cache or reach a host.
+            let lawResult: TopologyLayout | null = null;
+            try {
+                lawResult = lawKey ? this.lawCache.get(lawKey) ?? await computeTopologyLayoutAsync(
+                    this.topology as Exclude<TopologyId, 'natural'>, this.lawSnapshot, projection, this.topologyIndra) : null;
+            } catch (error) {
+                if (projectionEpoch !== this.projectionEpoch && error instanceof Error && error.name === 'AbortError') return;
+                throw error;
+            }
+            if (projectionEpoch !== this.projectionEpoch) return;
+            // D085-S1 END
             // D082-LAB-FIX2 END
-            if (lawKey && lawResult && !this.lawCache.has(lawKey)) this.lawCache.set(lawKey, lawResult);
+            if (lawKey && lawResult) this.lawCache.set(lawKey, lawResult);
             const result: LayoutResult = reused ?? (lawResult ? topologyLayoutResult(lawResult) : canopy
                 ? { positions: canopyRenderPositions(canopy, sceneNodes.map(node => node.id), projection),
                     containers: [], source: 'fractal-canopy' }
                 : await computeClassicLayout(layoutInput));
+            // D085-S1 BEGIN: classic worker results obey the same last-request gate.
+            if (projectionEpoch !== this.projectionEpoch) return;
+            // D085-S1 END
             if (lawResult && sceneNodes.some(node => !result.positions.has(node.id)))
                 throw new Error(`${this.topology}: un dettaglio caricato non appartiene allo snapshot topologico fisso`);
             // D082-B2 END
@@ -4089,8 +4120,11 @@ export class V2Page {
             // separate main-thread tasks; the resident view stays on screen.
             if (this.density === 'complete' && disclosed.nodes.length > 1200)
                 await new Promise<void>(resolve => setTimeout(resolve, 0));
+            // D085-S1 BEGIN: remove a prepared host when a newer request arrived during the yield.
+            if (projectionEpoch !== this.projectionEpoch) { nextHost.remove(); return; }
+            // D085-S1 END
             // D081-P3c END
-            let mounted: ProductView;
+            let mounted!: ProductView;
             let nextRailLayer: CanopyRailLayer | null = null;
             // D082-B2 BEGIN
             let nextGuideLayer: { destroy(): void } | null = null;
@@ -4143,6 +4177,10 @@ export class V2Page {
                 }
             }
             catch (error) {
+                // D085-S1 BEGIN: a later overlay failure cannot strand the new renderer.
+                mounted?.destroy();
+                nextRailLayer?.destroy();
+                // D085-S1 END
                 // D082-B2 BEGIN
                 nextGuideLayer?.destroy();
                 // D082-B2 END
@@ -4517,7 +4555,9 @@ export class V2Page {
      * recomputed on the next refresh and the coordinates never move. */
     // D085-S1 BEGIN: density participates in the same page transition lane.
     setDensity(value: Density): Promise<void> {
-        return this.transitions.enqueue(() => this.applyDensity(value));
+        this.supersedeGeometry();
+        const intent = this.geometryIntent;
+        return this.transitions.enqueue(() => intent === this.geometryIntent ? this.applyDensity(value) : Promise.resolve());
     }
     private async applyDensity(value: Density) {
         const next = normalizeDensity(value);
@@ -4739,9 +4779,12 @@ export class V2Page {
     // D082-B2 BEGIN: validate the requested row before changing either taxonomy axis.
     // D085-S1 BEGIN: queue the whole mutation/refresh/commit, not merely the worker response.
     setTaxonomy(topology: TopologyId, indra: boolean): Promise<void> {
-        return this.transitions.enqueue(() => this.applyTaxonomy(topology, indra));
+        this.supersedeGeometry();
+        const intent = this.geometryIntent;
+        return this.transitions.enqueue(() => intent === this.geometryIntent
+            ? this.applyTaxonomy(topology, indra, intent) : Promise.resolve());
     }
-    private async applyTaxonomy(topology: TopologyId, indra: boolean): Promise<void> {
+    private async applyTaxonomy(topology: TopologyId, indra: boolean, intent: number): Promise<void> {
         const support = topologySupport(topology, this.axes.projection, indra);
         if (!support.ok) throw new Error(support.reason);
         const previousAxes = this.axes;
@@ -4755,18 +4798,36 @@ export class V2Page {
             : topology === 'natural' && indra ? 'indra' : 'natural';
         try {
             await this.applyAxes({ organization });
+            if (intent !== this.geometryIntent) return;
             // D085-S1 BEGIN: a protected mount can keep the last good view and resolve refresh().
             // That is a refusal, never a successful topology selection for the toolbar to persist.
             if (this.view && (this.committedTaxonomy.topology !== topology || this.committedTaxonomy.indra !== indra))
                 throw new Error(`${topology}: la nuova vista non è stata montata`);
             // D085-S1 END
         }
-        catch (error) { this.axes = previousAxes; this.topology = previous.topology; this.topologyIndra = previous.indra;
+        catch (error) { if (intent !== this.geometryIntent) return;
+            this.axes = previousAxes; this.topology = previous.topology; this.topologyIndra = previous.indra;
             this.legacyIndra = previous.legacyIndra; this.taxonomyExplicit = previous.explicit; throw error; }
     }
     // D082-B2 END
     setAxes(value: AxesInput): Promise<void> {
-        return this.transitions.enqueue(() => this.applyAxes(value));
+        this.supersedeGeometry();
+        const intent = this.geometryIntent;
+        return this.transitions.enqueue(async () => {
+            if (intent !== this.geometryIntent) return;
+            const previousAxes = this.axes;
+            try {
+                await this.applyAxes(value);
+                // D085-S1 BEGIN: a protected mount may resolve while keeping the old dimension.
+                if (intent === this.geometryIntent && this.view?.witness().axes.projection !== undefined
+                    && this.view.witness().axes.projection !== this.axes.projection)
+                    throw new Error('La nuova proiezione non è stata montata');
+                // D085-S1 END
+            } catch (error) {
+                if (intent === this.geometryIntent) this.axes = previousAxes;
+                throw error;
+            }
+        });
     }
     private async applyAxes(value: AxesInput) {
         const changed = normalizeAxesInput(value);

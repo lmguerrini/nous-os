@@ -76,6 +76,18 @@ const pendingInquiries = new Map<number, PendingInquiry>();
 let topologyWorker: Worker | null = null;
 let nextLayoutRequest = 0;
 
+// D085-S1 BEGIN: a superseded law must release the shared worker lane immediately.
+export function cancelPendingTopologyLayouts(): void {
+  if (pendingLayouts.size === 0) return;
+  topologyWorker?.terminate();
+  topologyWorker = null;
+  for (const task of pendingLayouts.values()) task.reject(new DOMException('Topology layout superseded', 'AbortError'));
+  pendingLayouts.clear();
+  for (const task of pendingInquiries.values()) task.reject(new DOMException('Topology inquiry superseded', 'AbortError'));
+  pendingInquiries.clear();
+}
+// D085-S1 END
+
 function embeddedTopologyWorker(): Worker | null {
   if (topologyWorker) return topologyWorker;
   const source = (globalThis as typeof globalThis & { __PROJECTION_WORKER_SOURCE__?: unknown }).__PROJECTION_WORKER_SOURCE__;
@@ -94,6 +106,9 @@ function embeddedTopologyWorker(): Worker | null {
         if (message.kind === 'lull-inquiry-result' && 'result' in message && message.result)
           task.resolve(message.result as unknown as LullInquiry);
         else task.reject(new Error(message.message ?? 'Lull inquiry worker failed'));
+        // D085-S1 BEGIN: the worker's own law cache is released between requests.
+        if (pendingLayouts.size === 0 && pendingInquiries.size === 0) { worker.terminate(); topologyWorker = null; }
+        // D085-S1 END
         return;
       }
       // D082-LAB-FIX3 END
@@ -103,6 +118,9 @@ function embeddedTopologyWorker(): Worker | null {
       pendingLayouts.delete(message.requestId!);
       if (message.kind === 'topology-layout-result' && message.result) task.resolve(message.result);
       else task.reject(new Error(message.message ?? 'Topology worker failed'));
+      // D085-S1 BEGIN: completed worker layouts cannot accumulate across a tour.
+      if (pendingLayouts.size === 0 && pendingInquiries.size === 0) { worker.terminate(); topologyWorker = null; }
+      // D085-S1 END
     };
     worker.onerror = event => {
       for (const task of pendingLayouts.values()) task.reject(new Error(event.message || 'Topology worker failed'));

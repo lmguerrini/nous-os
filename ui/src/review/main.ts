@@ -362,7 +362,8 @@ function updateButtons() {
   // D082-B2 BEGIN
   syncTaxonomyControls();
   // D082-B2 END
-  const selectedNode = stack.current && data.nodes.some((node) => node.id === stack.current?.id) ? stack.current.id : null;
+  // D085-S1 BEGIN: toolbar clicks can arrive before the legacy focus stack is loaded.
+  const selectedNode = stack?.current && data?.nodes.some((node) => node.id === stack.current?.id) ? stack.current.id : null;
   for (const axis of ["projection", "morphology", "organization", "reading"] as const) {
     document
       .querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`)
@@ -388,14 +389,15 @@ function updateButtons() {
   get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";
   syncAppearanceControls();
   syncCustomColours();
-  get<HTMLButtonElement>("back").disabled = stack.depth === 0;
-  get<HTMLButtonElement>("back").dataset.tooltip = stack.depth === 0 ? "Nessuna selezione precedente" : "Torna alla selezione precedente";
-  get<HTMLButtonElement>("expand").disabled = stack.depth === 0;
-  get<HTMLButtonElement>("expand").dataset.tooltip = stack.depth === 0 ? "Seleziona prima un nodo" : "Espandi il vicinato";
+  get<HTMLButtonElement>("back").disabled = !stack || stack.depth === 0;
+  get<HTMLButtonElement>("back").dataset.tooltip = !stack || stack.depth === 0 ? "Nessuna selezione precedente" : "Torna alla selezione precedente";
+  get<HTMLButtonElement>("expand").disabled = !stack || stack.depth === 0;
+  get<HTMLButtonElement>("expand").dataset.tooltip = !stack || stack.depth === 0 ? "Seleziona prima un nodo" : "Espandi il vicinato";
   get<HTMLSelectElement>("fullscreen-preset").disabled = axes.projection !== "3d";
   get<HTMLSelectElement>("fullscreen-preset").dataset.tooltip = axes.projection === "3d" ? "Vista 3D" : "Disponibile nella vista 3D";
   syncBrainControls();
-  const current = stack.current;
+  const current = stack?.current;
+  // D085-S1 END
   get<HTMLElement>("search-feedback").textContent = current?.capped ? "Vicinato limitato a 60 nodi." : "";
   syncToolbarSummary();
   // D082-LAB-FIX4 BEGIN
@@ -569,6 +571,7 @@ function reportTaxonomyTransitionError(error: unknown): void {
   get<HTMLElement>('error').textContent = message;
 }
 function chooseTaxonomy(topology: TopologyId, indra?: boolean): Promise<void> {
+  v2?.supersedeGeometry();
   return geometryTransitions.enqueue(() => applyTaxonomy(topology, indra));
 }
 async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Promise<void> {
@@ -1144,10 +1147,15 @@ function center(): Promise<void> {
 }
 // D085-S1 BEGIN: projection and other axes use the same lane as topology selection.
 function setAxes(input: AxesInput): Promise<void> {
+  v2?.supersedeGeometry();
   return geometryTransitions.enqueue(() => applyAxes(input));
 }
 function applyAxes(input: AxesInput): Promise<void> {
   let partial = normalizeAxesInput(input);
+  // D085-S1 BEGIN: the toolbar and URL return to the mounted axes if a protected remount fails.
+  const previousAxes = axes;
+  const previousGeometry = geometry;
+  // D085-S1 END
   // D082-B2 BEGIN: rendering never silently changes a law or Indra state.
   if (partial.projection && !('mode' in geometry)) {
     const support = topologySupport(lawTopology(geometry.topology), partial.projection, geometry.indra === 'on');
@@ -1200,7 +1208,18 @@ function applyAxes(input: AxesInput): Promise<void> {
       // D082-LAB-FIX4 BEGIN
       syncLoadedAxisButtons();
       // D082-LAB-FIX4 END
-    }).catch(error => { if (projectionRefusalOf(error) !== null) return; throw error; }); }
+    }).catch(error => {
+      // D085-S1 BEGIN
+      axes = previousAxes;
+      geometry = previousGeometry;
+      persistView();
+      syncTaxonomyControls();
+      syncLoadedAxisButtons();
+      syncToolbarSummary();
+      // D085-S1 END
+      if (projectionRefusalOf(error) !== null) return;
+      throw error;
+    }); }
     // D080-A3 END
   return enqueue(async () => {
     if (partial.projection && partial.projection !== "3d") { focusMode = false; focusCamera = null; }
@@ -1226,6 +1245,7 @@ function applyAxes(input: AxesInput): Promise<void> {
 // D085-S1 BEGIN: location navigation cannot interleave a toolbar transition.
 function restoreGeometryFromLocation(): Promise<void> {
   const search = location.search, hash = location.hash;
+  v2?.supersedeGeometry();
   return geometryTransitions.enqueue(() => applyGeometryFromLocation(search, hash));
 }
 async function applyGeometryFromLocation(search: string, hash: string): Promise<void> {
@@ -1739,6 +1759,7 @@ function syncDensity(): void {
 function applyDensity(next: unknown): void {
   const value = normalizeDensity(next);
   // D085-S1 BEGIN: density must reach the renderer before the next topology intent.
+  v2?.supersedeGeometry();
   void geometryTransitions.enqueue(async () => {
     if (value === density) return;
     density = value;
