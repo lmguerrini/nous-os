@@ -76,9 +76,13 @@ test('wire taxonomy and label gating follow law support', () => {
   assert.equal(topologyLabel('lull', '2d'), LULL_NAME_AUTHORISED ? 'Llull' : 'Topologia circolare combinatoria');
   assert.equal(topologyLabel('lull', '3d'), LULL_NAME_AUTHORISED ? 'Llull' : 'Topologia circolare combinatoria');
   assert.deepEqual(topologySupport('natural', '3d', true), { ok: true });
-  const forbidden = topologySupport('lull', '3d', false);
+  // D085-S4 BEGIN: the certified Third Figure enables standalone 3D;
+  // the separate Indra composition still has an explicit registry refusal.
+  assert.deepEqual(topologySupport('lull', '3d', false), { ok: true });
+  const forbidden = topologySupport('lull', '3d', true);
   assert.equal(forbidden.ok, false);
   if (!forbidden.ok) assert.ok(forbidden.reason);
+  // D085-S4 END
   // D082-B6 integration: Indra composition is implemented, so Canopy IFS + Indra ON is supported (matrix: declared limits).
   assert.equal(topologySupport('canopy-ifs', '2d', true).ok, true);
   assert.throws(() => parseGeometryView2(JSON.stringify({ ...defaultGeometryView2(), topology: 'lull' })), /topology/);

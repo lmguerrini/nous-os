@@ -14,8 +14,10 @@ test('standalone guides restore fully at rest; composed guides keep budgets and 
   const timers = new Map<number, () => void>();
   let nextId = 0;
   const listeners = new Map<string, () => void>();
-  const context = { setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+  // D085-S4 BEGIN: the merged Llull pair guides reset the Canvas dash after each stroke.
+  const context = { setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, setLineDash(_dash: number[]) {},
     strokeStyle: '', lineWidth: 0 };
+  // D085-S4 END
   const canvas = () => ({ dataset: {} as Record<string, string>, style: {}, width: 0, height: 0,
     getContext: () => context, remove() {} });
   let mountedCanvas: ReturnType<typeof canvas> | null = null;
