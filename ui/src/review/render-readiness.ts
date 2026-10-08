@@ -4,12 +4,18 @@ import { installRenderReadinessSink } from '#render-common/render-readiness-prod
 // D082-B1f BEGIN
 import { capUnpresentedCanopySomata } from '../fractal/canopy-soma-readiness.ts';
 // D082-B1f END
+// D085-S3 BEGIN
+import { withRenderProgress } from './toolbar-status.ts';
+// D085-S3 END
 
 export type ReadinessStage = "nodes" | "mainEdges" | "allEdges" | "decor";
 export type StageCounts = { readonly required: number; readonly loaded: number; readonly drawn: number };
 export type RenderDecor = { readonly labels: boolean; readonly background: boolean; readonly glow: boolean; readonly animation: boolean };
 export type RenderReadiness = {
   readonly frame: number;
+  // D085-S3 BEGIN
+  readonly origin?: 'renderer' | 'preparation';
+  // D085-S3 END
   readonly view: string;
   readonly quality: "movimento" | "recupero" | "completa";
   readonly ladder: 0 | 1 | 2 | 3 | 4;
@@ -72,7 +78,12 @@ export function renderPercent(readiness: RenderReadiness): number {
   ));
   const countsComplete = [readiness.nodes, readiness.mainEdges, readiness.allEdges]
     .every(counts => counts.drawn === counts.required);
-  return countsComplete && decor.complete ? 100 : Math.min(99, Math.max(0, value));
+  // D085-S3 BEGIN: a reduced draw tier cannot claim completion even when its counts happen to match.
+  // D085-S3 BEGIN: the page's interim 3D counts cannot certify a presented GPU frame.
+  const presented = !readiness.view.includes('/3d/') || readiness.origin === 'renderer';
+  return countsComplete && decor.complete && presented && readiness.quality === 'completa' && readiness.ladder === 4
+    ? 100 : Math.min(99, Math.max(0, value));
+  // D085-S3 END
 }
 
 function dispatch(readiness: RenderReadiness): void {
@@ -109,13 +120,38 @@ export function reportRenderReadiness(next: RenderReadiness): void {
   // D082-B1f BEGIN: a drawn fallback disc is still a loaded, unpresented soma.
   const presented = canopySomaPending() ? capUnpresentedCanopySomata(next) : next;
   // D082-B1f END
-  const coherent: RenderReadiness = {
+  const counted: RenderReadiness = {
     ...presented,
     nodes: coherentCounts(presented.nodes),
     mainEdges: coherentCounts(presented.mainEdges),
     allEdges: coherentCounts(presented.allEdges),
   };
+  // D085-S3 BEGIN: normalize the public phase as well as its percentage.
+  const coherent: RenderReadiness = counted.view.includes('/3d/')
+    && counted.quality === 'completa' && renderPercent(counted) < 100
+    ? { ...counted, quality: 'recupero' } : counted;
+  // D085-S3 END
   current = coherent;
+  // D085-S3 BEGIN: renderer presentations refresh the toolbar even when the page
+  // has no new graph-status event. The witness guards 100% until a drawn frame.
+  if (coherent.view.includes('/3d/') && typeof document !== 'undefined'
+    && typeof document.getElementById === 'function') {
+    const percent = renderPercent(coherent);
+    const phase = percent === 100 ? 'Completa' : coherent.quality === 'movimento' ? 'Movimento' : 'Recupero';
+    const statusLine = document.getElementById('human-status');
+    if (statusLine) {
+      const line = withRenderProgress(statusLine.textContent ?? '', percent);
+      if (statusLine.textContent !== line) statusLine.textContent = line;
+      if (statusLine.title !== line) statusLine.title = line;
+    }
+    const graphStatus = document.getElementById('graph-status-cap');
+    if (graphStatus?.textContent) {
+      const line = graphStatus.textContent.replace(/Qualità: (?:Movimento|Recupero|Completa)\./,
+        `Qualità: ${phase}.`);
+      if (graphStatus.textContent !== line) graphStatus.textContent = line;
+    }
+  }
+  // D085-S3 END
   pending = coherent;
   if (pendingTimer !== null) return;
   const wait = Math.max(0, 100 - (Date.now() - lastDispatchAt));

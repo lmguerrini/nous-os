@@ -72,7 +72,10 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
   const edgeDrawn = edges?.drawn ?? fallback?.edges?.rendered ?? 0;
   const edgeEligible = edges?.eligible ?? fallback?.edges?.available ?? 0;
   const edgeTotal = edges?.total ?? edgeEligible;
-  const quality = status?.quality ?? "dati in attesa";
+  // D085-S3 BEGIN: the presented renderer phase owns the visible 3D quality label.
+  const quality = readiness?.view.includes('/3d/') ? readiness.quality
+    : status?.quality ?? "dati in attesa";
+  // D085-S3 END
   const lastFullRecovery = formatDuration(status?.msToFullQuality);
   const depth = status?.depth?.label ?? (status?.depth?.level === undefined ? "—" : `livello ${status.depth.level}`);
   // D082-A-STALE BEGIN

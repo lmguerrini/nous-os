@@ -67,7 +67,7 @@ import type { Render3fTypedInput, TypedProjectionGeometry } from "#render3f/pick
 import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts";
 // D082-B-GPUFLOOR END
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
-import { QualityLadder, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+import { QualityLadder, labDrawPolicy, labMainSegmentRanges, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
 
 /** How long the camera must be still before the derived geometry returns to full quality. */
 const DERIVED_STILL_MS = 200;
@@ -465,12 +465,15 @@ export function mount(
       requestedMainEdges = typedPicker.semanticIncidence.filter(edge => {
         if ((styled?.edgeStyle[edge.id]?.alpha ?? 1) === 0) return false;
         const sourceMark = styled?.nodeStyle[edge.source], targetMark = styled?.nodeStyle[edge.target];
-        const level = styled?.edgeStyle[edge.id]?.hierarchyLevel;
+        // D085-S3 BEGIN: a domain or upper-level endpoint keeps its real relation in the moving skeleton.
+        const endpointLevel = Math.min(Number(sourceMark?.level ?? Infinity), Number(targetMark?.level ?? Infinity));
+        const level = styled?.edgeStyle[edge.id]?.hierarchyLevel ?? endpointLevel;
         return mainRelation({ attested: true,
           selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
           sourceHub: sourceMark?.type === 'hub', targetHub: targetMark?.type === 'hub',
           sourceDomain: sourceMark?.type === 'domain', targetDomain: targetMark?.type === 'domain',
           ...(typeof level === 'number' ? { hierarchyLevel: level } : {}) });
+        // D085-S3 END
       }).length;
     } else {
       requestedNodes = live.buffers.nodes.ids.length;
@@ -488,6 +491,114 @@ export function mount(
   };
   refreshPresentedCounts();
   // D082-A-PERF END
+  // D085-S3 BEGIN: resident Lab interaction proxies retain only actual anchor nodes and
+  // whole morphology segments belonging to real upper-level relations. They are rebuilt
+  // on a visibility revision, never on a camera frame; released geometry is untouched.
+  const labProxy = new THREE.Group();
+  labProxy.visible = false;
+  threeScene.add(labProxy);
+  let labProxyDirty = true;
+  let labProxyReady = false;
+  let labProxyNodes = 0;
+  let labProxyEdges = 0;
+  const labDense = (): boolean => typedPicker !== null && requestedNodes >= DENSE_SCENE_THRESHOLD;
+  const positionKey = (point: Coordinates): string =>
+    `${point.x.toFixed(5)}:${point.y.toFixed(5)}:${point.z.toFixed(5)}`;
+  const clearLabProxy = (): void => {
+    for (const child of [...labProxy.children]) {
+      labProxy.remove(child);
+      if (child.userData.ownedGeometry && child instanceof THREE.Mesh) child.geometry.dispose();
+    }
+    labProxyNodes = 0;
+    labProxyEdges = 0;
+    labProxyReady = false;
+    labProxyDirty = true;
+  };
+  const rebuildLabProxy = (): void => {
+    clearLabProxy();
+    if (!labDense() || !typedPicker || !currentStyled) return;
+    if (typedLayer.preparedCounts().semanticEdges < requestedSemanticEdges) return;
+    const anchors = new Set(typedPicker.geometry.nodes.flatMap(point => {
+      if (point.pick.kind !== 'node') return [];
+      const style = currentStyled!.nodeStyle[point.pick.id];
+      return style && (Number(style.level) <= 2 || style.type === 'hub' || style.type === 'domain')
+        ? [positionKey(point.position)] : [];
+    }));
+    const main = new Set(typedPicker.semanticIncidence.flatMap(edge => {
+      const sourceStyle = currentStyled!.nodeStyle[edge.source], targetStyle = currentStyled!.nodeStyle[edge.target];
+      const level = Math.min(Number(sourceStyle?.level ?? Infinity), Number(targetStyle?.level ?? Infinity));
+      return (currentStyled!.edgeStyle[edge.id]?.alpha ?? 1) !== 0 && mainRelation({
+        attested: true, selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
+        sourceHub: sourceStyle?.type === 'hub', targetHub: targetStyle?.type === 'hub',
+        sourceDomain: sourceStyle?.type === 'domain', targetDomain: targetStyle?.type === 'domain',
+        hierarchyLevel: level,
+      }) ? [`semantic:${edge.id}`] : [];
+    }));
+    const drawnMain = new Set<string>();
+    const matrix = new THREE.Matrix4(), tint = new THREE.Color(), center = new THREE.Vector3();
+    for (const child of typedLayer.group.children) {
+      if (child instanceof THREE.InstancedMesh && child.name === 'typed-round-nodes') {
+        const selected: number[] = [];
+        for (let index = 0; index < child.count; index++) {
+          child.getMatrixAt(index, matrix);
+          center.setFromMatrixPosition(matrix);
+          if (anchors.has(positionKey(center))) selected.push(index);
+        }
+        if (!selected.length) continue;
+        const proxy = new THREE.InstancedMesh(child.geometry, child.material, selected.length);
+        proxy.name = 'lab-anchor-proxy';
+        proxy.frustumCulled = false;
+        selected.forEach((index, output) => {
+          child.getMatrixAt(index, matrix);
+          proxy.setMatrixAt(output, matrix);
+          if (child.instanceColor) { child.getColorAt(index, tint); proxy.setColorAt(output, tint); }
+        });
+        proxy.instanceMatrix.needsUpdate = true;
+        if (proxy.instanceColor) proxy.instanceColor.needsUpdate = true;
+        labProxy.add(proxy);
+        labProxyNodes += selected.length;
+      } else if (child instanceof THREE.Mesh && child.name === 'typed-semantic-morphology') {
+        const ends = child.userData.segmentEnds as number[] | undefined;
+        const ids = child.userData.segmentEdgeIds as string[] | undefined;
+        const positionAttribute = child.geometry.getAttribute('position');
+        if (!ends || !ids || !positionAttribute || positionAttribute.itemSize !== 3) continue;
+        const selected = labMainSegmentRanges(ends, ids, main);
+        for (const id of selected.relationIds) drawnMain.add(id);
+        if (!selected.vertices) continue;
+        const vertices = new Float32Array(selected.vertices * 3);
+        let offset = 0;
+        const raw = positionAttribute.array as Float32Array;
+        for (const [start, end] of selected.ranges) {
+          vertices.set(raw.subarray(start * 3, end * 3), offset);
+          offset += (end - start) * 3;
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+        const proxy = new THREE.Mesh(geometry, child.material);
+        proxy.name = 'lab-main-relation-proxy';
+        proxy.userData.ownedGeometry = true;
+        proxy.frustumCulled = false;
+        labProxy.add(proxy);
+      }
+    }
+    labProxyEdges = drawnMain.size;
+    labProxyReady = labProxyNodes > 0
+      && typedLayer.preparedCounts().semanticEdges >= requestedSemanticEdges
+      && (requestedMainEdges === 0 || labProxyEdges > 0);
+    labProxyDirty = false;
+  };
+  const applyLabPolicy = (stage: 1 | 2 | 3 | 4): void => {
+    const reduced = labDense() && labProxyReady && stage < 3;
+    const policy = labDrawPolicy(stage);
+    labProxy.visible = reduced;
+    for (const child of labProxy.children)
+      child.visible = child.name !== 'lab-anchor-proxy' || policy.nodes === 'anchors';
+    for (const child of typedLayer.group.children) {
+      if (child.name === 'typed-round-nodes') child.visible = !reduced || policy.nodes === 'all';
+      else if (child.name === 'typed-semantic-morphology') child.visible = !reduced;
+    }
+  };
+  // D085-S3 END
   let destroyed = false;
   const perfMarksEnabled = new URLSearchParams(location.search).has('perfmarks');
   let labelTimer: ReturnType<typeof setTimeout> | undefined;
@@ -621,7 +732,13 @@ export function mount(
         publishPresentedFrame();
       }
     }, 160);
+    // D085-S3 BEGIN: optional per-layer CPU submission marks for performance traces.
+    if (perfMarksEnabled) performance.mark('d085:webgl:start');
     renderer.render(threeScene, rig.camera);
+    if (perfMarksEnabled) { performance.mark('d085:webgl:end');
+      performance.measure('d085:webgl', 'd085:webgl:start', 'd085:webgl:end'); }
+    if (perfMarksEnabled) performance.mark('d085:overlays:start');
+    // D085-S3 END
     if (!typedPicker && (ladder.state.stage === 4 || live.scene.nodes.length < DENSE_SCENE_THRESHOLD)) distinct?.draw();
     // D082-A-PERF BEGIN: the GPU layer owns the structural moving frame.
     // Dense projection visuals are decorative and their canvas projection is
@@ -645,6 +762,10 @@ export function mount(
       }
     }
     // D081-P3b END
+    // D085-S3 BEGIN
+    if (perfMarksEnabled) { performance.mark('d085:overlays:end');
+      performance.measure('d085:overlays', 'd085:overlays:start', 'd085:overlays:end'); }
+    // D085-S3 END
     publishPresentedFrame();
     if (perfMarksEnabled) { performance.mark('d082:render3d:end'); performance.measure('d082:render3d', 'd082:render3d:start', 'd082:render3d:end'); }
   };
@@ -654,17 +775,23 @@ export function mount(
     const stage = ladder.state.stage;
     const submitted = typedPicker ? typedLayer.submittedCounts() : null;
     const prepared = typedPicker ? typedLayer.preparedCounts() : null;
-    const drawnNodes = submitted ? submitted.nodes
+    // D085-S3 BEGIN: the typed layer does not own the resident interaction proxies.
+    const proxyActive = labDense() && labProxyReady && labProxy.visible;
+    const drawnNodes = submitted ? submitted.nodes + (proxyActive && stage === 1 ? labProxyNodes : 0)
       : world.visible && (nodeResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedNodes, nodeResources.mesh.visible ? nodeResources.geometry.instanceCount : requestedNodes) : 0;
-    const drawnSemantic = submitted ? submitted.semanticEdges
+    const drawnSemantic = submitted ? submitted.semanticEdges + (proxyActive ? labProxyEdges : 0)
       : world.visible && (filamentResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedSemanticEdges, filamentResources.mesh.visible ? filamentResources.geometry.instanceCount : requestedSemanticEdges) : 0;
+    // D085-S3 END
     const drawnVisual = submitted?.visualEdges ?? 0;
     const scope = currentStyled ? readProjectionStyle(currentStyled) : null;
+    // D085-S3 BEGIN: the phase is complete only after all requested resident ranges and decor draw.
+    const allDrawn = drawnNodes >= requestedNodes && drawnSemantic >= requestedSemanticEdges
+      && drawnVisual >= requestedVisualEdges && labelTimer === undefined;
     return {
       view: `${options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
-      quality: ladder.state.moving ? 'movimento' : stage === 4 ? 'completa' : 'recupero',
+      quality: ladder.state.moving ? 'movimento' : stage === 4 && allDrawn ? 'completa' : 'recupero',
       ladder: stage,
       nodes: { required: requestedNodes, loaded: prepared?.nodes ?? requestedNodes, drawn: drawnNodes },
       mainEdges: { required: requestedMainEdges, loaded: Math.min(requestedMainEdges, prepared?.semanticEdges ?? requestedMainEdges),
@@ -676,6 +803,7 @@ export function mount(
         background: stage === 4, glow: stage === 4, animation: true },
       decorApplicable: { animation: false },
     } as const;
+    // D085-S3 END
   };
   const publishPresentedFrame = (): void => {
     const snapshot = readinessSnapshot();
@@ -687,11 +815,22 @@ export function mount(
     }));
   };
   // D082-A-STALE END
-  typedLayer.setOnReady(renderFrame);
+  // D085-S3 BEGIN: finish the cached proxies only after the typed worker attaches whole ribbons.
+  typedLayer.setOnReady(() => {
+    rebuildLabProxy();
+    applyLabPolicy(ladder.state.stage);
+    renderFrame();
+  });
+  // D085-S3 END
   // D082-A-PERF BEGIN: three scheduled restores; no frame loop or scene rebuild at rest.
   const ladder = new QualityLadder(({ stage, moving }) => {
     typedMoving = stage < 4;
-    typedLayer.setQuality(stage >= 3 ? "full" : stage >= 2 ? "main" : "moving");
+    // D085-S3 BEGIN: stage three restores semantic ribbons; stage four restores visual relations.
+    if (stage < 4 && labProxyDirty) rebuildLabProxy();
+    typedLayer.setQuality(labDense() ? stage === 4 ? 'full' : stage === 3 ? 'main' : 'moving'
+      : stage >= 3 ? "full" : stage >= 2 ? "main" : "moving");
+    applyLabPolicy(stage);
+    // D085-S3 END
     visuals?.setQuality(stage >= 4 ? "full" : "moving", false);
     if (visuals?.canvas && typedPicker && requestedNodes >= DENSE_SCENE_THRESHOLD)
       visuals.canvas.style.visibility = stage >= 4 ? "" : "hidden";
@@ -929,7 +1068,10 @@ export function mount(
           typedLabelBudget = nextScope.labelBudget;
           derivedMorphology = nextScope.morphology;
         }
+        // D085-S3 BEGIN: release proxy geometry before its source buffers are replaced.
+        clearLabProxy();
         typedLayer.update(next.geometry, update.styled);
+        // D085-S3 END
         refreshPresentedCounts();
         // D081-P3b BEGIN
         updateBundleLabels(update);
@@ -948,7 +1090,10 @@ export function mount(
           derivedMorphology = nextScope.morphology;
           visuals?.setMorphology(nextScope.morphology);
         }
+        // D085-S3 BEGIN
+        clearLabProxy();
         typedLayer.update(typedPicker.geometry, update.styled);
+        // D085-S3 END
         refreshPresentedCounts();
         // D081-P3b BEGIN
         updateBundleLabels(update);
@@ -1130,6 +1275,10 @@ export function mount(
       detachInteractions();
       labels.destroy();
       distinct?.destroy();
+      // D085-S3 BEGIN
+      clearLabProxy();
+      labProxy.removeFromParent();
+      // D085-S3 END
       typedLayer.dispose();
       brainEnvelope?.dispose();
       fiberRoot.unmount();

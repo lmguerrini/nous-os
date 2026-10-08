@@ -2,6 +2,9 @@
 export type PresentedStageCounts = { readonly required: number; readonly loaded: number; readonly drawn: number };
 export type PresentedRenderReadiness = {
   readonly frame: number;
+  // D085-S3 BEGIN: a renderer-owned presentation is distinct from page preparation counts.
+  readonly origin: 'renderer' | 'preparation';
+  // D085-S3 END
   readonly view: string;
   readonly quality: 'movimento' | 'recupero' | 'completa';
   readonly ladder: 0 | 1 | 2 | 3 | 4;
@@ -24,8 +27,10 @@ export function installRenderReadinessSink(next: (value: PresentedRenderReadines
   return () => { if (sink === next) sink = previous; };
 }
 
-export function presentRenderReadiness(value: Omit<PresentedRenderReadiness, 'frame'>): PresentedRenderReadiness {
-  const next = { ...value, frame: ++frame };
+export function presentRenderReadiness(value: Omit<PresentedRenderReadiness, 'frame' | 'origin'>): PresentedRenderReadiness {
+  // D085-S3 BEGIN
+  const next = { ...value, frame: ++frame, origin: 'renderer' as const };
+  // D085-S3 END
   latest = next;
   sink?.(next);
   return next;
@@ -34,8 +39,10 @@ export function presentRenderReadiness(value: Omit<PresentedRenderReadiness, 'fr
 // D082-A-PERF BEGIN: during a new-scene preparation the resident old frame is
 // still displayed. Report only buffers actually prepared and zero drawn for the
 // requested scene; a renderer presentation supersedes this transient state.
-export function reportPreparationReadiness(value: Omit<PresentedRenderReadiness, 'frame'>): void {
-  sink?.({ ...value, frame: ++frame });
+export function reportPreparationReadiness(value: Omit<PresentedRenderReadiness, 'frame' | 'origin'>): void {
+  // D085-S3 BEGIN: preparation never carries a presented-frame certificate.
+  sink?.({ ...value, frame: ++frame, origin: 'preparation' });
+  // D085-S3 END
 }
 // D082-A-PERF END
 

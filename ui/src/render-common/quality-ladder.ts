@@ -12,6 +12,41 @@ export { presentRenderReadiness } from './render-readiness-producer.ts';
 /** The last input restarts this clock. Stage 4 is reached 320 ms after that input. */
 export const QUALITY_RESTORE_MS = [0, 80, 160, 320] as const;
 
+// D085-S3 BEGIN: Lab camera work uses resident geometry at four explicit draw tiers.
+export type LabDrawPolicy = Readonly<{
+  nodes: 'anchors' | 'all';
+  semanticEdges: 'main' | 'all';
+  visualEdges: boolean;
+  decor: boolean;
+}>;
+export function labDrawPolicy(stage: QualityStage): LabDrawPolicy {
+  return {
+    nodes: stage === 1 ? 'anchors' : 'all',
+    semanticEdges: stage < 3 ? 'main' : 'all',
+    visualEdges: stage === 4,
+    decor: stage === 4,
+  };
+}
+/** Select complete, already prepared morphology segments for real relation IDs. */
+export function labMainSegmentRanges(ends: readonly number[], ids: readonly string[],
+  main: ReadonlySet<string>): { ranges: readonly (readonly [number, number])[]; relationIds: ReadonlySet<string>; vertices: number } {
+  const ranges: [number, number][] = [];
+  const relationIds = new Set<string>();
+  let previous = 0, vertices = 0;
+  for (let index = 0; index < ends.length; index++) {
+    const end = ends[index]!;
+    const id = ids[index];
+    if (id !== undefined && main.has(id) && end > previous) {
+      ranges.push([previous, end]);
+      relationIds.add(id);
+      vertices += end - previous;
+    }
+    previous = end;
+  }
+  return { ranges, relationIds, vertices };
+}
+// D085-S3 END
+
 export function qualityAt(elapsedMs: number): QualityStage {
   if (elapsedMs < QUALITY_RESTORE_MS[1]) return 1;
   if (elapsedMs < QUALITY_RESTORE_MS[2]) return 2;
