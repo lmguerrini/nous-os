@@ -78,6 +78,106 @@ test('a superseded request already displayed resynchronizes main to the page com
   assert.equal(main.state.axes.projection, '3d');
 });
 
+// D085-S1 BEGIN: a committed view may still be awaiting its final fit or panel work.
+for (const successor of ['refused Indra', 'same-density click'] as const) {
+  test(`displayed Julia survives ${successor} with toolbar and URL resynced`, async () => {
+    environment.mod.setJuliaIndraLegibility('2d', false);
+    try {
+      let finishFit!: () => void;
+      const fit = new Promise<void>(resolve => { finishFit = resolve; });
+      const page = makePage(environment.mod, { afterCommit: () => fit });
+      const main = await makeMain(environment.mod, environment.mainSource, page);
+      const first = main.chooseTaxonomy('julia');
+      for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+      const mount = page.mounts[0]; mount.released = true; mount.release();
+      for (let step = 0; step < 30 && !mount.committed; step++) await tick(4);
+      assert.equal(mount.committed, true);
+      const second = successor === 'refused Indra'
+        ? main.chooseTaxonomy('julia', true)
+        : (main.applyDensity('balanced'), main.lane.enqueue(async () => {}));
+      finishFit();
+      await drain(page, main, [first, second]);
+      consistent(page, main);
+      assert.equal(wit(page).topology, 'julia');
+      assert.equal(main.state.geometry.topology, 'julia');
+      assert.equal(main.log.urls.at(-1).topology, 'julia');
+      if (successor === 'refused Indra') await assert.rejects(second, /./);
+    } finally { environment.mod.setJuliaIndraLegibility('2d', true); }
+  });
+}
+
+test('displayed density survives supersession without a provisional rollback', async () => {
+  let finishFit!: () => void;
+  const fit = new Promise<void>(resolve => { finishFit = resolve; });
+  const page = makePage(environment.mod, { afterCommit: () => fit });
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  main.applyDensity('essential');
+  const first = main.lane.enqueue(async () => {});
+  for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+  const mount = page.mounts[0]; mount.released = true; mount.release();
+  for (let step = 0; step < 30 && !mount.committed; step++) await tick(4);
+  assert.equal(mount.committed, true);
+  page.supersedeGeometry();
+  finishFit();
+  await drain(page, main, [first]);
+  consistent(page, main);
+  assert.equal(page.density, 'essential');
+  assert.equal(main.state.density, 'essential');
+  assert.equal(main.log.urls.at(-1).density, 'essential');
+});
+
+test('Neural Natural persists the main-resolved arrangement', async () => {
+  const page = makePage(environment.mod);
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  const request = main.setAxes({ morphology: 'neural' });
+  await drain(page, main, [request]);
+  assert.equal(main.state.axes.arrangement, 'network');
+  assert.equal(main.state.geometry.naturalArrangement, 'network');
+});
+
+test('post-commit page failure resynchronizes mounted taxonomy and URL', async () => {
+  const page = makePage(environment.mod, { afterCommit: () => { throw new Error('post-commit overlay failure'); } });
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  const request = main.chooseTaxonomy('sierpinski');
+  await drain(page, main, [request]);
+  await assert.rejects(request, /post-commit overlay failure/);
+  consistent(page, main);
+  assert.equal(main.state.geometry.topology, 'sierpinski');
+  assert.equal(page.taxonomyPresentationPending, false);
+});
+
+test('post-commit restore failure also resynchronizes the displayed view', async () => {
+  const page = makePage(environment.mod, { afterCommit: () => { throw new Error('restore overlay failure'); } });
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  main.setTarget({ value: { schema: 2, rendering: '3d', topology: 'julia', indra: 'off',
+    morphology: 'stellar', density: 'essential', reading: 'combined', colour: 'bw', labels: true } });
+  const request = main.restoreGeometryFromLocation();
+  await drain(page, main, [request]);
+  await assert.rejects(request, /restore overlay failure/);
+  consistent(page, main);
+  assert.equal(main.state.geometry.topology, 'julia');
+  assert.equal(main.log.urls.at(-1).topology, 'julia');
+});
+
+for (const topology of ['natural', 'julia'] as const) {
+  test(`${topology} density refresh cannot inherit the detail refresh selection`, async () => {
+    const page = makePage(environment.mod, { topology,
+      committedTaxonomy: { topology, indra: false }, lastNodeSelection: { rendered: ['old-density'] } });
+    const detail = page.setRelationDetail('all');
+    for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+    assert.equal(page.mounts.length, 1);
+    assert.equal(page.relationDetailSwitchPending, true);
+    assert.equal(page.relationDetailSwitchEpoch, page.projectionEpoch);
+    const density = page.setDensity('essential');
+    await drain(page, { lane: environment.mod.createGeometryTransitionQueue() }, [detail, density]);
+    assert.equal(page.density, 'essential');
+    assert.equal(page.relationDetailSwitchPending, false);
+    assert.equal(page.relationDetailSwitchEpoch, null);
+    assert.equal(page.mounts.at(-1).snap.axes.organization, 'natural');
+  });
+}
+// D085-S1 END
+
 test('location restore mounts final Julia Indra 3D once and confirms presentation after persistence', async () => {
   const page = makePage(environment.mod);
   const main = await makeMain(environment.mod, environment.mainSource, page);
