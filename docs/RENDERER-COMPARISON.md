@@ -159,8 +159,9 @@ lifecycle, and that is why its handle cannot answer two of the questions the sha
 it has one camera and cannot enumerate resources it does not own. Those are honest absences, recorded
 as capabilities it does not declare rather than as fabricated answers.
 
-**The Three engine** is about 11,057 lines of source and its own tests together (11,000–12,000 lines).
-D-080 added the closer 3D camera, Neural trunks, procedural brain, residual packing and drawer. The
+**The Three engine** is about 12,217 lines of source and its own tests together (12,000–13,000 lines).
+D-080 added the closer 3D camera, Neural trunks, procedural brain, residual packing and drawer; D-085 added the
+Lab interaction ladder and the on-screen gate of the exploratory beam. The
 figure grows every time its controls are strengthened — it has moved three times while this document
 was being written, and a check now refuses the claim when the command below stops reproducing it — so
 it is deliberately given as a band and reproduced rather than pinned:

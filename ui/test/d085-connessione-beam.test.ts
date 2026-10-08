@@ -249,7 +249,10 @@ test("D085-S6 native driver retires offscreen, schedules no idle frame, and re-a
 
 test("D085-S6 the mounted driver invalidates visibility on camera and native-pass changes", () => {
   assert.match(mountSource, /const syncCameraState = \(\): void => \{[\s\S]*?invalidateNativeBeamVisibility\(\);[\s\S]*?ladder\.touch\(\)/);
-  assert.match(mountSource, /rig\.resize\(next\.width, next\.height, renderDpr\);[\s\S]*?invalidateNativeBeamVisibility\(\)/);
+  // Integration with the S3 ladder: the resize observer now resizes through syncDrawingBuffer (which calls rig.resize);
+  // the guarantee is unchanged — beam visibility is invalidated after every drawing-buffer resize.
+  assert.match(mountSource, /syncDrawingBuffer\(next\.width, next\.height\);[\s\S]*?invalidateNativeBeamVisibility\(\)/);
+  assert.match(mountSource, /const syncDrawingBuffer = [\s\S]*?rig\.resize\(width, height, ratio\);/);
   assert.match(mountSource, /world\.visible = false;[\s\S]{0,300}?invalidateNativeBeamVisibility\(\)/);
   assert.match(mountSource, /const refreshNativeBeamVisibility = \(\): void => \{\s*if \(!nativeBeamVisibilityDirty\) return;/);
   assert.match(mountSource, /nativeBeamVisibleEdgeCount\(live\.buffers\.filaments, nativeBeamEdgeIds, rig\.camera\)/);
