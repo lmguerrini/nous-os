@@ -554,7 +554,9 @@ export function mount(
       if (activeOptions.morphology === "neural") for (const [id, entry] of update.nodeEntries) {
         const base = baseNodeAttributes.get(id);
         if (!base || entry.radiusPx === undefined) continue;
-        baseNodeAttributes.set(id, nativeNodePresentationBase(base, entry));
+        // "D086-F1 BEGIN": retain the settled native law size while updating Neural's halo.
+        baseNodeAttributes.set(id, nativeNodePresentationBase(base, entry, nativeSizeLaw !== null && update.nativeNodeSizeLaw === true));
+        // "D086-F1 END"
         nativeNodeStyleChanged = true;
       }
       // "D082-A-VEIL2 END"
