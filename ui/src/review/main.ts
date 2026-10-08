@@ -648,7 +648,11 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   // until the controls and URL have been presented below.
   await v2?.setTaxonomy(topology, indra, true);
   // D085-S1 END
-  axes = appliedAxes({ organization });
+  try {
+  // D085-S1 BEGIN: present precisely the axes that the page mounted.
+  axes = v2 ? { ...v2.committedViewAxes } : appliedAxes({ organization });
+  if (v2) density = v2.densitySetting ?? density;
+  // D085-S1 END
   geometry = { schema: 2, rendering: axes.projection, topology: wireTopology(topology), indra: indra ? 'on' : 'off',
     morphology: axes.morphology, density, reading: axes.reading, colour: axes.colour, labels: axes.labels,
     ...(axes.brain !== undefined ? { brain: axes.brain } : {}),
@@ -665,9 +669,11 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   // D082-B-NOTICE BEGIN
   showSelectedGeometryDescription();
   // D082-B-NOTICE END
-  // D085-S1 BEGIN
-  v2?.confirmTaxonomyPresentation(topology, indra);
-  // D085-S1 END
+  } finally {
+    // D085-S1 BEGIN: a failed final sync cannot leave the mounted witness in transition.
+    v2?.confirmTaxonomyPresentation(topology, indra);
+    // D085-S1 END
+  }
 }
 // D085-S1 END
 installTaxonomyControls();
@@ -1247,6 +1253,19 @@ function center(): Promise<void> {
   });
 }
 // D085-S1 BEGIN: projection and other axes use the same lane as topology selection.
+function syncCommittedPageGeometry(): void {
+  if (!v2) return;
+  const committed = v2.committedViewTaxonomy;
+  axes = { ...v2.committedViewAxes };
+  density = v2.densitySetting ?? density;
+  if (!('mode' in geometry)) geometry = { ...geometry, rendering: axes.projection,
+    topology: wireTopology(committed.topology), indra: committed.indra ? 'on' : 'off', density };
+  syncBrainControls();
+  syncTaxonomyControls();
+  syncLoadedAxisButtons();
+  syncDensity();
+  syncToolbarSummary();
+}
 function setAxes(input: AxesInput): Promise<void> {
   v2?.supersedeGeometry();
   return geometryTransitions.enqueue(() => applyAxes(input));
@@ -1276,7 +1295,9 @@ function applyAxes(input: AxesInput): Promise<void> {
     return Promise.reject(new Error(`La vista ${viewLabel(partial.organization)} non è disponibile per questo grafo`));
   axes = appliedAxes(partial);
   syncBrainControls();
-  persistView();
+  // D085-S1 BEGIN: the URL follows only a committed page view.
+  if (!v2) persistView();
+  // D085-S1 END
   syncToolbarSummary();
   // D082-B2 BEGIN
   syncTaxonomyControls();
@@ -1306,7 +1327,7 @@ function applyAxes(input: AxesInput): Promise<void> {
       // D085-S1 BEGIN: old page callers may await a stale axis request, but main cannot persist it.
       if (result === 'superseded') throw new GeometrySupersededError();
       // D085-S1 END
-      axes = { ...axes, brain: v2!.brainEnabled };
+      syncCommittedPageGeometry();
       syncBrainControls();
       persistView();
       // D082-LAB-FIX4 BEGIN
@@ -1314,8 +1335,8 @@ function applyAxes(input: AxesInput): Promise<void> {
       // D082-LAB-FIX4 END
     }).catch(error => {
       // D085-S1 BEGIN
-      axes = previousAxes;
-      geometry = previousGeometry;
+      if (v2) syncCommittedPageGeometry();
+      else { axes = previousAxes; geometry = previousGeometry; }
       persistView();
       syncTaxonomyControls();
       syncLoadedAxisButtons();
@@ -1367,19 +1388,24 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
   const target = support.value;
   const targetAxes = geometryToLegacyAxes(target);
   if (!('mode' in target) && v2) {
-    const previous = 'mode' in geometry ? null : geometry;
-    const previousTopology = previous ? lawTopology(previous.topology) : 'natural';
-    const previousIndra = previous?.indra === 'on';
     const targetTopology = lawTopology(target.topology);
     const targetIndra = target.indra === 'on';
-    if (topologySupport(previousTopology, target.rendering, previousIndra).ok) {
-      if (await v2.setAxes({ projection: target.rendering }) === 'superseded')
-        throw new GeometrySupersededError();
-      axes = { ...axes, projection: target.rendering };
-    }
-    if (topologySupport(targetTopology, axes.projection, targetIndra).ok)
-      await v2.setTaxonomy(targetTopology, targetIndra);
-    if (await v2.setAxes(targetAxes) === 'superseded') throw new GeometrySupersededError();
+    // D085-S1 BEGIN: restore one final scene, then present its URL and controls.
+    await v2.setTaxonomy(targetTopology, targetIndra, true, targetAxes, target.density);
+    try {
+      geometry = target;
+      axes = { ...v2.committedViewAxes };
+      density = v2.densitySetting ?? density;
+      if (support.notice) experimentalSuspensionNotice = support.notice;
+      persistView();
+      syncDensity();
+      syncTaxonomyControls();
+      syncLoadedAxisButtons();
+      syncToolbarSummary();
+      if (support.notice) showExperimentalSuspensionNotice();
+    } finally { v2.confirmTaxonomyPresentation(targetTopology, targetIndra); }
+    return;
+    // D085-S1 END
   }
   geometry = target;
   axes = targetAxes;
@@ -1878,6 +1904,7 @@ function applyDensity(next: unknown): void {
     if (value === density) return;
     // D085-S1 BEGIN: persist only after the page accepts the density.
     if (await v2?.setDensity(value) === 'superseded') return;
+    if (v2) syncCommittedPageGeometry();
     density = value;
     // D082-B2 BEGIN
     geometry = { ...geometry, density };
