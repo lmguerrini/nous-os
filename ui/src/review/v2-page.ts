@@ -1613,7 +1613,10 @@ export class V2Page {
         const task = this.pending.then(action);
         this.pending = task.catch(() => { });
         return task.catch(e => {
+            // D085-S5 BEGIN: every displayed failure has an object identity for ownership.
             const message = e instanceof Error ? e.message : String(e);
+            const failure = typeof e === 'object' && e !== null ? e : new Error(message, { cause: e });
+            // D085-S5 END
             element('status').textContent = `Errore: ${message}`;
             // D085-S5 BEGIN: the retry reloads the kept view, and owns its rejection.
             this.pageErrorShown = true;
@@ -1625,9 +1628,11 @@ export class V2Page {
             // D085-S5 END
             element('error').append(retry);
             // D085-S5 BEGIN: the error is owned only after its visible recovery UI exists.
-            if (typeof e === 'object' && e !== null) displayedPageFailures.add(e);
+            displayedPageFailures.add(failure);
             // D085-S5 END
-            throw e;
+            // D085-S5 BEGIN
+            throw failure;
+            // D085-S5 END
         });
     }
     private visible() {
@@ -5733,13 +5738,13 @@ export class V2Page {
             this.revealState = emptyRevealState(this.revealCamera.zoom);
             this.lastRevealSampleKey = '';
             // D085-S5 BEGIN: a background fold must own a failed remount.
-            void this.refresh().then(() => this.guideLayer?.invalidate()).catch(() => { });
+            this.ownDisplayedFailure(this.refresh().then(() => this.guideLayer?.invalidate()));
             // D085-S5 END
         }
         // D085-S4 BEGIN: re-enable the overview fold at the current camera.
         else if (this.topology === 'lull' && this.lawActive() && this.axes.organization === 'natural')
             // D085-S5 BEGIN
-            void this.refresh().then(() => this.guideLayer?.invalidate()).catch(() => { });
+            this.ownDisplayedFailure(this.refresh().then(() => this.guideLayer?.invalidate()));
             // D085-S5 END
         // D085-S4 END
     }

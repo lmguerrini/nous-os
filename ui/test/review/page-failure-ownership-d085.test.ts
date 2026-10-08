@@ -82,7 +82,51 @@ test('UI callbacks own displayed failures, expose foreign failures, and ignore s
       assert.deepEqual(unhandled, [foreign], 'supersession is expected');
       assert.equal(isOwnedPageFailure(superseded), true);
       assert.equal(prevented(superseded), 1);
-      console.log('owned callback: 0 unhandled; foreign callback: 1 original unhandled; superseded: 0; listener: owned only');
+
+      // D085-S5 BEGIN: primitive failures must retain their cause and enter the displayed owner.
+      page.history.undo = () => {};
+      for (const reason of ['primitive displayed failure', 0, undefined, null]) {
+        page.refresh = () => page.run(async () => { throw reason; });
+        const observed = [];
+        const task = page.undo();
+        task.catch(error => { observed.push(error); });
+        ownDisplayedRemount(task);
+        await tick(); await tick();
+        const message = String(reason);
+        assert.equal(status.textContent, 'Errore: ' + message);
+        assert.equal(errorRegion.hidden, false);
+        assert.equal(errorRegion.children[0].text, message);
+        assert.equal(observed.length, 1);
+        assert.ok(observed[0] instanceof Error, 'displayed primitive is rethrown as an Error');
+        assert.equal(observed[0].message, message);
+        assert.equal(observed[0].cause, reason);
+        assert.equal(isOwnedPageFailure(observed[0]), true);
+        assert.equal(prevented(observed[0]), 1, 'real listener prevents the displayed rejection');
+        assert.deepEqual(unhandled, [foreign], 'wrapped callback does not surface a displayed primitive');
+      }
+
+      for (const on of [false, true]) {
+        const invalidation = new Error('guide invalidation failed: ' + on);
+        let calls = 0;
+        page.guideLayer = { invalidate() { if (++calls === 2) throw invalidation; } };
+        page.refresh = async () => {};
+        page.auto = { clear() {} };
+        page.autoPageCounts = { clear() {} };
+        page.revealCamera = { zoom: 1 };
+        page.topology = 'lull';
+        page.axes = { organization: 'natural' };
+        page.lawActive = () => true;
+        page.setSemanticZoom(on);
+        await tick(); await tick();
+        assert.equal(calls, 2, 'guide invalidates after successful refresh');
+        assert.deepEqual(unhandled.at(-1), invalidation, 'undisplayed invalidate failure surfaces unchanged');
+        assert.equal(unhandled.filter(error => error === invalidation).length, 1);
+        assert.equal(isOwnedPageFailure(invalidation), false);
+        assert.equal(prevented(invalidation), 0);
+      }
+      assert.equal(unhandled.length, 3, 'one foreign callback and two guide failures surface');
+      console.log('owned callback: 0 unhandled; foreign callback: 1 original unhandled; superseded: 0; primitive callbacks: 0; guide failures: 2; listener: owned only');
+      // D085-S5 END
     `;
     const result = spawnSync(process.execPath, ['--input-type=module', '--eval', child], { encoding: 'utf8', timeout: 20_000 });
     assert.equal(result.status, 0, `child failed: ${result.stderr}`);
