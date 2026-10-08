@@ -33,6 +33,59 @@ export const DENSITY_BUDGETS: Readonly<Record<Density, LodBudget>> = {
   complete: { nodes: 850, arcs: 1200, labels: 60 },
 };
 
+// D085-S2 BEGIN: Bilanciata realmente intermedia (fix 3). One budget per topology:
+// the geometry that must stay recognisable decides how many real glyphs Bilanciata admits,
+// instead of one global 400-node step for Natural, Canopy, Julia, Sierpiński and Llull alike.
+// Essenziale keeps its approved 80/100/20 everywhere (Canopy keeps its 150 marks); Completa
+// keeps its bounded-path entry. Natural and Indra keep the approved classic 400/450 —
+// fix 3 evidence names only the Geometry Lab topologies, and the approved D-084
+// states 01–06 are Natural 3D Bilanciata at 400 (measured justification in §4 of the D-085 S2
+// report; raising them is filed there as a review candidate). The Lab balanced values are the
+// measured choices of §4: ~17–50× Essenziale and ~7–36% of Completa.
+export type BudgetTopology = 'natural' | 'indra' | 'canopy' | 'julia' | 'sierpinski' | 'lull';
+
+const DENSITY_TOPOLOGY_BUDGETS: Readonly<Record<BudgetTopology, Readonly<Record<Density, LodBudget>>>> = {
+  natural: {
+    essential: { nodes: 80, arcs: 100, labels: 20 },
+    balanced: { nodes: 400, arcs: 450, labels: 40 },
+    complete: { nodes: 850, arcs: 1200, labels: 60 },
+  },
+  indra: {
+    essential: { nodes: 80, arcs: 100, labels: 20 },
+    balanced: { nodes: 400, arcs: 450, labels: 40 },
+    complete: { nodes: 850, arcs: 1200, labels: 60 },
+  },
+  canopy: {
+    essential: { nodes: 150, arcs: 160, labels: 20 },
+    balanced: { nodes: 2500, arcs: 2600, labels: 40 },
+    complete: { nodes: 850, arcs: 1200, labels: 60 },
+  },
+  julia: {
+    essential: { nodes: 80, arcs: 100, labels: 20 },
+    balanced: { nodes: 4000, arcs: 4200, labels: 40 },
+    complete: { nodes: 850, arcs: 1200, labels: 60 },
+  },
+  sierpinski: {
+    essential: { nodes: 80, arcs: 100, labels: 20 },
+    balanced: { nodes: 2500, arcs: 2600, labels: 40 },
+    complete: { nodes: 850, arcs: 1200, labels: 60 },
+  },
+  lull: {
+    essential: { nodes: 80, arcs: 100, labels: 20 },
+    balanced: { nodes: 4000, arcs: 4200, labels: 40 },
+    complete: { nodes: 850, arcs: 1200, labels: 60 },
+  },
+};
+
+/** The density budget of one topology. `DENSITY_BUDGETS` above remains the verified D-082
+ * table verbatim — it still backs the density-independent Essenziale constants, the pinned
+ * counts and the reachability proof — while every density-driven path in the page resolves
+ * its budget through this function, so the witness can name the policy it applied. */
+export function densityBudget(density: Density, topology: BudgetTopology): LodBudget {
+  return DENSITY_TOPOLOGY_BUDGETS[topology][density];
+}
+// D085-S2 END
+
 // D082-A-DENSITY BEGIN: both lower densities draw from one semantic, camera-independent
 // disclosure. Keeping this pool identical is necessary for stable coordinates on a switch.
 // D082 A-DENSITYc: the pool is a pure function of (index, explicit disclosure, selection).
@@ -45,14 +98,29 @@ import type { V2Index, V2Visible, V2Node } from './v2-core.ts';
 import type { Reading } from './view-contract.ts';
 // D082-A-READINGS END
 const DENSITY_POOL_LIMIT = 850;
+// D085-S2 BEGIN: the shared candidate pool grows with the topology-aware Bilanciata budget.
+// The fill order is untouched, so a larger pool is a prefix-stable extension of the smaller
+// one: the first 850 candidates (and every coordinate computed over them) are identical.
+const DENSITY_POOL_MARGIN = 450;
+export function densityPoolLimit(budgetNodes: number): number {
+  return Math.max(DENSITY_POOL_LIMIT, budgetNodes + DENSITY_POOL_MARGIN);
+}
+// D085-S2 END
 const densityPoolCache = new WeakMap<V2Index, Map<string, V2Visible>>();
-export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: string | null = null): V2Visible {
+export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: string | null = null,
+  // D085-S2 BEGIN: `limit` defaults to the verified D-082 pool for every existing caller.
+  limit: number = DENSITY_POOL_LIMIT): V2Visible {
+  // D085-S2 END
   const baseKey = base.nodes.map(node => node.id).sort().join(',');
-  const key = `${baseKey}|${selectedId ?? ''}`;
+  // D085-S2 BEGIN: the limit is part of the pool's identity, so a typed caller asking for
+  // the verified 850 pool and a classic caller asking for the Bilanciata pool never share
+  // an entry. The selection-subsumption fast path keeps the same limit.
+  const key = `${baseKey}|${selectedId ?? ''}|${limit}`;
   const retained = densityPoolCache.get(index);
-  const cached = retained?.get(key) ?? (selectedId && retained?.get(`${baseKey}|`)?.nodes.some(node => node.id === selectedId)
-    ? retained.get(`${baseKey}|`) : undefined);
+  const cached = retained?.get(key) ?? (selectedId && retained?.get(`${baseKey}||${limit}`)?.nodes.some(node => node.id === selectedId)
+    ? retained.get(`${baseKey}||${limit}`) : undefined);
   if (cached) return cached;
+  // D085-S2 END
   const byId = new Map(index.nodes.map(node => [node.id, node]));
   const degree = new Map<string, number>();
   for (const edge of index.edges) if (edge.class === 'attested') {
@@ -65,7 +133,7 @@ export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: s
     + Math.log1p(node.counts.live_proposals ?? 0) * 0.15;
   const rank = (a: V2Node, b: V2Node) => score(b) - score(a) || compare(a.id, b.id);
   const chosen = new Map<string, V2Node>();
-  const add = (node: V2Node) => { if (chosen.size < DENSITY_POOL_LIMIT) chosen.set(node.id, node); };
+  const add = (node: V2Node) => { if (chosen.size < limit) chosen.set(node.id, node); };
   // Domains, projects and conversations are the complete structural scaffold. It also
   // guarantees that every community has a visible representative.
   for (const node of index.nodes.filter(node => node.level <= 3).sort((a, b) => a.level - b.level || rank(a, b))) add(node);
@@ -92,7 +160,9 @@ export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: s
   }
   for (const group of groups.values()) group.sort(rank);
   const keys = [...groups.keys()].sort(compare);
-  for (let round = 0; chosen.size < DENSITY_POOL_LIMIT && keys.some(key => round < groups.get(key)!.length); round++)
+  // D085-S2 BEGIN: the round-robin stops at the caller's limit, not the verified 850, or a
+  // Bilanciata pool larger than 850 could never fill past the old cap. (D085-S2 END)
+  for (let round = 0; chosen.size < limit && keys.some(key => round < groups.get(key)!.length); round++)
     for (const key of keys) {
       const node = groups.get(key)![round];
       if (node) add(node);
@@ -255,6 +325,48 @@ export function densityConnectedNodes<T extends { source: string; target: string
   }
 }
 // D082-A-DENSITY END
+
+// D085-S2 BEGIN: structure-aware selection score for the topology laws (fix 3).
+// A law's coordinates place every node of the fixed snapshot; radius (the potential band in
+// Julia, the record band in Llull, the gasket scale in Sierpiński) is the structural feature
+// the density must sample, because importance alone selects one radial band and the geometry
+// stops being recognisable. The order the score induces interleaves the bands — first every
+// band's most important member, then every band's second, and so on — so any budget draws
+// all twelve rings of the geometry at a uniform fraction instead of a thick outer annulus;
+// on equal rank the outer band (Julia's rim, Llull's wheel) comes first. The score is a pure
+// function of (positions, importance): same snapshot, same scores, deterministic prefixes.
+export const LAW_SELECTION_BANDS = 12;
+
+export function lawSelectionScores(
+  nodes: readonly { id: string; importance: number }[],
+  positions: ReadonlyMap<string, Readonly<{ x: number; y: number; z?: number }>>,
+): ReadonlyMap<string, number> {
+  const rows: { id: string; importance: number; radius: number }[] = [];
+  for (const node of nodes) {
+    const point = positions.get(node.id);
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+    const radius = Math.hypot(point.x, point.y, point.z ?? 0);
+    if (Number.isFinite(radius)) rows.push({ id: node.id, importance: node.importance, radius });
+  }
+  rows.sort((a, b) => a.radius - b.radius || compare(a.id, b.id));
+  const bands: { id: string; importance: number }[][] = Array.from({ length: LAW_SELECTION_BANDS }, () => []);
+  for (let index = 0; index < rows.length; index++) {
+    const band = Math.min(LAW_SELECTION_BANDS - 1,
+      Math.floor((index / rows.length) * LAW_SELECTION_BANDS));
+    bands[band]!.push({ id: rows[index]!.id, importance: rows[index]!.importance });
+  }
+  const scores = new Map<string, number>();
+  for (let band = 0; band < bands.length; band++) {
+    // Importance ranks the members inside one band; the band fraction (< 1) only breaks
+    // ties across bands at the same rank, outer band first.
+    bands[band]!.sort((a, b) => b.importance - a.importance || compare(a.id, b.id));
+    for (let rank = 0; rank < bands[band]!.length; rank++) {
+      scores.set(bands[band]![rank]!.id, rank + band / LAW_SELECTION_BANDS);
+    }
+  }
+  return scores;
+}
+// D085-S2 END
 
 export function normalizeDensity(value: unknown, fallback: Density = "balanced"): Density {
   return typeof value === "string" && (DENSITIES as readonly string[]).includes(value)

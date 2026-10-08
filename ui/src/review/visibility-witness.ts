@@ -5,12 +5,28 @@ import { relationVisible } from './reading.ts';
 export type VisibilityEdge = Readonly<{ id: string; source: string; target: string; class: RelationClass }>;
 export type VisibilityNode = Readonly<{ id: string; level?: number | undefined; kind?: string | undefined; parent?: string | null | undefined }>;
 export type VisibilityCause = 'budget' | 'hiddenEndpoint' | 'readingFilter' | 'detailFilter';
+// D085-S2 BEGIN (fix 3): the per-topology, per-dimension density budget record the
+// page keeps — requested, visible, aggregated and excluded counts with the reason
+// the policy applied, in a shape a tool can read straight out of the visibility witness.
+export type VisibilityBudgetSide = Readonly<{
+  requested: number; visible: number; aggregated: number; excluded: number; reason: string;
+}>;
+export type VisibilityBudgetRecord = Readonly<{
+  policy: string; topology: string; dimension: string; density: string;
+  nodes: VisibilityBudgetSide; edges: Readonly<{
+    requested: number; drawn: number; aggregated: number; excluded: number; reason: string;
+  }>;
+}>;
+// D085-S2 END
 export type VisibilityWitnessInput = Readonly<{
   axes: Axes; relationDetail: 'essential' | 'all'; density: string;
   nodes: readonly VisibilityNode[]; renderedNodeIds: ReadonlySet<string>;
   submittedEdges: readonly VisibilityEdge[]; sourceEdges?: readonly VisibilityEdge[];
   labels: number; aggregateCount: number; representedCount: number; starCount: number;
   excluded?: Partial<Record<VisibilityCause, number>>;
+  // D085-S2 BEGIN: optional so every pre-existing caller keeps its exact witness shape.
+  budgetRecord?: VisibilityBudgetRecord;
+  // D085-S2 END
 }>;
 
 /** Hidden records belong to their nearest drawn ancestor, counted once across nested pearls. */
@@ -97,5 +113,8 @@ export function buildVisibilityWitness(input: VisibilityWitnessInput) {
       readingFilter: input.excluded?.readingFilter ?? 0,
       detailFilter: input.excluded?.detailFilter ?? 0,
     } },
+    // D085-S2 BEGIN: present exactly when the page recorded the budget it applied.
+    ...(input.budgetRecord ? { densityBudget: input.budgetRecord } : {}),
+    // D085-S2 END
   };
 }
