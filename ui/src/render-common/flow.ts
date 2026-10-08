@@ -276,6 +276,13 @@ export function nativeBeamElapsedSample(input: {
 /** Share of white mixed into the edge colour for the beam core. */
 export const FLOW_BEAM_WHITE_MIX = 0.72;
 export const FLOW_BEAM_WHITE_CHANNEL = 1;
+// D086-F5 BEGIN: all canvas evidence beams mix their own edge ink toward the same white target.
+export function flowBeamCoreChannels(channels: readonly [number, number, number]): readonly [number, number, number] {
+  const white = 255 * FLOW_BEAM_WHITE_CHANNEL;
+  const mix = (channel: number) => Math.round(channel + (white - channel) * FLOW_BEAM_WHITE_MIX);
+  return [mix(channels[0]), mix(channels[1]), mix(channels[2])];
+}
+// D086-F5 END
 /** The beam envelope as a share of its peak: the pulse alpha divided by the peak the intensity allows. */
 export function flowBeamEnvelope(pulseAlpha: number, intensity: number): number {
   const peak = FLOW_WAVE_MAX_ALPHA * Math.min(1, Math.max(0, intensity) / 0.6);

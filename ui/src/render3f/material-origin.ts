@@ -217,6 +217,13 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["three", new Set(["*"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
     ["#render3f/buffers.ts", new Set(["FilamentBuffers"])],
+    // D086-F5 BEGIN: exact native beam material inputs from the shared flow law.
+    ["#render-common/flow.ts", new Set([
+      "FLOW_BEAM_CORE_MIN_PX", "FLOW_BEAM_SHOULDER_FRACTION", "FLOW_BEAM_WHITE_CHANNEL",
+      "FLOW_BEAM_WHITE_MIX", "FLOW_HEAD_MAX_ALPHA", "FLOW_HEAD_SPEED_PX_S",
+      "FLOW_PULSE_LENGTH_FRACTION", "FLOW_PULSE_MAX_PX", "FLOW_PULSE_MIN_PX",
+    ])],
+    // D086-F5 END
     // D084-W2-NEURAL-R3 BEGIN
     // D084-W5-SHADER BEGIN: the shader geometry table is uploaded as texture bytes.
     ["#engine/morphology-geometry.ts", new Set(["NEURAL_PROFILE_GLSL", "NEURAL_PROFILE_SAMPLES", "NEURAL_PROFILE_TABLE", "NEURAL_PROFILE_TEXTURE_BYTES", "NEURAL_ROOT_ANCHOR_RADII"])],

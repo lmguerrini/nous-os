@@ -926,9 +926,22 @@ export const createProductView: CreateProductView = async (input) => {
     if (perfMarksEnabled) { performance.mark('d082:flow:end'); performance.measure('d082:flow', 'd082:flow:start', 'd082:flow:end'); }
     // D082-A-PERF END
   };
+  // D086-F5 BEGIN: a visible native filament beam owns the paced frame; its callback also draws
+  // the existing canvas composite, so the approved long bright span keeps both layers.
+  const nativeBeamOwnsFlow = () => (three?.nativeBeamVisibleExploratory() ?? 0) > 0;
+  const recordFlowOverlayFrame = (now: number, began: number) => {
+    flowLoop.frameCostMs = performance.now() - began;
+    perfRecord.frame(flowLoop.frameCostMs, 'flow');
+    if (now - flowLoop.windowStartMs >= 1000) { flowLoop.measuredFps = flowLoop.frames; flowLoop.frames = 0; flowLoop.windowStartMs = now; }
+    flowLoop.frames += 1;
+  };
+  // D086-F5 END
   const flowTick = (now: number) => {
     flowLoop.raf = 0;
     if (destroyed || handle === null) { flowLoop.running = false; return; }
+    // D086-F5 BEGIN
+    if (nativeBeamOwnsFlow()) { stopFlowLoop(); return; }
+    // D086-F5 END
     const allowed = flowAnimatesNow();
     if (!flowLayerFrameDue(now, flowLoop.lastFrameMs)) {
       // Paused between frames: only a still-running reason may reschedule; the visibilitychange
@@ -951,10 +964,9 @@ export const createProductView: CreateProductView = async (input) => {
     setFlowNow(now - flowLoop.origin);
     const began = performance.now();
     drawFlowOverlay(now);
-    flowLoop.frameCostMs = performance.now() - began;
-    perfRecord.frame(flowLoop.frameCostMs, 'flow');
-    if (now - flowLoop.windowStartMs >= 1000) { flowLoop.measuredFps = flowLoop.frames; flowLoop.frames = 0; flowLoop.windowStartMs = now; }
-    flowLoop.frames += 1;
+    // D086-F5 BEGIN: both frame owners feed the same flow witnesses.
+    recordFlowOverlayFrame(now, began);
+    // D086-F5 END
     flowRunState.allowed = allowed;
     flowRunState.hidden = document.hidden;
     flowRunState.animatedEdges = flowAnimatedEdgeCount();
@@ -972,7 +984,9 @@ export const createProductView: CreateProductView = async (input) => {
     }
   };
   const startFlowLoop = () => {
-    if (destroyed || flowLoop.running) return;
+    // D086-F5 BEGIN
+    if (destroyed || flowLoop.running || nativeBeamOwnsFlow()) return;
+    // D086-F5 END
     flowLoop.running = true;
     flowLoop.resumedAtMs = performance.now();
     flowLoop.lastFrameMs = 0;
@@ -992,11 +1006,17 @@ export const createProductView: CreateProductView = async (input) => {
   const syncFlowLoop = () => {
     if (destroyed) return;
     const allowed = flowAnimatesNow();
+    // D086-F5 BEGIN: prime the shared phase before the native-only driver samples its first frame.
+    if (allowed && flowLoop.origin === null) flowLoop.origin = performance.now();
+    // D086-F5 END
     claimFlowMotion(flowOwner, allowed);
     // D085-S6 BEGIN: changing Movimento must retire a live 3D pulse immediately and wake the
     // native driver when motion resumes, without requiring a camera event or a remount.
     three?.syncNativeBeamMotion();
     // D085-S6 END
+    // D086-F5 BEGIN: the native driver receives the composite pass, so retire the page timer.
+    if (nativeBeamOwnsFlow() && flowLoop.running) stopFlowLoop();
+    // D086-F5 END
     if (allowed !== flowFlag) {
       // The base pass flips between the overlay-owned highlights and the static cue: repaint it
       // once so an exploratory reading never shows both or neither.
@@ -2066,7 +2086,21 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-PERF BEGIN: mount directly in the final camera. The former
       // orthographic mount followed by setCameraKind drew both scenes.
       // D082-B-CANOPYN BEGIN: use the exact worker-prepared Neural routes once.
-      three = mount3d(container, subset, { ...renderOptions, initialCameraKind: "perspective" }, frame,
+      // D086-F5 BEGIN: native frames advance the same phase and draw the same canvas beam.
+      three = mount3d(container, subset, { ...renderOptions, initialCameraKind: "perspective",
+        nativeFlowClockAt: wallMs => {
+          if (flowLoop.origin === null) flowLoop.origin = wallMs;
+          const elapsed = wallMs - flowLoop.origin;
+          setFlowNow(elapsed);
+          return elapsed;
+        },
+        onNativeBeamFrame: () => {
+          if (flowLoop.running) stopFlowLoop();
+          const now = performance.now();
+          drawFlowOverlay(now);
+          recordFlowOverlayFrame(now, now);
+        } }, frame,
+      // D086-F5 END
         undefined, anchors, undefined, preparedCanopy3d ?? undefined);
       preparedCanopy3d = null;
       // D082-B-CANOPYN END
