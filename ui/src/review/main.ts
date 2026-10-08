@@ -330,11 +330,16 @@ function persistView(): void {
 function syncArrangementInspector(): void {
   const host = document.getElementById("arrangement-inspector");
   if (!host) return;
-  if (!resolvedArrangement || axes.organization !== "natural") { host.hidden = true; host.textContent = ""; host.title = ""; return; }
+  // D085-X1 BEGIN
+  if (!resolvedArrangement || axes.organization !== "natural") { host.hidden = true; host.textContent = ""; host.title = ""; syncControlTooltip(host); return; }
+  // D085-X1 END
   host.textContent = resolvedArrangement.source === "explicit"
     ? `Natural · ${ARRANGEMENT_LABELS[resolvedArrangement.arrangement]} · esplicita · ${resolvedArrangement.layoutVersion}`
     : `Natural · ${ARRANGEMENT_LABELS[resolvedArrangement.arrangement]} · predefinita da ${MORPHOLOGY_LABELS[axes.morphology]} · ${resolvedArrangement.layoutVersion}`;
   host.title = host.textContent;
+  // D085-X1 BEGIN
+  syncControlTooltip(host);
+  // D085-X1 END
   host.hidden = false;
 }
 function enqueue(work: () => Promise<void>): Promise<void> {
@@ -448,7 +453,9 @@ function installTaxonomyControls(): void {
     // D084-W3-LABELS BEGIN: the container keeps its group name but its tooltip states that
     // the lab holds mathematical topologies of different families — never one «IFS» or
     // «Fractal» family.
-    if (label) { label.textContent = 'Topologia'; label.title = LAB_CONTAINER_DESCRIPTION; }
+    // D085-X1 BEGIN
+    if (label) { label.textContent = 'Topologia'; label.title = LAB_CONTAINER_DESCRIPTION; syncControlTooltip(label); }
+    // D085-X1 END
     // D084-W3-LABELS END
     organizationAxis.dataset.axis = 'topology';
     for (const id of TOPOLOGY_IDS) {
@@ -486,6 +493,14 @@ function installTaxonomyControls(): void {
   }
   syncTaxonomyControls();
 }
+// D085-X1 BEGIN: keep the styled tooltip current and suppress the duplicate native title.
+function syncControlTooltip(control: HTMLElement): void {
+  const message = control.getAttribute('title');
+  if (message === null) return;
+  control.dataset.tooltip = message;
+  control.removeAttribute('title');
+}
+// D085-X1 END
 function syncTaxonomyControls(): void {
   const id = 'mode' in geometry ? null : lawTopology(geometry.topology);
   const indra = 'mode' in geometry ? false : geometry.indra === 'on';
@@ -518,6 +533,9 @@ function syncTaxonomyControls(): void {
     // carries the full name and its mathematical classification.
     button.title = reason ?? topologyTooltip(topology, axes.projection);
     // D084-W3-LABELS END
+    // D085-X1 BEGIN
+    syncControlTooltip(button);
+    // D085-X1 END
     button.dataset.reason = reason ?? '';
     button.setAttribute('aria-label', reason ? `${row.label}: ${reason}` : row.label);
     // D082-LAB-FIX4 BEGIN: only the currently visible toolbar placement is pressed.
@@ -552,6 +570,9 @@ function syncTaxonomyControls(): void {
     }
     // D085-S5 END
     button.title = support.ok ? `Indra ${on ? 'ON' : 'OFF'}` : support.reason;
+    // D085-X1 BEGIN
+    syncControlTooltip(button);
+    // D085-X1 END
     button.dataset.reason = support.ok ? '' : support.reason;
     button.setAttribute('aria-label', support.ok ? `Indra ${on ? 'ON' : 'OFF'}` : `Indra ${on ? 'ON' : 'OFF'}: ${support.reason}`);
     // D082-LAB-FIX4 BEGIN
@@ -563,7 +584,12 @@ function syncTaxonomyControls(): void {
     const dimension = (button.dataset.value ?? button.dataset.fullProjection) as '2d' | '3d';
     const support = id ? topologySupport(id, dimension, indra) : { ok: true as const };
     button.disabled = !support.ok;
-    if (!support.ok) button.title = support.reason;
+    // D085-X1 BEGIN: remember the original projection hint before a refusal replaces it.
+    const defaultTooltip = button.dataset.defaultTooltip ?? button.getAttribute('title') ?? button.dataset.tooltip ?? '';
+    button.dataset.defaultTooltip = defaultTooltip;
+    button.title = support.ok ? defaultTooltip : support.reason;
+    syncControlTooltip(button);
+    // D085-X1 END
   }
 }
 // D082-LAB-FIX4 BEGIN: legacy organization controls and inactive toolbar mirrors must not
@@ -698,6 +724,9 @@ function syncToolbarToggle(): void {
   button.setAttribute('aria-expanded', String(!collapsed));
   button.setAttribute('aria-label', label);
   button.title = label;
+  // D085-X1 BEGIN
+  syncControlTooltip(button);
+  // D085-X1 END
   button.innerHTML = collapsed
     ? '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.25 4 5.75 6-5.75 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
     : '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7.25 10 13l6-5.75" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -962,7 +991,9 @@ function syncContractGraphStatus(): void {
   const statusLine = get<HTMLElement>('human-status');
   const line = preserveRenderProgress(formatted.line, statusLine.textContent ?? '');
   if (statusLine.textContent !== line) statusLine.textContent = line;
-  if (statusLine.title !== line) statusLine.title = line;
+  // D085-X1 BEGIN
+  if (statusLine.dataset.tooltip !== line) { statusLine.title = line; syncControlTooltip(statusLine); }
+  // D085-X1 END
   // D082-A-HUD END
   get<HTMLElement>('graph-status-counts').textContent = formatted.details[0];
   get<HTMLElement>('graph-status-levels').textContent = `${formatted.details[1]} ${formatted.details[2]} ${formatted.details[3]}`;
@@ -994,6 +1025,9 @@ function syncLoadedGraphStatus(): void {
   if (!counts) return;
   get<HTMLElement>("human-status").textContent = formatLegacyToolbarStatus(counter, counts);
   get<HTMLElement>("human-status").title = get<HTMLElement>("human-status").textContent;
+  // D085-X1 BEGIN
+  syncControlTooltip(get<HTMLElement>("human-status"));
+  // D085-X1 END
   get<HTMLElement>("graph-status-counts").textContent = formatGraphPanelCounts(counter, counts);
   get<HTMLElement>("graph-status-levels").textContent = counts.levels
     ? `Elementi per livello: ${counts.levels.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} ${count === "1" ? "elemento" : "elementi"}`; }).join("; ")}.`
@@ -1769,6 +1803,9 @@ get<HTMLButtonElement>("fullscreen-collapse").addEventListener("click", () => {
   const collapsed = bar.classList.contains("collapsed");
   button.setAttribute('aria-label', collapsed ? 'Espandi la barra fullscreen' : 'Riduci la barra fullscreen');
   button.title = `${collapsed ? 'Espandi' : 'Riduci'} la barra fullscreen · tasto T`;
+  // D085-X1 BEGIN
+  syncControlTooltip(button);
+  // D085-X1 END
   button.innerHTML = collapsed
     ? '<svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="m7.25 4 5.75 6-5.75 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
     : '<svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="M4 7.25 10 13l6-5.75" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1921,13 +1958,18 @@ get<HTMLElement>("neighbourhood-control").addEventListener("click", event => {
 });
 const controlTip = document.createElement("div"); controlTip.id = "control-tooltip"; controlTip.hidden = true; document.body.append(controlTip);
 let tipTimer = 0;
-document.querySelectorAll<HTMLElement>("header [title], #fullscreen-bar [title]").forEach(control => {
-  const message = control.getAttribute("title") || "";
-  control.removeAttribute("title"); control.setAttribute("data-tooltip", message);
+// D085-X1 BEGIN: some controls sync their tooltip before pointer listeners are attached.
+document.querySelectorAll<HTMLElement>("header [title], header [data-tooltip], #fullscreen-bar [title], #fullscreen-bar [data-tooltip]").forEach(control => {
+  const message = control.getAttribute("title") ?? control.dataset.tooltip ?? "";
+  syncControlTooltip(control);
+  if (control.dataset.tooltip === undefined) control.dataset.tooltip = message;
+// D085-X1 END
   control.addEventListener("pointerenter", () => {
     clearTimeout(tipTimer); tipTimer = window.setTimeout(() => {
       if (!control.isConnected || control.closest("[hidden]")) return;
-      controlTip.textContent = control.dataset.tooltip || message; controlTip.hidden = false;
+      // D085-X1 BEGIN
+      controlTip.textContent = control.dataset.tooltip ?? message; controlTip.hidden = false;
+      // D085-X1 END
       const box = control.getBoundingClientRect();
       const x = Math.min(innerWidth - controlTip.offsetWidth - 12, Math.max(12, box.left));
       const y = box.bottom + 9 + controlTip.offsetHeight <= innerHeight - 12 ? box.bottom + 9 : box.top - controlTip.offsetHeight - 9;
