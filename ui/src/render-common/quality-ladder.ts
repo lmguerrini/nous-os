@@ -17,6 +17,52 @@ export const QUALITY_RESTORE_MS = [0, 80, 160, 320] as const;
 export function labPixelRatio(stage: QualityStage, fullPixelRatio: number): number {
   return stage < 3 ? Math.min(fullPixelRatio, 1) : fullPixelRatio;
 }
+/** The page owns this taxonomy; renderer organization alone cannot identify a Lab law. */
+export function labInteractionEnabled(topology: string | undefined): boolean {
+  return topology !== undefined && topology !== 'natural';
+}
+/** Sparse and non-Lab scenes retain their existing interaction presentation. */
+export function labDenseInteraction(topology: string | undefined, nodes: number, threshold: number): boolean {
+  return labInteractionEnabled(topology) && nodes >= threshold;
+}
+/** Mirror typed-layer's opacity buckets and insertion order, then select by node ID.
+ * A count mismatch refuses the proxy rather than associating an instance with another node. */
+export function labAnchorInstanceIndices(nodes: readonly { id: string; alpha: number }[],
+  anchors: ReadonlySet<string>, bucketCounts: readonly number[],
+): readonly (readonly number[])[] | null {
+  const buckets = new Map<number, string[]>();
+  for (const node of nodes) {
+    const alpha = Math.max(0, Math.min(1, Number.isFinite(node.alpha) ? node.alpha : 1));
+    if (alpha <= 0) continue;
+    const bucket = buckets.get(alpha) ?? [];
+    bucket.push(node.id);
+    buckets.set(alpha, bucket);
+  }
+  const ordered = [...buckets.values()];
+  if (ordered.length !== bucketCounts.length || ordered.some((bucket, index) => bucket.length !== bucketCounts[index]))
+    return null;
+  return ordered.map(bucket => bucket.flatMap((id, index) => anchors.has(id) ? [index] : []));
+}
+/** Native Lab skeleton: only real node and relation IDs from the mounted scene. */
+export function nativeLabSkeleton(nodes: readonly { id: string; kind: string; interaction?: string }[],
+  edges: readonly { id: string; source: string; target: string }[],
+): { nodeIds: ReadonlySet<string>; edgeIds: ReadonlySet<string> } {
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const anchors = new Set(nodes.filter(node => node.kind === 'domain' || node.kind === 'hub'
+    || node.interaction === 'selected' || node.interaction === 'focused').map(node => node.id));
+  const main = edges.filter(edge => {
+    const source = byId.get(edge.source), target = byId.get(edge.target);
+    return source !== undefined && target !== undefined && mainRelation({ attested: true,
+      selectedIncident: source.interaction === 'selected' || target.interaction === 'selected',
+      neighbourhoodIncident: anchors.has(edge.source) || anchors.has(edge.target),
+      sourceHub: source.kind === 'hub', targetHub: target.kind === 'hub',
+      sourceDomain: source.kind === 'domain', targetDomain: target.kind === 'domain',
+    });
+  }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, 768);
+  for (const edge of main) { anchors.add(edge.source); anchors.add(edge.target); }
+  if (anchors.size === 0 && nodes.length) anchors.add(nodes[0]!.id);
+  return { nodeIds: anchors, edgeIds: new Set(main.map(edge => edge.id)) };
+}
 // D085-S3 END
 
 // D085-S3 BEGIN: Lab camera work uses resident geometry at four explicit draw tiers.

@@ -79,7 +79,7 @@ import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts
 // D082-B-GPUFLOOR END
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
 // D085-S3 BEGIN
-import { QualityLadder, labDrawPolicy, labMainSegmentRanges, labPixelRatio, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+import { QualityLadder, labAnchorInstanceIndices, labDenseInteraction, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, mainRelation, nativeLabSkeleton, presentRenderReadiness } from "#render-common/quality-ladder.ts";
 // D085-S3 END
 
 /** How long the camera must be still before the derived geometry returns to full quality. */
@@ -102,6 +102,10 @@ export type PreparedCanopyNeural3dMount = {
 export type Render3fOptions = {
   readonly morphology: Morphology;
   readonly organization: Organization;
+  // D085-S3 BEGIN: page-committed Geometry Lab topology, independent of renderer organization.
+  readonly labTopology?: 'natural' | 'canopy-ifs' | 'julia' | 'sierpinski' | 'lull';
+  readonly labIndra?: boolean;
+  // D085-S3 END
   readonly palette?: Palette;
   readonly temperature: Temperature;
   readonly theme: Theme;
@@ -567,6 +571,9 @@ export function mount(
   // projected through the live camera. It redraws with every frame and drops to the moving quality while
   // the camera moves; the restore timer exists only after a camera change, so an idle page schedules nothing.
   let visuals: ProjectionVisualsLayer | null = null;
+  // D085-S3 BEGIN: a density revision may cross the interaction threshold in place.
+  let visualsSuspended = false;
+  // D085-S3 END
   // D-073 W4f: the typed path reads its whole-scene options (morphology, label budget) from the
   // style bridge's reserved scope record, falling back to the engine defaults for the basic bridge.
   let currentStyled: StyledProjection | null = typedInput?.styled ?? null;
@@ -676,9 +683,9 @@ export function mount(
   let labProxyReady = false;
   let labProxyNodes = 0;
   let labProxyEdges = 0;
-  const labDense = (): boolean => typedPicker !== null && requestedNodes >= DENSE_SCENE_THRESHOLD;
-  const positionKey = (point: Coordinates): string =>
-    `${point.x.toFixed(5)}:${point.y.toFixed(5)}:${point.z.toFixed(5)}`;
+  const labView = labInteractionEnabled(options.labTopology);
+  const labDense = (): boolean => typedPicker !== null
+    && labDenseInteraction(options.labTopology, requestedNodes, DENSE_SCENE_THRESHOLD);
   const clearLabProxy = (): void => {
     for (const child of [...labProxy.children]) {
       labProxy.remove(child);
@@ -697,8 +704,16 @@ export function mount(
       if (point.pick.kind !== 'node') return [];
       const style = currentStyled!.nodeStyle[point.pick.id];
       return style && (Number(style.level) <= 2 || style.type === 'hub' || style.type === 'domain')
-        ? [positionKey(point.position)] : [];
+        ? [point.pick.id] : [];
     }));
+    const instanceMeshes = typedLayer.group.children.filter((child): child is THREE.InstancedMesh =>
+      child instanceof THREE.InstancedMesh && child.name === 'typed-round-nodes');
+    const anchorIndices = labAnchorInstanceIndices(typedPicker.geometry.nodes.flatMap(point =>
+      point.pick.kind === 'node' ? [{ id: point.pick.id,
+        alpha: typeof currentStyled!.nodeStyle[point.pick.id]?.alpha === 'number'
+          ? Number(currentStyled!.nodeStyle[point.pick.id]?.alpha) : 1 }] : []),
+      anchors, instanceMeshes.map(child => child.count));
+    if (anchorIndices === null) return;
     const main = new Set(typedPicker.semanticIncidence.flatMap(edge => {
       const sourceStyle = currentStyled!.nodeStyle[edge.source], targetStyle = currentStyled!.nodeStyle[edge.target];
       const level = Math.min(Number(sourceStyle?.level ?? Infinity), Number(targetStyle?.level ?? Infinity));
@@ -710,15 +725,11 @@ export function mount(
       }) ? [`semantic:${edge.id}`] : [];
     }));
     const drawnMain = new Set<string>();
-    const matrix = new THREE.Matrix4(), tint = new THREE.Color(), center = new THREE.Vector3();
+    const matrix = new THREE.Matrix4(), tint = new THREE.Color();
+    let bucketIndex = 0;
     for (const child of typedLayer.group.children) {
       if (child instanceof THREE.InstancedMesh && child.name === 'typed-round-nodes') {
-        const selected: number[] = [];
-        for (let index = 0; index < child.count; index++) {
-          child.getMatrixAt(index, matrix);
-          center.setFromMatrixPosition(matrix);
-          if (anchors.has(positionKey(center))) selected.push(index);
-        }
+        const selected = anchorIndices[bucketIndex++]!;
         if (!selected.length) continue;
         const proxy = new THREE.InstancedMesh(child.geometry, child.material, selected.length);
         proxy.name = 'lab-anchor-proxy';
@@ -773,6 +784,67 @@ export function mount(
       else if (child.name === 'typed-semantic-morphology') child.visible = !reduced;
     }
   };
+  // Native law scenes have no typed picker. Copy only selected real instances once per
+  // scene revision; keep the original meshes and materials for an exact full restore.
+  const nativeLab = labView && typedPicker === null;
+  const nativeProxy = new THREE.Group();
+  nativeProxy.visible = false;
+  world.add(nativeProxy);
+  let nativeProxyNodes = 0, nativeProxyEdges = 0;
+  const subsetInstances = (source: THREE.InstancedBufferGeometry, indices: readonly number[]): THREE.InstancedBufferGeometry => {
+    const geometry = new THREE.InstancedBufferGeometry();
+    for (const [name, attribute] of Object.entries(source.attributes)) {
+      if (attribute instanceof THREE.InstancedBufferAttribute) {
+        const values = new Float32Array(indices.length * attribute.itemSize);
+        for (let output = 0; output < indices.length; output++)
+          for (let component = 0; component < attribute.itemSize; component++)
+            values[output * attribute.itemSize + component] = attribute.getComponent(indices[output]!, component);
+        geometry.setAttribute(name, new THREE.InstancedBufferAttribute(values, attribute.itemSize,
+          attribute.normalized, attribute.meshPerAttribute));
+      } else geometry.setAttribute(name, attribute.clone());
+    }
+    geometry.instanceCount = indices.length;
+    return geometry;
+  };
+  const clearNativeProxy = (): void => {
+    for (const child of [...nativeProxy.children]) {
+      nativeProxy.remove(child);
+      if (child instanceof THREE.Mesh) child.geometry.dispose();
+    }
+    nativeProxyNodes = nativeProxyEdges = 0;
+  };
+  const rebuildNativeProxy = (): void => {
+    clearNativeProxy();
+    if (!nativeLab || typedPicker || !labDenseInteraction(options.labTopology,
+      live.scene.nodes.length, DENSE_SCENE_THRESHOLD)) return;
+    const skeleton = nativeLabSkeleton(live.scene.nodes, live.scene.edges);
+    const nodeIndices = live.buffers.nodes.ids.flatMap((id, index) => skeleton.nodeIds.has(id) ? [index] : []);
+    const edgeIndices = live.buffers.filaments.edgeIds.flatMap((id, index) => skeleton.edgeIds.has(id) ? [index] : []);
+    if (nodeIndices.length === 0) return;
+    const nodes = new THREE.Mesh(subsetInstances(nodeResources.geometry, nodeIndices), nodeResources.material);
+    nodes.frustumCulled = false;
+    nodes.renderOrder = nodeResources.mesh.renderOrder;
+    nativeProxy.add(nodes);
+    nativeProxyNodes = nodeIndices.length;
+    if (edgeIndices.length) {
+      const edges = new THREE.Mesh(subsetInstances(filamentResources.geometry, edgeIndices), filamentResources.material);
+      edges.frustumCulled = false;
+      edges.renderOrder = filamentResources.mesh.renderOrder;
+      nativeProxy.add(edges);
+      nativeProxyEdges = edgeIndices.length;
+    }
+  };
+  const applyNativeLabPolicy = (stage: 1 | 2 | 3 | 4): void => {
+    if (!nativeLab || typedPicker || nativeProxyNodes === 0) return;
+    const reduced = stage < 3;
+    nativeProxy.visible = reduced;
+    const [nodes, edges] = nativeProxy.children;
+    if (nodes) nodes.visible = stage === 1;
+    if (edges) edges.visible = reduced;
+    nodeResources.mesh.visible = stage !== 1;
+    filamentResources.mesh.visible = !reduced;
+  };
+  rebuildNativeProxy();
   // D085-S3 END
   let destroyed = false;
   const perfMarksEnabled = new URLSearchParams(location.search).has('perfmarks');
@@ -920,7 +992,7 @@ export function mount(
     // too costly to repeat for every wheel event; restore it at stage four.
     // D085-S3 BEGIN: the structural GPU tier moves; the optional projected
     // canvas is restored once, at full quality, after the camera stops.
-    if (!typedPicker || ladder.state.stage === 4) visuals?.draw();
+    if (!typedPicker || !labDense() || ladder.state.stage === 4) visuals?.draw();
     // D085-S3 END
     // D082-A-PERF END
     // D081-P3b BEGIN: labels live on the typed overlay and follow the camera.
@@ -955,10 +1027,16 @@ export function mount(
     const prepared = typedPicker ? typedLayer.preparedCounts() : null;
     // D085-S3 BEGIN: the typed layer does not own the resident interaction proxies.
     const proxyActive = labDense() && labProxyReady && labProxy.visible;
+    const nativeProxyActive = nativeLab && nativeProxy.visible;
+    const skeletonAnchors = proxyActive && stage === 1 ? labProxyNodes
+      : nativeProxyActive && stage === 1 ? nativeProxyNodes : 0;
+    const skeletonMainRelations = proxyActive ? labProxyEdges : nativeProxyActive ? nativeProxyEdges : 0;
     const drawnNodes = submitted ? submitted.nodes + (proxyActive && stage === 1 ? labProxyNodes : 0)
+      : nativeProxyActive ? stage === 1 ? nativeProxyNodes : requestedNodes
       : world.visible && (nodeResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedNodes, nodeResources.mesh.visible ? nodeResources.geometry.instanceCount : requestedNodes) : 0;
     const drawnSemantic = submitted ? submitted.semanticEdges + (proxyActive ? labProxyEdges : 0)
+      : nativeProxyActive ? nativeProxyEdges
       : world.visible && (filamentResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedSemanticEdges, filamentResources.mesh.visible ? filamentResources.geometry.instanceCount : requestedSemanticEdges) : 0;
     // D085-S3 END
@@ -970,11 +1048,14 @@ export function mount(
       && drawnVisual >= requestedVisualEdges && labelTimer === undefined
       && activePixelRatio === fullRenderDpr;
     return {
-      view: `${options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
+      view: `${options.labTopology && options.labTopology !== 'natural'
+        ? `lab/${options.labTopology}${options.labIndra ? '+indra' : ''}`
+        : options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
       quality: ladder.state.moving ? 'movimento' : stage === 4 && allDrawn ? 'completa' : 'recupero',
       ladder: stage,
       pixelRatio: activePixelRatio,
       fullPixelRatio: fullRenderDpr,
+      skeleton: { anchors: skeletonAnchors, mainRelations: skeletonMainRelations },
       nodes: { required: requestedNodes, loaded: prepared?.nodes ?? requestedNodes, drawn: drawnNodes },
       mainEdges: { required: requestedMainEdges, loaded: Math.min(requestedMainEdges, prepared?.semanticEdges ?? requestedMainEdges),
         drawn: Math.min(requestedMainEdges, drawnSemantic) },
@@ -1021,7 +1102,9 @@ export function mount(
   // next draw. The ratio change shares that draw and schedules no extra frame.
   const syncDrawingBuffer = (width: number, height: number): void => {
     fullRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
-    const ratio = typedPicker ? labPixelRatio(ladder.state.stage, fullRenderDpr) : fullRenderDpr;
+    const denseLab = typedPicker ? labDense() : labDenseInteraction(options.labTopology,
+      live.scene.nodes.length, DENSE_SCENE_THRESHOLD);
+    const ratio = denseLab ? labPixelRatio(ladder.state.stage, fullRenderDpr) : fullRenderDpr;
     const ratioChanged = ratio !== renderer.getPixelRatio();
     const sizeChanged = width !== renderWidth || height !== renderHeight;
     if (!ratioChanged && !sizeChanged) return;
@@ -1033,6 +1116,18 @@ export function mount(
     currentRenderDpr = ratio;
     renderWidth = width;
     renderHeight = height;
+  };
+  const syncVisualsSuspension = (stage: 1 | 2 | 3 | 4): void => {
+    if (!visuals?.canvas) return;
+    if (labDense() && stage < 4) {
+      visualsSuspended = true;
+      visuals.canvas.style.visibility = "hidden";
+      visuals.canvas.setAttribute('width', '0');
+      visuals.canvas.setAttribute('height', '0');
+    } else if (visualsSuspended) {
+      visualsSuspended = false;
+      visuals.canvas.style.visibility = "";
+    }
   };
   // D085-S3 END
   // D082-A-PERF BEGIN: three scheduled restores; no frame loop or scene rebuild at rest.
@@ -1046,17 +1141,12 @@ export function mount(
     typedLayer.setQuality(labDense() ? stage === 4 ? 'full' : stage === 3 ? 'main' : 'moving'
       : stage >= 3 ? "full" : stage >= 2 ? "main" : "moving");
     applyLabPolicy(stage);
+    applyNativeLabPolicy(stage);
     // D085-S3 END
     visuals?.setQuality(stage >= 4 ? "full" : "moving", false);
     // D085-S3 BEGIN: a hidden projected layer must not retain a full-screen
     // composited bitmap during interaction. The stage-four draw restores it.
-    if (visuals?.canvas && typedPicker) {
-      visuals.canvas.style.visibility = stage >= 4 ? "" : "hidden";
-      if (stage < 4) {
-        visuals.canvas.setAttribute('width', '0');
-        visuals.canvas.setAttribute('height', '0');
-      }
-    }
+    syncVisualsSuspension(stage);
     // D085-S3 END
     brainEnvelope?.setLod(stage >= 4 ? "full" : "moving");
     const suspendedLayers = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD
@@ -1268,6 +1358,10 @@ export function mount(
       // D082-A-NODES BEGIN
       applyNativeEdgeVeil();
       // D082-A-NODES END
+      // D085-S3 BEGIN: the scene revision replaces native source attributes.
+      rebuildNativeProxy();
+      applyNativeLabPolicy(ladder.state.stage);
+      // D085-S3 END
     }
     if (!typedPicker) distinct?.setScene(live.scene);
     rig.setWorldFramingSubjects(sceneCameraFramingSubjects(live.scene));
@@ -1357,12 +1451,20 @@ export function mount(
             denseNodeRadii.set(id, { radius: entry.radiusPx, halo: entry.haloRadiusPx ?? entry.radiusPx });
           }
           core.needsUpdate = halo.needsUpdate = gap.needsUpdate = floor.needsUpdate = true;
+          // D085-S3 BEGIN: keep resident real-ID anchors in the current size revision.
+          rebuildNativeProxy();
+          applyNativeLabPolicy(ladder.state.stage);
+          // D085-S3 END
           renderFrame();
         }
         if (nativeEdgeVeilById.size) {
           for (const [id, entry] of update.edgeEntries) if (entry.presentation)
             nativeEdgeVeilById.set(id, entry.presentation.denseVeilFactor ?? 1);
           applyNativeEdgeVeil();
+          // D085-S3 BEGIN: the moving skeleton must use the same relation visibility.
+          rebuildNativeProxy();
+          applyNativeLabPolicy(ladder.state.stage);
+          // D085-S3 END
           renderFrame();
         }
         // D082-A-NODES END
@@ -1390,10 +1492,16 @@ export function mount(
         typedLayer.update(next.geometry, update.styled);
         // D085-S3 END
         refreshPresentedCounts();
+        // D085-S3 BEGIN: an in-place density change updates the buffer before this draw.
+        syncDrawingBuffer(renderWidth, renderHeight);
+        // D085-S3 END
         // D081-P3b BEGIN
         updateBundleLabels(update);
         // D081-P3b END
         acceptVisuals(update);
+        // D085-S3 BEGIN: density revisions restore or suspend the overlay before presenting.
+        syncVisualsSuspension(ladder.state.stage);
+        // D085-S3 END
         updateLabels();
         renderFrame();
       } else if (typedPicker.update(update)) {
@@ -1412,10 +1520,16 @@ export function mount(
         typedLayer.update(typedPicker.geometry, update.styled);
         // D085-S3 END
         refreshPresentedCounts();
+        // D085-S3 BEGIN: restore the full buffer immediately if the revised scene is sparse.
+        syncDrawingBuffer(renderWidth, renderHeight);
+        // D085-S3 END
         // D081-P3b BEGIN
         updateBundleLabels(update);
         // D081-P3b END
         acceptVisuals(update);
+        // D085-S3 BEGIN: the revised derived canvas follows the current draw tier.
+        syncVisualsSuspension(ladder.state.stage);
+        // D085-S3 END
         updateLabels();
         renderFrame();
       }
@@ -1599,6 +1713,8 @@ export function mount(
       // D085-S3 BEGIN
       clearLabProxy();
       labProxy.removeFromParent();
+      clearNativeProxy();
+      nativeProxy.removeFromParent();
       // D085-S3 END
       typedLayer.dispose();
       brainEnvelope?.dispose();

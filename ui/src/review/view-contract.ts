@@ -450,6 +450,10 @@ export type ViewInput = {
   readonly container: HTMLElement;
   readonly data: ReviewExport;
   readonly v2Prepared?: import("./product-adapter.ts").AdaptedReview;
+  // D085-S3 BEGIN: the mounted page taxonomy identifies native Geometry Lab scenes.
+  readonly labTopology?: import('../topology/contract.ts').TopologyId;
+  readonly labIndra?: boolean;
+  // D085-S3 END
   readonly v2Colours?: Partial<Record<import("./palette.ts").V2Category,string>>;
   /** Indra containers of the v2 layout, in the same world coordinates as the supplied anchors. */
   readonly layoutContainers?: readonly import("./layout-v2.ts").LayoutContainer[];
