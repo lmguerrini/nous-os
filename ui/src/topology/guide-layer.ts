@@ -42,10 +42,14 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     // D085-S5 BEGIN: route hints have no eligibility token at this surface; never
     // paint them. Fine guide volume is capped deterministically during interaction.
     let drawn = 0, suppressed = guides.length - drawableGuides.length;
-    // D085-S5 BEGIN
+    // D085-S5 BEGIN: standalone Lab views keep their complete D-084 guide
+    // field at rest; only Indra compositions use density sampling then.
+    const composed = drawableGuides.some(guide => guide.id.startsWith('indra:') || guide.id.startsWith('indra-root:'))
+      || guides.some(guide => guide.kind === 'indra-real-edge-route');
     const density = document.querySelector<HTMLButtonElement>('#density-control button[data-density][aria-pressed="true"]')?.dataset.density ?? 'balanced';
     const budget = interacting ? Math.min(450, drawableGuides.length)
-      : Math.min(drawableGuides.length, density === 'complete' ? 12000 : density === 'essential' ? 1500 : 4000);
+      : composed ? Math.min(drawableGuides.length, density === 'complete' ? 12000 : density === 'essential' ? 1500 : 4000)
+        : drawableGuides.length;
     // D085-S5 END
     for (const [index, guide] of drawableGuides.entries()) {
       // D085-S5 BEGIN: root Figure A guides always survive density and motion LOD.
@@ -54,7 +58,9 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       if (!selected && !guide.id.startsWith('indra-root:')) { suppressed++; continue; }
       // D085-S5 END
       // D085-S5 END
-      if (guide.points.length < 2) continue;
+      // D085-S5 BEGIN: every requested guide must be either drawn or suppressed.
+      if (guide.points.length < 2) { suppressed++; continue; }
+      // D085-S5 END
       // D084-LLULL BEGIN: distinguish the outer rim and the radial hub without
       // changing the appearance of guides belonging to any other topology.
       if (guide.kind === 'lull-figure-a' || guide.kind === 'lull-letter') {
