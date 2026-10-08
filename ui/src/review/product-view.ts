@@ -49,7 +49,9 @@ import { PALETTES, hexRgb, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
 import type { RelationClass } from "./reading.ts";
-import { buildVisibilityWitness, countAggregateRepresentation, indraCompositionCounts } from './visibility-witness.ts';
+// D085-X8 BEGIN
+import { buildVisibilityWitness, countAggregateRepresentation, indraCompositionFromCounts } from './visibility-witness.ts';
+// D085-X8 END
 import { PerfRecord } from './perf-record.ts';
 import { cachedStarfieldStars } from '../render-common/starfield.ts';
 import type { ReviewEdge } from "./model.ts";
@@ -740,6 +742,37 @@ export const createProductView: CreateProductView = async (input) => {
   } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate" };
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
+  // D085-X8 BEGIN: this view owns the measured shell LOD counters. They change
+  // with camera, mounted subset and focus, never merely because status was read.
+  let indraShellsSubmitted = 0;
+  let indraShellsDrawn = 0;
+  function refreshIndraShellCounts(containers = layoutContainers) {
+    if (axes.organization !== 'indra' || !containers || !handle) {
+      indraShellsSubmitted = 0;
+      indraShellsDrawn = 0;
+      return;
+    }
+    indraShellsSubmitted = 0;
+    indraShellsDrawn = 0;
+    for (const shell of containers) {
+      if (shell.id === ABSOLUTE_CONTAINER_ID) continue;
+      indraShellsSubmitted++;
+      if (axes.projection === '2d' || containerSphereLOD(shell.level, shell.open !== false,
+        morphologyInteraction.focusIds?.has(shell.id) ?? false,
+        Math.max(0.5, shell.radius * projectedWorldScale(shell.center, shell.radius, project))))
+        indraShellsDrawn++;
+    }
+  }
+  function readIndraComposition() {
+    if (axes.organization !== 'indra' || !layoutContainers || !handle) return undefined;
+    const guideLayer = container.querySelector<HTMLCanvasElement>('canvas[data-topology-guides]');
+    return indraCompositionFromCounts(indraShellsSubmitted, indraShellsDrawn, {
+      requested: Number(guideLayer?.dataset.guideRequested ?? 0),
+      drawn: Number(guideLayer?.dataset.guideDrawn ?? 0),
+      suppressed: Number(guideLayer?.dataset.guideSuppressed ?? 0),
+    });
+  }
+  // D085-X8 END
   let placed: LabelWitness[] = [];
   let visibleTitleCount = 0;
   let frameId = 0;
@@ -1498,6 +1531,9 @@ export const createProductView: CreateProductView = async (input) => {
     const state = handle.readCameraState();
     if (!sameCamera(lastCamera, state)) {
       lastCamera = state;
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
       // C2 Fractal-only rail overlay follows the same settled camera as the product renderers.
       if (container.hasAttribute('data-fractal-rails-active'))
         container.dispatchEvent(new Event('d080-fractal-camera-motion'));
@@ -2093,6 +2129,9 @@ export const createProductView: CreateProductView = async (input) => {
     }
     // D082-A-NODES END
     rebuildScreenPickIndex();
+    // D085-X8 BEGIN
+    refreshIndraShellCounts();
+    // D085-X8 END
     labelPass();
     syncFlowLoop();
     const mountMs = performance.now() - began;
@@ -2266,6 +2305,9 @@ export const createProductView: CreateProductView = async (input) => {
     try {
       sigma?.updateVisibleSubset(nextOverlay);
       three?.updateVisibleSubset(nextOverlay);
+      // D085-X8 BEGIN: publish the next mounted subset before label events.
+      refreshIndraShellCounts(nextContainers);
+      // D085-X8 END
       labelPass({ visible: nextVisible, containers: nextContainers, budget: nextBudget });
       if (oldSelection && !nextSelection) {
         handle.clearSelection();
@@ -2293,6 +2335,9 @@ export const createProductView: CreateProductView = async (input) => {
         morphologyInteraction.denseNeuralHaloById = oldDenseNeuralHaloById;
         // D082-A-NCOMPLETA END
         morphologyInteraction.focusIds = oldFocusIds;
+        // D085-X8 BEGIN
+        refreshIndraShellCounts();
+        // D085-X8 END
         container.style.backgroundColor = oldBackground;
         if (oldSelection) handle.setSelection(oldSelection);
         else handle.clearSelection();
@@ -2319,6 +2364,9 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NCOMPLETA3 END
     // D082-A-NODES END
     selected = nextSelection;
+    // D085-X8 BEGIN
+    refreshIndraShellCounts();
+    // D085-X8 END
     for (const edge of records) edgesById.set(edge.id, edge);
     if (nextFlowScene) flowScene = nextFlowScene;
     return true;
@@ -2507,7 +2555,13 @@ export const createProductView: CreateProductView = async (input) => {
   // updated geometry.
   const resizeLabelObserver = new ResizeObserver(() => {
     if (destroyed) return;
-    requestAnimationFrame(() => { if (!destroyed) { sizeFlowCanvas(); rebuildScreenPickIndex(); labelPass(); } });
+    requestAnimationFrame(() => { if (!destroyed) {
+      sizeFlowCanvas(); rebuildScreenPickIndex();
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
+      labelPass();
+    } });
   });
   resizeLabelObserver.observe(container);
   try {
@@ -2686,6 +2740,9 @@ export const createProductView: CreateProductView = async (input) => {
     const final = solved.camera;
     if (!validCamera(final)) {
       if (validCamera(start)) current.restoreCameraState(start);
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
       // The programmatic motion is over either way: settle quality now so the closing pass below
       // is the full one — labels return with the framing, never a settle later.
       if (qualityController.endMotion() === "full") onQualityFull(performance.now(), false);
@@ -2742,6 +2799,9 @@ export const createProductView: CreateProductView = async (input) => {
       ? [edge.v2 as import('./v2-relations.ts').LiftedRelation] : []) : [];
     const refreshed = fittedNeuralCompleta && lifted.length === drawnEdges.length
       && applyVisibleSubset({ visibleNodeIds: visible, edges: lifted });
+    // D085-X8 BEGIN
+    refreshIndraShellCounts();
+    // D085-X8 END
     if (!refreshed) labelPass();
     // D082-A-NCOMPLETA3 END
   }
@@ -2786,19 +2846,30 @@ export const createProductView: CreateProductView = async (input) => {
     updateVisibleSubset(update) { return applyVisibleSubset(update); },
     setInsets(value) {
       insets = value;
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
       labelPass();
     },
     async setAppearance(value) { appearance = value; saveCamera(); mount(); },
     setFlowMotion(enabled) { flowMotion = enabled; syncFlowLoop(); },
     async setPalette(value) { customPalette = value; saveCamera(); mount(); },
-    viewPreset(name) { three?.setReviewViewPreset(name); noteCameraMotion(); labelPass(); },
+    viewPreset(name) { three?.setReviewViewPreset(name); noteCameraMotion();
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
+      labelPass(); },
     camera() { return three?.readReviewCameraPose() ?? null; },
     readCamera() { return handle?.readCameraState() ?? null; },
     restoreCamera(state) { if (handle && validCamera(state as VisualStateCamera)) {
       // D081-P6c BEGIN.
       frameEpoch++;
       // D081-P6c END.
-      handle.restoreCameraState(state as VisualStateCamera); noteCameraMotion(); labelPass();
+      handle.restoreCameraState(state as VisualStateCamera); noteCameraMotion();
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
+      labelPass();
     } },
     keepNodeAt(id: string, screenPoint: ScreenPoint) {
       // D081-P6c BEGIN.
@@ -2815,7 +2886,11 @@ export const createProductView: CreateProductView = async (input) => {
         three?.readReviewCameraPose());
       if (!next) return false;
       handle.restoreCameraState(next);
-      noteCameraMotion(); labelPass();
+      noteCameraMotion();
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
+      labelPass();
       return true;
     },
     async resetCamera() {
@@ -2834,6 +2909,9 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-B-CANOPYN END
       selected = nextSelected;
       morphologyInteraction.focusIds = new Set([...(emphasis ?? []), ...(selected ? [selected] : [])]);
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
       redrawMorphology();
       if (handle) {
         if (selected && visible.has(selected)) handle.setSelection(selected);
@@ -2850,6 +2928,9 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-B-CANOPYN END
       emphasis = ids;
       morphologyInteraction.focusIds = new Set([...(ids ?? []), ...(selected ? [selected] : [])]);
+      // D085-X8 BEGIN
+      refreshIndraShellCounts();
+      // D085-X8 END
       redrawMorphology();
       sigma?.setEmphasis(ids);
       three?.setEmphasis(ids);
@@ -2872,6 +2953,9 @@ export const createProductView: CreateProductView = async (input) => {
     },
     readPlacedCounts() { return { labels: placed.length, titles: visibleTitleCount }; },
     // D082-A-PERF END
+    // D085-X8 BEGIN
+    readIndraComposition,
+    // D085-X8 END
     witness() {
       // D082-A-PERF BEGIN
       const { mounted, nodeViewport, positions } = readGestureWitness();
@@ -2896,22 +2980,9 @@ export const createProductView: CreateProductView = async (input) => {
         starCount: axes.morphology === 'stellar' && appearance.starfieldBrightness > 0
           ? cachedStarfieldStars(r.width, r.height, appearance.starfieldDensity).length : 0,
       });
-      // D085-S5 BEGIN: the mounted view reports submitted pearls and guide strokes;
-      // a null drawn-shell count avoids claiming an unmeasured Indra LOD result.
-      const guideLayer = container.querySelector<HTMLCanvasElement>('canvas[data-topology-guides]');
-      const shellLodDrawn = (axes.organization === 'indra' ? layoutContainers ?? [] : []).filter(shell => {
-        if (shell.id === ABSOLUTE_CONTAINER_ID) return false;
-        if (axes.projection === '2d') return true;
-        const radiusPx = shell.radius * projectedWorldScale(shell.center, shell.radius, project);
-        return containerSphereLOD(shell.level, shell.open !== false,
-          morphologyInteraction.focusIds?.has(shell.id) ?? false, Math.max(0.5, radiusPx));
-      }).length;
-      const indraComposition = axes.organization === 'indra' && layoutContainers
-        ? indraCompositionCounts(layoutContainers, {
-          requested: Number(guideLayer?.dataset.guideRequested ?? 0),
-          drawn: Number(guideLayer?.dataset.guideDrawn ?? 0),
-          suppressed: Number(guideLayer?.dataset.guideSuppressed ?? 0) }, shellLodDrawn) : null;
-      // D085-S5 END
+      // D085-X8 BEGIN: witness and status read the same mounted counters.
+      const indraComposition = readIndraComposition();
+      // D085-X8 END
       return {
         axes,
         cameraKind: handle.cameraKind,

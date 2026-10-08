@@ -10,12 +10,21 @@ import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
 export function indraCompositionCounts(containers: readonly LayoutContainer[],
   guideLayer: Readonly<{ requested: number; drawn: number; suppressed: number }>, pearlShellsDrawn: number) {
   const realPearls = containers.filter(shell => shell.id !== ABSOLUTE_CONTAINER_ID);
-  return { pearlShellsSubmitted: realPearls.length, pearlShellsDrawn,
-    pearlShellsLodSuppressed: Math.max(0, realPearls.length - pearlShellsDrawn),
+  // D085-X8 BEGIN: the product view can publish its mounted shell counters
+  // without enumerating shells during every public status read.
+  return indraCompositionFromCounts(realPearls.length, pearlShellsDrawn, guideLayer);
+  // D085-X8 END
+}
+// D085-X8 BEGIN
+export function indraCompositionFromCounts(pearlShellsSubmitted: number, pearlShellsDrawn: number,
+  guideLayer: Readonly<{ requested: number; drawn: number; suppressed: number }>) {
+  return { pearlShellsSubmitted, pearlShellsDrawn,
+    pearlShellsLodSuppressed: Math.max(0, pearlShellsSubmitted - pearlShellsDrawn),
     guidesRequested: guideLayer.requested, guidesDrawn: guideLayer.drawn,
     guidesSuppressed: guideLayer.suppressed, eligibleRealEdgeRoutes: 0,
     guideStrokesCountAsRelations: false as const };
 }
+// D085-X8 END
 // D085-S5 END
 // D085-S7 BEGIN
 import type { RelationDetailCounts } from './relation-routing.ts';
