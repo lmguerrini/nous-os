@@ -47,6 +47,9 @@ import {
   NATIVE_BEAM_SUSPENDED_MS,
   NATIVE_BEAM_WATCH_BUDGET_MS,
   NATIVE_BEAM_WATCH_MS,
+  // D086-F5 BEGIN
+  createPacedFrameScheduler,
+  // D086-F5 END
   flowMotionAllowedNow,
   flowNow,
   nativeBeamElapsedSample,
@@ -268,16 +271,18 @@ export function renderNativeBeamQuietOnRetire(input: {
   if (input.lastRenderedLive && input.visible) input.renderQuiet();
 }
 
-export function createNativeBeamDriver(input: {
+// D086-F5 BEGIN: the pending frame is whatever handle the injected scheduler returns.
+export function createNativeBeamDriver<Handle = ReturnType<typeof setTimeout>>(input: {
   readonly eligible: () => boolean;
   readonly sample: () => number;
   readonly render: () => void;
   readonly onRetire: () => void;
   readonly now: () => number;
-  readonly schedule: (tick: () => void, delay: number) => ReturnType<typeof setTimeout>;
-  readonly cancel: (timer: ReturnType<typeof setTimeout>) => void;
+  readonly schedule: (tick: () => void, delay: number) => Handle;
+  readonly cancel: (timer: Handle) => void;
 }) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: Handle | undefined;
+// D086-F5 END
   let lastLiveWallMs = 0;
   const retire = (): void => {
     if (timer !== undefined) input.cancel(timer);
@@ -1244,6 +1249,14 @@ export function mount(
     refreshNativeBeamVisibility();
     return nativeBeamVisibleEdges > 0;
   };
+  // D086-F5 BEGIN
+  const nativeBeamFrames = createPacedFrameScheduler({
+    requestFrame: callback => requestAnimationFrame(callback),
+    cancelFrame: frame => cancelAnimationFrame(frame),
+    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: timer => clearTimeout(timer as ReturnType<typeof setTimeout>),
+  });
+  // D086-F5 END
   const nativeBeamDriver = createNativeBeamDriver({
     eligible: nativeBeamPreconditions,
     sample: sampleNativeBeam,
@@ -1265,8 +1278,11 @@ export function mount(
     },
     // D085-X8 END
     now: () => performance.now(),
-    schedule: (tick, delay) => setTimeout(tick, delay),
-    cancel: timer => clearTimeout(timer),
+    // D086-F5 BEGIN: the pulse is drawn inside the browser's frame callback, paced at the flow
+    // layer's cadence; the wait between frames is a timer and nothing is queued at rest.
+    schedule: nativeBeamFrames.schedule,
+    cancel: nativeBeamFrames.cancel,
+    // D086-F5 END
   });
   const wakeNativeBeam = (): void => {
     nativeBeamDriver.wake();
