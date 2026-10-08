@@ -1,6 +1,7 @@
 import type { CanopyLayout, CanopyInputNode, CanopyPoint } from './canopy-layout.ts';
 import { canopyFitAnchorIds } from './canopy-layout.ts';
 import type { Density } from '../review/lod.ts';
+import { densityBudget } from '../review/lod.ts';
 
 export type CanopyBand = 'fit' | 'mid' | 'deep';
 /** Half-octave camera steps keep disclosure moving within the coarse product LOD bands. */
@@ -12,13 +13,64 @@ export function canopyBandForZoom(zoom: number): CanopyBand {
 }
 export type CanopyMark = Readonly<{ id: string; memberCount: number; memberIds: readonly string[];
   aggregate: boolean }>;
+/** One evidence relation candidate: identity, endpoints, attestation class and source type. */
+export type CanopyEvidenceCandidate = Readonly<{ id: string; source: string; target: string; class: string;
+  type: string }>;
 
 const densityOrderCache = new WeakMap<CanopyLayout, readonly string[]>();
+// D085-S2 BEGIN: cached per (layout, evidence candidates array identity) — both are stable
+// page objects, so the sequence is computed once per snapshot.
+const densityRelationSequenceCache = new WeakMap<CanopyLayout, WeakMap<object, readonly string[]>>();
+// D085-S2 END
+
+// D085-S2 BEGIN: the Bilanciata mark sequence continues the structural scaffold with the
+// endpoints of the strongest real evidence relations (fix 3: branches carry
+// real relations). Ranking is (class weight, summed endpoint importance, id) — the same
+// semantic features `densitySourceRelations` uses — and every appended id is a real node
+// that has not been chosen yet, so the sequence stays a deterministic total order over the
+// dataset: Essenziale is its unchanged structural prefix (the D-082 comparator), Bilanciata
+// is a longer prefix of the same sequence, Completa names every real ID.
+/** The evidence relations in the deterministic canopy order: class first (attested, then
+ * exploratory, then anything else), summed endpoint importance, id. Pure in its inputs. */
+export function rankedCanopyEvidence(nodes: readonly CanopyInputNode[],
+  evidence: readonly CanopyEvidenceCandidate[]): readonly CanopyEvidenceCandidate[] {
+  const importanceOf = new Map(nodes.map(node => [node.id, node.importance?.value ?? 0]));
+  const importance = (id: string): number => importanceOf.get(id) ?? 0;
+  const weight = (value: string): number => (value === 'attested' ? 3 : value === 'exploratory' ? 2 : 1);
+  return [...evidence].sort((a, b) => weight(b.class) - weight(a.class)
+    || (importance(b.source) + importance(b.target)) - (importance(a.source) + importance(a.target))
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+function canopyRelationSequence(layout: CanopyLayout, nodes: readonly CanopyInputNode[],
+  ordered: readonly string[], evidence: readonly CanopyEvidenceCandidate[]): readonly string[] {
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  let structuralCut = ordered.length;
+  for (let index = 0; index < ordered.length; index++) {
+    if ((byId.get(ordered[index]!)?.level ?? 0) >= 4) { structuralCut = index; break; }
+  }
+  const sequence = ordered.slice(0, structuralCut);
+  const chosen = new Set(sequence);
+  for (const edge of rankedCanopyEvidence(nodes, evidence)) {
+    for (const id of [edge.source, edge.target]) {
+      if (byId.has(id) && !chosen.has(id)) { chosen.add(id); sequence.push(id); }
+    }
+  }
+  for (const id of ordered.slice(structuralCut)) {
+    if (!chosen.has(id)) { chosen.add(id); sequence.push(id); }
+  }
+  return sequence;
+}
+// D085-S2 END
 
 /** One stable lower-density mark sequence; complete always names each real ID. */
 export function canopyDensityMarks(layout: CanopyLayout, nodes: readonly CanopyInputNode[],
   density: Density, _band: CanopyBand, focusId: string | null, _pixelsPerUnit: number,
-  projection: '2d' | '3d', _projectPoint?: (point: CanopyPoint) => Readonly<{ x: number; y: number }>): CanopyMark[] {
+  projection: '2d' | '3d', _projectPoint?: (point: CanopyPoint) => Readonly<{ x: number; y: number }>,
+  // D085-S2 BEGIN: `evidence` continues the sequence after the structural scaffold. It is
+  // optional so the verified D-082 callers keep their exact behaviour when absent.
+  evidence?: readonly CanopyEvidenceCandidate[]): CanopyMark[] {
+  // D085-S2 END
   if (density === 'complete') return nodes.map(node => ({ id: node.id, memberCount: 1,
     memberIds: [node.id], aggregate: false }));
   // D082-B1: semantic selection is independent of camera distance. Ancestor tiers
@@ -31,8 +83,20 @@ export function canopyDensityMarks(layout: CanopyLayout, nodes: readonly CanopyI
       (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map(node => node.id);
     densityOrderCache.set(layout, ordered);
   }
-  const budget = density === 'essential' ? 150 : 850;
-  const ids = new Set(ordered.slice(0, budget));
+  // D085-S2 BEGIN: topology-aware budget; the sequence stays the plain D-082 order for
+  // Essenziale and for every caller that names no evidence candidates.
+  const sequence = evidence && density === 'balanced' ? (() => {
+    let byLayout = densityRelationSequenceCache.get(layout);
+    if (!byLayout) { byLayout = new WeakMap(); densityRelationSequenceCache.set(layout, byLayout); }
+    const cached = byLayout.get(evidence);
+    if (cached) return cached;
+    const computed = canopyRelationSequence(layout, nodes, ordered, evidence);
+    byLayout.set(evidence, computed);
+    return computed;
+  })() : ordered;
+  const budget = density === 'essential' ? 150 : densityBudget(density, 'canopy').nodes;
+  const ids = new Set(sequence.slice(0, budget));
+  // D085-S2 END
   for (const id of canopyFitAnchorIds(layout, projection)) ids.add(id);
   if (focusId && layout.positions.has(focusId)) ids.add(focusId);
   return [...ids].map(id => ({ id, memberCount: 1, memberIds: [id], aggregate: false }));
