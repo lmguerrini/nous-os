@@ -42,6 +42,7 @@ function slice(source, startMarker, kind = 'function') {
 }
 export async function makeMain(mod, mainSource, page, opts = {}) {
   const parts = [
+    slice(mainSource, 'function appliedAxes('),
     slice(mainSource, 'function reportTaxonomyTransitionError('),
     slice(mainSource, 'function chooseTaxonomy('),
     slice(mainSource, 'async function applyTaxonomy('),
@@ -55,7 +56,9 @@ export async function makeMain(mod, mainSource, page, opts = {}) {
   const js = (await transform(parts, { loader: 'ts', target: 'es2022' })).code;
   const prelude = `
 let taxonomyErrorShown = false;
-let axes = { projection: '2d', morphology: 'stellar', organization: 'natural', colour: 'bw', labels: true, reading: 'combined' };
+let axes = { projection: '2d', morphology: 'stellar', organization: 'natural', colour: 'bw', labels: true, reading: 'combined', arrangement: 'constellation' };
+let resolvedArrangement = resolveArrangementReadout(null, axes.morphology, false);
+const typedPipelineFlag = false;
 let geometry = { schema: 2, rendering: '2d', topology: 'natural', indra: 'off', morphology: 'stellar', density: 'balanced', reading: 'combined', colour: 'bw', labels: true };
 let density = 'balanced';
 let view2WriteAllowed = false;
@@ -64,12 +67,10 @@ const geometryTransitions = createGeometryTransitionQueue();
 const experimentalFlags = new Set(); const storage = {}; let experimentalSuspensionNotice = ''; let indraPearlsSelected = false;
 const log = { persist: [], sync: [], urls: [], storage: [] };
 const get = () => ({ hidden: true, textContent: '', value: '' });
-function appliedAxes(partial) { const next = { ...axes, ...partial };
-  if (next.organization !== 'natural') return { projection: next.projection, morphology: next.morphology, organization: next.organization, colour: next.colour, labels: next.labels, reading: next.reading, ...(next.brain !== undefined ? { brain: next.brain } : {}) };
-  return next; }
 function snapshotControls(tag) { log.sync.push({ tag, topology: geometry.topology, indra: geometry.indra, projection: axes.projection, density, organization: axes.organization }); }
 let __fault = null; function persistView() { if (__fault) { const f = __fault; __fault = null; throw f; }
-  if (!('mode' in geometry)) geometry = { ...geometry, rendering: axes.projection, morphology: axes.morphology, reading: axes.reading, colour: axes.colour, labels: axes.labels, ...(axes.brain !== undefined ? { brain: axes.brain } : {}) };
+  if (!('mode' in geometry)) geometry = { ...geometry, rendering: axes.projection, morphology: axes.morphology, reading: axes.reading, colour: axes.colour, labels: axes.labels, ...(axes.brain !== undefined ? { brain: axes.brain } : {}),
+    ...(geometry.topology === 'natural' && geometry.indra === 'off' && axes.arrangement !== undefined ? { naturalArrangement: axes.arrangement } : {}) };
   const rec = { topology: geometry.topology, indra: geometry.indra, rendering: geometry.rendering, density: geometry.density };
   log.urls.push(rec); if (view2WriteAllowed) log.storage.push(rec); }
 function syncTaxonomyControls() { snapshotControls('taxonomy'); }
@@ -95,7 +96,8 @@ const topologyOf = lawTopology;
   const scope = { createGeometryTransitionQueue: mod.createGeometryTransitionQueue, lawTopology: mod.lawTopology, wireTopology: mod.wireTopology,
     serializeGeometryView2: mod.serializeGeometryView2, topologySupport: mod.topologySupport, normalizeAxesInput: mod.normalizeAxesInput,
     normalizeDensity: mod.normalizeDensity, GeometrySupersededError: mod.GeometrySupersededError, projectionRefusalOf: mod.projectionRefusalOf,
-    geometryToLegacyAxes: mod.geometryToLegacyAxes, Promise, Error, Set, Map, console, globalThis: {} };
+    geometryToLegacyAxes: mod.geometryToLegacyAxes, resolveArrangementReadout: mod.resolveArrangementReadout,
+    Promise, Error, Set, Map, console, globalThis: {} };
   scope.globalThis = scope;
   const api = runInNewContext(script, scope);
   api.setV2(page);
@@ -132,6 +134,7 @@ export function makePage(mod, init = {}) {
     page.committedTaxonomy = { topology: snap.topology, indra: snap.indra };
     page.committedAxes = { ...snap.axes };
     rec.committed = true;
+    if (page.afterCommit) await page.afterCommit(rec);
   };
   return page;
 }

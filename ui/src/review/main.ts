@@ -639,18 +639,29 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   const indra = requestedIndra ?? ('mode' in geometry ? false : geometry.indra === 'on');
   const support = topologySupport(topology, axes.projection, indra);
   // D085-S1 BEGIN: an accepted click cannot silently finish without a page task.
-  if (!support.ok) throw new Error(support.reason);
+  if (!support.ok) {
+    if (v2) { syncCommittedPageGeometry(); persistView(); }
+    throw new Error(support.reason);
+  }
   // D085-S1 END
   // D085-S5 BEGIN: keep the organization axis aligned with the Indra control.
   const organization = topology === 'canopy-ifs' && !indra ? 'fractal' : indra ? 'indra' : 'natural';
   // D085-S5 END
   // D085-S1 BEGIN: the page mounts the final law and organization once; defer completion
   // until the controls and URL have been presented below.
-  await v2?.setTaxonomy(topology, indra, true);
+  try { await v2?.setTaxonomy(topology, indra, true); }
+  catch (error) {
+    if (v2) { syncCommittedPageGeometry(); persistView(); }
+    throw error;
+  }
   // D085-S1 END
   try {
   // D085-S1 BEGIN: present precisely the axes that the page mounted.
-  axes = v2 ? { ...v2.committedViewAxes } : appliedAxes({ organization });
+  if (v2) {
+    const committed = v2.committedViewAxes;
+    axes = appliedAxes({ projection: committed.projection, organization: committed.organization,
+      ...(committed.brain !== undefined ? { brain: committed.brain } : {}) });
+  } else axes = appliedAxes({ organization });
   if (v2) density = v2.densitySetting ?? density;
   // D085-S1 END
   geometry = { schema: 2, rendering: axes.projection, topology: wireTopology(topology), indra: indra ? 'on' : 'off',
@@ -1256,7 +1267,11 @@ function center(): Promise<void> {
 function syncCommittedPageGeometry(): void {
   if (!v2) return;
   const committed = v2.committedViewTaxonomy;
-  axes = { ...v2.committedViewAxes };
+  // D085-S1 BEGIN: retain main's resolved Natural arrangement across page remounts.
+  const mounted = v2.committedViewAxes;
+  axes = appliedAxes({ projection: mounted.projection, organization: mounted.organization,
+    ...(mounted.brain !== undefined ? { brain: mounted.brain } : {}) });
+  // D085-S1 END
   density = v2.densitySetting ?? density;
   if (!('mode' in geometry)) geometry = { ...geometry, rendering: axes.projection,
     topology: wireTopology(committed.topology), indra: committed.indra ? 'on' : 'off', density };
@@ -1391,10 +1406,19 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
     const targetTopology = lawTopology(target.topology);
     const targetIndra = target.indra === 'on';
     // D085-S1 BEGIN: restore one final scene, then present its URL and controls.
-    await v2.setTaxonomy(targetTopology, targetIndra, true, targetAxes, target.density);
+    try { await v2.setTaxonomy(targetTopology, targetIndra, true, targetAxes, target.density); }
+    catch (error) {
+      syncCommittedPageGeometry(); persistView();
+      throw error;
+    }
     try {
       geometry = target;
-      axes = { ...v2.committedViewAxes };
+      // D085-S1 BEGIN: the restored target supplies Natural's resolved arrangement.
+      const committed = v2.committedViewAxes;
+      axes = appliedAxes({ ...targetAxes, projection: committed.projection,
+        organization: committed.organization,
+        ...(committed.brain !== undefined ? { brain: committed.brain } : {}) });
+      // D085-S1 END
       density = v2.densitySetting ?? density;
       if (support.notice) experimentalSuspensionNotice = support.notice;
       persistView();
@@ -1901,9 +1925,19 @@ function applyDensity(next: unknown): void {
   // D085-S1 BEGIN: density must reach the renderer before the next topology intent.
   v2?.supersedeGeometry();
   void geometryTransitions.enqueue(async () => {
-    if (value === density) return;
+    // D085-S1 BEGIN: a no-op can follow an already displayed, still settling mount.
+    if (value === density) {
+      if (v2) { syncCommittedPageGeometry(); persistView(); }
+      return;
+    }
     // D085-S1 BEGIN: persist only after the page accepts the density.
-    if (await v2?.setDensity(value) === 'superseded') return;
+    let densityCommitted = false;
+    try {
+      if (await v2?.setDensity(value) === 'superseded') return;
+      densityCommitted = true;
+    } finally {
+      if (!densityCommitted && v2) { syncCommittedPageGeometry(); persistView(); }
+    }
     if (v2) syncCommittedPageGeometry();
     density = value;
     // D082-B2 BEGIN

@@ -822,6 +822,7 @@ export class V2Page {
     private lastNodeSelection: LodNodeSelection | null = null;
     // D085-S7 BEGIN: a detail-only refresh keeps the mounted node representatives.
     private relationDetailSwitchPending = false;
+    private relationDetailSwitchEpoch: number | null = null;
     // D085-S7 END
     /** D-072 R2: everything a mounted view's drawing derives from. An unchanged key means the
      * next refresh is a pure level-of-detail change — same disclosed set, same arrangement, same
@@ -2945,7 +2946,7 @@ export class V2Page {
             const input = { nodes: infos, level: this.lod, pinned, focus: active, priority, adjacency, communityOf,
                 reserveStructure: true };
             // D085-S7 BEGIN
-            const selection = this.relationDetailSwitchPending && this.lastNodeSelection
+            const selection = this.relationDetailSwitchPending && this.relationDetailSwitchEpoch === this.projectionEpoch && this.lastNodeSelection
                 ? this.lastNodeSelection : this.selectLod({ ...input, budget: budget.nodes }, this.lastNodeSelection);
             // D085-S7 END
             // Node admission is one shared union-graph plan; only relation selection varies by reading.
@@ -3052,7 +3053,7 @@ export class V2Page {
         const priority = [...tiers.priorityChildren, ...this.focusedRenderPriority(disclosed),
             ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
         // D085-S7 BEGIN
-        const selection = this.relationDetailSwitchPending && this.lastNodeSelection
+        const selection = this.relationDetailSwitchPending && this.relationDetailSwitchEpoch === this.projectionEpoch && this.lastNodeSelection
             ? this.lastNodeSelection : this.selectLod({
             nodes: infos, level: this.lod, budget: budget.nodes, pinned, focus: active, priority,
             adjacency: adjacencyOf(disclosed as V2Node[], this.index.edges), communityOf,
@@ -3700,9 +3701,6 @@ export class V2Page {
         if (this.geometryTransitionActive && !ownedByGeometry)
             return this.transitions.enqueue(() => this.refresh(false, detailSwitch));
         // D085-S1 END
-        // D085-S7 BEGIN: only this refresh may reuse the last mounted representatives.
-        if (detailSwitch) this.relationDetailSwitchPending = true;
-        // D085-S7 END
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
         this.refreshPending++;
         // D082-A-HUD BEGIN: publish the requested scene as in recovery while its new view is pending.
@@ -3712,6 +3710,10 @@ export class V2Page {
         this.interruptMount();
         const projectionEpoch = ++this.projectionEpoch;
         // D085-S1 END
+        // D085-S7 BEGIN: a replacement refresh cannot inherit a detail-only selection.
+        this.relationDetailSwitchPending = detailSwitch;
+        this.relationDetailSwitchEpoch = detailSwitch ? projectionEpoch : null;
+        // D085-S7 END
         this.cancelProjectionWork();
         return this.run(async () => {
             // D085-S1 BEGIN: an invalidated job never reads the next request's mutable axes.
@@ -4906,7 +4908,10 @@ export class V2Page {
             this.renderPanel();
         }).finally(() => {
             // D085-S7 BEGIN
-            if (detailSwitch) this.relationDetailSwitchPending = false;
+            if (this.relationDetailSwitchEpoch === projectionEpoch) {
+                this.relationDetailSwitchPending = false;
+                this.relationDetailSwitchEpoch = null;
+            }
             // D085-S7 END
             this.refreshPending--;
             if (this.d081Quality === 'recupero' && this.refreshPending === 0) {
@@ -5105,8 +5110,7 @@ export class V2Page {
      * recomputed on the next refresh and the coordinates never move. */
     // D085-S1 BEGIN: density participates in the same page transition lane.
     setDensity(value: Density): Promise<void | 'superseded'> {
-        // D085-S1 BEGIN: carry an unfinished organization choice into the density mount;
-        // a provisional projection still returns to the committed dimension.
+        // D085-S1 BEGIN: direct page callers may change density during a provisional axis mount.
         const inheritedOrganization = this.geometryTransitionActive
             && this.axes.organization !== (this.committedAxes?.organization ?? this.axes.organization)
             ? this.axes.organization : null;
@@ -5117,15 +5121,16 @@ export class V2Page {
         return this.transitions.enqueue(async () => {
             if (intent !== this.geometryIntent) return 'superseded' as const;
             const previousDensity = this.density;
+            const committedBefore = this.committedAxes;
             this.geometryTransitionActive = true;
             try {
                 await this.applyDensity(value, inheritedOrganization);
                 if (intent !== this.geometryIntent) {
-                    this.density = previousDensity;
+                    if (this.committedAxes === committedBefore) this.density = previousDensity;
                     return 'superseded' as const;
                 }
             } catch (error) {
-                this.density = previousDensity;
+                if (this.committedAxes === committedBefore) this.density = previousDensity;
                 throw error;
             } finally { this.geometryTransitionActive = false; }
         });
@@ -5157,7 +5162,8 @@ export class V2Page {
             // D081-P3c END
         }
         // D081-P3b END
-        // D085-S1 BEGIN: the successor applies the inherited organization in its own refresh.
+        // D085-S1 BEGIN: direct page callers keep a pending organization; main's lane
+        // normally resolves the preceding geometry task before density reaches here.
         if (inheritedOrganization) await this.applyAxes({ organization: inheritedOrganization });
         else await this.refresh(true);
         // D085-S1 END
