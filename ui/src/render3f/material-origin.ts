@@ -288,7 +288,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#render-common/typed-layer.ts", new Set(["createTypedProjectionLayer"])],
     // D082-A-PERF BEGIN
     // D085-S3 BEGIN: exact Lab stage and complete-segment selectors are material-independent.
-    ["#render-common/quality-ladder.ts", new Set(["QualityLadder", "labDrawPolicy", "labMainSegmentRanges", "mainRelation", "presentRenderReadiness"])],
+    // D085-S3 BEGIN
+    ["#render-common/quality-ladder.ts", new Set(["QualityLadder", "labDrawPolicy", "labMainSegmentRanges", "labPixelRatio", "mainRelation", "presentRenderReadiness"])],
+    // D085-S3 END
     // D085-S3 END
     // D082-A-PERF END
     ["#render3f/camera.tsx", new Set([

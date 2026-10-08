@@ -8,6 +8,10 @@ export type PresentedRenderReadiness = {
   readonly view: string;
   readonly quality: 'movimento' | 'recupero' | 'completa';
   readonly ladder: 0 | 1 | 2 | 3 | 4;
+  // D085-S3 BEGIN: these describe the submitted drawing buffer, not window DPR.
+  readonly pixelRatio?: number;
+  readonly fullPixelRatio?: number;
+  // D085-S3 END
   readonly nodes: PresentedStageCounts;
   readonly mainEdges: PresentedStageCounts;
   readonly allEdges: PresentedStageCounts;

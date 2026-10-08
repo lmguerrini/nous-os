@@ -12,6 +12,13 @@ export { presentRenderReadiness } from './render-readiness-producer.ts';
 /** The last input restarts this clock. Stage 4 is reached 320 ms after that input. */
 export const QUALITY_RESTORE_MS = [0, 80, 160, 320] as const;
 
+// D085-S3 BEGIN: Lab 3D uses a CSS-pixel drawing buffer through the moving
+// tiers, then restores the exact requested buffer before the full draw tier.
+export function labPixelRatio(stage: QualityStage, fullPixelRatio: number): number {
+  return stage < 3 ? Math.min(fullPixelRatio, 1) : fullPixelRatio;
+}
+// D085-S3 END
+
 // D085-S3 BEGIN: Lab camera work uses resident geometry at four explicit draw tiers.
 export type LabDrawPolicy = Readonly<{
   nodes: 'anchors' | 'all';

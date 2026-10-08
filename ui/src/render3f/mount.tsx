@@ -67,7 +67,9 @@ import type { Render3fTypedInput, TypedProjectionGeometry } from "#render3f/pick
 import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts";
 // D082-B-GPUFLOOR END
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
-import { QualityLadder, labDrawPolicy, labMainSegmentRanges, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+// D085-S3 BEGIN
+import { QualityLadder, labDrawPolicy, labMainSegmentRanges, labPixelRatio, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+// D085-S3 END
 
 /** How long the camera must be still before the derived geometry returns to full quality. */
 const DERIVED_STILL_MS = 200;
@@ -257,6 +259,10 @@ export function mount(
     options.presentation?.morphologyLanguage === "distinct" && scene.nodes.length < DENSE_SCENE_THRESHOLD
       ? 1 : pixelRatio;
   let currentRenderDpr = renderPixelRatio(live.scene, devicePixelRatio);
+  // D085-S3 BEGIN
+  let fullRenderDpr = currentRenderDpr;
+  let renderWidth = dimensions.width, renderHeight = dimensions.height;
+  // D085-S3 END
   const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
   const worldFramingSubjects = sceneCameraFramingSubjects(live.scene);
   const rig = new CameraRig(
@@ -264,7 +270,9 @@ export function mount(
     live.scene.camera,
     dimensions.width,
     dimensions.height,
-    devicePixelRatio,
+    // D085-S3 BEGIN
+    currentRenderDpr,
+    // D085-S3 END
     worldFramingSubjects,
   );
 
@@ -319,11 +327,13 @@ export function mount(
   updateField(renderer, live.scene);
 
   const labels = new LabelOverlayController(container);
+  // D085-S3 BEGIN
   let distinct = typedInput === undefined && options.presentation?.morphologyLanguage === "distinct"
     ? mountDistinctOverlay(container, live.scene, options.morphology, options.presentation, (point) => ({
       ...rig.graphToViewport(point), scale: rig.sizeScaleAt(point),
-    }))
+    }), () => currentRenderDpr)
     : null;
+  // D085-S3 END
   // D082-A-NODES BEGIN
   // The native filament is visible at Completa size beneath the structure canvas. Its alpha
   // attribute must receive the same per-edge factor as the canvas, including after LOD updates.
@@ -433,6 +443,22 @@ export function mount(
   let typedLabelBudget: number | undefined = initialScope?.labelBudget;
   let typedLabelOverlay: ProjectionLabelOverlay | null = null;
   let typedFittedCameraDistance: number | null = null;
+  // D085-S3 BEGIN: an empty derived layer needs no full-viewport compositor
+  // surface. Stellar's starfield counts as content even without guides.
+  const syncVisualsCanvas = (): void => {
+    const layer = visuals, overlay = layer?.canvas;
+    if (!layer || !overlay) return;
+    const witness = layer.readWitness();
+    const empty = derivedMorphology !== 'stellar' && witness.containerIds.length === 0
+      && witness.curveIds.length === 0 && witness.fieldIds.length === 0;
+    const wasHidden = overlay.style.display === 'none';
+    overlay.style.display = empty ? 'none' : '';
+    if (empty) {
+      overlay.setAttribute('width', '0');
+      overlay.setAttribute('height', '0');
+    } else if (wasHidden) layer.draw();
+  };
+  // D085-S3 END
   const acceptVisuals = (input: Render3fTypedInput): void => {
     if (visuals === null) {
       visuals = createProjectionVisualsLayer(container, "3d",
@@ -441,6 +467,9 @@ export function mount(
       const labelLayer = container.querySelector("[data-render3f-labels]");
       if (labelLayer && visuals.canvas) labelLayer.before(visuals.canvas);
     } else visuals.updateVisibleSubset(input);
+    // D085-S3 BEGIN
+    syncVisualsCanvas();
+    // D085-S3 END
   };
   if (typedPicker) {
     world.visible = false;
@@ -743,7 +772,10 @@ export function mount(
     // D082-A-PERF BEGIN: the GPU layer owns the structural moving frame.
     // Dense projection visuals are decorative and their canvas projection is
     // too costly to repeat for every wheel event; restore it at stage four.
-    if (!typedPicker || requestedNodes < DENSE_SCENE_THRESHOLD || ladder.state.stage === 4) visuals?.draw();
+    // D085-S3 BEGIN: the structural GPU tier moves; the optional projected
+    // canvas is restored once, at full quality, after the camera stops.
+    if (!typedPicker || ladder.state.stage === 4) visuals?.draw();
+    // D085-S3 END
     // D082-A-PERF END
     // D081-P3b BEGIN: labels live on the typed overlay and follow the camera.
     if (!typedMoving && typedBundleLabels.length && visuals?.canvas) {
@@ -787,12 +819,16 @@ export function mount(
     const drawnVisual = submitted?.visualEdges ?? 0;
     const scope = currentStyled ? readProjectionStyle(currentStyled) : null;
     // D085-S3 BEGIN: the phase is complete only after all requested resident ranges and decor draw.
+    const activePixelRatio = renderer.getPixelRatio();
     const allDrawn = drawnNodes >= requestedNodes && drawnSemantic >= requestedSemanticEdges
-      && drawnVisual >= requestedVisualEdges && labelTimer === undefined;
+      && drawnVisual >= requestedVisualEdges && labelTimer === undefined
+      && activePixelRatio === fullRenderDpr;
     return {
       view: `${options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
       quality: ladder.state.moving ? 'movimento' : stage === 4 && allDrawn ? 'completa' : 'recupero',
       ladder: stage,
+      pixelRatio: activePixelRatio,
+      fullPixelRatio: fullRenderDpr,
       nodes: { required: requestedNodes, loaded: prepared?.nodes ?? requestedNodes, drawn: drawnNodes },
       mainEdges: { required: requestedMainEdges, loaded: Math.min(requestedMainEdges, prepared?.semanticEdges ?? requestedMainEdges),
         drawn: Math.min(requestedMainEdges, drawnSemantic) },
@@ -807,12 +843,16 @@ export function mount(
   };
   const publishPresentedFrame = (): void => {
     const snapshot = readinessSnapshot();
-    // The draw boundary supplies counts. Two frames allow the submitted frame
-    // to pass the browser presentation boundary before the HUD can claim it.
     const revision = ++presentationRevision;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    // D085-S3 BEGIN: the stage-four renderer draw and settled label pass have
+    // both completed before this callback. One presentation tick avoids an
+    // extra GPU-bound frame on the path to the complete witness.
+    const publish = () => {
       if (!destroyed && revision === presentationRevision) presentRenderReadiness(snapshot);
-    }));
+    };
+    if (snapshot.ladder === 4 && snapshot.quality === 'completa') requestAnimationFrame(publish);
+    else requestAnimationFrame(() => requestAnimationFrame(publish));
+    // D085-S3 END
   };
   // D082-A-STALE END
   // D085-S3 BEGIN: finish the cached proxies only after the typed worker attaches whole ribbons.
@@ -822,8 +862,29 @@ export function mount(
     renderFrame();
   });
   // D085-S3 END
+  // D085-S3 BEGIN: resize the Three buffer and the rig together, before the
+  // next draw. The ratio change shares that draw and schedules no extra frame.
+  const syncDrawingBuffer = (width: number, height: number): void => {
+    fullRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
+    const ratio = typedPicker ? labPixelRatio(ladder.state.stage, fullRenderDpr) : fullRenderDpr;
+    const ratioChanged = ratio !== renderer.getPixelRatio();
+    const sizeChanged = width !== renderWidth || height !== renderHeight;
+    if (!ratioChanged && !sizeChanged) return;
+    // setPixelRatio already resizes Three's current viewport. A second setSize
+    // is needed only when the CSS dimensions changed in the same turn.
+    if (ratioChanged) renderer.setPixelRatio(ratio);
+    if (sizeChanged) renderer.setSize(width, height, false);
+    rig.resize(width, height, ratio);
+    currentRenderDpr = ratio;
+    renderWidth = width;
+    renderHeight = height;
+  };
+  // D085-S3 END
   // D082-A-PERF BEGIN: three scheduled restores; no frame loop or scene rebuild at rest.
   const ladder = new QualityLadder(({ stage, moving }) => {
+    // D085-S3 BEGIN
+    syncDrawingBuffer(renderWidth, renderHeight);
+    // D085-S3 END
     typedMoving = stage < 4;
     // D085-S3 BEGIN: stage three restores semantic ribbons; stage four restores visual relations.
     if (stage < 4 && labProxyDirty) rebuildLabProxy();
@@ -832,8 +893,16 @@ export function mount(
     applyLabPolicy(stage);
     // D085-S3 END
     visuals?.setQuality(stage >= 4 ? "full" : "moving", false);
-    if (visuals?.canvas && typedPicker && requestedNodes >= DENSE_SCENE_THRESHOLD)
+    // D085-S3 BEGIN: a hidden projected layer must not retain a full-screen
+    // composited bitmap during interaction. The stage-four draw restores it.
+    if (visuals?.canvas && typedPicker) {
       visuals.canvas.style.visibility = stage >= 4 ? "" : "hidden";
+      if (stage < 4) {
+        visuals.canvas.setAttribute('width', '0');
+        visuals.canvas.setAttribute('height', '0');
+      }
+    }
+    // D085-S3 END
     brainEnvelope?.setLod(stage >= 4 ? "full" : "moving");
     const suspendedLayers = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD
       ? ["[data-render3f-labels]", "[data-projection-labels]", "[data-morphology-canvas='distinct-3d']"]
@@ -890,7 +959,9 @@ export function mount(
       return;
     }
     threeScene.add(world);
-    rig.resize(dimensions.width, dimensions.height, renderPixelRatio(live.scene, devicePixelRatio));
+    // D085-S3 BEGIN
+    rig.resize(dimensions.width, dimensions.height, currentRenderDpr);
+    // D085-S3 END
     renderFrame();
     requestAnimationFrame(renderWhileFiberConfigures);
   };
@@ -902,7 +973,9 @@ export function mount(
     camera: rig.camera,
     frameloop: "never",
     size: { width: dimensions.width, height: dimensions.height, top: 0, left: 0 },
-    dpr: renderPixelRatio(live.scene, devicePixelRatio),
+    // D085-S3 BEGIN
+    dpr: currentRenderDpr,
+    // D085-S3 END
     onCreated: () => {
       renderFrame();
     },
@@ -914,7 +987,9 @@ export function mount(
     fiberStore.setState({ camera: rig.camera });
     threeScene.add(world);
     threeScene.add(typedLayer.group);
-    rig.resize(dimensions.width, dimensions.height, renderPixelRatio(live.scene, devicePixelRatio));
+    // D085-S3 BEGIN
+    rig.resize(dimensions.width, dimensions.height, currentRenderDpr);
+    // D085-S3 END
     renderFrame();
   });
 
@@ -923,14 +998,9 @@ export function mount(
       return;
     }
     const next = containerDimensions(container);
-    const nextDevicePixelRatio = requiredDevicePixelRatio();
-    const renderDpr = renderPixelRatio(live.scene, nextDevicePixelRatio);
-    if (renderDpr !== currentRenderDpr) {
-      renderer.setPixelRatio(renderDpr);
-      currentRenderDpr = renderDpr;
-    }
-    renderer.setSize(next.width, next.height, false);
-    rig.resize(next.width, next.height, renderDpr);
+    // D085-S3 BEGIN
+    syncDrawingBuffer(next.width, next.height);
+    // D085-S3 END
     fiberStore?.setState({
       size: { width: next.width, height: next.height, top: 0, left: 0 },
       viewport: fiberStore.getState().viewport,
@@ -959,14 +1029,10 @@ export function mount(
     live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
     brainEnvelope?.update(live.scene.nodes, live.scene.edges);
     refreshPresentedCounts();
-    const nextRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
-    if (nextRenderDpr !== currentRenderDpr) {
-      const nextDimensions = containerDimensions(container);
-      renderer.setPixelRatio(nextRenderDpr);
-      renderer.setSize(nextDimensions.width, nextDimensions.height, false);
-      rig.resize(nextDimensions.width, nextDimensions.height, nextRenderDpr);
-      currentRenderDpr = nextRenderDpr;
-    }
+    // D085-S3 BEGIN
+    const nextDimensions = containerDimensions(container);
+    syncDrawingBuffer(nextDimensions.width, nextDimensions.height);
+    // D085-S3 END
     if (distinct) {
       filamentResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
       nodeResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
@@ -1014,6 +1080,9 @@ export function mount(
     setDerivedMorphology(morphology: ProjectionVisualsMorphology): void {
       derivedMorphology = morphology;
       visuals?.setMorphology(morphology);
+      // D085-S3 BEGIN
+      syncVisualsCanvas();
+      // D085-S3 END
       // D082-A-STALE BEGIN
       // A morphology mutation invalidates the previously complete visual state immediately.
       // This remains a renderer-side estimate, not compositor presentation evidence.
