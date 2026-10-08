@@ -642,6 +642,9 @@ export class V2Page {
     private committedTaxonomy: { topology: TopologyId; indra: boolean } = { topology: 'natural', indra: false };
     // D085-S1 BEGIN: the mounted view, not a provisional request, owns these axes.
     private committedAxes: PageAxes | null = null;
+    // D085-S5 BEGIN: a failed remount restores the density of the displayed view.
+    private committedDensity: Density | null = null;
+    // D085-S5 END
     get committedViewAxes(): PageAxes { return { ...(this.committedAxes ?? this.view?.witness?.().axes ?? this.axes) }; }
     get committedViewTaxonomy() { return { ...this.committedTaxonomy }; }
     // D085-S1 END
@@ -2195,6 +2198,9 @@ export class V2Page {
         // D085-S1 BEGIN: typed projection mounts commit the same page truth as product views.
         this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
         this.committedAxes = { ...this.axes };
+        // D085-S5 BEGIN
+        this.committedDensity = this.density;
+        // D085-S5 END
         // D085-S1 END
         this.projectionSnapshot = snapshot;
         this.projectionDomain = domain;
@@ -4494,6 +4500,9 @@ export class V2Page {
                     // D085-S1 BEGIN
                     this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
                     this.committedAxes = { ...this.axes };
+                    // D085-S5 BEGIN
+                    this.committedDensity = this.density;
+                    // D085-S5 END
                     // D085-S1 END
                     // The same commit a successful mount makes, minus everything a remount owns
                     // (positions, camera bookkeeping, layout keys — the scene did not change).
@@ -4730,8 +4739,21 @@ export class V2Page {
                     mountFailureLogged = true;
                     console.error('[d072] view remount failed; keeping the last good view', error);
                 }
-                element('status').textContent = 'Aggiornamento sospeso \u00B7 resta l\u2019ultima vista valida';
-                return;
+                // D085-S5 BEGIN: restore the values read by the toolbar and HUD
+                // before the transition rejects. The mounted witness already retained
+                // its old geometry, labels and camera.
+                if (this.committedAxes) this.axes = { ...this.committedAxes };
+                if (this.committedDensity) this.density = this.committedDensity;
+                this.topology = this.committedTaxonomy.topology;
+                this.topologyIndra = this.committedTaxonomy.indra;
+                this.densitySwitchPending = false;
+                this.d081Emit();
+                // The transition must reject so its caller restores
+                // provisional axes and density. The page's run() shows the same
+                // error region used by an explicitly refused selection.
+                throw new Error('La nuova vista non è stata montata; resta l’ultima vista valida. '
+                    + (error instanceof Error ? error.message : String(error)), { cause: error });
+                // D085-S5 END
             }
             const previousView = this.view;
             const previousHost = this.viewHost;
@@ -4743,6 +4765,9 @@ export class V2Page {
             // D085-S1 BEGIN
             this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
             this.committedAxes = { ...this.axes };
+            // D085-S5 BEGIN
+            this.committedDensity = this.density;
+            // D085-S5 END
             // D085-S1 END
             this.viewHost = nextHost;
             this.canopyRailLayer = nextRailLayer;
@@ -5122,6 +5147,10 @@ export class V2Page {
             if (intent !== this.geometryIntent) return 'superseded' as const;
             const previousDensity = this.density;
             const committedBefore = this.committedAxes;
+            // D085-S5 BEGIN: Complete may publish a provisional recovery phase.
+            const previousQuality = this.d081Quality;
+            const previousMetrics = structuredClone(this.d081Metrics);
+            // D085-S5 END
             this.geometryTransitionActive = true;
             try {
                 await this.applyDensity(value, inheritedOrganization);
@@ -5130,7 +5159,14 @@ export class V2Page {
                     return 'superseded' as const;
                 }
             } catch (error) {
-                if (this.committedAxes === committedBefore) this.density = previousDensity;
+                if (this.committedAxes === committedBefore) {
+                    this.density = previousDensity;
+                    // D085-S5 BEGIN
+                    this.d081Quality = previousQuality;
+                    this.d081Metrics = previousMetrics;
+                    this.d081Emit();
+                    // D085-S5 END
+                }
                 throw error;
             } finally { this.geometryTransitionActive = false; }
         });

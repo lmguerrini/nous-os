@@ -356,7 +356,8 @@ test("only camera navigation keys mark user camera motion", () => {
   assert.equal((page as unknown as { userMovedSinceFit: boolean }).userMovedSinceFit, true);
 });
 
-test("a failing mount keeps the old view: no destroy, labels unchanged, a notice not the banner", async () => {
+// D085-S5 BEGIN: a failed selection keeps the mounted witness and exposes its cause.
+test("a failing mount keeps the old view and shows the error region", async () => {
   resetMountFailureLog();
   mountCount = 0; mountAttempts = 0; destroyCount = 0; failMounts = false;
   const page = makePage();
@@ -364,14 +365,15 @@ test("a failing mount keeps the old view: no destroy, labels unchanged, a notice
   assert.equal(mountCount, 1);
   const labelsBefore = page.witness().lod.labels.rendered;
   const renderedBefore = page.witness().lod.nodes.rendered;
+  const statusBefore = (page as unknown as { d081Status(): unknown }).d081Status();
   assert.ok(labelsBefore > 0);
   const errors: unknown[] = [];
   const originalError = console.error;
   console.error = (...args: unknown[]) => { errors.push(args); };
   try {
     failMounts = true;
-    await page.refresh();               // must resolve, not reject
-    await page.refresh();               // a second failure logs nothing new
+    await assert.rejects(page.refresh(), /resta l’ultima vista valida.*mount exploded/);
+    await assert.rejects(page.refresh(), /resta l’ultima vista valida.*mount exploded/);
   }
   finally { console.error = originalError; }
   assert.equal(mountCount, 1, "no view is mounted behind a failing mount");
@@ -380,9 +382,18 @@ test("a failing mount keeps the old view: no destroy, labels unchanged, a notice
   assert.equal(page.witness().lod.labels.rendered, labelsBefore, "labels keep coming from the kept view");
   assert.equal(page.witness().lod.nodes.rendered, renderedBefore, "the rendered set still describes the kept view");
   assert.equal(errors.length, 1, "the failure is logged once per session");
-  assert.match(elements.get("status")!.textContent, /Aggiornamento sospeso/);
-  assert.equal(elements.get("error")!.hidden, true, "the blocking error banner stays hidden");
+  assert.match(elements.get("status")!.textContent, /Errore:.*resta l’ultima vista valida/);
+  assert.equal(elements.get("error")!.hidden, false, "the failure is visible");
+  assert.match((elements.get('error')!.children[0] as { text: string }).text, /mount exploded/);
+  await muteErrorLog(() => assert.rejects(page.setAxes({ projection: '3d' }), /resta l’ultima vista valida/));
+  assert.equal(page.committedViewAxes.projection, '2d');
+  assert.equal((page as unknown as { axes: { projection: string } }).axes.projection, '2d');
+  assert.equal(page.witness().lod.nodes.rendered, renderedBefore);
+  await muteErrorLog(() => assert.rejects(page.setDensity('complete'), /resta l’ultima vista valida/));
+  assert.equal(page.densitySetting, 'balanced');
+  assert.deepEqual((page as unknown as { d081Status(): unknown }).d081Status(), statusBefore);
 });
+// D085-S5 END
 
 test("a successful mount swaps and destroys the old view exactly once, camera restored on the same scene", async () => {
   resetMountFailureLog();
@@ -430,7 +441,11 @@ test("each refresh owns a host; failed mounts remove only their new host", async
   assert.deepEqual(observed.slice(0, 3), ["mount:1", "mount:2", "destroy:2"], "the old host survives until its view is destroyed");
   assert.equal(root.children.length, 1, "the old host is removed after success");
   failMounts = true;
-  await muteErrorLog(() => page.refresh());
+  // D085-S5 BEGIN: a kept view is an explicit visible transition failure.
+  await muteErrorLog(() => assert.rejects(page.refresh(), /resta l’ultima vista valida.*mount exploded/));
+  assert.equal(elements.get('error')!.hidden, false);
+  assert.match((elements.get('error')!.children[0] as { text: string }).text, /resta l’ultima vista valida/);
+  // D085-S5 END
   assert.equal(observed.at(-1), "mount:2", "the working host remains during the attempted mount");
   assert.deepEqual(root.children, [secondHost], "failure removes the attempted host only");
   assert.equal(view(page).destroyed(), 0, "the working view survives failure");
