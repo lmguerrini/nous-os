@@ -998,10 +998,10 @@ function readD081Status(): D081GraphStatus | null {
       indraStatusSource = api.status;
       indraStatusWrapper = () => {
         const base = indraStatusSource!();
-        const witness = (window as Window & { __d067?: { witness?: () => {
-          indraComposition?: D081GraphStatus['indraComposition'] } } }).__d067?.witness?.();
+        // D085-X8 BEGIN: the page status owns its mounted composition counters.
+        // The full visibility witness remains an explicit diagnostic read.
+        // D085-X8 END
         return { ...base,
-          ...(witness?.indraComposition ? { indraComposition: witness.indraComposition } : {}),
           ...(!('mode' in geometry) && geometry.topology === 'julia'
             ? { juliaIndraGate: juliaIndraGateStatus(axes.projection) } : {}) };
       };

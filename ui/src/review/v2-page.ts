@@ -892,7 +892,15 @@ export class V2Page {
         // D081-P3b BEGIN: both typed renderers suppress dense lines while the camera moves.
         const movingIndra = this.d081Quality === 'movimento' && this.density === 'complete'
             && this.indraPearlsView();
+        // D085-X8 BEGIN: read only the mounted view's small composition record.
+        const composition = (this.view as ProductView & {
+            readIndraComposition?: () => D081GraphStatus['indraComposition'] } | null)
+            ?.readIndraComposition?.();
+        // D085-X8 END
         return { ...this.d081Metrics,
+            // D085-X8 BEGIN
+            ...(composition ? { indraComposition: composition } : {}),
+            // D085-X8 END
             ...(movingIndra ? { edges: { ...this.d081Metrics.edges, drawn: 0, bundled: 0, bundles: 0 },
                 hint: 'Rilascia la camera: gli archi tornano quando il movimento termina.' } : {}),
             quality: this.d081Quality,
