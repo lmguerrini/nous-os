@@ -904,11 +904,13 @@ export class V2Page {
         // D081-FRACTAL-MERGE BEGIN: the canopy owns the public status contract while active.
         if (this.canopyActive()) { this.publishCanopyStatus(); return; }
         // D081-FRACTAL-MERGE END.
-        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function')
-            window.dispatchEvent(new CustomEvent('d081:status', { detail: this.d081Status() }));
+        // D085-X7 BEGIN: listeners read the accepted readiness of this status's view.
         // D082-A-HUD BEGIN: interim counts are the real page-visible sets; renderer producers replace this.
         this.d082PublishReadiness();
         // D082-A-HUD END
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function')
+            window.dispatchEvent(new CustomEvent('d081:status', { detail: this.d081Status() }));
+        // D085-X7 END
     }
     // D082-A-HUD BEGIN: temporary real-count producer; no time-based progress is synthesized.
     private d082PublishReadiness() {
