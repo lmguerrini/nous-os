@@ -228,6 +228,29 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
   entry("Strutturale · provenienza", "Contenimento, classificazione e co-appartenenza; visibile in ogni lettura.", (svg) => {
     svg.append(line(2, 7, 24, 7, palette.container, 0.8, 0.5));
   });
+  // D085-S4 BEGIN (fix 2): the Llull Figure A guides get their own legend entry with a
+  // dashed sample, so the structural pair compartments are told apart from the real
+  // relations on the legend surface too (hierarchy: guide < relazioni reali < radici).
+  // Only the Llull topology carries it; every other topology keeps its pixels.
+  if (topology === "lull") {
+    entry("Guida Figura A · coppia", "Terza Figura: le 36 corde tratteggiate fra le nove lettere del cerchio esterno (domini reali a 40° esatti) sono compartimenti strutturali, non relazioni; non entrano nei conteggi. Le relazioni reali sono le linee continue più luminose; le radici restano i segni più intensi. In 3D le stesse corde salgono alle quattro tavole d'offset d=1–4 e i record si sollevano della classe massima attestata dalle loro relazioni reali fra domini.", (svg) => {
+      const sample = line(2, 7, 24, 7, "rgba(205,215,230,.55)", 1.25);
+      sample.setAttribute("stroke-dasharray", "7 6");
+      svg.append(sample);
+    });
+  }
+  // D085-S4 END
+  // D085-S4 BEGIN: the overview bundles and the record veil get their own
+  // entry, so the aggregate ink is told apart from the dashed compartments and from
+  // the single real relations on the legend surface too. Llull-only, like the guides:
+  // every other topology keeps its pixels.
+  if (topology === "lull") {
+    entry("Fascio d’insieme · coppia", "Zoom semantico: a distanza d’insieme ogni compartimento con evidenza è disegnato come un fascio spesso fra le sue due lettere — larghezza e opacità proporzionali al numero esatto di relazioni reali del compartimento nel snapshot completo; un fascio rappresenta N relazioni reali, mai una nuova relazione. I compartimenti senza evidenza non disegnano nulla; le relazioni dentro lo stesso settore restano brevi e locali. Avvicinando la vista i fasci svaniscono e prendono il posto le relazioni singole, che la densità e la lettura attive filtrano; un velo attenua intanto le fasce dei record, senza mai rimuovere un segno. In 3D gli stessi fasci siedono alle quattro tavole d’offset d=1–4.", (svg) => {
+      svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.16)", 6));
+      svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.8)", 2.6));
+    });
+  }
+  // D085-S4 END
   const detailNote = document.createElement("p");
   detailNote.className = "flow-legend-entry";
   detailNote.textContent = "Relazioni: essenziali/tutte è un filtro di dettaglio separato dalla lettura epistemica.";

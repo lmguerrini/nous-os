@@ -30,7 +30,23 @@
  * Positions depend only on the full snapshot: densities choose subsets and shared IDs
  * never move between Essenziale, Bilanciata and Completa. `layoutFull` caches per
  * (snapshot digest, law version, dimension) as TOPOLOGY-CONTRACT requires.
- * D084-LLULL END */
+ * D084-LLULL END
+ *
+ * D085-S4 (fix 2): the Figure A layer is completed by the Third Figure's 36 pair
+ * compartments — one dashed structural chord per two-letter combination between the
+ * nine real root vertices. They are guides, never relations: non-semantic, excluded
+ * from every count, disclosed in the witness and the legend; the real relations stay
+ * the only solid ink between vertices.
+ *
+ * D085-S4: semantic zoom over the same compartments. Each compartment
+ * with real cross-domain evidence also emits one pair bundle — a non-semantic
+ * guide whose weight is the exact number of real relations of that compartment
+ * in the FULL snapshot — drawn at overview between its two root vertices (in 3D
+ * at its offset-class table) and released into the individual real chords as the
+ * camera closes in. Empty compartments draw no bundle. A translucent overview
+ * veil over the record annulus lightens the record bands at distance; it never
+ * removes a mark and fades to nothing on the same zoom curve. Bundles aggregate
+ * existing relations, never new edges: `lull.generated-edges` stays 0. */
 import type { GuideCurve, TopologyDimension, TopologyLayout, TopologyLaw, TopologyNode, TopologySnapshot, TopologyWitness } from './contract.ts';
 import type { LayoutContainer, Point3 } from '../review/layout-v2.ts';
 import type { LullIndex } from './lull-inquiry.ts';
@@ -60,9 +76,50 @@ export const LULL_NAME_AUTHORISED = true;
 export const LULL_LABEL_AUTHORISED = 'Llull';
 export const LULL_LABEL_FALLBACK = 'Topologia circolare combinatoria';
 // D084-LLULL END
-export const LULL_3D_REFUSAL = 'Non significativa in 3D: l\u2019estruzione della Quarta Figura non aggiunge operazioni combinatorie; serve una terza coordinata reversibile fondata sui dati e un nuovo controllo.';
+// D085-S4 BEGIN (fix 5): the offset-class lift supersedes the 3D refusal of D-084 (that
+// refusal was right about the extrusion it described; it never considered this coordinate).
+// Every pair compartment has a wheel offset in ninth-of-a-turn units between its two real
+// root letters; the class min(offset, 9 - offset) in {1,2,3,4} partitions the 36 compartments
+// into four regular sub-families of 9 (enneagon, star {9/2}, three triangles, star {9/4}).
+// That class is the third coordinate: the pair chords lift to four tables and each real
+// node rises by the maximal class its real cross-domain relations attest.
+export const LULL_3D_LIFT = LULL_OUTER_RADIUS / 4;
+export const LULL_3D_LEVELS = 4;
+/** Class of the wheel offset between two root-letter indices, in ninth-of-a-turn units. */
+export function lullPairClass(letterIndexA: number, letterIndexB: number): 1 | 2 | 3 | 4 {
+  const offset = ((letterIndexB - letterIndexA) % 9 + 9) % 9;
+  return (offset <= 4 ? offset : 9 - offset) as 1 | 2 | 3 | 4;
+}
+export const LULL_3D_LAW = 'In 3D la quota \u00e8 la classe d\u2019offset della Terza Figura (d = min(offset, 9 \u2212 offset) \u2208 {1,2,3,4}): le 36 coppie salgono a quattro tavole regolari di 9 e ogni record si solleva della classe massima attestata dalle sue relazioni reali fra domini; le combinazioni senza evidenza non alzano nulla e nessuna diventa spigolo.';
+// D085-S4 END
 
 const LULL_LIMIT_COMPACT = 'Limite storico: le lettere indicano corpora documentali, non i principi predicabili di Llull; i conteggi non provano verità; le 84 triple sono classi deduplicate delle 252 camere della Quarta Figura (Ars brevis, 1308).';
+
+// D085-S4 BEGIN (fix 2): the structural-guide disclosure every «Perché qui» carries, so
+// the 36 dashed pair chords of the figure are never mistaken for relations.
+export const LULL_GUIDE_DISCLOSURE = 'Guide strutturali: le 36 corde tratteggiate fra le lettere del cerchio esterno sono i compartimenti binari della Terza Figura, non relazioni; non entrano nei conteggi e nessuna combinazione generata diventa spigolo.';
+// D085-S4 END
+
+// D085-S4 BEGIN: semantic zoom over the 36 pair compartments. The pair
+// bundles are non-semantic guides like the dashed chords, but each one stands for
+// a counted set of REAL relations of the full snapshot (its `weight`), so the
+// overview reads as Llull's chord rosette drawn from real data while the
+// individual chords — density- and reading-filtered by the view, never by the
+// law — take over as the camera closes in. The overview veil lightens the record
+// band at distance; it is a drawing layer over the marks, never a removal.
+export type LullBundleGuide = GuideCurve & Readonly<{ weight: number }>;
+/** Guide kind of an aggregated pair bundle (one per evidenced compartment). */
+export const LULL_BUNDLE_KIND = 'lull-pair-bundle';
+/** Guide kind of the overview veil over the record annulus (2D only). */
+export const LULL_VEIL_KIND = 'lull-overview-veil';
+/** The veil covers the record annulus with a small margin, inside the communities. */
+export const LULL_VEIL_RADIUS = LULL_BANDS.record.outer + 13;
+/** The disclosure sentence of the bundles, with the two audit numbers interpolated. */
+export const LULL_BUNDLE_DISCLOSURE = (count: number, total: number): string =>
+  `Fasci d’insieme: a distanza i ${count} compartimenti con evidenza sono disegnati come fasci che aggregano ${total} relazioni reali fra domini del snapshot completo (larghezza e opacità proporzionali al conteggio; un fascio rappresenta relazioni reali già esistenti, mai una nuova); i compartimenti senza evidenza non disegnano nulla e avvicinando la vista i fasci lasciano il posto alle relazioni singole, che la densità e la lettura attive filtrano.`;
+/** The 2D-only veil sentence of the same disclosure block. */
+export const LULL_VEIL_DISCLOSURE = 'Velo d’insieme: a distanza un velo attenua le fasce dei record per lasciar leggere la figura; non rimuove mai un segno e svanisce avvicinando la vista.';
+// D085-S4 END
 
 type SectorGeometry = Readonly<{ spans: readonly number[]; starts: readonly number[] }>;
 /** D084-LLULL BEGIN: Figure A's equal ninefold partition. Counts are accepted
@@ -236,7 +293,16 @@ function relationIndex(snapshot: TopologySnapshot, index: LullIndex): ReadonlyMa
   return perNode;
 }
 
-function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements: ReadonlyMap<string, Placement>, pathOf: ReadonlyMap<string, string>, relations: ReadonlyMap<string, RelationDegree>): ReadonlyMap<string, TopologyWitness> {
+// D085-S4 BEGIN (fix 5): the offset classes a node's real cross-domain relations attest.
+type LiftClass = Readonly<{ max: number; classes: readonly number[] }>;
+/** The 3D table sentence every witness of the lifted view carries. */
+export const LULL_3D_TABLES = 'In 3D le 36 corde salgono alle quattro tavole d’offset d=1–4 della Terza Figura (enneagono, stella {9/2}, tre triangoli, stella {9/4}).';
+
+function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements: ReadonlyMap<string, Placement>, pathOf: ReadonlyMap<string, string>, relations: ReadonlyMap<string, RelationDegree>,
+  // D085-S4: the bundle audit of this layout, disclosed by every witness.
+  bundleAudit: Readonly<{ count: number; total: number }>,
+  // D085-S4 (fix 5): non-null only for the 3D lift; null keeps the 2D quota text away.
+  liftClasses: ReadonlyMap<string, LiftClass> | null = null): ReadonlyMap<string, TopologyWitness> {
   const witnesses = new Map<string, TopologyWitness>();
   const rootTitles = new Map(index.roots.map(r => [r.id, r.title]));
   // D084-LLULL BEGIN: expose the exact sector, sort and evidence mapping.
@@ -255,6 +321,13 @@ function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements:
     const moreIds = degree ? degree.ids.length - Math.min(12, degree.ids.length) : 0;
     const pathText = (pathOf.get(node.id) ?? '').split('\u0000').filter(Boolean).join(' \u203a ');
     const isRoot = node.parent === null;
+    // D085-S4 BEGIN (fix 5): the quota sentence of the lifted view. Roots anchor the
+    // instrument at z=0 by rule; every other node rises by its maximal attested class.
+    const lift = liftClasses?.get(node.id);
+    const quotaText = liftClasses === null ? '' : isRoot
+      ? `Quota 3D: 0 — le nove lettere ancorano il cerchio di Figura A, lo strumento della regola. `
+      : `Quota 3D: classe d=${lift?.max ?? 0} da ${degree ? degree.cross : 0} relazioni reali fra domini (classi attestate: ${lift ? lift.classes.join(', ') : 'nessuna'}); la quota deriva solo dalle relazioni reali del snapshot completo e le combinazioni senza evidenza non alzano nulla. `;
+    // D085-S4 END
     const address = isRoot ? `${letter}:figura-a` : `${letter}:${placement.band === 'community' ? 'c' : 'r'}${placement.ring}:p${placement.slot}`;
     const text = `Perch\u00e9 qui: vertice reale ${node.id} del dominio ${rootTitle} (lettera ${letter}; alfabeto B\u2013K dall'ordinamento codepoint dei nove domini radice). `
       + `Comunit\u00e0: ${pathText || '(sotto la radice)'}. Chiavi d'ordine: percorso primario, kind ${node.kind}, status ${node.status ?? 'assente'}, importanza ${node.importance.toFixed(3)} decrescente, id. `
@@ -263,6 +336,17 @@ function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements:
       + `Relazioni reali: ${degree ? degree.ids.length : 0} (${degree ? degree.cross : 0} fra domini${shownIds ? `; id: ${shownIds}${moreIds > 0 ? ` \u2026 +${moreIds} nella tavola d'inchiesta` : ''}` : ''}). `
       + `Tipo di evidenza: ${degree ? degree.attested : 0} attestate, ${degree ? degree.exploratory : 0} esplorative, ${degree ? degree.structural : 0} strutturali (${degree ? degree.directedCount : 0} direzionali, ${degree ? degree.undirected : 0} senza direzione). `
       + `Lettura dei conteggi: tutte le relazioni del snapshot completo; la lettura attiva della vista filtra la tavola d'inchiesta, mai i vertici. `
+      // D085-S4 BEGIN (fix 2): every witness discloses the structural pair guides.
+      + `${LULL_GUIDE_DISCLOSURE} `
+      // D085-S4 END
+      // D085-S4 BEGIN: every witness also discloses the overview bundles
+      // and — in the flat view only — the veil that lightens the record band.
+      + `${LULL_BUNDLE_DISCLOSURE(bundleAudit.count, bundleAudit.total)} `
+      + (liftClasses === null ? `${LULL_VEIL_DISCLOSURE} ` : '')
+      // D085-S4 END
+      // D085-S4 BEGIN (fix 5): the lifted view adds the tables and the node's quota.
+      + (liftClasses === null ? '' : `${LULL_3D_TABLES} ${quotaText}`)
+      // D085-S4 END
       + `${LULL_LIMIT_COMPACT} ${LULL_SOURCE_CITATION}`;
     witnesses.set(node.id, {
       law: `combinatoria-lulliana/${LULL_RING_POLICY_VERSION}`,
@@ -277,7 +361,13 @@ function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements:
         evidenceAttested: degree ? degree.attested : 0, evidenceExploratory: degree ? degree.exploratory : 0,
         evidenceStructural: degree ? degree.structural : 0, evidenceDirected: degree ? degree.directedCount : 0,
         evidenceUndirected: degree ? degree.undirected : 0, reading: 'snapshot-completo',
+        // D085-S4 BEGIN: the bundle audit values behind the disclosure.
+        pairBundles: bundleAudit.count, pairBundleRelations: bundleAudit.total,
+        // D085-S4 END
         kind: node.kind, status: node.status ?? '', importance: Number(node.importance.toFixed(6)),
+        // D085-S4 BEGIN (fix 5): the quota values exist only in the lifted view.
+        ...(liftClasses !== null ? { quota3d: isRoot ? 0 : lift?.max ?? 0, quota3dClasses: isRoot ? '' : lift?.classes.join(',') ?? '' } : {}),
+        // D085-S4 END
       },
       text,
     });
@@ -339,14 +429,10 @@ function lullContainers(snapshot: TopologySnapshot, index: LullIndex, placements
   return containers;
 }
 
-function lullLayout2d(snapshot: TopologySnapshot): TopologyLayout {
-  const index = indexLullSnapshot(snapshot);
-  const byId = new Map(snapshot.nodes.map(n => [n.id, n]));
-  const rootSet = new Set(index.roots.map(r => r.id));
-  const pathOf = communityPaths(snapshot, rootSet, byId);
-  const placements = lullPlacements(snapshot, index, pathOf);
-  const positions = new Map<string, Point3>();
-  for (const [id, placement] of placements) positions.set(id, placement.point);
+/** The D-084 Figure A ground marks (rim, hub, spokes, sector rays, letter arcs, band
+ * circles): 32 non-semantic guides at z = 0. D085-S4 (fix 5): shared verbatim by both
+ * dimensions — the whole 2D figure is the ground of the 3D view. */
+function lullFigureMarks(snapshot: TopologySnapshot, index: LullIndex): GuideCurve[] {
   // D084-LLULL BEGIN: radial guide marks are nonsemantic, not relation edges.
   const guides: GuideCurve[] = [
     circleGuide('lull:guide:figure-a', 'lull-figure-a', LULL_OUTER_RADIUS),
@@ -365,34 +451,261 @@ function lullLayout2d(snapshot: TopologySnapshot): TopologyLayout {
   for (const radius of [LULL_BANDS.community.outer, LULL_BANDS.community.inner, LULL_BANDS.record.outer])
     guides.push(circleGuide(`lull:guide:band:${radius}`, 'lull-band', radius, 96));
   // D084-LLULL END
-  const witnesses = lullWitnesses(snapshot, index, placements, pathOf, relationIndex(snapshot, index));
+  return guides;
+}
+
+function lullLayout2d(snapshot: TopologySnapshot): TopologyLayout {
+  const index = indexLullSnapshot(snapshot);
+  const byId = new Map(snapshot.nodes.map(n => [n.id, n]));
+  const rootSet = new Set(index.roots.map(r => r.id));
+  const pathOf = communityPaths(snapshot, rootSet, byId);
+  const placements = lullPlacements(snapshot, index, pathOf);
+  const positions = new Map<string, Point3>();
+  for (const [id, placement] of placements) positions.set(id, placement.point);
+  // D085-S4 BEGIN (fix 5): the D-084 mark set now lives in the shared lullFigureMarks,
+  // so both dimensions draw the identical Figure A ground. D085-S4: the
+  // overview veil comes first in the list, so the guide layer fills it beneath
+  // every other mark of the figure.
+  const guides: GuideCurve[] = [lullOverviewVeilGuide(), ...lullFigureMarks(snapshot, index)];
+  // D085-S4 END
+  // D085-S4 BEGIN (fix 2): the Third Figure's 36 pair compartments as dashed structural
+  // chords between the nine real root vertices — the recognisable Figure A signature
+  // (the complete graph over the circle letters). Each chord's endpoints are exactly
+  // the two root vertices already placed by `lullPlacements`, so nothing is invented:
+  // a chord exposes a combinatorial compartment, never a relation, it is non-semantic,
+  // stays out of every count, and no generated combination becomes an edge
+  // (lull.generated-edges stays 0). Angles come from the same count-independent
+  // geometry, so the chords are identical across densities and readings.
+  const lullPairChords: GuideCurve[] = [];
+  for (let a = 0; a < index.roots.length; a++) {
+    for (let b = a + 1; b < index.roots.length; b++) {
+      const letters = `${index.letterOf.get(index.roots[a]!.id)!}${index.letterOf.get(index.roots[b]!.id)!}`;
+      lullPairChords.push({
+        id: `lull:guide:pair:${letters}`,
+        points: [placements.get(index.roots[a]!.id)!.point, placements.get(index.roots[b]!.id)!.point],
+        kind: 'lull-pair-chord',
+        semantic: false,
+      });
+    }
+  }
+  guides.push(...lullPairChords);
+  // D085-S4 END
+  // D085-S4 BEGIN: the evidenced compartments' bundles, last in the list so
+  // the guide layer strokes them above the dashes and the veil. Weights come from
+  // the full snapshot: the overview aggregate never follows the active density or
+  // reading, which filter only the individual drawn chords.
+  const pairWeights2d = lullPairWeights(snapshot, index);
+  const pairBundles = lullPairBundles(index, placements, pairWeights2d, () => 0);
+  guides.push(...pairBundles);
+  const bundleAudit = {
+    count: pairBundles.length,
+    total: pairBundles.reduce((sum, bundle) => sum + bundle.weight, 0),
+  };
+  // D085-S4 END
+  // D084-LLULL END
+  const witnesses = lullWitnesses(snapshot, index, placements, pathOf, relationIndex(snapshot, index), bundleAudit);
   // Snapshot diagnostics (fixtures of this digest, not UI constants).
+  // D085-S4 BEGIN (fix 5): the cross-domain pair evidence and the base audit rows are
+  // extracted so the lifted layout certifies the same facts.
+  const pairEvidence = lullPairEvidence(snapshot, index);
+  const diagnostics = [
+    ...lullBaseDiagnostics(index, positions.size, positions.size === snapshot.nodes.length, pairEvidence),
+    // D085-S4 END
+    // D085-S4 BEGIN (fix 2): the Figure A pair guides are counted from the built list,
+    // never hardcoded, and are acceptable exactly when all C(9,2) compartments exist.
+    { code: 'lull.figure-a-pair-guides', value: lullPairChords.length, acceptable: lullPairChords.length === 36 },
+    // D085-S4 END
+    // D085-S4 BEGIN: the bundles are honest counts of real relations —
+    // acceptable exactly when they equal the cross-domain audit over the same edges.
+    { code: 'lull.pair-bundles', value: bundleAudit.count, acceptable: bundleAudit.count === pairEvidence.evidenced },
+    { code: 'lull.pair-bundle-relations', value: bundleAudit.total, acceptable: bundleAudit.total === pairEvidence.crossDomain },
+    // D085-S4 END
+  ];
+  return { positions, guides, containers: lullContainers(snapshot, index, placements, byId), witnesses, diagnostics };
+}
+
+// D085-S4 BEGIN (fix 5): the cross-domain pair evidence shared by both dimensions'
+// diagnostics and the base audit rows built from it. D085-S4: the exact
+// per-pair counts it walks are now the bundle weights, so the overview aggregates
+// and the audit count the identical edges by construction.
+function lullPairWeights(snapshot: TopologySnapshot, index: LullIndex): ReadonlyMap<string, number> {
   const pairCounts = new Map<string, number>();
-  let crossDomain = 0;
   for (const edge of snapshot.edges) {
     const sourceRoot = index.rootOf.get(edge.source);
     const targetRoot = index.rootOf.get(edge.target);
     if (sourceRoot !== undefined && targetRoot !== undefined && sourceRoot !== targetRoot) {
-      crossDomain++;
       const key = pairKey(index.letterOf.get(sourceRoot)!, index.letterOf.get(targetRoot)!);
       pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
     }
   }
+  return pairCounts;
+}
+
+function lullPairEvidence(snapshot: TopologySnapshot, index: LullIndex):
+Readonly<{ crossDomain: number; evidenced: number }> {
+  const pairCounts = lullPairWeights(snapshot, index);
+  let crossDomain = 0;
+  for (const count of pairCounts.values()) crossDomain += count;
   const evidenced = [...pairCounts.values()].filter(count => count > 0).length;
-  const diagnostics = [
+  return { crossDomain, evidenced };
+}
+
+// D085-S4 BEGIN: one bundle per pair compartment with real cross-domain
+// evidence in the FULL snapshot, straight between its two root vertices at the
+// height `heightOf` gives (z = 0 flat; the pair's offset-class table lifted).
+// The weight is the compartment's exact real-relation count; a compartment
+// without evidence draws nothing. Deterministic and reading-independent: the law
+// always consumes the full snapshot.
+function lullPairBundles(index: LullIndex, placements: ReadonlyMap<string, Placement>,
+  pairWeights: ReadonlyMap<string, number>, heightOf: (a: number, b: number) => number): LullBundleGuide[] {
+  const bundles: LullBundleGuide[] = [];
+  for (let a = 0; a < index.roots.length; a++) {
+    for (let b = a + 1; b < index.roots.length; b++) {
+      const letters = `${index.letterOf.get(index.roots[a]!.id)!}${index.letterOf.get(index.roots[b]!.id)!}`;
+      const weight = pairWeights.get(letters) ?? 0;
+      if (weight <= 0) continue;
+      const height = heightOf(a, b);
+      bundles.push({
+        id: `lull:bundle:${letters}`,
+        points: [{ ...placements.get(index.roots[a]!.id)!.point, z: height },
+          { ...placements.get(index.roots[b]!.id)!.point, z: height }],
+        kind: LULL_BUNDLE_KIND,
+        semantic: false,
+        weight,
+      });
+    }
+  }
+  return bundles;
+}
+
+/** The overview veil: a closed circle over the record annulus, filled — never
+ * stroked — by the guide layer at overview and fading to nothing on approach.
+ * Flat view only; the lifted view keeps its tables unobstructed. */
+function lullOverviewVeilGuide(): GuideCurve {
+  return circleGuide('lull:guide:overview-veil', LULL_VEIL_KIND, LULL_VEIL_RADIUS, 128);
+}
+// D085-S4 END
+
+function lullBaseDiagnostics(index: LullIndex, vertexCount: number, verticesComplete: boolean,
+  pairEvidence: Readonly<{ crossDomain: number; evidenced: number }>): readonly Readonly<{ code: string; value: number | string; acceptable: boolean }>[] {
+  return [
     { code: 'lull.roots', value: index.roots.length, acceptable: true },
     { code: 'lull.letters', value: LULL_LETTERS.join(''), acceptable: true },
-    { code: 'lull.vertices', value: positions.size, acceptable: positions.size === snapshot.nodes.length },
+    { code: 'lull.vertices', value: vertexCount, acceptable: verticesComplete },
     { code: 'lull.policy', value: LULL_RING_POLICY_VERSION, acceptable: true },
     { code: 'lull.pairs', value: 36, acceptable: true },
-    { code: 'lull.pairs.evidenced', value: evidenced, acceptable: true },
-    { code: 'lull.pairs.empty', value: 36 - evidenced, acceptable: true },
-    { code: 'lull.cross-domain-relations', value: crossDomain, acceptable: true },
+    { code: 'lull.pairs.evidenced', value: pairEvidence.evidenced, acceptable: true },
+    { code: 'lull.pairs.empty', value: 36 - pairEvidence.evidenced, acceptable: true },
+    { code: 'lull.cross-domain-relations', value: pairEvidence.crossDomain, acceptable: true },
     { code: 'lull.triples', value: 84, acceptable: true },
     { code: 'lull.generated-edges', value: 0, acceptable: true },
   ];
-  return { positions, guides, containers: lullContainers(snapshot, index, placements, byId), witnesses, diagnostics };
 }
+
+/** The offset classes each real node's cross-domain relations attest (full snapshot,
+ * exactly the edges the cross-domain diagnostic counts). Pure and deterministic. */
+function lullLiftClasses(snapshot: TopologySnapshot, index: LullIndex): ReadonlyMap<string, LiftClass> {
+  const letterIndex = new Map(index.roots.map((root, i) => [root.id, i] as const));
+  const perNode = new Map<string, { max: number; classes: number[] }>();
+  const raise = (id: string, klass: number): void => {
+    const entry = perNode.get(id) ?? { max: 0, classes: [] };
+    if (!entry.classes.includes(klass)) entry.classes.push(klass);
+    if (klass > entry.max) entry.max = klass;
+    perNode.set(id, entry);
+  };
+  for (const edge of snapshot.edges) {
+    const sourceRoot = index.rootOf.get(edge.source);
+    const targetRoot = index.rootOf.get(edge.target);
+    if (sourceRoot === undefined || targetRoot === undefined || sourceRoot === targetRoot) continue;
+    const klass = lullPairClass(letterIndex.get(sourceRoot)!, letterIndex.get(targetRoot)!);
+    raise(edge.source, klass);
+    raise(edge.target, klass);
+  }
+  for (const entry of perNode.values()) entry.classes.sort((a, b) => a - b);
+  return perNode;
+}
+
+/** The lifted Third Figure (fix 5): x and y are byte-identical to `lullLayout2d`;
+ * z is the offset class — the pair chords rise to four regular tables (d = 1..4,
+ * 9 compartments each) and every real non-root node rises by the maximal class its
+ * real cross-domain relations attest. Roots anchor the Figure A circle at z = 0.
+ * No generated combination becomes an edge or lifts anything. */
+function lullLayout3d(snapshot: TopologySnapshot): TopologyLayout {
+  const index = indexLullSnapshot(snapshot);
+  const byId = new Map(snapshot.nodes.map(n => [n.id, n]));
+  const rootSet = new Set(index.roots.map(r => r.id));
+  const pathOf = communityPaths(snapshot, rootSet, byId);
+  const placements = lullPlacements(snapshot, index, pathOf);
+  const liftClasses = lullLiftClasses(snapshot, index);
+  const positions = new Map<string, Point3>();
+  let lifted = 0;
+  const classVertices = [0, 0, 0, 0];
+  for (const [id, placement] of placements) {
+    const maxClass = rootSet.has(id) ? 0 : liftClasses.get(id)?.max ?? 0;
+    if (maxClass > 0) { lifted++; classVertices[maxClass - 1]!++; }
+    positions.set(id, { ...placement.point, z: maxClass * LULL_3D_LIFT });
+  }
+  const guides = [...lullFigureMarks(snapshot, index)];
+  // The 36 pair chords at their class height: the four tables of the Third Figure.
+  const letterIndexOf = new Map(index.roots.map((root, i) => [root.id, i] as const));
+  let liftedChords = 0;
+  for (let a = 0; a < index.roots.length; a++) {
+    for (let b = a + 1; b < index.roots.length; b++) {
+      const letters = `${index.letterOf.get(index.roots[a]!.id)!}${index.letterOf.get(index.roots[b]!.id)!}`;
+      const height = lullPairClass(letterIndexOf.get(index.roots[a]!.id)!, letterIndexOf.get(index.roots[b]!.id)!) * LULL_3D_LIFT;
+      const from = placements.get(index.roots[a]!.id)!.point;
+      const to = placements.get(index.roots[b]!.id)!.point;
+      guides.push({
+        id: `lull:guide:pair:${letters}`,
+        points: [{ ...from, z: height }, { ...to, z: height }],
+        kind: 'lull-pair-chord',
+        semantic: false,
+      });
+      liftedChords++;
+    }
+  }
+  // One faint riser per letter, so the four tables stay anchored to Figure A.
+  for (const root of index.roots) {
+    const base = placements.get(root.id)!.point;
+    guides.push({
+      id: `lull:guide:riser:${index.letterOf.get(root.id)!}`,
+      points: [{ ...base, z: 0 }, { ...base, z: LULL_3D_LEVELS * LULL_3D_LIFT }],
+      kind: 'lull-riser',
+      semantic: false,
+    });
+  }
+  // D085-S4 BEGIN: the same overview bundles, lifted to each compartment's
+  // offset-class table — the aggregate sits at the table it belongs to, above the
+  // lifted relation ink. No veil in the lifted view: the tables stay unobstructed.
+  const pairBundles = lullPairBundles(index, placements, lullPairWeights(snapshot, index),
+    (a, b) => lullPairClass(letterIndexOf.get(index.roots[a]!.id)!, letterIndexOf.get(index.roots[b]!.id)!) * LULL_3D_LIFT);
+  guides.push(...pairBundles);
+  const bundleAudit = {
+    count: pairBundles.length,
+    total: pairBundles.reduce((sum, bundle) => sum + bundle.weight, 0),
+  };
+  // D085-S4 END
+  const witnesses = lullWitnesses(snapshot, index, placements, pathOf, relationIndex(snapshot, index), bundleAudit, liftClasses);
+  const pairEvidence = lullPairEvidence(snapshot, index);
+  const diagnostics = [
+    ...lullBaseDiagnostics(index, positions.size, positions.size === snapshot.nodes.length, pairEvidence),
+    { code: 'lull.figure-a-pair-guides', value: liftedChords, acceptable: liftedChords === 36 },
+    // D085-S4 BEGIN: the same honest counts as the flat view.
+    { code: 'lull.pair-bundles', value: bundleAudit.count, acceptable: bundleAudit.count === pairEvidence.evidenced },
+    { code: 'lull.pair-bundle-relations', value: bundleAudit.total, acceptable: bundleAudit.total === pairEvidence.crossDomain },
+    // D085-S4 END
+    { code: 'lull.3d.lift-unit', value: LULL_3D_LIFT, acceptable: true },
+    { code: 'lull.3d.levels', value: LULL_3D_LEVELS, acceptable: true },
+    { code: 'lull.3d.lifted-vertices', value: lifted, acceptable: true },
+    { code: 'lull.3d.class-d1', value: classVertices[0]!, acceptable: true },
+    { code: 'lull.3d.class-d2', value: classVertices[1]!, acceptable: true },
+    { code: 'lull.3d.class-d3', value: classVertices[2]!, acceptable: true },
+    { code: 'lull.3d.class-d4', value: classVertices[3]!, acceptable: true },
+  ];
+  // Containers are the 2D drawer's circles; the lifted view draws none (as Julia).
+  return { positions, guides, containers: [], witnesses, diagnostics };
+}
+// D085-S4 END
 
 /** Layout cache (TOPOLOGY-CONTRACT): positions are computed once per
  * (snapshot digest, law version, dimension) and reused; densities only choose
@@ -418,11 +731,13 @@ export function clearLullLayoutCache(): void {
 /** `layoutFull` with the required cache: the first call computes, later calls
  * with the same (digest, version, dimension) key return the identical layout. */
 export function cachedLullLayout(snapshot: TopologySnapshot, dimension: TopologyDimension): TopologyLayout {
-  if (dimension !== '2d') throw new Error(`lull: ${LULL_3D_REFUSAL}`);
   const key = lullLayoutCacheKey(snapshot, lullLaw.version, dimension);
   const cached = layoutCache.get(key);
   if (cached) return cached;
-  const layout = lullLayout2d(snapshot);
+  // D085-S4 BEGIN (fix 5): each dimension computes its own cached layout — the 2D wheel
+  // and the lifted Third Figure share placements, never cache entries.
+  const layout = dimension === '2d' ? lullLayout2d(snapshot) : lullLayout3d(snapshot);
+  // D085-S4 END
   layoutCache.set(key, layout);
   while (layoutCache.size > LULL_LAYOUT_CACHE_MAX)
     layoutCache.delete(layoutCache.keys().next().value!);
@@ -477,13 +792,13 @@ export const lullLaw: TopologyLaw = {
   id: 'lull',
   version: LULL_RING_POLICY_VERSION,
   label: (_dimension: TopologyDimension) => LULL_NAME_AUTHORISED ? LULL_LABEL_AUTHORISED : LULL_LABEL_FALLBACK,
-  supports: (dimension: TopologyDimension) => dimension === '2d'
-    ? { ok: true }
-    : { ok: false, reason: LULL_3D_REFUSAL },
-  layoutFull: (snapshot: TopologySnapshot, dimension: TopologyDimension) => {
-    if (dimension !== '2d') throw new Error(`lull: ${LULL_3D_REFUSAL}`);
-    return cachedLullLayout(snapshot, dimension);
-  },
+  supports: (_dimension: TopologyDimension) =>
+    // D085-S4 BEGIN (fix 5): both dimensions are certified — the 3D quota is the Third
+    // Figure's offset class, not an extrusion.
+    ({ ok: true } as const),
+  // D085-S4 END
+  layoutFull: (snapshot: TopologySnapshot, dimension: TopologyDimension) =>
+    cachedLullLayout(snapshot, dimension),
   layoutLocal: (children: readonly TopologyNode[], snapshot: TopologySnapshot, _dimension: TopologyDimension) =>
     lullLayoutLocal(children, snapshot),
 };

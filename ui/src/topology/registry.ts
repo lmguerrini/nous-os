@@ -39,6 +39,11 @@ export const LAB_CONTAINER_DESCRIPTION =
 function topologyNote(id: TopologyId, dimension: TopologyDimension): string {
   if (id === 'julia' && dimension === '3d')
     return ' In 3D la quota è il potenziale esterno G (sollevamento scalare), non un insieme di Julia 3D.';
+  // D085-S4 BEGIN (fix 5): the Llull 3D quota is the Third Figure's offset class —
+  // a reversible combinatorial coordinate, never an extrusion of the 2D wheel.
+  if (id === 'lull' && dimension === '3d')
+    return ' In 3D la quota è la classe d’offset della Terza Figura (d = 1–4): le 36 coppie salgono a quattro tavole regolari e i record si sollevano della classe massima attestata dalle loro relazioni reali fra domini.';
+  // D085-S4 END
   return '';
 }
 /** Selector-facing label: the short name only. Natural is classic; Canopy, Julia, Sierpiński
