@@ -5,9 +5,10 @@ import { relationVisible } from './reading.ts';
 import type { LayoutContainer } from './layout-v2.ts';
 import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
 export function indraCompositionCounts(containers: readonly LayoutContainer[],
-  guideLayer: Readonly<{ requested: number; drawn: number; suppressed: number }>) {
+  guideLayer: Readonly<{ requested: number; drawn: number; suppressed: number }>, pearlShellsDrawn: number) {
   const realPearls = containers.filter(shell => shell.id !== ABSOLUTE_CONTAINER_ID);
-  return { pearlShellsSubmitted: realPearls.length, pearlShellsDrawn: null,
+  return { pearlShellsSubmitted: realPearls.length, pearlShellsDrawn,
+    pearlShellsLodSuppressed: Math.max(0, realPearls.length - pearlShellsDrawn),
     guidesRequested: guideLayer.requested, guidesDrawn: guideLayer.drawn,
     guidesSuppressed: guideLayer.suppressed, eligibleRealEdgeRoutes: 0,
     guideStrokesCountAsRelations: false as const };

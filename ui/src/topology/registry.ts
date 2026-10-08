@@ -39,9 +39,21 @@ export const LAB_CONTAINER_DESCRIPTION =
 export const JULIA_INDRA_REFUSAL = 'Julia con Indra non è disponibile: alla scala adattata le perle non mostrano abbastanza figli reali separati e curve guida leggibili. Usa Julia senza Indra.';
 export const LULL_INDRA_3D_REFUSAL = 'Llull con Indra in 3D non è disponibile: la regola verificata assegna ai nove domini lettere e posizioni sul cerchio, ma non una terza coordinata ai nodi reali. Ruotare o estrudere il diagramma non rappresenterebbe una nuova operazione combinatoria. Usa Llull con Indra in 2D.';
 const juliaIndraGate = new Map<TopologyDimension, boolean>();
-export function setJuliaIndraLegibility(dimension: TopologyDimension, ok: boolean): void {
-  juliaIndraGate.set(dimension, ok);
+// D085-S5 BEGIN: the selector and graph status share the evaluated gate record.
+type JuliaGateMetric = Readonly<{ eligible: number; passing: number; share: number }>;
+const juliaGateMetrics = new Map<TopologyDimension, JuliaGateMetric>();
+export function juliaIndraGateStatus(dimension: TopologyDimension) {
+  const metric = juliaGateMetrics.get(dimension);
+  return { evaluated: metric !== undefined, ok: juliaIndraGate.get(dimension) === true,
+    eligible: metric?.eligible ?? 0, passing: metric?.passing ?? 0, share: metric?.share ?? 0,
+    reason: juliaIndraGate.get(dimension) === true ? null : JULIA_INDRA_REFUSAL };
 }
+export function setJuliaIndraLegibility(dimension: TopologyDimension, ok: boolean,
+  metric?: JuliaGateMetric): void {
+  juliaIndraGate.set(dimension, ok);
+  if (metric) juliaGateMetrics.set(dimension, metric);
+}
+// D085-S5 END
 // D085-S5 END
 /** Dimension-specific technical note, kept as explanation next to the classification. */
 function topologyNote(id: TopologyId, dimension: TopologyDimension): string {

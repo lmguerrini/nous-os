@@ -55,6 +55,11 @@ import type { GeometryView2, SavedGeometryView2 } from './geometry-view2.ts';
 import { LAB_CONTAINER_DESCRIPTION, TOPOLOGY_IDS, topologyLabel, topologyRowState, topologySupport, topologyTooltip } from '../topology/registry.ts';
 // D084-W3-LABELS END
 import type { TopologyId } from '../topology/contract.ts';
+// D085-S5 BEGIN: certify Julia's fitted atlas from the loaded read-only snapshot.
+import { topologySnapshot, computeTopologyLayoutAsync } from '../topology/page-bridge.ts';
+import { assessJuliaIndraLegibility } from '../topology/indra-compose.ts';
+import { juliaIndraGateStatus, setJuliaIndraLegibility } from '../topology/registry.ts';
+// D085-S5 END
 // D082-B2 END
 // D082-B-NOTICE BEGIN
 import { dismissLabNotice, showLabNotice } from './lab-notice.ts';
@@ -466,10 +471,13 @@ function installTaxonomyControls(): void {
     heading.textContent = 'Indra'; indraAxis.append(heading);
     for (const value of ['off','on'] as const) {
       const button = document.createElement('button');
+      // D085-S5 BEGIN: stable description targets for a keyboard-readable refusal.
+      button.id = `lab-indra-${value}-${full ? 'fullscreen' : 'toolbar'}`;
+      // D085-S5 END
       button.dataset.indra = value;
       button.textContent = value.toUpperCase();
       // D085-S1 BEGIN
-      button.addEventListener('click', () => { if (!('mode' in geometry))
+      button.addEventListener('click', () => { if (button.getAttribute('aria-disabled') !== 'true' && !('mode' in geometry))
         void chooseTaxonomy(lawTopology(geometry.topology), value === 'on').catch(reportTaxonomyTransitionError); });
       // D085-S1 END
       indraAxis.append(button);
@@ -520,7 +528,29 @@ function syncTaxonomyControls(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-indra]')) {
     const on = button.dataset.indra === 'on';
     const support = id ? topologySupport(id, axes.projection, on) : { ok: false as const, reason: 'Vista analitica legacy.' };
-    button.disabled = !support.ok;
+    // D085-S5 BEGIN: Julia's refused ON control stays keyboard reachable and
+    // explains the measured gate in both dimensions.
+    const focusableJuliaRefusal = id === 'julia' && on && !support.ok;
+    button.disabled = !support.ok && !focusableJuliaRefusal;
+    if (focusableJuliaRefusal) {
+      const descriptionId = `${button.id}-reason`;
+      let description = document.getElementById(descriptionId);
+      if (!description) {
+        description = document.createElement('span');
+        description.id = descriptionId;
+        description.className = 'visually-hidden';
+        document.body.append(description);
+      }
+      description.textContent = support.reason;
+      button.setAttribute('aria-disabled', 'true');
+      button.setAttribute('aria-describedby', descriptionId);
+      button.tabIndex = 0;
+    } else {
+      button.removeAttribute('aria-disabled');
+      button.removeAttribute('aria-describedby');
+      button.removeAttribute('tabindex');
+    }
+    // D085-S5 END
     button.title = support.ok ? `Indra ${on ? 'ON' : 'OFF'}` : support.reason;
     button.dataset.reason = support.ok ? '' : support.reason;
     button.setAttribute('aria-label', support.ok ? `Indra ${on ? 'ON' : 'OFF'}` : `Indra ${on ? 'ON' : 'OFF'}: ${support.reason}`);
@@ -896,10 +926,30 @@ function updateSummary() {
 function readD081Status(): D081GraphStatus | null {
   try {
     const api = (window as Window & { __d081?: { status?: () => D081GraphStatus } }).__d081;
+    // D085-S5 BEGIN: V2Page owns core counts; decorate its live getter with
+    // measured composition ink from the public witness, without changing totals.
+    if (api?.status && api.status !== indraStatusWrapper) {
+      indraStatusSource = api.status;
+      indraStatusWrapper = () => {
+        const base = indraStatusSource!();
+        const witness = (window as Window & { __d067?: { witness?: () => {
+          indraComposition?: D081GraphStatus['indraComposition'] } } }).__d067?.witness?.();
+        return { ...base,
+          ...(witness?.indraComposition ? { indraComposition: witness.indraComposition } : {}),
+          ...(!('mode' in geometry) && geometry.topology === 'julia'
+            ? { juliaIndraGate: juliaIndraGateStatus(axes.projection) } : {}) };
+      };
+      api.status = indraStatusWrapper;
+    }
+    // D085-S5 END
     const status = api?.status?.();
     return status?.nodes && status?.edges && status?.depth ? status : null;
   } catch { return null; }
 }
+// D085-S5 BEGIN: page-owned status sources can change after a taxonomy switch.
+let indraStatusSource: (() => D081GraphStatus) | undefined;
+let indraStatusWrapper: (() => D081GraphStatus) | undefined;
+// D085-S5 END
 function syncContractGraphStatus(): void {
   const contract = readD081Status();
   if (!contract) return;
@@ -2051,6 +2101,19 @@ async function load() {
           ? { useDefaultPipeline: true } : {}),
         // D082-B2 END
       });
+    // D085-S5 BEGIN: assess both Julia dimensions once from the fixed source
+    // snapshot. A failed or interrupted assessment leaves the control refused.
+    const juliaSnapshot = topologySnapshot(manifest, v2.index);
+    void Promise.all((['2d', '3d'] as const).map(async dimension => {
+      try {
+        const layout = await computeTopologyLayoutAsync('julia', juliaSnapshot, dimension, true);
+        const metric = assessJuliaIndraLegibility(juliaSnapshot, layout);
+        setJuliaIndraLegibility(dimension, metric.ok, metric);
+      } catch { setJuliaIndraLegibility(dimension, false); }
+      syncTaxonomyControls();
+      syncContractGraphStatus();
+    }));
+    // D085-S5 END
     // D080-A3 BEGIN: the page resolves the brain default and stored choice on first entry.
     axes = { ...axes, brain: v2.brainEnabled };
     syncBrainControls();

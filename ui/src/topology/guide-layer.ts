@@ -7,6 +7,10 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
   if (!guides.length || !view.projectPoint) return { destroy() {} };
   if (guides.some(guide => guide.semantic !== false || !guide.id))
     throw new Error('Topology guide must be non-semantic');
+  // D085-S5 BEGIN: source-ID routes stay in the layout contract but cannot
+  // compete for a visible chart budget without drawn-edge eligibility tokens.
+  const drawableGuides = guides.filter(guide => guide.kind !== 'indra-real-edge-route');
+  // D085-S5 END
   const canvas = document.createElement('canvas');
   canvas.dataset.topologyGuides = 'true';
   // D085-S5 BEGIN: the mounted guide surface exposes actual stroke accounting.
@@ -37,17 +41,16 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     context.lineWidth = 0.75;
     // D085-S5 BEGIN: route hints have no eligibility token at this surface; never
     // paint them. Fine guide volume is capped deterministically during interaction.
-    let drawn = 0, suppressed = 0;
+    let drawn = 0, suppressed = guides.length - drawableGuides.length;
     // D085-S5 BEGIN
     const density = document.querySelector<HTMLButtonElement>('#density-control button[data-density][aria-pressed="true"]')?.dataset.density ?? 'balanced';
-    const budget = interacting ? Math.min(450, guides.length)
-      : Math.min(guides.length, density === 'complete' ? 12000 : density === 'essential' ? 1500 : 4000);
+    const budget = interacting ? Math.min(450, drawableGuides.length)
+      : Math.min(drawableGuides.length, density === 'complete' ? 12000 : density === 'essential' ? 1500 : 4000);
     // D085-S5 END
-    for (const [index, guide] of guides.entries()) {
-      if (guide.kind === 'indra-real-edge-route') { suppressed++; continue; }
+    for (const [index, guide] of drawableGuides.entries()) {
       // D085-S5 BEGIN: root Figure A guides always survive density and motion LOD.
-      const selected = budget >= guides.length
-        || Math.floor((index + 1) * budget / guides.length) > Math.floor(index * budget / guides.length);
+      const selected = budget >= drawableGuides.length
+        || Math.floor((index + 1) * budget / drawableGuides.length) > Math.floor(index * budget / drawableGuides.length);
       if (!selected && !guide.id.startsWith('indra-root:')) { suppressed++; continue; }
       // D085-S5 END
       // D085-S5 END

@@ -9,7 +9,7 @@ import { LULL_LETTERS } from './lull-inquiry.ts';
 // D085-S5 END
 
 // D085-S5 BEGIN: chart and root-ring layouts require a fresh cache key.
-export const INDRA_COMPOSE_VERSION = '3';
+export const INDRA_COMPOSE_VERSION = '4';
 // D085-S5 END
 const cache = new Map<string, TopologyLayout>();
 const cmp = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -211,7 +211,10 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
   }
   let radius2d = discs.reduce((r, d) => Math.max(r, Math.hypot(d.x, d.y) + d.radius), 0) / 0.94;
   let rootOffsets = new Map(discs.map(d => [d.id, {
-    x: d.x, y: d.y, z: dimension === '3d' ? depthOf(d.id) * radius2d * 0.62 : 0,
+    // D085-S5 BEGIN: a shallower display-only root depth leaves the XY chart
+    // visible across more of the fitted 3D shell; local law coordinates stay intact.
+    x: d.x, y: d.y, z: dimension === '3d' ? depthOf(d.id) * radius2d * 0.28 : 0,
+    // D085-S5 END
   }]));
   // D085-S5 BEGIN: exact nine-root Figure A law, with the least nonoverlapping radius.
   let lullRingRadius = 0;
@@ -304,8 +307,27 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
         points: guide.points.map(p => times(p, lullRingRadius / LULL_OUTER_RADIUS)), semantic: false });
   }
   // D085-S5 END
-  // D085-S5 BEGIN: route-shaped hints are omitted until the renderer can pass
-  // the exact eligible source-edge IDs. Real relations remain in the edge layer.
+  // D085-S5 BEGIN: retain source-ID routes for the core layout contract. The guide
+  // layer suppresses these hints until it receives eligible drawn source IDs.
+  for (const edge of snapshot.edges) {
+    const source = positions.get(edge.source), target = positions.get(edge.target);
+    if (!source || !target) throw new Error('indra-compose: edge endpoint is not a real ID: ' + edge.id);
+    const ancestry = (id: string) => {
+      const chain = [id];
+      let parent = byId.get(id)!.parent;
+      while (parent) { chain.push(parent); parent = byId.get(parent)!.parent; }
+      return chain;
+    };
+    const a = ancestry(edge.source), b = ancestry(edge.target);
+    const bSet = new Set(b);
+    const lca = a.find(id => bSet.has(id));
+    if (lca === edge.source || lca === edge.target) continue;
+    const route = lca
+      ? [...a.slice(0, a.indexOf(lca) + 1), ...b.slice(0, b.indexOf(lca)).reverse()]
+      : [...a, ABSOLUTE_CONTAINER_ID, ...b.reverse()];
+    guides.push({ id: 'indra-route:' + edge.id, kind: 'indra-real-edge-route', semantic: false,
+      points: route.map(id => id === ABSOLUTE_CONTAINER_ID ? zero : positions.get(id)!) });
+  }
   // D085-S5 END
   const extent = containers.reduce((r, shell) => Math.max(r, length(shell.center) + shell.radius),
     [...positions.values()].reduce((r, point) => Math.max(r, length(point)), 0));

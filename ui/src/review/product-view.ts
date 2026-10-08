@@ -25,6 +25,9 @@ import type { PreparedCanopyNeural3dMount } from "../render3f/mount.tsx";
 import { framingEnvelopeSpherePoints, framingVolumePoints, solveFraming } from "./framing.ts";
 // D082-A-DENSITY BEGIN: share one full-hierarchy Indra fit envelope across densities.
 import { indraFullHierarchyFitPoints } from "./indra-fit-bounds.ts";
+// D085-S5 BEGIN: exclude the absolute visual shell from real pearl accounting.
+import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
+// D085-S5 END
 import { naturalCompletaFitPoints } from "../render-common/dense-node-scale.ts";
 // D082-A-DENSITY END
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
@@ -2853,11 +2856,18 @@ export const createProductView: CreateProductView = async (input) => {
       // D085-S5 BEGIN: the mounted view reports submitted pearls and guide strokes;
       // a null drawn-shell count avoids claiming an unmeasured Indra LOD result.
       const guideLayer = container.querySelector<HTMLCanvasElement>('canvas[data-topology-guides]');
+      const shellLodDrawn = (axes.organization === 'indra' ? layoutContainers ?? [] : []).filter(shell => {
+        if (shell.id === ABSOLUTE_CONTAINER_ID) return false;
+        if (axes.projection === '2d') return true;
+        const radiusPx = shell.radius * projectedWorldScale(shell.center, shell.radius, project);
+        return containerSphereLOD(shell.level, shell.open !== false,
+          morphologyInteraction.focusIds?.has(shell.id) ?? false, Math.max(0.5, radiusPx));
+      }).length;
       const indraComposition = axes.organization === 'indra' && layoutContainers
         ? indraCompositionCounts(layoutContainers, {
           requested: Number(guideLayer?.dataset.guideRequested ?? 0),
           drawn: Number(guideLayer?.dataset.guideDrawn ?? 0),
-          suppressed: Number(guideLayer?.dataset.guideSuppressed ?? 0) }) : null;
+          suppressed: Number(guideLayer?.dataset.guideSuppressed ?? 0) }, shellLodDrawn) : null;
       // D085-S5 END
       return {
         axes,
