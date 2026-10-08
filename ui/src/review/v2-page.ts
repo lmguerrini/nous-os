@@ -4511,7 +4511,9 @@ export class V2Page {
             // reveal witness keeps the exact drawn-vs-aggregated partition. Pinned edges,
             // and any pair whose two root glyphs are not both drawn, keep their individual
             // strokes; same-sector relations are untouched at every zoom.
-            if (!canopy && this.topology === 'lull' && this.lawActive() && lawResult) {
+            // D086-F4 BEGIN: composed 2D Indra has no pair-bundle guides to replace folded strokes.
+            if (!canopy && this.topology === 'lull' && this.lawActive() && lawResult &&
+                (organization === 'natural' || this.axes.projection === '3d')) {
                 this.lullIndex ??= indexLullSnapshot(this.lawSnapshot);
                 const lullView = this.view;
                 const lullHost = document.getElementById('render-root');
@@ -4555,6 +4557,7 @@ export class V2Page {
                 this.lullOverviewFold = null;
                 this.lullOverviewRecord = null;
             }
+            // D086-F4 END
             // D085-S4 END
             this.restoreNeighbourhood = false;
             // D085-S2 BEGIN: the per-topology, per-dimension budget record —
@@ -5982,10 +5985,13 @@ export class V2Page {
             // D085-S5 END
         }
         // D085-S4 BEGIN: re-enable the overview fold at the current camera.
-        else if (this.topology === 'lull' && this.lawActive())
+        // D086-F4 BEGIN: only configurations with pair-bundle guides refresh the overview fold.
+        else if (this.topology === 'lull' && this.lawActive() &&
+            (this.axes.organization === 'natural' || this.axes.projection === '3d'))
             // D085-S5 BEGIN
             this.ownDisplayedFailure(this.refresh().then(() => this.guideLayer?.invalidate()));
             // D085-S5 END
+        // D086-F4 END
         // D085-S4 END
     }
     get semanticZoomEnabled() { return this.zoomOn; }
@@ -6068,7 +6074,9 @@ export class V2Page {
         // wheel scale crossed the fold's hysteresis, the refresh applies the fold (or the
         // return of the individual relations) in place — same host, same camera. Only
         // `refresh()` writes the state, so this never fights the drawn frame.
-        if (this.topology === 'lull' && this.lawActive()) {
+        // D086-F4 BEGIN: avoid fold crossings for the approved 2D Indra composition.
+        if (this.topology === 'lull' && this.lawActive() &&
+            (this.axes.organization === 'natural' || this.axes.projection === '3d')) {
             const lullView = this.view;
             const lullHost = document.getElementById('render-root');
             if (lullView?.projectPoint && lullHost) {
@@ -6081,6 +6089,7 @@ export class V2Page {
                 // D085-S5 END
             }
         }
+        // D086-F4 END
         // D085-S4 END
         // D081-P3 BEGIN complete camera path: all glyphs and bundles are already resident.
         if (this.density === 'complete') {
