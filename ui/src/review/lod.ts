@@ -332,9 +332,10 @@ export function densityConnectedNodes<T extends { source: string; target: string
 // the density must sample, because importance alone selects one radial band and the geometry
 // stops being recognisable. The order the score induces interleaves the bands — first every
 // band's most important member, then every band's second, and so on — so any budget draws
-// all twelve rings of the geometry at a uniform fraction instead of a thick outer annulus;
-// on equal rank the outer band (Julia's rim, Llull's wheel) comes first. The score is a pure
-// function of (positions, importance): same snapshot, same scores, deterministic prefixes.
+// all twelve radial quantiles before the hierarchy/community selector applies its own
+// ordering. That selector guarantees broad coverage, not equal quantile occupancy; the
+// production-path tests measure the actual draw distribution. On equal rank the outer band
+// comes first. The score is pure in (positions, importance), yielding deterministic prefixes.
 export const LAW_SELECTION_BANDS = 12;
 
 export function lawSelectionScores(

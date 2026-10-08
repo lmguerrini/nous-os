@@ -1515,26 +1515,20 @@ export class V2Page {
         // D081-P3b BEGIN complete Indra domain
         if (this.density === 'complete' && !this.canopyActive() && (!this.typedActive() || this.indraPearlsView())) return completeVisible(this.index);
         // D081-P3b END
-        const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
-        for (const [id, count] of this.autoPageCounts) pages.set(id, count);
-        for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
-        const state = this.canopyActive() ? { ...this.history.state,
-            expanded: new Set([...this.history.state.expanded,
-                ...this.index.nodes.filter(node => node.level <= 2).map(node => node.id)]) } : this.history.state;
-        const base = v2Visible(this.index, state, pages, V2_CAP,
-            this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId);
-        // D085-S2 BEGIN (fix 3): the topology laws select Bilanciata over the full
-        // fixed snapshot — a law's layout positions every node of the immutable snapshot, so
-        // a wider candidate set cannot move a coordinate; the band-stratified selection in
-        // refresh() decides which real glyphs draw. Essenziale keeps the verified D-082 pool.
+        // D085-S2 BEGIN: the live Essenziale law disclosure is also the Bilanciata seed.
+        // Both paths must include zoom admissions and their page counts.
+        const base = this.liveDensityDisclosure();
+        // D085-S2 END
+        // D085-S2 BEGIN: Bilanciata may draw from the full fixed law layout.
         if (this.lawActive() && !this.canopyActive() && this.density === 'balanced' &&
             this.index.nodes.length > V2_CAP) return completeVisible(this.index);
         // D085-S2 END
+        // D085-S2 BEGIN: law Essenziale admits the current semantic-zoom disclosure
+        // before the stable candidate fill. Natural and Indra retain their explicit-only pool.
+        if (this.lawActive() && !this.canopyActive() && this.density === 'essential' &&
+            this.index.nodes.length > V2_CAP) return this.lawEssentialDisclosure();
+        // D085-S2 END
         // D082-A-DENSITY BEGIN: the two lower levels share one semantic disclosure.
-        // D082 A-DENSITYc: the pool base is the explicit disclosure only — manual
-        // expansions over the overview, never the reveal controller's zoom admissions
-        // or disclosure a previous density left behind — so the Essenziale and
-        // Bilanciata candidate sets are pure in (dataset, explicit state, selection).
         return this.density === 'complete' || this.index.nodes.length <= V2_CAP ||
             (this.axes.organization !== 'natural' && this.axes.organization !== 'indra')
             ? base : densityDisclosure(this.index, this.densityManualVisible(), this.selected,
@@ -1547,6 +1541,22 @@ export class V2Page {
         // D085-S2 END
         // D082-A-DENSITY END
     }
+    // D085-S2 BEGIN: one disclosure path for a law's live Essenziale and its Bilanciata seed.
+    private liveDensityDisclosure(): V2Visible {
+        const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
+        for (const [id, count] of this.autoPageCounts) pages.set(id, count);
+        for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
+        const state = this.canopyActive() ? { ...this.history.state,
+            expanded: new Set([...this.history.state.expanded,
+                ...this.index.nodes.filter(node => node.level <= 2).map(node => node.id)]) } : this.history.state;
+        const base = v2Visible(this.index, state, pages, V2_CAP,
+            this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId);
+        return base;
+    }
+    private lawEssentialDisclosure(): V2Visible {
+        return densityDisclosure(this.index, this.liveDensityDisclosure(), this.selected);
+    }
+    // D085-S2 END
     // D082-A-DENSITY BEGIN: use the unchanged D-081 disclosure as the overview
     // scaffold before placing any extra lower-density candidates. D082 A-DENSITYc:
     // explicit only — the reveal controller's auto pages stay out of both the anchor
@@ -3944,7 +3954,10 @@ export class V2Page {
             // of the immutable snapshot, never of the density.
             if (!canopy && this.lawActive() && this.density === 'balanced' && lawResult &&
                 this.index.nodes.length > V2_CAP) {
-                const seedPool = densityDisclosure(this.index, this.densityManualVisible(), this.selected);
+                // D085-S2 BEGIN: share the live Essenziale disclosure, including cumulative
+                // zoom admissions, rather than reconstructing an explicit-only pool.
+                const seedPool = this.lawEssentialDisclosure();
+                // D085-S2 END
                 const seedInfos = seedPool.nodes.map(node => ({ id: node.id, level: node.level,
                     parent: node.parent, importance: node.importance.value }));
                 const seedTiers = manualExpansionTiers(seedInfos, this.history.state.manualOrder, V2_PAGE);
@@ -4089,25 +4102,38 @@ export class V2Page {
                 const budgetTopology = this.budgetTopologyOf();
                 const totalNodes = canopy ? this.canopyDatasetNodes.length : this.index.nodes.length;
                 const isLaw = !canopy && this.lawActive();
-                const nodeReason = canopy
+                // D085-S2 BEGIN: describe the density actually drawn, including Complete.
+                const nodeReason = this.density === 'complete'
+                    ? 'Completa richiede tutti i nodi reali dello snapshot immutabile.'
+                    : this.density === 'essential'
+                    ? 'Essenziale seleziona il prefisso semantico; nelle leggi include le ammissioni dello zoom corrente.'
+                    : canopy
                     ? 'Prefisso strutturale (livelli ≤ 3), poi gli estremi delle relazioni di evidenza più forti; ancore di fit e focus sempre incluse.'
                     : isLaw
                         ? 'Bilanciata campiona la geometria della legge per bande radiali (l\'Essenziale resta il seme); l\'importanza decide solo dentro ogni banda.'
                         : 'Bilanciata estende il pool semantico condiviso: scaffold strutturale, percorsi dei focali, resto per importanza.';
-                const edgeReason = canopy
+                const edgeReason = this.density === 'complete'
+                    ? 'Completa richiede tutte le relazioni eleggibili per la lettura corrente.'
+                    : this.density === 'essential'
+                    ? 'Essenziale disegna le relazioni eleggibili tra i nodi scelti entro il budget.'
+                    : canopy
                     ? 'Archi di evidenza (attestate o esplorative, con relazioni sottostanti) fra i mark scelti, entro il budget Canopy.'
                     : isLaw
                         ? 'Relazioni reali fra i nodi selezionati dalla legge, entro il budget della topologia.'
                         : 'Le relazioni coprono prima i nodi selezionati, poi il resto per classe e importanza, entro il budget condiviso.';
+                // D085-S2 END
                 this.densityBudgetRecord = {
                     policy: 'd085-s2-topology-budgets', topology: budgetTopology,
                     dimension: projection, density: this.density,
-                    nodes: { requested: budget.nodes, visible: renderedIds.size,
+                    // D085-S2 BEGIN: Completa requests the full scene, not the legacy
+                    // bounded-path budget entry retained for other callers.
+                    nodes: { requested: this.density === 'complete' ? totalNodes : budget.nodes, visible: renderedIds.size,
                         aggregated: canopy ? canopyViewMarks.reduce((sum, mark) => sum + mark.memberCount - 1, 0) : 0,
                         excluded: Math.max(0, totalNodes - renderedIds.size), reason: nodeReason },
-                    edges: { requested: budget.arcs, drawn: shown.length,
+                    edges: { requested: this.density === 'complete' ? availableArcs.total : budget.arcs, drawn: shown.length,
                         aggregated: route.aggregates.length,
                         excluded: Math.max(0, availableArcs.total - shown.length), reason: edgeReason },
+                    // D085-S2 END
                 };
             }
             // D085-S2 END
