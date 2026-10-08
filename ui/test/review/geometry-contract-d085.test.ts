@@ -88,6 +88,40 @@ for (const [axis, requested] of [
     });
   }
 }
+
+// D085-S1 BEGIN: chrome and palette storage must follow the committed page after a dropped axis mount.
+for (const [axis, requested] of [
+  ['projection', '3d'], ['colour', 'warm'], ['morphology', 'neural'],
+] as const) {
+  test(`dropped ${axis} then same-density click restores committed chrome`, async () => {
+    const page = makePage(environment.mod);
+    const main = await makeMain(environment.mod, environment.mainSource, page);
+    const first = main.setAxes({ [axis]: requested });
+    for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+    assert.equal(page.mounts.length, 1, `${axis} request reached the mount`);
+    assert.equal(main.state.axes[axis], requested);
+    if (axis === 'projection') {
+      assert.equal(main.controls.get('gizmo').hidden, false);
+      assert.equal(main.controls.get('view-presets').hidden, false);
+    }
+    main.applyDensity('balanced');
+    const second = main.lane.enqueue(async () => {});
+    await drain(page, main, [first, second]);
+    assert.equal(page.mounts[0].interrupted, true);
+    consistent(page, main);
+    if (axis === 'projection') {
+      assert.equal(main.controls.get('gizmo').hidden, true, '2D hides the gizmo');
+      assert.equal(main.controls.get('view-presets').hidden, true, '2D hides the preset group');
+    } else if (axis === 'colour') {
+      assert.equal(main.log.accent.at(-1).colour, 'bw', 'accent uses committed colour');
+      assert.equal(main.log.legends.at(-1).colour, 'bw', 'flow legends use committed colour');
+      assert.equal(main.log.palette.at(-1), 'bw', 'legacy palette storage uses committed colour');
+    } else {
+      assert.equal(main.log.inspector.at(-1).morphology, 'stellar', 'inspector uses committed morphology');
+    }
+  });
+}
+// D085-S1 END
 // D085-S1 END
 
 test('a superseded request already displayed resynchronizes main to the page commit', async () => {
@@ -299,11 +333,25 @@ test('seeded transition chains settle with toolbar, URL, witness and mount align
   const topologies = ['natural', 'canopy-ifs', 'julia', 'sierpinski', 'lull'];
   // D085-S1 BEGIN: the seeded chains must actually exercise every newly included axis.
   const axisClicks = { morphology: 0, reading: 0, colour: 0, labels: 0 };
+  let axisGeometryPairs = 0;
   // D085-S1 END
   for (let run = 0; run < 48; run++) {
     const page = makePage(environment.mod);
     const main = await makeMain(environment.mod, environment.mainSource, page);
-    const requests: Promise<unknown>[] = [main.setAxes({ projection: '3d' })];
+    // D085-S1 BEGIN: force an in-flight axis request immediately before a geometry intent in half the chains.
+    const requests: Promise<unknown>[] = [];
+    if (run % 2 === 0) {
+      const axis = (['morphology', 'reading', 'colour', 'labels'] as const)[(run / 2) % 4]!;
+      const value = axis === 'morphology' ? 'neural' : axis === 'reading' ? 'exploratory' : axis === 'colour' ? 'warm' : false;
+      axisClicks[axis]++;
+      requests.push(main.setAxes({ [axis]: value }));
+      for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+      assert.equal(page.mounts.length, 1, `run ${run} axis reached the mount`);
+      main.applyDensity('essential');
+      requests.push(main.lane.enqueue(async () => {}));
+      axisGeometryPairs++;
+    } else requests.push(main.setAxes({ projection: '3d' }));
+    // D085-S1 END
     const steps = 2 + Math.floor(random() * 4);
     for (let step = 0; step < steps; step++) {
       const state = main.state;
@@ -341,5 +389,6 @@ test('seeded transition chains settle with toolbar, URL, witness and mount align
     assert.equal(main.errors.length, 0, `run ${run}`);
   }
   for (const [axis, count] of Object.entries(axisClicks)) assert.ok(count > 0, `${axis} was clicked`);
+  assert.equal(axisGeometryPairs, 24);
 });
 // D085-S1 END
