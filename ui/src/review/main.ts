@@ -30,7 +30,9 @@ import { mount2d } from "./view2d.ts";
 import { mount3d } from "./view3d.ts";
 import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
-import { V2Page, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts";
+// D085-S1 BEGIN: distinguish a superseded page task from a committed selection.
+import { GeometrySupersededError, V2Page, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts";
+// D085-S1 END
 import { bindSurfaces } from "./popover.ts";
 // D081-P4 BEGIN
 import { mountPerformanceHud } from "./perf-hud.ts";
@@ -619,6 +621,9 @@ function syncLoadedAxisButtons(): void {
 // D085-S1 BEGIN: defer reading the current Indra axis until this click reaches the renderer.
 let taxonomyErrorShown = false;
 function reportTaxonomyTransitionError(error: unknown): void {
+  // D085-S1 BEGIN: a newer geometry intent owns the toolbar; stale work has no banner.
+  if (error instanceof GeometrySupersededError) return;
+  // D085-S1 END
   const message = error instanceof Error ? error.message : String(error);
   errors.push(message);
   taxonomyErrorShown = true;
@@ -639,11 +644,10 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   // D085-S5 BEGIN: keep the organization axis aligned with the Indra control.
   const organization = topology === 'canopy-ifs' && !indra ? 'fractal' : indra ? 'indra' : 'natural';
   // D085-S5 END
-  await v2?.setTaxonomy(topology, indra);
-  // D085-S5 BEGIN: V2Page's legacy taxonomy mapper still selects Natural internally;
-  // restore the actual Indra organization after its law transition completes.
-  if (indra && topology !== 'natural') await v2?.setAxes({ organization: 'indra' });
-  // D085-S5 END
+  // D085-S1 BEGIN: the page mounts the final law and organization once; defer completion
+  // until the controls and URL have been presented below.
+  await v2?.setTaxonomy(topology, indra, true);
+  // D085-S1 END
   axes = appliedAxes({ organization });
   geometry = { schema: 2, rendering: axes.projection, topology: wireTopology(topology), indra: indra ? 'on' : 'off',
     morphology: axes.morphology, density, reading: axes.reading, colour: axes.colour, labels: axes.labels,
@@ -661,6 +665,9 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   // D082-B-NOTICE BEGIN
   showSelectedGeometryDescription();
   // D082-B-NOTICE END
+  // D085-S1 BEGIN
+  v2?.confirmTaxonomyPresentation(topology, indra);
+  // D085-S1 END
 }
 // D085-S1 END
 installTaxonomyControls();
@@ -1295,7 +1302,10 @@ function applyAxes(input: AxesInput): Promise<void> {
     get<HTMLSelectElement>("palette").value=axes.colour;
     if (partial.colour) writeLocal(storage, "d069.palette", partial.colour);
     // D080-A3 BEGIN: keep the toolbar's axes mirror aligned with the page's per-mode brain choice.
-    return v2.setAxes(partial).then(() => {
+    return v2.setAxes(partial).then(result => {
+      // D085-S1 BEGIN: old page callers may await a stale axis request, but main cannot persist it.
+      if (result === 'superseded') throw new GeometrySupersededError();
+      // D085-S1 END
       axes = { ...axes, brain: v2!.brainEnabled };
       syncBrainControls();
       persistView();
@@ -1310,6 +1320,9 @@ function applyAxes(input: AxesInput): Promise<void> {
       syncTaxonomyControls();
       syncLoadedAxisButtons();
       syncToolbarSummary();
+      // D085-S1 END
+      // D085-S1 BEGIN: the queued successor will own the next committed selection.
+      if (error instanceof GeometrySupersededError) return;
       // D085-S1 END
       if (projectionRefusalOf(error) !== null) return;
       throw error;
@@ -1360,12 +1373,13 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
     const targetTopology = lawTopology(target.topology);
     const targetIndra = target.indra === 'on';
     if (topologySupport(previousTopology, target.rendering, previousIndra).ok) {
-      await v2.setAxes({ projection: target.rendering });
+      if (await v2.setAxes({ projection: target.rendering }) === 'superseded')
+        throw new GeometrySupersededError();
       axes = { ...axes, projection: target.rendering };
     }
     if (topologySupport(targetTopology, axes.projection, targetIndra).ok)
       await v2.setTaxonomy(targetTopology, targetIndra);
-    await v2.setAxes(targetAxes);
+    if (await v2.setAxes(targetAxes) === 'superseded') throw new GeometrySupersededError();
   }
   geometry = target;
   axes = targetAxes;
@@ -1381,6 +1395,9 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
 // D085-S1 END
 function restoreGeometryFromLocationSafely(): void {
   void restoreGeometryFromLocation().catch((error: unknown) => {
+    // D085-S1 BEGIN
+    if (error instanceof GeometrySupersededError) return;
+    // D085-S1 END
     experimentalSuspensionNotice = `Vista dal link non applicata: ${error instanceof Error ? error.message : String(error)}.`;
     showExperimentalSuspensionNotice();
     syncTaxonomyControls();
@@ -1859,6 +1876,8 @@ function applyDensity(next: unknown): void {
   v2?.supersedeGeometry();
   void geometryTransitions.enqueue(async () => {
     if (value === density) return;
+    // D085-S1 BEGIN: persist only after the page accepts the density.
+    if (await v2?.setDensity(value) === 'superseded') return;
     density = value;
     // D082-B2 BEGIN
     geometry = { ...geometry, density };
@@ -1867,7 +1886,7 @@ function applyDensity(next: unknown): void {
     // D082-B2 END
     writeLocal(storage, "d072.density", density);
     syncDensity();
-    await v2?.setDensity(density);
+    // D085-S1 END
   }).catch(reportTaxonomyTransitionError);
   // D085-S1 END
 }

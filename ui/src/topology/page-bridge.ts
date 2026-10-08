@@ -78,7 +78,9 @@ let nextLayoutRequest = 0;
 
 // D085-S1 BEGIN: a superseded law must release the shared worker lane immediately.
 export function cancelPendingTopologyLayouts(): void {
-  if (pendingLayouts.size === 0) return;
+  // D085-S1 BEGIN: an inquiry-only worker also owns superseded work.
+  if (pendingLayouts.size === 0 && pendingInquiries.size === 0) return;
+  // D085-S1 END
   topologyWorker?.terminate();
   topologyWorker = null;
   for (const task of pendingLayouts.values()) task.reject(new DOMException('Topology layout superseded', 'AbortError'));
