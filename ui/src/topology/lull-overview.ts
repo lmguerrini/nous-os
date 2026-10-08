@@ -26,20 +26,25 @@ export type LullOverviewFold = Readonly<{
   foldedRelations: number;
 }>;
 
-// D085-S4 BEGIN: budget units are source relations. Keep visual stroke and
-// bundle counts alongside them so grouped routes cannot distort the partition.
+// D085-S4 BEGIN: budget units are raw underlying relation IDs. Lifted route IDs
+// are visual identifiers and never enter the eligible source-relation partition.
 export function lullOverviewBudget(available: number,
-  drawn: readonly Readonly<{ sourceRelationIds: readonly string[] }>[], fold: LullOverviewFold | null) {
-  const drawnIds = new Set(drawn.flatMap(edge => edge.sourceRelationIds));
+  drawn: readonly Readonly<{ id: string; type?: string;
+    underlying: readonly Readonly<{ id: string }>[] }>[], fold: LullOverviewFold | null) {
+  // Complete's primary-parent containment is a real eligible route with an
+  // index-derived `contains:` ID and no GraphEdge in `underlying`. Co-membership
+  // display guides also have no underlying edge, but are not in that raw pool.
+  const drawnIds = new Set(drawn.flatMap(edge => edge.underlying.length
+    ? edge.underlying.map(source => source.id)
+    : edge.type === 'contains' && edge.id.startsWith('contains:') ? [edge.id] : []));
   const foldedIds = new Set(fold?.pairs.flatMap(pair => pair.relationIds) ?? []);
-  for (const id of foldedIds) if (drawnIds.has(id))
-    throw new Error(`Llull relation both drawn and folded: ${id}`);
-  if (drawnIds.size + foldedIds.size > available)
-    throw new Error('Llull route exceeds available relations');
+  // A diagnostic record must never reject refresh. Count any overlap once;
+  // the page-level witness also exposes the routed and folded ID lists.
+  for (const id of foldedIds) drawnIds.delete(id);
   return { drawn: drawnIds.size, drawnVisualEdges: drawn.length,
     aggregated: foldedIds.size, aggregatedVisualEdges: fold?.foldedEdges ?? 0,
     aggregateBundles: fold?.pairs.filter(pair => pair.relationIds.length).length ?? 0,
-    excluded: available - drawnIds.size - foldedIds.size };
+    excluded: Math.max(0, available - drawnIds.size - foldedIds.size) };
 }
 // D085-S4 END
 

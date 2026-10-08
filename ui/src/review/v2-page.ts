@@ -678,7 +678,7 @@ export class V2Page {
     // D085-S1 END
     private readonly lawSnapshot: TopologySnapshot;
     private lawLayout: TopologyLayout | null = null;
-    private guideLayer: { destroy(): void } | null = null;
+    private guideLayer: { destroy(): void; invalidate(): void } | null = null;
     // D085-S4 BEGIN: the state of the Llull overview fold.
     // `lullOverviewFolded` starts true — a freshly mounted view sits at its fitted
     // camera, which is the overview band — and only `refresh()` ever writes it,
@@ -689,6 +689,13 @@ export class V2Page {
     private lullOverviewFolded = true;
     private lullIndex: LullIndex | null = null;
     private lullOverviewFold: LullOverviewFold | null = null;
+    // D085-S4 BEGIN: only a successful renderer commit can change guide ink.
+    private committedLullPairs: LullOverviewFold['pairs'] = [];
+    private commitLullGuideInk(): void {
+        this.committedLullPairs = this.lullOverviewFold?.pairs ?? [];
+        this.guideLayer?.invalidate();
+    }
+    // D085-S4 END
     private lullOverviewRecord: Readonly<{
         phase: 'aggregated' | 'individual';
         drawnEdges: number;
@@ -4377,8 +4384,8 @@ export class V2Page {
                     // and excluded relations; every other view keeps the D085-S2 uniform basis.
                     edges: this.lullOverviewRecord
                         ? { requested: this.density === 'complete' ? availableArcs.total : budget.arcs,
-                            ...lullOverviewBudget(availableArcs.total, route.drawn, this.lullOverviewFold),
-                            reason: `${edgeReason} I fasci Llull aggregano relazioni reali per coppia; i conteggi dei tratti visivi sono separati. Base esclusi: ${availableArcs.total} relazioni disponibili per questa vista; esclusi = base − disegnate − aggregate.` }
+                            ...lullOverviewBudget(eligibleRelations, shown, this.lullOverviewFold),
+                            reason: `${edgeReason} I fasci Llull aggregano relazioni reali per coppia; i conteggi dei tratti visivi sono separati. Base esclusi: ${eligibleRelations} relazioni eleggibili dello snapshot completo per questa lettura; esclusi = base − disegnate − aggregate.` }
                         : { requested: this.density === 'complete' ? availableArcs.total : budget.arcs, drawn: shown.length,
                             aggregated: route.aggregates.length,
                             excluded: Math.max(0, eligibleRelations - shown.length),
@@ -4492,6 +4499,9 @@ export class V2Page {
                     this.lastDisclosureKey = this.disclosureKey();
                     this.lodCounts = nextLodCounts;
                     this.renderedRelations = nextRenderedRelations;
+                    // D085-S4 BEGIN: an in-place subset revision commits a new fold too.
+                    this.commitLullGuideInk();
+                    // D085-S4 END
                     this.publishReveal(route, renderedIds);
                     this.d081Publish(route, availableArcs.total, this.density === 'complete' ? this.index.nodes.length : disclosed.nodes.length,
                         declaredAggregateCounts.members, declaredAggregateCounts.groups);
@@ -4623,7 +4633,7 @@ export class V2Page {
             let cancelMount: (() => void) | null = null;
             // D085-S1 END
             // D082-B2 BEGIN
-            let nextGuideLayer: { destroy(): void } | null = null;
+            let nextGuideLayer: { destroy(): void; invalidate(): void } | null = null;
             // D082-B2 END
             // D082-A-PLUSN BEGIN
             const previousHiddenCounts = this.indraLabelHiddenCounts;
@@ -4672,10 +4682,9 @@ export class V2Page {
                 // D082-B2 BEGIN: guide IDs are visual only, never counted as source edges.
                 // D085-S4 BEGIN: only the committed fold's exact active pairs
                 // contribute visible bundle ink, including after camera motion.
-                const committedLullPairs = this.lullOverviewFold?.pairs ?? [];
                 if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides,
                     this.topology === 'lull' && organization === 'natural'
-                        ? () => committedLullPairs : undefined);
+                        ? () => this.committedLullPairs : undefined);
                 // D085-S4 END
                 // D082-B2 END
                 if (canopy) {
@@ -4776,6 +4785,9 @@ export class V2Page {
             this.rendered = renderedIds;
             this.lodCounts = nextLodCounts;
             this.renderedRelations = nextRenderedRelations;
+            // D085-S4 BEGIN: redraw the newly mounted layer from the committed fold.
+            this.commitLullGuideInk();
+            // D085-S4 END
             // D081-FRACTAL-MERGE BEGIN: read the committed visible set for canopy status.
             if (canopy) this.publishCanopyStatus();
             // D081-FRACTAL-MERGE END.
@@ -4876,7 +4888,10 @@ export class V2Page {
             if (canopy) showLabNotice(element('status').textContent);
             // D082-B-NOTICE END
             const status = canopy ? this.canopyStatus ?? this.d081Status() : this.d081Status();
-            element('counter').textContent = `${formatCount(status.nodes.visible)} visibili · ${formatCount(status.nodes.represented)}/${formatCount(status.nodes.total)} rappresentati · ${formatCount(status.edges.drawn)} archi`;
+            // D085-S4 BEGIN: remounts keep the same fold note as in-place publication.
+            const folded = this.lullOverviewFold;
+            element('counter').textContent = `${formatCount(status.nodes.visible)} visibili · ${formatCount(status.nodes.represented)}/${formatCount(status.nodes.total)} rappresentati · ${formatCount(status.edges.drawn)} archi${folded?.foldedEdges ? ` (${formatCount(folded.foldedEdges)} tratti / ${formatCount(folded.foldedRelations)} relazioni in ${formatCount(folded.pairs.length)} fasci Llull)` : ''}`;
+            // D085-S4 END
             element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
             (element('back') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
             (element('v2-undo') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
@@ -5628,16 +5643,18 @@ export class V2Page {
     }
     setSemanticZoom(on: boolean) {
         this.zoomOn = on;
+        // D085-S4 BEGIN: invalidate the guide on the toggle and after the fold commits.
+        this.guideLayer?.invalidate();
         if (!on) {
             this.auto.clear();
             this.autoPageCounts.clear();
             this.revealState = emptyRevealState(this.revealCamera.zoom);
             this.lastRevealSampleKey = '';
-            void this.refresh();
+            void this.refresh().then(() => this.guideLayer?.invalidate());
         }
         // D085-S4 BEGIN: re-enable the overview fold at the current camera.
         else if (this.topology === 'lull' && this.lawActive() && this.axes.organization === 'natural')
-            void this.refresh();
+            void this.refresh().then(() => this.guideLayer?.invalidate());
         // D085-S4 END
     }
     get semanticZoomEnabled() { return this.zoomOn; }
@@ -5893,7 +5910,14 @@ export class V2Page {
             ...(this.densityBudgetRecord ? { budgetRecord: this.densityBudgetRecord } : {}),
             // D085-S2 END
             // D085-S7 BEGIN
-            ...(this.revealRoute?.detail ? { relationCounts: this.revealRoute.detail } : {}),
+            // D085-S4 BEGIN: detail selection is measured before the Llull fold;
+            // publish the post-fold visual count beside it to remove ambiguity.
+            ...(this.revealRoute?.detail ? { relationCounts: this.lullOverviewRecord
+                ? { ...this.revealRoute.detail, drawnBeforeLullFold: this.revealRoute.detail.drawn,
+                    drawnAfterLullFold: this.renderedRelations.size,
+                    aggregatedIntoLullBundles: this.lullOverviewRecord.foldedEdges }
+                : this.revealRoute.detail } : {}),
+            // D085-S4 END
             // D085-S7 END
             // D085-S4 BEGIN: the Llull overview fold record — phase, exact
             // drawn vs aggregated counts, and per-pair ids both of the fold and of the
