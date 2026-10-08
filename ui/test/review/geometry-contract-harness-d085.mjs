@@ -65,8 +65,9 @@ let view2WriteAllowed = false;
 const errors = []; const status = { textContent: '' };
 const geometryTransitions = createGeometryTransitionQueue();
 const experimentalFlags = new Set(); const storage = {}; let experimentalSuspensionNotice = ''; let indraPearlsSelected = false;
-const log = { persist: [], sync: [], urls: [], storage: [] };
-const get = () => ({ hidden: true, textContent: '', value: '' });
+const log = { persist: [], sync: [], urls: [], storage: [], accent: [], legends: [], inspector: [], palette: [] };
+const controls = new Map();
+const get = id => { if (!controls.has(id)) controls.set(id, { hidden: true, textContent: '', value: '', setAttribute() {} }); return controls.get(id); };
 function snapshotControls(tag) { log.sync.push({ tag, topology: geometry.topology, indra: geometry.indra, projection: axes.projection, density, organization: axes.organization }); }
 let __fault = null; function persistView() { if (__fault) { const f = __fault; __fault = null; throw f; }
   if (!('mode' in geometry)) geometry = { ...geometry, rendering: axes.projection, morphology: axes.morphology, reading: axes.reading, colour: axes.colour, labels: axes.labels, ...(axes.brain !== undefined ? { brain: axes.brain } : {}),
@@ -74,23 +75,25 @@ let __fault = null; function persistView() { if (__fault) { const f = __fault; _
   const rec = { topology: geometry.topology, indra: geometry.indra, rendering: geometry.rendering, density: geometry.density };
   log.urls.push(rec); if (view2WriteAllowed) log.storage.push(rec); }
 function syncTaxonomyControls() { snapshotControls('taxonomy'); }
-function updateButtons() { snapshotControls('buttons'); }
+function updateButtons() { snapshotControls('buttons'); get('gizmo').hidden = axes.projection !== '3d';
+  get('view-presets').hidden = axes.projection !== '3d'; syncCustomColours(); }
 function syncLoadedAxisButtons() { snapshotControls('loaded'); }
-function syncToolbarSummary() {} function refreshFlowLegends() {} function showSelectedGeometryDescription() {} function syncBrainControls() {}
-function syncArrangementInspector() {} function stopGizmoUpdate() {} function requestGizmoUpdate() {} function syncCustomColours() {}
+function syncToolbarSummary() {} function refreshFlowLegends() { log.legends.push({ colour: axes.colour }); } function showSelectedGeometryDescription() {} function syncBrainControls() {}
+function syncArrangementInspector() { log.inspector.push({ morphology: axes.morphology, arrangement: resolvedArrangement?.arrangement }); }
+function stopGizmoUpdate() {} function requestGizmoUpdate() {} function syncCustomColours() { log.accent.push({ colour: axes.colour }); refreshFlowLegends(); }
 function syncDensity() { snapshotControls('density'); }
-function showExperimentalSuspensionNotice() {} function writeLocal() {} function readLocal() { return ''; }
+function showExperimentalSuspensionNotice() {} function writeLocal(_storage, key, value) { if (key === 'd069.palette') log.palette.push(value); } function readLocal() { return ''; }
 function resolveExperimentalOrganization(o) { return { organization: o }; }
 const VIEW_STORAGE_KEY = 'k';
 let __target = null; function resolveGeometryView2() { return __target; }
 function resolveSupportedGeometryView2(value) { return { value }; }
-const document = { fullscreenElement: null, querySelectorAll: () => ({ forEach() {} , [Symbol.iterator]: function*(){} }) , getElementById: () => null };
+const document = { fullscreenElement: null, querySelectorAll: () => ({ forEach() {} , [Symbol.iterator]: function*(){} }) , getElementById: get };
 const viewLabel = o => o; const location = { search: '', hash: '' };
 const topologyOf = lawTopology;
 `;
   const epilogue = `
 ({ chooseTaxonomy, setAxes, applyDensity, restoreGeometryFromLocation, reportTaxonomyTransitionError,
-   get state() { return { axes, geometry, density }; }, log, errors, status, setV2(p) { v2 = p; }, setFault(f) { __fault = f; }, setTarget(t) { __target = t; },
+   get state() { return { axes, geometry, density }; }, controls, log, errors, status, setV2(p) { v2 = p; }, setFault(f) { __fault = f; }, setTarget(t) { __target = t; },
    get taxonomyErrorShown() { return taxonomyErrorShown; }, get lane() { return geometryTransitions; } })`;
   const script = `let v2 = null;\n${prelude}\n${js}\n${epilogue}`;
   const scope = { createGeometryTransitionQueue: mod.createGeometryTransitionQueue, lawTopology: mod.lawTopology, wireTopology: mod.wireTopology,

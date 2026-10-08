@@ -1291,6 +1291,11 @@ function syncCommittedPageGeometry(): void {
   // D085-S1 END
   syncDensity();
   syncToolbarSummary();
+  // D085-S1 BEGIN: a superseded mount must restore all chrome and legacy palette storage from the page commit.
+  updateButtons();
+  syncArrangementInspector();
+  writeLocal(storage, "d069.palette", axes.colour);
+  // D085-S1 END
 }
 function setAxes(input: AxesInput): Promise<void> {
   v2?.supersedeGeometry();
