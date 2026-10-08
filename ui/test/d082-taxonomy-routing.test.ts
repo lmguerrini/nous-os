@@ -38,19 +38,14 @@ test('Canopy law adapter has one point and witness per real ID; guides remain no
   assert.deepEqual([...computeTopologyLayout('canopy-ifs', snapshot, '2d', false).positions], [...layout.positions]);
 });
 
-test('disabled taxonomy rows retain the selected law and disclose a reason', () => {
-  // D085-S4b BEGIN: the disabled example follows the integrated
-  // contract. Llull 3D is a certified dimension since fix 5 (enabled without Indra
-  // below); the genuinely disabled row is Llull 3D + Indra, refused by the S5c
-  // registry gate. The behavioural guarantee is unchanged: a disabled row is not
-  // pressed, discloses its reason, and the selected law stays selected and enabled.
+// D086-F4 BEGIN
+test('the verified Llull 3D plus Indra row is enabled and Julia gate stays separate', () => {
   const row = topologyRowState('lull', '3d', true, 'natural');
-  assert.equal(row.disabled, true);
+  assert.equal(row.disabled, false);
   assert.equal(row.pressed, false);
-  assert.ok(row.reason);
-  assert.equal(topologyRowState('lull', '3d', false, 'natural').disabled, false,
-    'Llull 3D without Indra stays enabled');
+  assert.equal(row.reason, null);
+  assert.equal(topologyRowState('lull', '3d', false, 'natural').disabled, false);
   assert.equal(topologyRowState('natural', '3d', false, 'natural').pressed, true);
-  assert.equal(topologyRowState('natural', '3d', false, 'natural').disabled, false);
-  // D085-S4b END
+  assert.equal(topologyRowState('julia', '3d', true, 'natural').disabled, true);
 });
+// D086-F4 END

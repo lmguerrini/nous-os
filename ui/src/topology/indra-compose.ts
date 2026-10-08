@@ -4,12 +4,15 @@ import { ABSOLUTE_CONTAINER_ID, LAYOUT_EXTENT, packDiscs, pearlRadius } from '..
 import type { LayoutContainer, Point3 } from '../review/layout-v2.ts';
 import type { GuideCurve, TopologyDimension, TopologyLaw, TopologyLayout, TopologyNode, TopologySnapshot, TopologyWitness } from './contract.ts';
 // D085-S5 BEGIN: the Figure A radius is the exported reference for the composed root ring.
-import { LULL_OUTER_RADIUS } from './lull.ts';
+import { LULL_3D_LIFT, LULL_OUTER_RADIUS, lullPairClass } from './lull.ts';
+import { indexLullSnapshot } from './lull-inquiry.ts';
 import { LULL_LETTERS } from './lull-inquiry.ts';
 // D085-S5 END
 
 // D085-S5 BEGIN: chart and root-ring layouts require a fresh cache key.
-export const INDRA_COMPOSE_VERSION = '5';
+// D086-F4 BEGIN
+export const INDRA_COMPOSE_VERSION = '6';
+// D086-F4 END
 // D085-S5 END
 const cache = new Map<string, TopologyLayout>();
 const cmp = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -61,6 +64,7 @@ function depthOf(id: string): number {
 /** The same similarity transforms all sibling coordinates, preserving angles and contractions. */
 function locate(
   law: TopologyLaw, frames: readonly Frame[], snapshot: TopologySnapshot, dim: TopologyDimension,
+  lullClasses?: ReadonlyMap<string, number>, parentClass = 0,
 ): { offsets: ReadonlyMap<string, Point3>; radius: number; witnesses: ReadonlyMap<string, TopologyWitness>; guides: readonly GuideCurve[]; scale: number;
   center: Point3; original: ReadonlyMap<string, Point3>; oneChild: boolean } {
   const nodes = frames.map(frame => frame.node);
@@ -69,14 +73,45 @@ function locate(
   if (law.id === 'lull') {
     const gap = Math.max(7, frames.reduce((sum, frame) => sum + frame.radius, 0) / frames.length * 0.08);
     const packed = packDiscs(frames.map(frame => ({ id: frame.node.id, radius: frame.radius })), gap);
+    // D086-F4 BEGIN: the first disc of a multi-child pack sits at the parent's
+    // centre. Translate the whole pack so equal-class containment links remain
+    // measurable, without changing any sibling distance or certified height.
+    let shift = { x: 0, y: 0 };
+    if (lullClasses && frames.length > 1) {
+      const clearance = gap / 2;
+      const start = depthOf(frames[0]!.node.id) * Math.PI;
+      let found = false;
+      for (let i = 0; i < 32; i++) {
+        const angle = start + i * 2 * Math.PI / 32;
+        const candidate = { x: gap * Math.cos(angle), y: gap * Math.sin(angle) };
+        if (frames.every(frame => { const p = packed.get(frame.node.id)!;
+          return Math.hypot(p.x + candidate.x, p.y + candidate.y) >= clearance; })) {
+          shift = candidate;
+          found = true;
+          break;
+        }
+      }
+      if (!found) shift = { x: Math.max(...frames.map(frame => {
+        const p = packed.get(frame.node.id)!;
+        return Math.hypot(p.x, p.y);
+      })) + gap, y: 0 };
+    }
+    // D086-F4 END
+    // D086-F4 BEGIN: one scene-wide certified class height, also used by the Figure.
     const offsets = new Map<string, Point3>(frames.map(frame => { const p = packed.get(frame.node.id)!;
-      return [frame.node.id, { x: p.x, y: p.y, z: 0 }] as const; }));
+      return [frame.node.id, { x: p.x + shift.x, y: p.y + shift.y, z: lullClasses
+        ? LULL_3D_LIFT * (lullClasses.get(frame.node.id)! - parentClass) : 0 }] as const; }));
+    // D086-F4 END
     // D085-S5 BEGIN: a unary Llull container needs the same visible contains
     // separation as every other law; classic packing alone puts it at the origin.
     if (frames.length === 1) {
       const frame = frames[0]!;
       const angle = depthOf(frame.node.id) * Math.PI;
-      offsets.set(frame.node.id, times({ x: Math.cos(angle), y: Math.sin(angle), z: 0 }, frame.radius + gap));
+      // D086-F4 BEGIN
+      offsets.set(frame.node.id, { x: Math.cos(angle) * (frame.radius + gap),
+        y: Math.sin(angle) * (frame.radius + gap), z: lullClasses
+          ? LULL_3D_LIFT * (lullClasses.get(frame.node.id)! - parentClass) : 0 });
+      // D086-F4 END
     }
     // D085-S5 END
     const radius = Math.max(...frames.map(frame => length(offsets.get(frame.node.id)!) + frame.radius + gap)) / 0.94;
@@ -169,6 +204,30 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
   const hit = cache.get(key);
   if (hit) return hit;
 
+  // D086-F4 BEGIN: compute the full Figure once; validate its class certificate
+  // against the immutable real relation list before using it for pearl placement.
+  const lull3d = law.id === 'lull' && dimension === '3d' ? law.layoutFull(snapshot, '3d') : null;
+  let lullClasses: ReadonlyMap<string, number> | undefined;
+  if (lull3d) {
+    const index = indexLullSnapshot(snapshot);
+    const rootIndex = new Map(index.roots.map((root, i) => [root.id, i] as const));
+    const expected = new Map<string, number>(snapshot.nodes.map(node => [node.id, 0]));
+    for (const edge of snapshot.edges) {
+      const a = index.rootOf.get(edge.source), b = index.rootOf.get(edge.target);
+      if (a === undefined || b === undefined) throw new Error('indra-compose: unknown real edge endpoint');
+      if (a === b) continue;
+      const klass = lullPairClass(rootIndex.get(a)!, rootIndex.get(b)!);
+      for (const id of [edge.source, edge.target]) if (index.rootOf.get(id) !== id)
+        expected.set(id, Math.max(expected.get(id)!, klass));
+    }
+    for (const node of snapshot.nodes) {
+      const certified = Number(lull3d.witnesses.get(node.id)?.values.quota3d);
+      if (!Number.isInteger(certified) || certified < 0 || certified > 4 || certified !== expected.get(node.id))
+        throw new Error('indra-compose: Llull full-snapshot class certificate mismatch at ' + node.id);
+    }
+    lullClasses = expected;
+  }
+  // D086-F4 END
   const byId = new Map<string, TopologyNode>();
   for (const node of snapshot.nodes) {
     if (byId.has(node.id) || node.id === ABSOLUTE_CONTAINER_ID)
@@ -188,7 +247,8 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
     if (visiting.has(node.id)) throw new Error('indra-compose: primary hierarchy cycle at ' + node.id);
     visiting.add(node.id);
     const descendants = (children.get(node.id) ?? []).map(measure);
-    const local = descendants.length ? locate(law, descendants, snapshot, dimension) : null;
+    const local = descendants.length ? locate(law, descendants, snapshot, dimension, lullClasses,
+      lullClasses?.get(node.id) ?? 0) : null;
     const frame: Frame = {
       node,
       radius: Math.max(pearlRadius(node), local?.radius ?? 0),
@@ -232,7 +292,9 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
   let lullRingRadius = 0;
   const lullRootIndex = new Map<string, number>();
   if (law.id === 'lull') {
-    if (dimension !== '2d' || roots.length !== 9) throw new Error('Llull con Indra richiede nove domini reali in 2D.');
+    // D086-F4 BEGIN
+    if (roots.length !== 9) throw new Error('Llull con Indra richiede nove domini reali.');
+    // D086-F4 END
     const ringRoots = [...roots].sort((a, b) => cmp(a.node.id, b.node.id));
     ringRoots.forEach((root, i) => lullRootIndex.set(root.node.id, i));
     for (let i = 0; i < ringRoots.length; i++) for (let j = i + 1; j < ringRoots.length; j++) {
@@ -247,7 +309,7 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
   }
   // D085-S5 END
   // The full law provides the canonical witness when layoutLocal supplies coordinates only.
-  const full = law.layoutLocal ? law.layoutFull(snapshot, dimension) : null;
+  const full = lull3d ?? (law.layoutLocal ? law.layoutFull(snapshot, dimension) : null);
   const positions = new Map<string, Point3>();
   const containers: LayoutContainer[] = [];
   const witnesses = new Map<string, TopologyWitness>();
@@ -266,19 +328,30 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
       ...witness,
       // D085-S5 BEGIN: Llull's original source relation IDs survive even though
       // its global record-band coordinates do not govern placement inside pearls.
-      ...(law.id === 'lull' ? { address: nextPath.join(' / ') } : {}),
+      // D086-F4 BEGIN: retain the exact standalone letter/ring/sector address.
+      ...(law.id === 'lull' ? { address: lull3d ? fullWitness!.address! : nextPath.join(' / ') } : {}),
+      // D086-F4 END
       // D085-S5 END
-      values: { ...witness.values, containerPath: nextPath.join(' / '), frameScale: placementScale,
+      values: { ...(lull3d ? fullWitness?.values : witness.values), containerPath: nextPath.join(' / '), frameScale: placementScale,
         frameX: point.x, frameY: point.y, frameZ: point.z,
         // D085-S5 BEGIN: q = μ + (x - parentFrame) / chartScale, before global fit.
         chartMuX: chartCenter.x, chartMuY: chartCenter.y, chartMuZ: chartCenter.z,
         parentFrameX: parentPoint.x, parentFrameY: parentPoint.y, parentFrameZ: parentPoint.z,
         originalX: originalPoint.x, originalY: originalPoint.y, originalZ: originalPoint.z,
         oneChildConvention: oneChild ? 'shell separation, not a branch' : 'none',
-        rootZConvention: dimension === '3d' ? 'id-hash display convention' : 'planar',
+        rootZConvention: lull3d ? 'full-snapshot offset class'
+          : dimension === '3d' ? 'id-hash display convention' : 'planar',
         rootPlacement: path.length ? 'inside primary pearl' : law.id === 'lull'
           ? 'nine-domain Figure A ring' : 'Indra root disc packing',
         globalScale: 1,
+        // D086-F4 BEGIN: the displayed XY is Indra containment packing; the
+        // original full-law XY and its whole-snapshot certificate stay inspectable.
+        ...(lull3d ? { xyPlacement: 'Indra primary-pearl packing',
+          zRule: 'full-snapshot offset class', liftUnit: LULL_3D_LIFT,
+          standaloneX: full!.positions.get(frame.node.id)!.x,
+          standaloneY: full!.positions.get(frame.node.id)!.y,
+          packedOffsetX: point.x - parentPoint.x, packedOffsetY: point.y - parentPoint.y } : {}),
+        // D086-F4 END
         ...(law.id === 'lull' ? { rootRingRadius: lullRingRadius,
           figureARadius: LULL_OUTER_RADIUS,
           rootLetter: LULL_LETTERS[lullRootIndex.get(nextPath[0]!) ?? 0]!,
@@ -286,7 +359,9 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
           relationIds: fullWitness?.values.relationIds ?? '' } : {}),
         ...(law.id === 'sierpinski' ? { displayedConvergenceBound:
           Number(witness.values.convergenceBound ?? 0) * placementScale } : {}) },
-      text: witness.text + ' Contenitore primario: ' + nextPath.join(' / ') + '.'
+      text: (lull3d ? fullWitness!.text : witness.text)
+        + (lull3d ? ' Perla = nodo reale e discendenti primari; il suo raggio racchiude la gerarchia, non misura relazioni. La figura globale collega le nove radici; la posizione interna XY usa l’impacchettamento Indra e la quota usa la classe d’offset del snapshot completo.' : '')
+        + ' Contenitore primario: ' + nextPath.join(' / ') + '.'
         + (path.length ? '' : law.id === 'lull'
           ? ' La posizione radice segue il cerchio a nove domini di Figura A.'
           : ' La posizione radice segue l’impacchettamento Indra, non la legge locale.'),
@@ -312,11 +387,15 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
     zero, zero, rootOffsets.get(root.node.id)!, false);
   // D085-S5 BEGIN: Figure A is a guide field between the real root pearls.
   if (law.id === 'lull' && lullRingRadius > 0) {
-    const figure = law.layoutFull(snapshot, dimension);
-    for (const guide of figure.guides.filter(g =>
-      g.kind === 'lull-figure-a' || g.kind === 'lull-letter' || g.kind === 'lull-sector-ray'))
+    const figure = lull3d ?? law.layoutFull(snapshot, dimension);
+    // D086-F4 BEGIN: all four real class tables, risers and source-backed
+    // bundle templates share one global z scale with the certified node quota.
+    for (const guide of figure.guides.filter(g => lull3d
+      || g.kind === 'lull-figure-a' || g.kind === 'lull-letter' || g.kind === 'lull-sector-ray'))
       guides.push({ ...guide, id: 'indra-root:' + guide.id,
-        points: guide.points.map(p => times(p, lullRingRadius / LULL_OUTER_RADIUS)), semantic: false });
+        points: guide.points.map(p => ({ x: p.x * lullRingRadius / LULL_OUTER_RADIUS,
+          y: p.y * lullRingRadius / LULL_OUTER_RADIUS, z: p.z })), semantic: false });
+    // D086-F4 END
   }
   // D085-S5 END
   // D085-S5 BEGIN: retain source-ID routes for the core layout contract. The guide
@@ -372,13 +451,81 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
   }
   containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: zero,
     radius: Math.max(extent * globalScale / 0.94, 1), radius2d: radius2d * globalScale, open: true, title: 'NousOS' });
+  // D086-F4 BEGIN: acceptance-gated geometry certificate, measured after final fit.
+  let clearance = Infinity, containment = Infinity, zResidual = 0;
+  // D086-F4 BEGIN: source edge endpoints and all guide paths must survive final fit.
+  let edgeLength = Infinity, guideLength = Infinity, guideSegmentLength = Infinity;
+  if (lull3d) {
+    for (const edge of snapshot.edges) {
+      const a = positions.get(edge.source)!, b = positions.get(edge.target)!;
+      edgeLength = Math.min(edgeLength, Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z));
+    }
+    for (const guide of guides) {
+      let pathLength = 0;
+      for (let i = 1; i < guide.points.length; i++) {
+        const a = guide.points[i - 1]!, b = guide.points[i]!;
+        const segmentLength = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+        pathLength += segmentLength;
+        guideSegmentLength = Math.min(guideSegmentLength, segmentLength);
+      }
+      guideLength = Math.min(guideLength, pathLength);
+    }
+  }
+  // D086-F4 END
+  if (lull3d) {
+    const shellById = new Map(containers.map(shell => [shell.id, shell]));
+    // D086-F4 BEGIN: leaves still have real glyph/pearl seed radii.
+    for (const node of snapshot.nodes) if (!shellById.has(node.id)) shellById.set(node.id, {
+      id: node.id, level: node.level, center: positions.get(node.id)!,
+      radius: pearlRadius(node) * globalScale, open: false, title: node.title });
+    // D086-F4 END
+    for (const [parent, siblings] of children) {
+      const parentShell = parent === null ? null : shellById.get(parent);
+      for (const child of siblings) {
+        const childShell = shellById.get(child.id);
+        if (parentShell && childShell) containment = Math.min(containment, parentShell.radius
+          - length(plus(childShell.center, times(parentShell.center, -1))) - childShell.radius);
+      }
+      for (let i = 0; i < siblings.length; i++) for (let j = i + 1; j < siblings.length; j++) {
+        const a = shellById.get(siblings[i]!.id), b = shellById.get(siblings[j]!.id);
+        if (!a || !b) continue;
+        clearance = Math.min(clearance, length(plus(a.center, times(b.center, -1))) - a.radius - b.radius);
+      }
+    }
+    for (const node of snapshot.nodes) {
+      const point = positions.get(node.id)!;
+      zResidual = Math.max(zResidual, Math.abs(point.z - globalScale * LULL_3D_LIFT * lullClasses!.get(node.id)!));
+    }
+  }
+  // D086-F4 END
   const result: TopologyLayout = {
     positions, containers, witnesses, guides,
     diagnostics: [
+      // D086-F4 BEGIN: retain the full Figure's zero-generated-edge and class certificate.
+      ...(lull3d?.diagnostics ?? []),
+      // D086-F4 END
       { code: 'real-node-count', value: positions.size, acceptable: positions.size === snapshot.nodes.length },
       { code: 'real-edge-count', value: snapshot.edges.length, acceptable: true },
       { code: 'primary-path-count', value: witnesses.size, acceptable: witnesses.size === snapshot.nodes.length },
       { code: 'global-similarity-scale', value: globalScale, acceptable: Number.isFinite(globalScale) && globalScale > 0 },
+      // D086-F4 BEGIN
+      ...(lull3d ? [
+        { code: 'lull-indra3d.sibling-root-clearance-min', value: clearance, acceptable: clearance > -1e-7 },
+        { code: 'lull-indra3d.shell-containment-margin-min', value: containment, acceptable: containment > -1e-7 },
+        { code: 'lull-indra3d.z-residual-max', value: zResidual, acceptable: zResidual < 1e-7 },
+        // D086-F4 BEGIN: every density and reading draws a subset of these real
+        // source edges; route hints are checked as guides even when suppressed.
+        { code: 'lull-indra3d.real-edge-length-min', value: snapshot.edges.length ? edgeLength : 0,
+          acceptable: snapshot.edges.length === 0 || edgeLength > 0 },
+        { code: 'lull-indra3d.guide-path-length-min', value: guideLength, acceptable: guideLength > 0 },
+        { code: 'lull-indra3d.guide-segment-length-min', value: guideSegmentLength,
+          acceptable: guideSegmentLength > 0 },
+        // D086-F4 END
+        { code: 'lull-indra3d.class-step-fitted', value: globalScale * LULL_3D_LIFT, acceptable: globalScale > 0 },
+        { code: 'lull-indra3d.figure-pair-guides', value: guides.filter(g => g.kind === 'lull-pair-chord').length,
+          acceptable: guides.filter(g => g.kind === 'lull-pair-chord').length === 36 },
+      ] : []),
+      // D086-F4 END
       // D085-S5 BEGIN: shell and guide counts are inspectable with the law result.
       { code: 'pearl-shell-count', value: containers.length - 1, acceptable: true },
       { code: 'topology-guide-count', value: guides.length, acceptable: true },

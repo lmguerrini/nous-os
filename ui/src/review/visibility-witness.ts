@@ -76,6 +76,12 @@ export type VisibilityWitnessInput = Readonly<{
   // D085-S7 END
   // D085-S4 BEGIN
   lullOverview?: LullOverviewVisibility;
+  // D086-F4 BEGIN: applied Llull/Indra class and pearl certificate.
+  lullIndra3d?: Readonly<{ xyPlacement: string; zRule: string; pearlScope: string; rootRadius: number;
+    liftUnit: number; fittedClassStep: number; globalScale: number; pairGuides: number;
+    classCounts: readonly number[]; siblingRootClearanceMin: number;
+    shellContainmentMarginMin: number; zResidualMax: number }>;
+  // D086-F4 END
   // D085-S4 END
 }>;
 
@@ -189,5 +195,8 @@ export function buildVisibilityWitness(input: VisibilityWitnessInput) {
         relations: input.lullOverview.foldedRelations,
         ids: input.lullOverview.pairs.flatMap(pair => pair.relationIds).sort() } } : {}),
     // D085-S4 END
+    // D086-F4 BEGIN
+    ...(input.lullIndra3d ? { lullIndra3d: input.lullIndra3d } : {}),
+    // D086-F4 END
   };
 }

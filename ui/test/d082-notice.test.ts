@@ -73,21 +73,18 @@ test('legacy Fractal link migration is visible in the notice region', () => {
   assert.equal(message.textContent, 'Fractal è una vista sperimentale: caricata Natural.');
 });
 
-// D085-INT2 BEGIN: the unsupported pair is Llull 3D with Indra enabled.
-test('a 3D Llull plus Indra view2 link visibly explains the 2D fallback', () => {
+// D086-F4 BEGIN: the linked verified composition remains in 3D.
+test('a 3D Llull plus Indra view2 link loads without fallback', () => {
   const { naturalArrangement: _naturalArrangement, compatibility: _compatibility, ...defaults } = defaultGeometryView2();
   const view = { ...defaults, rendering: '3d' as const, topology: 'circular-combinatorial' as const, indra: 'on' as const };
   const linked = resolveGeometryView2('', `#view2=${encodeURIComponent(serializeGeometryView2(view))}`, null, null);
   const supported = resolveSupportedGeometryView2(linked.value, topologySupport);
-  assert.equal(supported.value.rendering, '2d');
+  assert.equal(supported.value.rendering, '3d');
   assert.ok(!('mode' in supported.value));
   if ('mode' in supported.value) throw new Error('Expected a topology view');
   assert.equal(supported.value.topology, 'circular-combinatorial');
   assert.equal(supported.value.indra, 'on');
-  assert.equal(supported.notice, 'lull non supporta 3D: caricata la vista 2D per mantenere la topologia.');
-  showLabNotice(supported.notice!);
-  assert.equal(host.hidden, false);
-  assert.equal(message.textContent, supported.notice);
+  assert.equal(supported.notice, undefined);
 });
 
 test('a standalone 3D Llull view2 link loads without a fallback notice', () => {

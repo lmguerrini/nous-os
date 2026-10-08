@@ -37,13 +37,9 @@ export const LAB_CONTAINER_DESCRIPTION =
   + 'sistema dinamico complesso, topologia combinatoria; nessuna etichetta unica le raggruppa.';
 // D085-S5 BEGIN: snapshot-derived Julia legibility refusals are shared by toolbar controls.
 export const JULIA_INDRA_REFUSAL = 'Julia con Indra non è disponibile: alla scala adattata le perle non mostrano abbastanza figli reali separati e curve guida leggibili. Usa Julia senza Indra.';
-// D085-S4 BEGIN: the 3D lift now assigns real nodes a third coordinate (the
-// Third Figure's offset class), so the old reason — «non una terza coordinata ai nodi
-// reali» — described a diagram it no longer draws. The gate stays (the lifted law was
-// certified for the whole-snapshot wheel; composing it inside per-pearl unit frames
-// has no defined coordinate mapping); the stated reason matches that constraint.
-export const LULL_INDRA_3D_REFUSAL = 'Llull con Indra in 3D non è disponibile: la quota 3D della regola è la classe d’offset della Terza Figura, certificata per la ruota del snapshot completo; la composizione dentro le perle (i fotogrammi unitari per dominio con la stessa quota) non è stata progettata né verificata, e non verrà improvvisata. Usa Llull con Indra in 2D.';
-// D085-S4 END
+// D086-F4 BEGIN: Llull 3D + Indra uses the verified full-snapshot class
+// and primary-pearl composition; Julia has an independent legibility gate.
+// D086-F4 END
 const juliaIndraGate = new Map<TopologyDimension, boolean>();
 // D085-S5 BEGIN: the selector and graph status share the evaluated gate record.
 type JuliaGateMetric = Readonly<{ eligible: number; passing: number; share: number }>;
@@ -85,7 +81,9 @@ export function topologyTooltip(id: TopologyId, dimension: TopologyDimension): s
 // D084-W3-LABELS END
 export function topologySupport(id: TopologyId, dimension: TopologyDimension, indra: boolean): TopologySupport {
   // D085-S5 BEGIN
-  if (id === 'lull' && dimension === '3d' && indra) return { ok: false, reason: LULL_INDRA_3D_REFUSAL };
+  // D086-F4 BEGIN: the verified full-snapshot class now composes with Indra.
+  // Julia retains its separate legibility gate.
+  // D086-F4 END
   if (id === 'julia' && indra && juliaIndraGate.get(dimension) !== true)
     return { ok: false, reason: JULIA_INDRA_REFUSAL };
   // D085-S5 END

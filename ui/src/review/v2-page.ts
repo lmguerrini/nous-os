@@ -103,7 +103,7 @@ import { mountTopologyGuides } from '../topology/guide-layer.ts';
 // D085-S4 BEGIN: the Llull overview fold — while the camera is
 // in the overview band the relation routing folds its cross-sector strokes into the
 // pair bundles instead of drawing them one by one under the guides.
-import { lullOverviewMode } from '../topology/guide-layer.ts';
+import { lullGuideBundleLetters, lullGuideRadius, lullOverviewMode } from '../topology/guide-layer.ts';
 import { lullFoldOverviewRelations, lullOverviewBudget, lullRouteExempt,
     type LullOverviewFold } from '../topology/lull-overview.ts';
 import { indexLullSnapshot, type LullIndex } from '../topology/lull-inquiry.ts';
@@ -907,6 +907,21 @@ export class V2Page {
         }
     }
     // D081-P3g END
+    // D086-F4 BEGIN: one compact applied-layout certificate for both public hooks.
+    private lullIndra3dCertificate() {
+        if (this.topology !== 'lull' || !this.topologyIndra || this.axes.projection !== '3d' || !this.lawLayout) return null;
+        const diagnostic = (code: string) => Number(this.lawLayout!.diagnostics.find(row => row.code === code)?.value ?? 0);
+        const root = [...this.lawLayout.witnesses.values()].find(w => Number(w.values.rootRingRadius) > 0);
+        return { xyPlacement: 'Indra primary-pearl packing', zRule: 'full-snapshot offset class',
+            pearlScope: 'nodo reale e discendenti primari', rootRadius: lullGuideRadius(this.lawLayout),
+            liftUnit: diagnostic('lull.3d.lift-unit'), fittedClassStep: diagnostic('lull-indra3d.class-step-fitted'),
+            globalScale: Number(root?.values.globalScale ?? 0), pairGuides: diagnostic('lull-indra3d.figure-pair-guides'),
+            classCounts: [1, 2, 3, 4].map(d => diagnostic(`lull.3d.class-d${d}`)),
+            siblingRootClearanceMin: diagnostic('lull-indra3d.sibling-root-clearance-min'),
+            shellContainmentMarginMin: diagnostic('lull-indra3d.shell-containment-margin-min'),
+            zResidualMax: diagnostic('lull-indra3d.z-residual-max') };
+    }
+    // D086-F4 END
     private d081Status() {
         // D081-P3b BEGIN: both typed renderers suppress dense lines while the camera moves.
         const movingIndra = this.d081Quality === 'movimento' && this.density === 'complete'
@@ -917,6 +932,9 @@ export class V2Page {
             ?.readIndraComposition?.();
         // D085-X8 END
         return { ...this.d081Metrics,
+            // D086-F4 BEGIN
+            ...(this.lullIndra3dCertificate() ? { lullIndra3d: this.lullIndra3dCertificate() } : {}),
+            // D086-F4 END
             // D085-X8 BEGIN
             ...(composition ? { indraComposition: composition } : {}),
             // D085-X8 END
@@ -4493,7 +4511,7 @@ export class V2Page {
             // reveal witness keeps the exact drawn-vs-aggregated partition. Pinned edges,
             // and any pair whose two root glyphs are not both drawn, keep their individual
             // strokes; same-sector relations are untouched at every zoom.
-            if (!canopy && this.topology === 'lull' && this.lawActive() && organization === 'natural' && lawResult) {
+            if (!canopy && this.topology === 'lull' && this.lawActive() && lawResult) {
                 this.lullIndex ??= indexLullSnapshot(this.lawSnapshot);
                 const lullView = this.view;
                 const lullHost = document.getElementById('render-root');
@@ -4501,7 +4519,7 @@ export class V2Page {
                 // clears the active guide bundles in this same refresh.
                 this.lullOverviewFolded = this.zoomOn && (lullView?.projectPoint && lullHost
                     ? lullOverviewMode(true, lullView, lullHost.clientWidth,
-                        lullHost.clientHeight, this.lullOverviewFolded) : true);
+                        lullHost.clientHeight, this.lullOverviewFolded, lullGuideRadius(lawResult)) : true);
                 // D085-S4 END
                 if (this.lullOverviewFolded) {
                     const pinnedArcIdsNow = this.pinnedArcIds(tiers);
@@ -4528,7 +4546,7 @@ export class V2Page {
                         .map(guide => {
                             const bundle = guide as LullBundleGuide;
                             return { scope: 'full-snapshot' as const,
-                                letters: bundle.id.slice('lull:bundle:'.length),
+                                letters: lullGuideBundleLetters(bundle.id),
                                 weight: bundle.weight, relationIds: bundle.relationIds };
                         }),
                 };
@@ -4903,8 +4921,8 @@ export class V2Page {
                 // D085-S4 BEGIN: only the committed fold's exact active pairs
                 // contribute visible bundle ink, including after camera motion.
                 if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides,
-                    this.topology === 'lull' && organization === 'natural'
-                        ? () => this.committedLullPairs : undefined,
+                    this.topology === 'lull'
+                        ? () => this.committedLullPairs : undefined, lullGuideRadius(lawResult),
                     // D086-F3 BEGIN: the guide ink follows the active palette, as the graph marks do.
                     () => this.activePalette());
                     // D086-F3 END
@@ -5959,7 +5977,7 @@ export class V2Page {
             // D085-S5 END
         }
         // D085-S4 BEGIN: re-enable the overview fold at the current camera.
-        else if (this.topology === 'lull' && this.lawActive() && this.axes.organization === 'natural')
+        else if (this.topology === 'lull' && this.lawActive())
             // D085-S5 BEGIN
             this.ownDisplayedFailure(this.refresh().then(() => this.guideLayer?.invalidate()));
             // D085-S5 END
@@ -6045,14 +6063,14 @@ export class V2Page {
         // wheel scale crossed the fold's hysteresis, the refresh applies the fold (or the
         // return of the individual relations) in place — same host, same camera. Only
         // `refresh()` writes the state, so this never fights the drawn frame.
-        if (this.topology === 'lull' && this.lawActive() && this.axes.organization === 'natural') {
+        if (this.topology === 'lull' && this.lawActive()) {
             const lullView = this.view;
             const lullHost = document.getElementById('render-root');
             if (lullView?.projectPoint && lullHost) {
                 const lullSettled = lodRefreshDue({ nowMs: performance.now(), pending: true,
                     lastCameraChangeMs: this.cameraChangedAt });
                 const aggregatedNow = lullOverviewMode(this.zoomOn, lullView, lullHost.clientWidth,
-                    lullHost.clientHeight, this.lullOverviewFolded);
+                    lullHost.clientHeight, this.lullOverviewFolded, lullGuideRadius(this.lawLayout));
                 // D085-S5 BEGIN
                 if (lullSettled && aggregatedNow !== this.lullOverviewFolded) void this.refresh().catch(() => { });
                 // D085-S5 END
@@ -6260,6 +6278,9 @@ export class V2Page {
             // drawn vs aggregated counts, and per-pair ids both of the fold and of the
             // full-snapshot layout bundles used for comparison.
             ...(this.lullOverviewRecord ? { lullOverview: this.lullOverviewRecord } : {}),
+            // D086-F4 BEGIN
+            ...(this.lullIndra3dCertificate() ? { lullIndra3d: this.lullIndra3dCertificate()! } : {}),
+            // D086-F4 END
             // D085-S4 END
         }) : undefined;
         // D082-A-READINGS BEGIN
@@ -6481,6 +6502,12 @@ export class V2Page {
         // D081-FRACTAL-MERGE BEGIN: the canvas canopy owns 44 title slots.
         line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), this.canopyActive() ? 44 : labelBudgetOf(this.density)));
         // D081-FRACTAL-MERGE END.
+        // D086-F4 BEGIN: expose the honest class step and placement in graph status.
+        if (this.topology === 'lull' && this.topologyIndra && this.axes.projection === '3d' && this.lawLayout) {
+            const step = this.lawLayout.diagnostics.find(row => row.code === 'lull-indra3d.class-step-fitted')?.value;
+            line(controls, 'Llull + Indra', `Perle della gerarchia primaria · XY: impacchettamento Indra · quota: classe d’offset dello snapshot completo · intervallo tavole ${Number(step ?? 0).toFixed(2)}`);
+        }
+        // D086-F4 END
         line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa' }[this.density]);
         // D081-P3 BEGIN complete graph metric; P5 owns the surrounding panel rows.
         line(controls, 'Grafo', this.density === 'complete'

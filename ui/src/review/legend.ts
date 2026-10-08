@@ -240,7 +240,7 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
   // relations on the legend surface too (hierarchy: guide < relazioni reali < radici).
   // Only the Llull topology carries it; every other topology keeps its pixels.
   if (topology === "lull") {
-    entry("Guida Figura A · coppia", "Terza Figura: le 36 corde tratteggiate fra le nove lettere del cerchio esterno (domini reali a 40° esatti) sono compartimenti strutturali, non relazioni; non entrano nei conteggi. Le relazioni reali sono le linee continue più luminose; le radici restano i segni più intensi. In 3D le stesse corde salgono alle quattro tavole d'offset d=1–4 e i record si sollevano della classe massima attestata dalle loro relazioni reali fra domini.", (svg) => {
+    entry("Guida Figura A · coppia", "Terza Figura: le 36 corde tratteggiate fra le nove lettere del cerchio esterno (domini reali a 40° esatti) sono compartimenti strutturali, non relazioni; non entrano nei conteggi. Le relazioni reali sono le linee continue più luminose; le radici restano i segni più intensi. In 3D le stesse corde salgono alle quattro tavole d'offset d=1–4 e i record si sollevano della classe massima attestata dalle loro relazioni reali fra domini. Con Indra: perla = nodo reale e discendenti primari; l'XY interno segue l'impacchettamento delle perle, la quota resta la classe d'offset globale.", (svg) => {
       const sample = line(2, 7, 24, 7, lullInk(palette, LULL_INK_LEVEL.strong, ".55"), 1.25);
       sample.setAttribute("stroke-dasharray", "7 6");
       svg.append(sample);
@@ -281,7 +281,12 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
     const note = document.createElement('p');
     note.className = 'flow-legend-entry';
     note.dataset.indraComposition = topology;
-    note.textContent = `Perla = nodo reale e discendenti primari. ${descriptions[topology] ?? ''} Le linee di connessione conservano solo relazioni reali idonee. La quota delle perle radice in 3D segue una convenzione di visualizzazione deterministica.`;
+    // D086-F4 BEGIN: Llull's composed roots stay at zero; member z is a data certificate.
+    const depthNote = topology === 'lull'
+      ? 'In 3D le radici stanno a quota zero e ogni record segue la classe d’offset del snapshot completo; l’XY interno segue l’impacchettamento della gerarchia primaria.'
+      : 'La quota delle perle radice in 3D segue una convenzione di visualizzazione deterministica.';
+    note.textContent = `Perla = nodo reale e discendenti primari. ${descriptions[topology] ?? ''} Le linee di connessione conservano solo relazioni reali idonee. ${depthNote}`;
+    // D086-F4 END
     host.append(note);
   }
   // D085-S5 END

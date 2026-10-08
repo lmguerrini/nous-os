@@ -65,7 +65,7 @@ function mountLayer(activePalette: () => PaletteValues, lifted = false) {
     drawnEdgeIds: ['e1'], relationIds: ['r1', 'r2', 'r3'] }];
   const view = { projectPoint: (point: { x: number; y: number }) => point } as unknown as ProductView;
   const layer = (guideLayer.mountTopologyGuides as (...args: unknown[]) => { destroy(): void; invalidate(): void })(
-    host, view, guides, () => pairs, activePalette);
+    host, view, guides, () => pairs, undefined, activePalette);
   flush();
   const byKind = () => new Map(KINDS.map((kind, index) => [kind, strokes[index]!]));
   return { layer, flush, strokes, byKind, restore() { layer.destroy(); Object.assign(globalThis, originals); } };

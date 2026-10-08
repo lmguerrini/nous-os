@@ -156,7 +156,7 @@ test('the page law cache and early toolbar focus read have explicit bounds and g
 // D085-S1 END
 
 // D085-S1 BEGIN: audit follow-up for stale persistence and unrelated refreshes.
-test('superseded Canopy, 3D, then refused Llull leaves URL, toolbar and witness on the mounted law', async () => {
+test('superseded Canopy, 3D, then refused Julia leaves URL, toolbar and witness on the mounted law', async () => {
   const bundled = await build({ entryPoints: [fileURLToPath(new URL('../../src/review/v2-page.ts', import.meta.url))],
     bundle: true, platform: 'node', format: 'esm', target: 'es2022', write: false });
   const directory = await mkdtemp(join(tmpdir(), 'd085-audit-chain-'));
@@ -187,8 +187,10 @@ test('superseded Canopy, 3D, then refused Llull leaves URL, toolbar and witness 
   const choose = (topology: string) => {
     page.supersedeGeometry();
     return lane.enqueue(async () => {
-      if (topology === 'lull' && page.axes.projection === '3d' && page.topologyIndra)
-        throw new Error('Llull Indra 3D refused');
+      // D086-F4 BEGIN: Llull + Indra is enabled; Julia retains the separate gate.
+      if (topology === 'julia' && page.axes.projection === '3d' && page.topologyIndra)
+        throw new Error('Julia Indra 3D refused');
+      // D086-F4 END
       await page.setTaxonomy(topology, true);
       toolbar = topology; url = `${topology}/${page.axes.projection}`;
     });
@@ -204,9 +206,9 @@ test('superseded Canopy, 3D, then refused Llull leaves URL, toolbar and witness 
   for (let attempt = 0; attempt < 8 && !entered; attempt++) await Promise.resolve();
   assert.equal(entered, true);
   const projection = dimension();
-  const lull = choose('lull');
+  const julia = choose('julia');
   release();
-  const results = await Promise.allSettled([canopy, projection, lull]);
+  const results = await Promise.allSettled([canopy, projection, julia]);
   assert.equal(results[0]?.status, 'rejected');
   assert.equal((results[0] as PromiseRejectedResult).reason.name, 'AbortError');
   assert.equal(results[1]?.status, 'fulfilled');
