@@ -150,7 +150,10 @@ export function reportRenderReadiness(next: RenderReadiness): void {
     if (statusLine) {
       const line = withRenderProgress(statusLine.textContent ?? '', percent);
       if (statusLine.textContent !== line) statusLine.textContent = line;
-      if (statusLine.title !== line) statusLine.title = line;
+      // D085-S3 BEGIN: the header's live tooltip is custom, not a native title.
+      if (statusLine.dataset.tooltip !== line) statusLine.dataset.tooltip = line;
+      statusLine.removeAttribute('title');
+      // D085-S3 END
     }
     const graphStatus = document.getElementById('graph-status-cap');
     if (graphStatus?.textContent) {

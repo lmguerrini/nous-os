@@ -46,21 +46,44 @@ export function labAnchorInstanceIndices(nodes: readonly { id: string; alpha: nu
 /** Native Lab skeleton: only real node and relation IDs from the mounted scene. */
 export function nativeLabSkeleton(nodes: readonly { id: string; kind: string; interaction?: string }[],
   edges: readonly { id: string; source: string; target: string }[],
+  levels: ReadonlyMap<string, number> = new Map(), emphasisIds: ReadonlySet<string> = new Set(),
+  wholeResidentRelations = false,
 ): { nodeIds: ReadonlySet<string>; edgeIds: ReadonlySet<string> } {
   const byId = new Map(nodes.map(node => [node.id, node]));
+  const degree = new Map<string, number>();
+  for (const edge of edges) if (byId.has(edge.source) && byId.has(edge.target)) {
+    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+  }
   const anchors = new Set(nodes.filter(node => node.kind === 'domain' || node.kind === 'hub'
+    || (levels.get(node.id) ?? Infinity) <= 2 || emphasisIds.has(node.id)
     || node.interaction === 'selected' || node.interaction === 'focused').map(node => node.id));
-  const main = edges.filter(edge => {
+  // The highest-degree real nodes remain recognizable even when the scene erases
+  // source kinds. Degree ties use IDs, never layout position or insertion order.
+  const hubs = nodes.filter(node => (degree.get(node.id) ?? 0) > 1)
+    .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0)
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).slice(0, 48);
+  for (const hub of hubs) anchors.add(hub.id);
+  let main = edges.filter(edge => {
     const source = byId.get(edge.source), target = byId.get(edge.target);
     return source !== undefined && target !== undefined && mainRelation({ attested: true,
-      selectedIncident: source.interaction === 'selected' || target.interaction === 'selected',
-      neighbourhoodIncident: anchors.has(edge.source) || anchors.has(edge.target),
+      selectedIncident: emphasisIds.has(edge.source) || emphasisIds.has(edge.target)
+        || source.interaction === 'selected' || target.interaction === 'selected',
       sourceHub: source.kind === 'hub', targetHub: target.kind === 'hub',
       sourceDomain: source.kind === 'domain', targetDomain: target.kind === 'domain',
     });
-  }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, 768);
+  });
+  // A native law with a resident relation set within the interaction budget
+  // keeps every real relation, including those whose source kind was erased.
+  // Larger sets retain only the main classifier, bounded by stable ID order.
+  if (wholeResidentRelations && edges.length <= 1024)
+    main = edges.filter(edge => byId.has(edge.source) && byId.has(edge.target));
+  else if (main.length === 0) main = edges.filter(edge => byId.has(edge.source) && byId.has(edge.target)
+    && (anchors.has(edge.source) || anchors.has(edge.target)));
+  main.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  if (main.length > 1024) main = main.slice(0, 1024);
   for (const edge of main) { anchors.add(edge.source); anchors.add(edge.target); }
-  if (anchors.size === 0 && nodes.length) anchors.add(nodes[0]!.id);
+  if (anchors.size === 0 && nodes.length) anchors.add(nodes.map(node => node.id).sort()[0]!);
   return { nodeIds: anchors, edgeIds: new Set(main.map(edge => edge.id)) };
 }
 // D085-S3 END
