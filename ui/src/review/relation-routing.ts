@@ -4,7 +4,9 @@ import { relationVisible, type RelationClass } from './reading.ts';
 import type { RevealBand, RevealSource } from './reveal-controller.ts';
 
 export type RouteChannel = 'semantic' | 'lifted' | 'visual';
-export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-budget' | 'fan-degree' | 'reading-filter';
+// D085-S7 BEGIN
+export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-budget' | 'fan-degree' | 'reading-filter' | 'detail-filter';
+// D085-S7 END
 export type RouteNode = Readonly<{ id: string; parent: string | null; level: 1 | 2 | 3 | 4 | 5; passageCount?: number }>;
 export type RouteRelation = Readonly<{
   id: string; channel: RouteChannel; source: string; target: string;
@@ -24,10 +26,23 @@ export type RouteAggregate = Readonly<{
 export type RouteSuppression = Readonly<{ id: string; cause: RouteCause }>;
 export type EndpointViolation = Readonly<{ edgeId: string; endpoint: 'from' | 'to'; reason: string }>;
 export type RouteInvariant = Readonly<{ ok: boolean; violations: readonly EndpointViolation[] }>;
+// D085-S7 BEGIN
+export type RelationDetailCounts = Readonly<{ setting: 'essential' | 'all'; rule: 'd084-projection' | 'selector';
+  drawn: number; represented: number;
+  essentialDrawn: number; essentialRepresented: number; availableDrawn: number; availableRepresented: number;
+  additionalDrawn: number; additionalRepresented: number; guideDrawn: number; guideRepresented: number;
+  bundles: number; bundled: number; classes: Readonly<Record<RelationClass,
+    Readonly<{ essentialDrawn: number; allDrawn: number; essentialRepresented: number;
+      allRepresented: number; additionalDrawn: number; additionalRepresented: number }>>> }>;
+// D085-S7 END
 export type RouteResult = Readonly<{
   drawn: readonly RoutedEdge[]; suppressed: readonly RouteSuppression[];
   aggregates: readonly RouteAggregate[]; renderedNodeIds: readonly string[];
   budget: number; derivedCurves: number; invariant: RouteInvariant;
+  // D085-S7 BEGIN
+  detail?: RelationDetailCounts;
+  detailFilteredSourceIds?: readonly string[];
+  // D085-S7 END
 }>;
 export type RouteInput = Readonly<{
   nodes: readonly RouteNode[]; disclosedIds: ReadonlySet<string>; renderedNodeIds: ReadonlySet<string>;
@@ -60,6 +75,95 @@ export function checkRouteInvariant(
   }
   return { ok: violations.length === 0, violations };
 }
+
+// D085-S7 BEGIN
+/** Report the two actual routed sets. Lab can have separately budgeted sets whose IDs differ. */
+export function measureRelationDetail(essential: RouteResult, all: RouteResult,
+  setting: 'essential' | 'all', rule: RelationDetailCounts['rule'] = 'd084-projection'): RouteResult {
+  const chosen = setting === 'essential' ? essential : all;
+  const guide = (edge: RoutedEdge) => edge.type === 'contains' || edge.type === 'synthetic-containment'
+    || edge.type === 'co_membership' || edge.type === 'co-membership';
+  const sourceCount = (edges: readonly RoutedEdge[]) => edges.filter(edge => !guide(edge))
+    .reduce((sum, edge) => sum + edge.count, 0);
+  const essentialIds = new Set(essential.drawn.map(edge => edge.id));
+  const added = all.drawn.filter(edge => !essentialIds.has(edge.id));
+  const guideEdges = chosen.drawn.filter(guide);
+  const bundles = chosen.drawn.filter(edge => edge.count > 1);
+  const classes = Object.fromEntries((['attested', 'exploratory', 'structural'] as const).map(kind => {
+    const first = essential.drawn.filter(edge => edge.class === kind);
+    const complete = all.drawn.filter(edge => edge.class === kind);
+    const extra = added.filter(edge => edge.class === kind);
+    return [kind, { essentialDrawn: first.length, allDrawn: complete.length,
+      essentialRepresented: sourceCount(first), allRepresented: sourceCount(complete),
+      additionalDrawn: extra.length, additionalRepresented: sourceCount(extra) }];
+  })) as RelationDetailCounts['classes'];
+  return { ...chosen, detail: { setting, rule, drawn: chosen.drawn.length,
+    represented: sourceCount(chosen.drawn), essentialDrawn: essential.drawn.length,
+    essentialRepresented: sourceCount(essential.drawn), availableDrawn: all.drawn.length,
+    availableRepresented: sourceCount(all.drawn), additionalDrawn: added.length,
+    additionalRepresented: sourceCount(added), guideDrawn: guideEdges.length,
+    guideRepresented: guideEdges.reduce((sum, edge) => sum + edge.count, 0),
+    bundles: bundles.length, bundled: bundles.reduce((sum, edge) => sum + edge.count, 0), classes } };
+}
+
+/** Apply the established Lab projection when it changes the drawn view. An equal
+ * routed ID set needs the bounded selector to give detail a visible meaning. */
+export function resolveLabRelationDetail(essential: RouteResult, all: RouteResult,
+  setting: 'essential' | 'all'): RouteResult {
+  const essentialIds = new Set(essential.drawn.map(edge => edge.id));
+  const sameDrawnIds = essentialIds.size === all.drawn.length
+    && all.drawn.every(edge => essentialIds.has(edge.id));
+  return sameDrawnIds ? selectRelationDetail(all, setting)
+    : measureRelationDetail(essential, all, setting);
+}
+
+/** Keep containment and a bounded maximum-strength edge cover in each admitted relation class.
+ * Typed visual routes retain their source-backed pick. A view may supply its established
+ * sparse route IDs. Both settings use the same post-LOD candidate route. */
+export function selectRelationDetail(route: RouteResult, setting: 'essential' | 'all',
+  essentialEdgeIds?: ReadonlySet<string>): RouteResult {
+  const retained = new Set<string>();
+  const cover = new Map<RouteRelation['class'], Set<string>>();
+  for (const kind of ['attested', 'exploratory', 'structural'] as const) cover.set(kind, new Set());
+  const retain = (edge: RoutedEdge) => {
+    retained.add(edge.id);
+    cover.get(edge.class)!.add(edge.from.id);
+    cover.get(edge.class)!.add(edge.to.id);
+  };
+  for (const edge of route.drawn) if (edge.type === 'contains' || edge.type === 'synthetic-containment'
+    || edge.type === 'co_membership' || edge.type === 'co-membership'
+    || (essentialEdgeIds === undefined && edge.type === 'lifted-route'
+      && edge.sourceRelationIds.some(id => id.startsWith('visual:')))) retain(edge);
+  if (essentialEdgeIds) for (const edge of route.drawn) if (essentialEdgeIds.has(edge.id)) retain(edge);
+  if (!essentialEdgeIds) {
+    for (const kind of ['attested', 'exploratory', 'structural'] as const) {
+      const ranked = route.drawn.filter(edge => edge.class === kind && !retained.has(edge.id))
+        .sort((a, b) => b.count - a.count || cmp(a.id, b.id));
+      const allowance = Math.max(1, Math.floor(ranked.length * 0.65));
+      let selected = 0;
+      for (const edge of ranked) {
+        if (selected >= allowance) break;
+        const seen = cover.get(kind)!;
+        if (!seen.has(edge.from.id) || !seen.has(edge.to.id)) { retain(edge); selected++; }
+      }
+      for (const edge of ranked) {
+        if (selected >= allowance) break;
+        if (!retained.has(edge.id)) { retain(edge); selected++; }
+      }
+    }
+  }
+  const drawn = setting === 'all' ? [...route.drawn] : route.drawn.filter(edge => retained.has(edge.id));
+  const aggregateIds = new Set(drawn.flatMap(edge => [edge.from, edge.to])
+    .filter(endpoint => endpoint.kind === 'aggregate').map(endpoint => endpoint.id));
+  const aggregates = route.aggregates.filter(item => aggregateIds.has(item.id));
+  const selected = { ...route, drawn, aggregates,
+    suppressed: setting === 'all' ? route.suppressed : [...route.suppressed,
+      ...route.drawn.filter(edge => !retained.has(edge.id)).map(edge => ({ id: edge.id, cause: 'detail-filter' as const }))],
+    invariant: checkRouteInvariant(drawn, new Set(route.renderedNodeIds), aggregates) };
+  return measureRelationDetail(setting === 'essential' ? selected : { ...selected,
+    drawn: route.drawn.filter(edge => retained.has(edge.id)) }, route, setting, 'selector');
+}
+// D085-S7 END
 
 /** Lift missing endpoints only along their primary-parent chain, then share one line budget. */
 export function routeRelationsAfterLOD(input: RouteInput): RouteResult {
@@ -234,7 +338,10 @@ export function buildRevealWitness(input: RevealWitnessInput) {
       aggregateOnly: aggregates.length, renderedInFocus: input.renderedInFocus ?? input.renderedNodeIds.size,
       revealableInFocus: input.revealableInFocus, budget: input.nodeBudget },
     renderedNodeIds: [...input.renderedNodeIds].sort(cmp), aggregates,
-    edges: { drawn, budget: input.route.budget, suppressed: input.route.suppressed },
+    // D085-S7 BEGIN
+    edges: { drawn, budget: input.route.budget, suppressed: input.route.suppressed,
+      detail: input.route.detail ?? null },
+    // D085-S7 END
     exclusions, derivedCurves: input.route.derivedCurves,
     invariant: checkRouteInvariant(drawn, input.renderedNodeIds, aggregates) };
 }
