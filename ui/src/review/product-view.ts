@@ -65,7 +65,7 @@ import { containerSphereLOD, containerTitleFont, placeContainerTitles, projected
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
-import { drawFlowLayer, neuralCompletaHaloFactor, neuralCompletaPointRadius, neuralCompletaVeilFactor, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
+import { DENSE_SCENE_THRESHOLD, drawFlowLayer, neuralCompletaHaloFactor, neuralCompletaPointRadius, neuralCompletaVeilFactor, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
 // D082-A-NCOMPLETA3 BEGIN
 import { clipNeuralCompletaScreenSegment, neuralCompletaFirstSceneScreen } from './neural-completa-first-scene.ts';
 // D082-A-NCOMPLETA3 END
@@ -326,6 +326,20 @@ export function mountProductProjection(
 
 export { createProjectionVisualsLayer } from "../render-common/projection-visuals-layer.ts";
 export type { ProjectionVisualsLayer, ProjectionVisualsProjector } from "../render-common/projection-visuals-layer.ts";
+
+// D086-F2 BEGIN: native renderers own a mount-time node and edge buffer. A changed
+// ID set needs a replacement host; the canvas subset path can keep its fast swap.
+export function nativeSubsetRequiresRemount(
+  mountedNodeCount: number,
+  currentNodes: ReadonlySet<string>, currentEdges: ReadonlySet<string>,
+  nextNodes: ReadonlySet<string>, nextEdges: ReadonlySet<string>,
+): boolean {
+  if (mountedNodeCount < DENSE_SCENE_THRESHOLD) return false;
+  const changed = (before: ReadonlySet<string>, after: ReadonlySet<string>) =>
+    before.size !== after.size || [...after].some(id => !before.has(id));
+  return changed(currentNodes, nextNodes) || changed(currentEdges, nextEdges);
+}
+// D086-F2 END
 
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
 const INDRA_CONTAINER_MARKER_PX = 2.5;
@@ -2202,6 +2216,11 @@ export const createProductView: CreateProductView = async (input) => {
     }) as ReviewEdge);
     const nextEdges = resolveDrawnEdges(records, nextVisible);
     const nextEdgeIds = new Set(nextEdges.map((edge) => edge.id));
+    // D086-F2 BEGIN: a native Sigma/Three scene cannot replace its mounted edge
+    // buffer through the distinct canvas update. Let the page remount this scene.
+    if (nativeSubsetRequiresRemount(mountedIds.size, visible, drawnEdgeIds,
+      nextVisible, nextEdgeIds)) return false;
+    // D086-F2 END
     const nextSelection = selected && (nextVisible.has(selected) || nextEdgeIds.has(selected)) ? selected : null;
     const anchors = restrictAnchors(fullAnchor(axes), mountedIds);
     // D082-A-PERF BEGIN: prepare only the revealed neighbourhood on an in-place Neural revision;

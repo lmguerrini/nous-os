@@ -860,6 +860,10 @@ export class V2Page {
      * next refresh is a pure level-of-detail change — same disclosed set, same arrangement, same
      * axes, same colours — and the view applies it in place instead of remounting. */
     private lastLodKey: string | null = null;
+    // D086-F2 BEGIN: a law's off-canvas hover belongs to one settings scene.
+    // It must never become a routing pin for a later toolbar request.
+    private lastRefreshSettingKey = '';
+    // D086-F2 END
     /** D-072 R2 (X8): a band crossing observed while the camera still moves is only noted; the
      * level refresh lands once the camera has been still `LOD_REFRESH_IDLE_MS`. */
     private pendingLod: LodLevel | null = null;
@@ -3862,6 +3866,25 @@ export class V2Page {
         if (this.geometryTransitionActive && !ownedByGeometry)
             return this.transitions.enqueue(() => this.refresh(false, detailSwitch));
         // D085-S1 END
+        // D086-F2 BEGIN: route selection may use hover as a temporary focus.
+        // Changing any drawn-set or style axis invalidates that focus, including
+        // when a prior renderer did not deliver pointerleave before replacement.
+        const settingKey = JSON.stringify([
+            this.topology, this.topologyIndra, this.density, this.relationDetail,
+            this.axes, this.appearance, this.palette, this.v2Colours,
+        ]);
+        if (settingKey !== this.lastRefreshSettingKey) {
+            // D086-F2 BEGIN: law routing must not inherit a focus from a prior
+            // toolbar view after the pointer has left the graph. Keep live
+            // pointer focus, including the established Natural/Indra pin path.
+            if (this.lawActive() && this.cursor === null) {
+                this.hovered = null;
+                this.hoveredEdge = null;
+            }
+            // D086-F2 END
+            this.lastRefreshSettingKey = settingKey;
+        }
+        // D086-F2 END
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
         this.refreshPending++;
         // D082-A-HUD BEGIN: publish the requested scene as in recovery while its new view is pending.
@@ -5830,13 +5853,20 @@ export class V2Page {
         // D085-X9b END
         const changed = [...compacted.auto].some(([id, count]) => this.autoPageCounts.get(id) !== count) ||
             [...this.autoPageCounts.keys()].some(id => !compacted.auto.has(id));
+        // D086-F2 BEGIN: Adatta restores the opening LOD as well as the opening
+        // camera. A deep zoom can leave disclosure unchanged but keep near routing.
+        const lodChanged = this.lod != null && this.lod !== 'far';
+        this.lod = 'far';
+        // D086-F2 END
         this.revealState = compacted.state;
         this.revealReleased = compacted.released;
         this.revealCamera = { zoom: 1, band: 'far', settled: true };
         this.autoPageCounts = new Map(compacted.auto);
         this.auto = new Set(compacted.auto.keys());
         this.lastRevealSampleKey = '';
-        if (changed) await this.refresh();
+        // D086-F2 BEGIN
+        if (changed || lodChanged) await this.refresh();
+        // D086-F2 END
         if (request !== this.fitRequestEpoch) return;
         const fitEpoch = this.cameraIntentEpoch;
         this.programmaticCamera();
