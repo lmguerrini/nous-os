@@ -712,7 +712,7 @@ export class V2Page {
     // D085-S1 END
     private lawActive(): boolean { return this.topology !== 'natural' &&
         (this.topology !== 'canopy-ifs' || this.topologyIndra); }
-    // D085-S2 BEGIN (fix 3): the density budget is a property of the topology being
+    // D085-S2 BEGIN: the density budget is a property of the topology being
     // drawn, not one global step. Every density-driven path in this page resolves through
     // here so the status line, the LOD selection, the routing budget and the witness record
     // all name the same policy. `DENSITY_BUDGETS` stays the Natural row for the callers
@@ -1010,8 +1010,8 @@ export class V2Page {
                 : this.density === 'complete'
                     ? { kind: 'proiezione', value: V2_CAP, reason: 'Il dominio della proiezione corrente è ancora limitato.' }
                     // D085-S2 BEGIN: the limit names the budget actually applied — the
-                    // topology-aware D085-S2 budget for the classic renderer, the verified
-                    // D-082 ladder for the typed analytical domain.
+                    // topology-specific budget for the classic renderer and the
+                    // fixed density ladder for the typed analytical domain.
                     : { kind: 'densità', value: this.typedActive() ? DENSITY_BUDGETS[this.density].nodes
                         : this.densityBudgetFor().nodes,
                         reason: 'La densità scelta limita i glyph individuali.' },
@@ -1039,7 +1039,7 @@ export class V2Page {
                 + `Archi: ${formatCount(route.drawn.length)} disegnati, `
                 + `${formatCount(eligible.length - possible)} con estremità non visibili, `
                 + `${formatCount(Math.max(0, possible - route.drawn.length))} oltre il budget di linee.`;
-            // D085-S2: same distinction as above — verified ladder for the typed domain.
+            // D085-S2: the typed domain uses its fixed density ladder.
             this.d081Metrics.limit = { kind: 'densità',
                 value: this.typedActive() ? DENSITY_BUDGETS[this.density].nodes : this.densityBudgetFor().nodes,
                 reason: `${label}: selezione semantica e budget per leggibilità.` };
@@ -1226,7 +1226,7 @@ export class V2Page {
     // D081-P7d BEGIN: drawer passage loads are outside the fixed graph snapshot.
     private readonly canopyDatasetNodes: readonly V2Node[];
     // D081-P7d END.
-    // D085-S2 BEGIN (fix 3): the real evidence relations that continue the Canopy
+    // D085-S2 BEGIN: the real evidence relations that continue the Canopy
     // Bilanciata mark sequence, and the budget record the witness publishes for every
     // topology and dimension. Both are pure functions of the immutable index.
     private readonly canopyEvidenceCandidates: readonly CanopyEvidenceCandidate[];
@@ -1404,7 +1404,7 @@ export class V2Page {
         // D081-P7d BEGIN.
         this.canopyDatasetNodes = [...index.nodes];
         // D081-P7d END.
-        // D085-S2 BEGIN (fix 3): attested/exploratory source relations, identity,
+        // D085-S2 BEGIN: attested/exploratory source relations, identity,
         // endpoints and source type — the same classes `canopyEvidenceArcs` admits after
         // projection. Built once so its array identity keys the mark-sequence cache.
         this.canopyEvidenceCandidates = index.edges
@@ -2923,7 +2923,7 @@ export class V2Page {
         // prefix as the classic renderer. Projection coordinates are reused verbatim.
         if (this.density !== 'complete' && this.index.nodes.length > V2_CAP &&
             (this.axes.organization === 'natural' || this.axes.organization === 'indra')) {
-            // D085-S2 BEGIN: the typed pipeline keeps the verified D-082 ladder. Its analytical
+            // D085-S2 BEGIN: the typed pipeline keeps its fixed density ladder. Its analytical
             // domain is separately capped at 850 by the D-081 contract (`selectAnalyticalDomain`,
             // outside this stream's ceiling) and its Essenziale/Bilanciata counts are pinned by
             // d081-completa-counts and d082-typed-density-required; the topology-aware D085-S2
@@ -3018,7 +3018,7 @@ export class V2Page {
                 pinnedIds: [...pinned].filter(id => rendered.has(id)).sort() },
                 arcs: { rendered: visuals.length, available: relations.total,
                     pinned: 0, pinnedIds: [] as string[] } };
-            // D085-S2 BEGIN: the typed renderer records its own verified budget contract —
+            // D085-S2 BEGIN: the typed renderer records its budget contract —
             // the D-082 ladder over the D-081 domain cap — distinct from the topology-aware
             // budgets of the classic renderer.
             this.densityBudgetRecord = {
@@ -3037,7 +3037,7 @@ export class V2Page {
             return { visibility, counts, selection, route, displayStyled, pickMap };
         }
         // D082-A-DENSITY END
-        // D085-S2 BEGIN: the remaining typed views keep the verified D-082 ladder, like the
+        // D085-S2 BEGIN: the remaining typed views keep the fixed density ladder, like the
         // typed Natural/Indra block above (the D-081 domain cap is outside this ceiling).
         const budget = DENSITY_BUDGETS[this.density];
         // D085-S2 END
@@ -3973,7 +3973,7 @@ export class V2Page {
             // disclosed set and never sees the LOD, so a level or density change cannot move a
             // node: whatever stays visible keeps its exact coordinates (the layout's own
             // incremental stability — existing positions are seeds, only fresh nodes are placed).
-            // D085-S2 BEGIN (fix 3): the budget of the topology being drawn.
+            // D085-S2 BEGIN: the budget of the topology being drawn.
             const budget = this.densityBudgetFor();
             // D085-S2 END
             const routingBegan = performance.now();
@@ -4091,13 +4091,13 @@ export class V2Page {
                 }
                 // D082-A-DENSITYh END
             }
-            // D085-S2 BEGIN (fix 3): the topology laws grow Bilanciata through the
+            // D085-S2 BEGIN: the topology laws grow Bilanciata through the
             // law's own geometry. `lawSelectionScores` ranks candidates by radial band over
             // the law's fixed coordinates (Julia's potential rings, Llull's record bands,
             // Sierpiński's gasket scale) with importance as the in-band tie-breaker, so the
             // drawn prefix samples the structure instead of one importance band. Essenziale
             // stays byte-identical: its disclosure (visible()) and its selection inputs are
-            // the verified D-082 ones, and the seed below re-derives exactly those inputs, so
+            // the established fixed values, and the seed below re-derives exactly those inputs, so
             // E ⊂ B ⊂ C holds with unchanged coordinates — a law's positions are functions
             // of the immutable snapshot, never of the density.
             if (!canopy && this.lawActive() && this.density === 'balanced' && lawResult &&
@@ -4154,13 +4154,13 @@ export class V2Page {
                 if (!relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading))
                     routedInput.push({ id: edge.id, channel: 'semantic', source: edge.source,
                         target: edge.target, class: edge.class, type: edge.type, count: 1 });
-            // D085-S2 BEGIN (fix 3: branches carry real relations): Canopy
-            // the raw candidates the block below admits are wrapped here as
+            // D085-S2 BEGIN: Canopy
+            // The raw candidates the block below admits are wrapped here as
             // single-source lifts, so the route's source-ID map resolves every relation it drew.
             const canopyBalancedSources: LiftedRelation[] = [];
             const rawById = new Map(this.index.edges.map(edge => [edge.id, edge]));
             // Bilanciata admits the real evidence relations with both endpoints among the
-            // balanced marks. The verified lower-density projection keeps lifting only the
+            // balanced marks. The lower-density projection keeps lifting only the
             // detail-essential relations (the 13 Essenziale arcs, byte-identical); the balanced
             // view adds the raw source pairs — the same eligibility the classic Natural/Indra
             // Bilanciata draws through `completeRelations` — ranked by the canopy order
@@ -4335,7 +4335,7 @@ export class V2Page {
             }
             // D085-S4 END
             this.restoreNeighbourhood = false;
-            // D085-S2 BEGIN (fix 3): the per-topology, per-dimension budget record —
+            // D085-S2 BEGIN: the per-topology, per-dimension budget record —
             // requested, visible, aggregated, excluded and the reason, for nodes and edges —
             // published through the visibility witness (`window.__d067.witness()`).
             {
@@ -5927,7 +5927,7 @@ export class V2Page {
             // D085-S7 END
             // D085-S4 BEGIN: the Llull overview fold record — phase, exact
             // drawn vs aggregated counts, and per-pair ids both of the fold and of the
-            // full-snapshot layout bundles it is verified against.
+            // full-snapshot layout bundles used for comparison.
             ...(this.lullOverviewRecord ? { lullOverview: this.lullOverviewRecord } : {}),
             // D085-S4 END
         }) : undefined;
@@ -6140,7 +6140,7 @@ export class V2Page {
         line(controls, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili · ${formatCount(this.lodCounts.arcs.pinned)} fissati`);
         // D085-S7 BEGIN
         const detail = this.revealRoute?.detail;
-        if (detail) line(controls, 'Relazioni', `${detail.setting === 'essential' ? 'Essenziali' : 'Tutte'} · Essenziali ${formatCount(detail.essentialDrawn)} tracciati / ${formatCount(detail.essentialRepresented)} relazioni · Tutte ${formatCount(detail.availableDrawn)} tracciati / ${formatCount(detail.availableRepresented)} relazioni · ${formatCount(detail.guideDrawn)} guide ora`);
+        if (detail) line(controls, 'Relazioni', `${detail.setting === 'essential' ? 'Essenziali' : 'Tutte'} · Essenziali ${formatCount(detail.essentialDrawn)} tracciati${this.lullOverviewFold?.foldedEdges ? ' prima del raggruppamento Llull' : ''} / ${formatCount(detail.essentialRepresented)} relazioni · Tutte ${formatCount(detail.availableDrawn)} tracciati${this.lullOverviewFold?.foldedEdges ? ' prima del raggruppamento Llull' : ''} / ${formatCount(detail.availableRepresented)} relazioni · ${formatCount(detail.guideDrawn)} guide ora`);
         // D085-S7 END
         // D081-FRACTAL-MERGE BEGIN: the canvas canopy owns 44 title slots.
         line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), this.canopyActive() ? 44 : labelBudgetOf(this.density)));

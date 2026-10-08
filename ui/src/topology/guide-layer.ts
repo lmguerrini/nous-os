@@ -11,7 +11,7 @@ import type { LullOverviewPairFold } from './lull-overview.ts';
 // routing does not draw the cross-sector strokes one by one — they are folded
 // into these pair bundles, which are the visible aggregates — and on approach
 // the exact individual relations return when the settled fold releases. The
-// earlier veil is gone. Bundle ink follows the committed fold so a moving
+// overview veil is absent. Bundle ink follows the committed fold so a moving
 // camera never fades it before the individual relations return.
 type LullWeightedGuide = GuideCurve & Readonly<{ weight: number }>;
 // The active visual weights are taken only from replaced sources.
@@ -166,7 +166,7 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       } else if (guide.kind === 'lull-band' || guide.kind === 'lull-sector-ray') {
         context.strokeStyle = 'rgba(180,190,210,.19)';
         context.lineWidth = 0.65;
-      // D085-S4 BEGIN (fix 2): the Third Figure's 36 pair compartments are dashed
+      // D085-S4 BEGIN: the Third Figure's 36 pair compartments are dashed
       // chords. The dash pattern is the primary distinguishability channel against the
       // solid real relations; width and alpha sit between the faint band marks and the
       // rim so the hierarchy stays guides < real relations < roots. The dash is reset
@@ -176,7 +176,7 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
         context.lineWidth = 1.25;
         context.setLineDash([7, 6]);
       } else if (guide.kind === 'lull-riser') {
-        // D085-S4 BEGIN (fix 5): the lifted view's letter risers — the faintest marks,
+        // D085-S4 BEGIN: the lifted view's letter risers — the faintest marks,
         // under the chords, so the four tables stay anchored to Figure A without
         // competing with the relation ink.
         context.strokeStyle = 'rgba(205,215,230,.26)';
@@ -207,7 +207,6 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
           context.lineWidth = 4 + 10 * share;
         }
       // D085-S4 END
-      // D085-S4 END
       } else {
         context.strokeStyle = 'rgba(180,190,210,.22)';
         context.lineWidth = 0.75;
@@ -227,7 +226,7 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       if (segments) { context.stroke(); drawn++; }
       else suppressed++;
       // D084-LLULL END
-      // D085-S4 BEGIN (fix 2): reset the dash after each guide so only the pair
+      // D085-S4 BEGIN: reset the dash after each guide so only the pair
       // chords are dashed.
       context.setLineDash([]);
       // D085-S4 END

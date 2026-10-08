@@ -65,3 +65,22 @@ test('legacy fallback labels visible and represented counts without implying com
   assert.ok(counts);
   assert.match(formatLegacyToolbarStatus('142/11199 nodi · 260/499 relazioni · limite 850', counts), /Nodi 142 visibili · almeno 142 rappresentati \/ 11\.199 totali · Archi 260 disegnati \/ 499 totali/);
 });
+
+// D085-X2 BEGIN: distinguish the relation-detail stage from the visible Llull fold.
+test('Llull status labels pre-fold strokes while Natural keeps its existing wording', () => {
+  const detail = { setting: 'all', drawn: 14155, represented: 14155,
+    essentialDrawn: 12000, essentialRepresented: 12000,
+    availableDrawn: 14155, availableRepresented: 14155,
+    additionalDrawn: 2155, additionalRepresented: 2155,
+    guideDrawn: 0, guideRepresented: 0, bundles: 0, bundled: 0,
+    rule: 'selector', classes: {} } as never;
+  const folded = formatD081GraphStatus({ ...contract, edges: { ...contract.edges,
+    drawn: 12502, detail, aggregatedIntoBundles: 1653 } });
+  assert.match(folded.details[1], /12\.502 disegnati/);
+  assert.match(folded.details[1], /14\.155 tracciati prima del raggruppamento Llull/);
+  assert.match(folded.details[1], /2\.155 tracciati esclusivi di Tutte prima del raggruppamento Llull/);
+  const natural = formatD081GraphStatus({ ...contract, edges: { ...contract.edges, detail } });
+  assert.match(natural.details[1], /14\.155 tracciati \/ 14\.155 relazioni/);
+  assert.doesNotMatch(natural.details[1], /raggruppamento Llull/);
+});
+// D085-X2 END

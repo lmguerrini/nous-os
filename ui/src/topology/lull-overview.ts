@@ -12,7 +12,7 @@ import type { LullIndex } from './lull-inquiry.ts';
 const cmp = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
 /** One compartment's fold: the drawn edge ids the route suppressed (for the
- * routing audit) and the sorted real relation ids they carried (for the witness). */
+ * suppression record) and the sorted real relation ids they carried (for the witness). */
 export type LullOverviewPairFold = Readonly<{
   letters: string;
   roots: readonly [string, string];

@@ -33,15 +33,12 @@ export const DENSITY_BUDGETS: Readonly<Record<Density, LodBudget>> = {
   complete: { nodes: 850, arcs: 1200, labels: 60 },
 };
 
-// D085-S2 BEGIN: Bilanciata realmente intermedia (fix 3). One budget per topology:
+// D085-S2 BEGIN: Bilanciata realmente intermedia. One budget per topology:
 // the geometry that must stay recognisable decides how many real glyphs Bilanciata admits,
 // instead of one global 400-node step for Natural, Canopy, Julia, Sierpiński and Llull alike.
 // Essenziale keeps its approved 80/100/20 everywhere (Canopy keeps its 150 marks); Completa
-// keeps its bounded-path entry. Natural and Indra keep the approved classic 400/450 —
-// fix 3 evidence names only the Geometry Lab topologies, and the approved D-084
-// states 01–06 are Natural 3D Bilanciata at 400 (measured justification in §4 of the D-085 S2
-// report; raising them is filed there as a review candidate). The Lab balanced values are the
-// measured choices of §4: ~17–50× Essenziale and ~7–36% of Completa.
+// keeps its bounded-path entry. Natural and Indra keep the classic 400/450 budget.
+// The Lab balanced budgets admit more real nodes and arcs at their topology scales.
 export type BudgetTopology = 'natural' | 'indra' | 'canopy' | 'julia' | 'sierpinski' | 'lull';
 
 const DENSITY_TOPOLOGY_BUDGETS: Readonly<Record<BudgetTopology, Readonly<Record<Density, LodBudget>>>> = {
@@ -77,7 +74,7 @@ const DENSITY_TOPOLOGY_BUDGETS: Readonly<Record<BudgetTopology, Readonly<Record<
   },
 };
 
-/** The density budget of one topology. `DENSITY_BUDGETS` above remains the verified D-082
+/** The density budget of one topology. `DENSITY_BUDGETS` above remains the fixed
  * table verbatim — it still backs the density-independent Essenziale constants, the pinned
  * counts and the reachability proof — while every density-driven path in the page resolves
  * its budget through this function, so the witness can name the policy it applied. */
@@ -108,12 +105,12 @@ export function densityPoolLimit(budgetNodes: number): number {
 // D085-S2 END
 const densityPoolCache = new WeakMap<V2Index, Map<string, V2Visible>>();
 export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: string | null = null,
-  // D085-S2 BEGIN: `limit` defaults to the verified D-082 pool for every existing caller.
+  // D085-S2 BEGIN: `limit` defaults to the fixed pool for every existing caller.
   limit: number = DENSITY_POOL_LIMIT): V2Visible {
   // D085-S2 END
   const baseKey = base.nodes.map(node => node.id).sort().join(',');
   // D085-S2 BEGIN: the limit is part of the pool's identity, so a typed caller asking for
-  // the verified 850 pool and a classic caller asking for the Bilanciata pool never share
+  // the fixed 850 pool and a classic caller asking for the Bilanciata pool never share
   // an entry. The selection-subsumption fast path keeps the same limit.
   const key = `${baseKey}|${selectedId ?? ''}|${limit}`;
   const retained = densityPoolCache.get(index);
@@ -160,7 +157,7 @@ export function densityDisclosure(index: V2Index, base: V2Visible, selectedId: s
   }
   for (const group of groups.values()) group.sort(rank);
   const keys = [...groups.keys()].sort(compare);
-  // D085-S2 BEGIN: the round-robin stops at the caller's limit, not the verified 850, or a
+  // D085-S2 BEGIN: the round-robin stops at the caller's limit, not the fixed 850, or a
   // Bilanciata pool larger than 850 could never fill past the old cap. (D085-S2 END)
   for (let round = 0; chosen.size < limit && keys.some(key => round < groups.get(key)!.length); round++)
     for (const key of keys) {
@@ -326,7 +323,7 @@ export function densityConnectedNodes<T extends { source: string; target: string
 }
 // D082-A-DENSITY END
 
-// D085-S2 BEGIN: structure-aware selection score for the topology laws (fix 3).
+// D085-S2 BEGIN: structure-aware selection score for the topology laws.
 // A law's coordinates place every node of the fixed snapshot; radius (the potential band in
 // Julia, the record band in Llull, the gasket scale in Sierpiński) is the structural feature
 // the density must sample, because importance alone selects one radial band and the geometry
