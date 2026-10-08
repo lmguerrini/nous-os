@@ -4,7 +4,9 @@ import { relationVisible, type RelationClass } from './reading.ts';
 import type { RevealBand, RevealSource } from './reveal-controller.ts';
 
 export type RouteChannel = 'semantic' | 'lifted' | 'visual';
-export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-budget' | 'fan-degree' | 'reading-filter';
+// D085-S7 BEGIN
+export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-budget' | 'fan-degree' | 'reading-filter' | 'detail-filter';
+// D085-S7 END
 export type RouteNode = Readonly<{ id: string; parent: string | null; level: 1 | 2 | 3 | 4 | 5; passageCount?: number }>;
 export type RouteRelation = Readonly<{
   id: string; channel: RouteChannel; source: string; target: string;
@@ -28,6 +30,13 @@ export type RouteResult = Readonly<{
   drawn: readonly RoutedEdge[]; suppressed: readonly RouteSuppression[];
   aggregates: readonly RouteAggregate[]; renderedNodeIds: readonly string[];
   budget: number; derivedCurves: number; invariant: RouteInvariant;
+  // D085-S7 BEGIN
+  detail?: Readonly<{ setting: 'essential' | 'all'; drawn: number; represented: number;
+    availableDrawn: number; availableRepresented: number; additionalDrawn: number;
+    additionalRepresented: number; guideDrawn: number; guideRepresented: number;
+    bundles: number; bundled: number }>;
+  detailFilteredSourceIds?: readonly string[];
+  // D085-S7 END
 }>;
 export type RouteInput = Readonly<{
   nodes: readonly RouteNode[]; disclosedIds: ReadonlySet<string>; renderedNodeIds: ReadonlySet<string>;
@@ -60,6 +69,64 @@ export function checkRouteInvariant(
   }
   return { ok: violations.length === 0, violations };
 }
+
+// D085-S7 BEGIN
+/** Keep containment and a bounded maximum-strength edge cover in each admitted relation class.
+ * Typed visual routes retain their source-backed pick. A view may supply its established
+ * sparse route IDs. Both settings use the same post-LOD candidate route. */
+export function selectRelationDetail(route: RouteResult, setting: 'essential' | 'all',
+  essentialEdgeIds?: ReadonlySet<string>): RouteResult {
+  const retained = new Set<string>();
+  const cover = new Map<RouteRelation['class'], Set<string>>();
+  for (const kind of ['attested', 'exploratory', 'structural'] as const) cover.set(kind, new Set());
+  const retain = (edge: RoutedEdge) => {
+    retained.add(edge.id);
+    cover.get(edge.class)!.add(edge.from.id);
+    cover.get(edge.class)!.add(edge.to.id);
+  };
+  for (const edge of route.drawn) if (edge.type === 'contains' || edge.type === 'synthetic-containment'
+    || (essentialEdgeIds === undefined && edge.type === 'lifted-route'
+      && edge.sourceRelationIds.some(id => id.startsWith('visual:')))) retain(edge);
+  if (essentialEdgeIds) for (const edge of route.drawn) if (essentialEdgeIds.has(edge.id)) retain(edge);
+  if (!essentialEdgeIds) {
+    for (const kind of ['attested', 'exploratory', 'structural'] as const) {
+      const ranked = route.drawn.filter(edge => edge.class === kind && !retained.has(edge.id))
+        .sort((a, b) => b.count - a.count || cmp(a.id, b.id));
+      const allowance = Math.max(1, Math.floor(ranked.length * 0.65));
+      let selected = 0;
+      for (const edge of ranked) {
+        if (selected >= allowance) break;
+        const seen = cover.get(kind)!;
+        if (!seen.has(edge.from.id) || !seen.has(edge.to.id)) { retain(edge); selected++; }
+      }
+      for (const edge of ranked) {
+        if (selected >= allowance) break;
+        if (!retained.has(edge.id)) { retain(edge); selected++; }
+      }
+    }
+  }
+  const drawn = setting === 'all' ? [...route.drawn] : route.drawn.filter(edge => retained.has(edge.id));
+  const aggregateIds = new Set(drawn.flatMap(edge => [edge.from, edge.to])
+    .filter(endpoint => endpoint.kind === 'aggregate').map(endpoint => endpoint.id));
+  const aggregates = route.aggregates.filter(item => aggregateIds.has(item.id));
+  const isGuide = (edge: RoutedEdge) => edge.type === 'contains' || edge.type === 'synthetic-containment'
+    || edge.type === 'co_membership' || edge.type === 'co-membership';
+  const represented = drawn.filter(edge => !isGuide(edge)).reduce((sum, edge) => sum + edge.count, 0);
+  const availableRepresented = route.drawn.filter(edge => !isGuide(edge)).reduce((sum, edge) => sum + edge.count, 0);
+  const guideEdges = drawn.filter(isGuide);
+  const bundles = drawn.filter(edge => edge.count > 1);
+  return { ...route, drawn, aggregates,
+    suppressed: setting === 'all' ? route.suppressed : [...route.suppressed,
+      ...route.drawn.filter(edge => !retained.has(edge.id)).map(edge => ({ id: edge.id, cause: 'detail-filter' as const }))],
+    detail: { setting, drawn: drawn.length, represented, availableDrawn: route.drawn.length,
+      availableRepresented, additionalDrawn: route.drawn.length - drawn.length,
+      additionalRepresented: availableRepresented - represented,
+      guideDrawn: guideEdges.length,
+      guideRepresented: guideEdges.reduce((sum, edge) => sum + edge.count, 0),
+      bundles: bundles.length, bundled: bundles.reduce((sum, edge) => sum + edge.count, 0) },
+    invariant: checkRouteInvariant(drawn, new Set(route.renderedNodeIds), aggregates) };
+}
+// D085-S7 END
 
 /** Lift missing endpoints only along their primary-parent chain, then share one line budget. */
 export function routeRelationsAfterLOD(input: RouteInput): RouteResult {
@@ -234,7 +301,10 @@ export function buildRevealWitness(input: RevealWitnessInput) {
       aggregateOnly: aggregates.length, renderedInFocus: input.renderedInFocus ?? input.renderedNodeIds.size,
       revealableInFocus: input.revealableInFocus, budget: input.nodeBudget },
     renderedNodeIds: [...input.renderedNodeIds].sort(cmp), aggregates,
-    edges: { drawn, budget: input.route.budget, suppressed: input.route.suppressed },
+    // D085-S7 BEGIN
+    edges: { drawn, budget: input.route.budget, suppressed: input.route.suppressed,
+      detail: input.route.detail ?? null },
+    // D085-S7 END
     exclusions, derivedCurves: input.route.derivedCurves,
     invariant: checkRouteInvariant(drawn, input.renderedNodeIds, aggregates) };
 }

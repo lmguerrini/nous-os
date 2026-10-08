@@ -4,7 +4,12 @@ import type { RenderReadiness } from "./render-readiness.ts";
 /** Discreet, opt-in D-081 performance HUD. No sampling work runs while closed. */
 export type D081Status = {
   nodes?: { visible?: number; represented?: number; total?: number; eligible?: number; aggregated?: number };
-  edges?: { drawn?: number; bundled?: number; eligible?: number; total?: number };
+  // D085-S7 BEGIN
+  edges?: { drawn?: number; bundled?: number; eligible?: number; total?: number;
+    detail?: { setting: 'essential' | 'all'; represented: number; availableDrawn: number;
+      availableRepresented: number; additionalDrawn: number; additionalRepresented: number;
+      guideDrawn: number; guideRepresented: number } };
+  // D085-S7 END
   depth?: { level?: number; label?: string };
   quality?: "movimento" | "recupero" | "completa" | string;
   msSinceInteraction?: number;
@@ -81,16 +86,21 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
     <dt>Archi pronti / disegnati / richiesti · totali</dt><dd>${readiness.allEdges.loaded.toLocaleString("it-IT")} / ${readiness.allEdges.drawn.toLocaleString("it-IT")} / ${readiness.allEdges.required.toLocaleString("it-IT")} · ${edges?.total?.toLocaleString("it-IT") ?? "—"}</dd>
     <dt>LOD · profondità</dt><dd>${readiness.ladder} · ${readiness.depthLabel ?? "—"}</dd>` : "<dt>Render</dt><dd>in attesa dei dati renderer</dd>";
   // D082-A-STALE END
+  // D085-S7 BEGIN
   return `<dl>
     ${renderRows}
     <dt>FPS p50 / p95</dt><dd>${rates.fps50.toFixed(1)} / ${rates.fps95.toFixed(1)}</dd>
     <dt>Frame ms p50 / p95</dt><dd>${rates.ms50.toFixed(1)} / ${rates.ms95.toFixed(1)}</dd>
     <dt>Nodi visibili / rappr.</dt><dd>${nodeDrawn} / ${nodes?.represented ?? nodeDrawn} · ${nodeEligible} elegg. / ${nodeTotal} tot. · +${nodes?.aggregated ?? 0}</dd>
     <dt>Archi / bundle</dt><dd>${edgeDrawn} / ${edges?.bundled ?? 0} · ${edgeEligible} elegg. / ${edgeTotal} tot.</dd>
+    <!-- D085-S7 BEGIN -->
+    ${edges?.detail ? `<dt>Relazioni ${edges.detail.setting === 'essential' ? 'Essenziali' : 'Tutte'}</dt><dd>${edges.detail.represented} sorgente · ${edges.detail.guideDrawn} guide · ${edges.detail.availableDrawn - edges.detail.additionalDrawn} tracciati ammessi · +${edges.detail.additionalRepresented} relazioni in Tutte</dd>` : ''}
+    <!-- D085-S7 END -->
     <dt>Qualità · LOD</dt><dd>${quality} · ${depth}</dd>
     <dt>Ultima interazione</dt><dd>${formatDuration(status?.msSinceInteraction)} fa</dd>
     <dt>Ultimo recupero completo</dt><dd>${lastFullRecovery}</dd>
   </dl>${status?.hint ? `<p class="performance-hint"></p>` : ""}`;
+  // D085-S7 END
 }
 
 export function mountPerformanceHud(surface: HTMLElement, opener: HTMLButtonElement): { setOpen(open: boolean): void; readStatus(): D081Status | null } {

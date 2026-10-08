@@ -11,6 +11,12 @@ export type VisibilityWitnessInput = Readonly<{
   submittedEdges: readonly VisibilityEdge[]; sourceEdges?: readonly VisibilityEdge[];
   labels: number; aggregateCount: number; representedCount: number; starCount: number;
   excluded?: Partial<Record<VisibilityCause, number>>;
+  // D085-S7 BEGIN
+  relationCounts?: Readonly<{ setting: 'essential' | 'all'; drawn: number; represented: number;
+    availableDrawn: number; availableRepresented: number; additionalDrawn: number;
+    additionalRepresented: number; guideDrawn: number; guideRepresented: number;
+    bundles: number; bundled: number }>;
+  // D085-S7 END
 }>;
 
 /** Hidden records belong to their nearest drawn ancestor, counted once across nested pearls. */
@@ -34,6 +40,9 @@ export function countExcludedRelations(input: Readonly<{
   relations: readonly (VisibilityEdge & { type?: string })[]; drawnSourceIds: ReadonlySet<string>;
   reading: Reading; relationDetail: 'essential' | 'all'; organization: Axes['organization'];
   activeId?: string | null;
+  // D085-S7 BEGIN
+  detailFilteredSourceIds?: ReadonlySet<string>;
+  // D085-S7 END
 }>) {
   const byId = new Map(input.nodes.map(node => [node.id, node]));
   const nearest = (id: string): string | null => {
@@ -48,8 +57,11 @@ export function countExcludedRelations(input: Readonly<{
   for (const edge of input.relations) {
     if (input.drawnSourceIds.has(edge.id)) continue;
     if (!relationVisible(edge.class, input.reading)) counts.readingFilter++;
-    else if (input.organization === 'natural' && input.relationDetail === 'essential'
-      && edge.type === 'mentions' && input.activeId !== edge.source && input.activeId !== edge.target)
+    // D085-S7 BEGIN: classify only source records actually removed by the detail selector.
+    else if (input.detailFilteredSourceIds?.has(edge.id) || (!input.detailFilteredSourceIds
+      && input.organization === 'natural' && input.relationDetail === 'essential'
+      && edge.type === 'mentions' && input.activeId !== edge.source && input.activeId !== edge.target))
+    // D085-S7 END
       counts.detailFilter++;
     else {
       const source = nearest(edge.source), target = nearest(edge.target);
@@ -89,6 +101,9 @@ export function buildVisibilityWitness(input: VisibilityWitnessInput) {
     aggregates: { drawn: input.aggregateCount, represented: input.representedCount },
     stars: { drawn: input.starCount, pickable: false as const }, labels: { drawn: input.labels },
     edges: { drawn, ids }, submitted: { ...drawn },
+    // D085-S7 BEGIN
+    relationDetail: input.relationCounts ?? null,
+    // D085-S7 END
     zeroDegree: { count: isolated.length, ids: isolated,
       markedUnconnected: isolated.filter(id => !legitimate.has(id)) },
     excluded: { byCause: {
