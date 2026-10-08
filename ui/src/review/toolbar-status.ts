@@ -4,6 +4,13 @@ export type GraphToolbarCounts = {
 };
 
 export type D081GraphStatus = {
+  // D085-S5 BEGIN: visual composition counts remain outside real node/edge totals.
+  indraComposition?: Readonly<{ pearlShellsSubmitted: number; pearlShellsDrawn: number;
+    pearlShellsLodSuppressed: number; guidesRequested: number; guidesDrawn: number;
+    guidesSuppressed: number; eligibleRealEdgeRoutes: number }>;
+  juliaIndraGate?: Readonly<{ evaluated: boolean; ok: boolean; eligible: number;
+    passing: number; share: number; reason: string | null }>;
+  // D085-S5 END
   nodes: { visible: number; represented: number; total: number; eligible: number; aggregated: number; aggregates: number };
   edges: { drawn: number; bundled: number; bundles: number; eligible: number; total: number };
   depth: { level: number; label: string };
@@ -40,9 +47,15 @@ export function formatD081GraphStatus(status: D081GraphStatus): { line: string; 
     `Aggregati: ${count(nodes.aggregates)} gruppi con ${count(nodes.aggregated)} elementi rappresentati.`,
     `Qualità: ${{ movimento: "Movimento", recupero: "Recupero", completa: "Completa" }[quality]}.`,
     limit ? `Limite attivo: ${limit.kind} · ${count(limit.value)} · ${sentence(limit.reason)}` : "Limite attivo: nessuno.",
-    hint ? sentence(hint) : nodes.visible < nodes.represented && nodes.aggregated > 0
+    // D085-S5 BEGIN: the expanded graph status names counted, non-semantic ink.
+    status.indraComposition
+      ? `Indra: ${count(status.indraComposition.pearlShellsSubmitted)} perle richieste, ${count(status.indraComposition.pearlShellsDrawn)} ammesse dal LOD, ${count(status.indraComposition.pearlShellsLodSuppressed)} soppresse; ${count(status.indraComposition.guidesDrawn)} guide disegnate / ${count(status.indraComposition.guidesRequested)} richieste, ${count(status.indraComposition.guidesSuppressed)} soppresse; ${count(status.indraComposition.eligibleRealEdgeRoutes)} percorsi guida di archi reali eleggibili. Le guide non sono relazioni.`
+      : status.juliaIndraGate && !status.juliaIndraGate.ok
+        ? sentence(`Julia con Indra: ${status.juliaIndraGate.evaluated ? `${count(status.juliaIndraGate.passing)} su ${count(status.juliaIndraGate.eligible)} carte leggibili` : 'verifica in attesa'}. ${status.juliaIndraGate.reason ?? ''}`)
+      : hint ? sentence(hint) : nodes.visible < nodes.represented && nodes.aggregated > 0
       ? sentence(`Tutti gli elementi eleggibili sono rappresentati: ${count(nodes.visible)} come glyph e ${count(nodes.aggregated)} dichiarati nei ${count(nodes.aggregates)} aggregati +N. Zooma su un contenitore per aprirlo e vedere i nodi individuali`)
       : "Tutti gli elementi eleggibili sono rappresentati.",
+    // D085-S5 END
   ];
   return { line, details };
 }

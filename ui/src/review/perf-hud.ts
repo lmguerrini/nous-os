@@ -3,6 +3,13 @@ import type { RenderReadiness } from "./render-readiness.ts";
 
 /** Discreet, opt-in D-081 performance HUD. No sampling work runs while closed. */
 export type D081Status = {
+  // D085-S5 BEGIN
+  indraComposition?: { pearlShellsSubmitted: number; pearlShellsDrawn: number;
+    pearlShellsLodSuppressed: number; guidesRequested: number; guidesDrawn: number;
+    guidesSuppressed: number; eligibleRealEdgeRoutes: number };
+  juliaIndraGate?: { evaluated: boolean; ok: boolean; eligible: number;
+    passing: number; share: number; reason: string | null };
+  // D085-S5 END
   nodes?: { visible?: number; represented?: number; total?: number; eligible?: number; aggregated?: number };
   edges?: { drawn?: number; bundled?: number; eligible?: number; total?: number };
   depth?: { level?: number; label?: string };
@@ -90,6 +97,12 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
     <dt>Qualità · LOD</dt><dd>${quality} · ${depth}</dd>
     <dt>Ultima interazione</dt><dd>${formatDuration(status?.msSinceInteraction)} fa</dd>
     <dt>Ultimo recupero completo</dt><dd>${lastFullRecovery}</dd>
+    <!-- D085-S5 BEGIN: guide strokes and shells are separate from real edges. -->
+    ${status?.indraComposition ? `<dt>Perle Indra richieste / LOD / soppresse</dt><dd>${status.indraComposition.pearlShellsSubmitted} / ${status.indraComposition.pearlShellsDrawn} / ${status.indraComposition.pearlShellsLodSuppressed}</dd>
+    <dt>Guide richieste / disegnate / soppresse</dt><dd>${status.indraComposition.guidesRequested} / ${status.indraComposition.guidesDrawn} / ${status.indraComposition.guidesSuppressed}</dd>
+    <dt>Percorsi guida di archi eleggibili</dt><dd>${status.indraComposition.eligibleRealEdgeRoutes}</dd>` : ''}
+    ${status?.juliaIndraGate ? `<dt>Julia × Indra</dt><dd>${status.juliaIndraGate.ok ? 'leggibile' : 'disabilitata'} · ${status.juliaIndraGate.passing}/${status.juliaIndraGate.eligible} carte · ${status.juliaIndraGate.reason ?? 'criterio superato'}</dd>` : ''}
+    <!-- D085-S5 END -->
   </dl>${status?.hint ? `<p class="performance-hint"></p>` : ""}`;
 }
 

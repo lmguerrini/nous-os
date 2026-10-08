@@ -1,5 +1,5 @@
 /** Canopy's certified IFS as a local law for Indra composition; OFF keeps the D-081 route. */
-import { CANOPY_VERSION, computeCanopyLayout } from '../fractal/canopy-layout.ts';
+import { CANOPY_RATIO, CANOPY_TURN, CANOPY_SPATIAL_TILT, CANOPY_VERSION, computeCanopyLayout } from '../fractal/canopy-layout.ts';
 import type { TopologyDimension, TopologyLaw, TopologyLayout, TopologyNode, TopologySnapshot } from './contract.ts';
 
 // D082-LAB-FIX4 BEGIN: the stationary similarity IFS certificate covers both projections.
@@ -18,7 +18,10 @@ function layout(snapshot: TopologySnapshot, dimension: TopologyDimension): Topol
     // D084-W3-LABELS BEGIN: the witness names the topology with the short selector name;
     // the extended technical name stays in the explanation text («Perché qui»).
     law: 'Canopy', address: row.address,
-    values: { livello: row.level },
+    // D085-S5 BEGIN: the local chart's certified maps remain visible in Perché qui.
+    values: { livello: row.level, ratio: CANOPY_RATIO, turn: CANOPY_TURN,
+      spatialTilt: CANOPY_SPATIAL_TILT },
+    // D085-S5 END
     text: 'Canopy: albero frattale generato tramite un sistema di funzioni iterate (IFS). '
       + 'Indirizzo binario deterministico nella gerarchia; i binari guida non sono relazioni.',
   }]));
@@ -38,6 +41,14 @@ export const canopyLaw: TopologyLaw = {
   supports: (_dimension: TopologyDimension) => ({ ok: true }),
   // D082-LAB-FIX4 END
   layoutFull: layout,
+  // D085-S5 BEGIN: preserve local IFS rails and local binary addresses inside each pearl.
+  layoutChart(children, snapshot, dimension) {
+    const ids = new Set(children.map(node => node.id));
+    return layout({ digest: `${snapshot.digest}:chart:${[...ids].sort().join('|')}`,
+      nodes: children.map(node => ({ ...node, parent: null })),
+      edges: snapshot.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)) }, dimension);
+  },
+  // D085-S5 END
   layoutLocal(children: readonly TopologyNode[], snapshot: TopologySnapshot, dimension: TopologyDimension) {
     const ids = new Set(children.map(node => node.id));
     const local: TopologySnapshot = { digest: `${snapshot.digest}:local:${[...ids].sort().join('|')}`,

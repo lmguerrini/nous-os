@@ -54,4 +54,7 @@ export interface TopologyLaw {
   supports(dimension: TopologyDimension): TopologySupport;
   layoutFull(snapshot: TopologySnapshot, dimension: TopologyDimension): TopologyLayout;
   layoutLocal?(children: readonly TopologyNode[], snapshot: TopologySnapshot, dimension: TopologyDimension): ReadonlyMap<string, Point3>;
+  // D085-S5 BEGIN: a local chart carries guides and the address actually used for placement.
+  layoutChart?(children: readonly TopologyNode[], snapshot: TopologySnapshot, dimension: TopologyDimension): TopologyLayout;
+  // D085-S5 END
 }

@@ -83,7 +83,10 @@ import type { D081GraphStatus } from './toolbar-status.ts';
 import type { TopologyId, TopologyLayout, TopologySnapshot, TopologyWitness } from '../topology/contract.ts';
 import { TOPOLOGY_LAWS, topologySupport } from '../topology/registry.ts';
 // D082-LAB-FIX2 BEGIN
-import { computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
+import { cancelPendingTopologyLayouts, computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
+// D085-S1 BEGIN: serialize page axes before any asynchronous renderer refresh reads them.
+import { createGeometryTransitionQueue } from './geometry-view2.ts';
+// D085-S1 END
 // D082-LAB-FIX2 END
 import { mountTopologyGuides } from '../topology/guide-layer.ts';
 // D082-B2 END.
@@ -141,6 +144,11 @@ let mountFailureLogged = false;
 export function resetMountFailureLog(): void {
     mountFailureLogged = false;
 }
+// D085-S1 BEGIN: cache and camera identity must include the certified law.
+export function topologySceneSignature(topology: TopologyId, indra: boolean): string {
+    return `${topology}|${indra}`;
+}
+// D085-S1 END
 /** The URL parameter that opts the page into the default typed projection pipeline. */
 const PROJECTION_FLAG_PARAM = 'projection';
 export function projectionFlagEnabled(search: string, hash: string): boolean {
@@ -604,11 +612,27 @@ export class V2Page {
     // D082-B2 BEGIN: fixed full snapshot; density only selects draw IDs from its law coordinates.
     private topology: TopologyId = 'natural';
     private topologyIndra = false;
+    // D085-S1 BEGIN: witness the last presented law while another selection is preparing.
+    private committedTaxonomy: { topology: TopologyId; indra: boolean } = { topology: 'natural', indra: false };
+    // D085-S1 END
     private taxonomyExplicit = false;
+    // D085-S1 BEGIN
+    private readonly transitions = createGeometryTransitionQueue();
+    private geometryIntent = 0;
+    /** A new request interrupts projection work even while its predecessor owns the mutation lane. */
+    supersedeGeometry(): void {
+        this.geometryIntent++;
+        this.projectionEpoch++;
+        this.cancelProjectionWork();
+        cancelPendingTopologyLayouts();
+    }
+    // D085-S1 END
     private readonly lawSnapshot: TopologySnapshot;
     private lawLayout: TopologyLayout | null = null;
     private guideLayer: { destroy(): void } | null = null;
-    private readonly lawCache = new Map<string, TopologyLayout>();
+    // D085-S1 BEGIN: only two completed laws may remain resident, within a byte cap.
+    private readonly lawCache = new PageResultCache<TopologyLayout>(2, 24 * 1024 * 1024);
+    // D085-S1 END
     private lawActive(): boolean { return this.topology !== 'natural' &&
         (this.topology !== 'canopy-ifs' || this.topologyIndra); }
     topologyWitness(id: string): { witness: TopologyWitness; path: readonly string[] } | null {
@@ -1966,13 +1990,19 @@ export class V2Page {
             host.className = 'view-host';
             Object.assign(host.style, { position: 'absolute', inset: '0' });
             element('render-root').append(host);
-            let renderer: ProjectionPageRenderer;
+            let renderer!: ProjectionPageRenderer;
             try {
                 renderer = input.createRenderer(host, dimension);
                 renderer.onPick((pick, shiftKey) => this.handleProjectionPick(pick, shiftKey));
                 renderer.onHover((pick, x, y) => this.projectionTooltip(pick, x, y));
                 renderer.mount(lod.displayStyled, visibility);
-            } catch (error) { host.remove(); throw error; }
+            } catch (error) {
+                // D085-S1 BEGIN: a renderer that mounted partly still owns GPU resources.
+                renderer?.destroy();
+                host.remove();
+                // D085-S1 END
+                throw error;
+            }
             this.projectionRenderer?.destroy();
             this.projectionHost?.remove();
             this.projectionRenderer = renderer;
@@ -3438,6 +3468,9 @@ export class V2Page {
         const projectionEpoch = ++this.projectionEpoch;
         this.cancelProjectionWork();
         return this.run(async () => {
+            // D085-S1 BEGIN: an invalidated job never reads the next request's mutable axes.
+            if (projectionEpoch !== this.projectionEpoch) return;
+            // D085-S1 END
             if (this.typedActive()) { await this.refreshProjection(projectionEpoch); return; }
             // Back on the product view: the typed renderer a Fractal view left behind is retired.
             this.retireTypedRenderer();
@@ -3613,14 +3646,26 @@ export class V2Page {
             this.projectionCacheOutcome = reused ? 'hit' : 'miss';
             // D081-P3c BEGIN: large classic layouts run in the embedded worker.
             // D082-LAB-FIX2 BEGIN: compute the certified full law and Indra composition in the worker.
-            const lawResult = lawKey ? this.lawCache.get(lawKey) ?? await computeTopologyLayoutAsync(
-                this.topology as Exclude<TopologyId, 'natural'>, this.lawSnapshot, projection, this.topologyIndra) : null;
+            // D085-S1 BEGIN: a cancelled worker response cannot populate a cache or reach a host.
+            let lawResult: TopologyLayout | null = null;
+            try {
+                lawResult = lawKey ? this.lawCache.get(lawKey) ?? await computeTopologyLayoutAsync(
+                    this.topology as Exclude<TopologyId, 'natural'>, this.lawSnapshot, projection, this.topologyIndra) : null;
+            } catch (error) {
+                if (projectionEpoch !== this.projectionEpoch && error instanceof Error && error.name === 'AbortError') return;
+                throw error;
+            }
+            if (projectionEpoch !== this.projectionEpoch) return;
+            // D085-S1 END
             // D082-LAB-FIX2 END
-            if (lawKey && lawResult && !this.lawCache.has(lawKey)) this.lawCache.set(lawKey, lawResult);
+            if (lawKey && lawResult) this.lawCache.set(lawKey, lawResult);
             const result: LayoutResult = reused ?? (lawResult ? topologyLayoutResult(lawResult) : canopy
                 ? { positions: canopyRenderPositions(canopy, sceneNodes.map(node => node.id), projection),
                     containers: [], source: 'fractal-canopy' }
                 : await computeClassicLayout(layoutInput));
+            // D085-S1 BEGIN: classic worker results obey the same last-request gate.
+            if (projectionEpoch !== this.projectionEpoch) return;
+            // D085-S1 END
             if (lawResult && sceneNodes.some(node => !result.positions.has(node.id)))
                 throw new Error(`${this.topology}: un dettaglio caricato non appartiene allo snapshot topologico fisso`);
             // D082-B2 END
@@ -3917,7 +3962,10 @@ export class V2Page {
             // loss, no remount spike. Everything above ran exactly as before (the layout over the
             // whole disclosed set, the LOD selection, the arc selection), so the payload carries
             // the same data a mount would receive.
-            const lodKey = [this.axes.organization, this.axes.projection, this.axes.morphology,
+            // D085-S1 BEGIN: distinct laws may share every legacy axis and the same visible IDs.
+            // The in-place LOD path changes marks/edges only; it cannot change their coordinates.
+            const topologySceneKey = topologySceneSignature(this.topology, this.topologyIndra);
+            const lodKey = [topologySceneKey, this.axes.organization, this.axes.projection, this.axes.morphology,
                 this.axes.reading, this.axes.colour, this.axes.labels, this.axes.brain === true, this.relationDetail,
                 JSON.stringify(this.appearance), JSON.stringify(this.palette), JSON.stringify(this.v2Colours),
                 [...ids].sort().join('|')].join('\u00B7');
@@ -3942,6 +3990,9 @@ export class V2Page {
                 if (!applied) this.indraLabelHiddenCounts = previousHiddenCounts;
                 // D082-A-PLUSN END
                 if (applied) {
+                    // D085-S1 BEGIN
+                    this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
+                    // D085-S1 END
                     // The same commit a successful mount makes, minus everything a remount owns
                     // (positions, camera bookkeeping, layout keys — the scene did not change).
                     this.rendered = renderedIds;
@@ -3995,13 +4046,14 @@ export class V2Page {
             // Bounds change with the visible set and also when a pearl resizes as its hidden children load.
             const box = layoutStats(next).bbox;
             const extent = [box.x, box.y, box.z].map(range => range.map(value => Math.round(value)).join(':')).join('/');
-            const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}|${extent}|${[...ids].sort().join('|')}`;
+            const boundsKey = `${topologySceneKey}|${arrangement}|${this.axes.morphology}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}|${extent}|${[...ids].sort().join('|')}`;
             const boundsChanged = boundsKey !== this.lastBoundsKey;
             // D-072 FixA: the same scene (same disclosed ids, arrangement and morphology) means a
             // density or level refresh — it must never move the camera, even when the rendered
             // subset's extents jitter enough to look like a bounds change. Only a genuinely new
             // scene may refit, and only while the user has not taken the camera themselves.
-            const sceneKey = `${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
+            const sceneKey = `${topologySceneKey}|${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
+            // D085-S1 END
             const sceneUnchanged = !!old && sceneKey === this.lastSceneKey;
             const keep = old && arrangement === this.lastArrangement;
             // A disclosure can move a node in any product layout (Natural 3D recalculates its
@@ -4068,8 +4120,11 @@ export class V2Page {
             // separate main-thread tasks; the resident view stays on screen.
             if (this.density === 'complete' && disclosed.nodes.length > 1200)
                 await new Promise<void>(resolve => setTimeout(resolve, 0));
+            // D085-S1 BEGIN: remove a prepared host when a newer request arrived during the yield.
+            if (projectionEpoch !== this.projectionEpoch) { nextHost.remove(); return; }
+            // D085-S1 END
             // D081-P3c END
-            let mounted: ProductView;
+            let mounted!: ProductView;
             let nextRailLayer: CanopyRailLayer | null = null;
             // D082-B2 BEGIN
             let nextGuideLayer: { destroy(): void } | null = null;
@@ -4122,6 +4177,10 @@ export class V2Page {
                 }
             }
             catch (error) {
+                // D085-S1 BEGIN: a later overlay failure cannot strand the new renderer.
+                mounted?.destroy();
+                nextRailLayer?.destroy();
+                // D085-S1 END
                 // D082-B2 BEGIN
                 nextGuideLayer?.destroy();
                 // D082-B2 END
@@ -4145,6 +4204,9 @@ export class V2Page {
             const previousGuideLayer = this.guideLayer;
             // D082-B2 END
             this.view = mounted;
+            // D085-S1 BEGIN
+            this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
+            // D085-S1 END
             this.viewHost = nextHost;
             this.canopyRailLayer = nextRailLayer;
             // D082-B2 BEGIN
@@ -4491,7 +4553,13 @@ export class V2Page {
     async setRelationDetail(value: RelationDetail) { this.relationDetail = value; await this.refresh(); }
     /** D-072 L1: change the density setting (Essenziale · Bilanciata · Completa); the budgets are
      * recomputed on the next refresh and the coordinates never move. */
-    async setDensity(value: Density) {
+    // D085-S1 BEGIN: density participates in the same page transition lane.
+    setDensity(value: Density): Promise<void> {
+        this.supersedeGeometry();
+        const intent = this.geometryIntent;
+        return this.transitions.enqueue(() => intent === this.geometryIntent ? this.applyDensity(value) : Promise.resolve());
+    }
+    private async applyDensity(value: Density) {
         const next = normalizeDensity(value);
         if (next === this.density)
             return;
@@ -4519,6 +4587,7 @@ export class V2Page {
         // D081-P3b END
         await this.refresh();
     }
+    // D085-S1 END
     get densitySetting() { return this.density; }
     get lodLevel() { return this.lod; }
     /** The selection path, hover, explicit containers and newest bounded child page. */
@@ -4708,9 +4777,17 @@ export class V2Page {
         window.setTimeout(() => layer.remove(), 1000);
     }
     // D082-B2 BEGIN: validate the requested row before changing either taxonomy axis.
-    async setTaxonomy(topology: TopologyId, indra: boolean): Promise<void> {
+    // D085-S1 BEGIN: queue the whole mutation/refresh/commit, not merely the worker response.
+    setTaxonomy(topology: TopologyId, indra: boolean): Promise<void> {
+        this.supersedeGeometry();
+        const intent = this.geometryIntent;
+        return this.transitions.enqueue(() => intent === this.geometryIntent
+            ? this.applyTaxonomy(topology, indra, intent) : Promise.resolve());
+    }
+    private async applyTaxonomy(topology: TopologyId, indra: boolean, intent: number): Promise<void> {
         const support = topologySupport(topology, this.axes.projection, indra);
         if (!support.ok) throw new Error(support.reason);
+        const previousAxes = this.axes;
         const previous = { topology: this.topology, indra: this.topologyIndra,
             legacyIndra: this.legacyIndra, explicit: this.taxonomyExplicit };
         this.topology = topology;
@@ -4719,12 +4796,40 @@ export class V2Page {
         if (topology === 'natural') this.legacyIndra = true;
         const organization = topology === 'canopy-ifs' && !indra ? 'fractal'
             : topology === 'natural' && indra ? 'indra' : 'natural';
-        try { await this.setAxes({ organization }); }
-        catch (error) { this.topology = previous.topology; this.topologyIndra = previous.indra;
+        try {
+            await this.applyAxes({ organization });
+            if (intent !== this.geometryIntent) return;
+            // D085-S1 BEGIN: a protected mount can keep the last good view and resolve refresh().
+            // That is a refusal, never a successful topology selection for the toolbar to persist.
+            if (this.view && (this.committedTaxonomy.topology !== topology || this.committedTaxonomy.indra !== indra))
+                throw new Error(`${topology}: la nuova vista non è stata montata`);
+            // D085-S1 END
+        }
+        catch (error) { if (intent !== this.geometryIntent) return;
+            this.axes = previousAxes; this.topology = previous.topology; this.topologyIndra = previous.indra;
             this.legacyIndra = previous.legacyIndra; this.taxonomyExplicit = previous.explicit; throw error; }
     }
     // D082-B2 END
-    async setAxes(value: AxesInput) {
+    setAxes(value: AxesInput): Promise<void> {
+        this.supersedeGeometry();
+        const intent = this.geometryIntent;
+        return this.transitions.enqueue(async () => {
+            if (intent !== this.geometryIntent) return;
+            const previousAxes = this.axes;
+            try {
+                await this.applyAxes(value);
+                // D085-S1 BEGIN: a protected mount may resolve while keeping the old dimension.
+                if (intent === this.geometryIntent && this.view?.witness().axes.projection !== undefined
+                    && this.view.witness().axes.projection !== this.axes.projection)
+                    throw new Error('La nuova proiezione non è stata montata');
+                // D085-S1 END
+            } catch (error) {
+                if (intent === this.geometryIntent) this.axes = previousAxes;
+                throw error;
+            }
+        });
+    }
+    private async applyAxes(value: AxesInput) {
         const changed = normalizeAxesInput(value);
         const merged: PageAxes = { ...this.axes, ...changed };
         // D082-B2 BEGIN
@@ -4778,6 +4883,7 @@ export class V2Page {
         (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
     }
+    // D085-S1 END
     async setAppearance(value: AppearanceOptions) { this.appearance = value; await this.refresh(); }
     setFlowMotion(enabled: boolean) { this.flowMotion = enabled; this.view?.setFlowMotion(enabled); }
     /** Per-axis expansion that balances the Flat 3D embedding's principal extents (PCA), from the canonical base. */
@@ -5114,6 +5220,12 @@ export class V2Page {
         // D082-A-READINGS END
         return {
             ...viewWitness,
+            // D085-S1 BEGIN: this is the mounted topology, not a later queued click.
+            taxonomy: { ...this.committedTaxonomy,
+                phase: this.topology === this.committedTaxonomy.topology
+                    && this.topologyIndra === this.committedTaxonomy.indra ? 'complete' : 'transition',
+                requested: { topology: this.topology, indra: this.topologyIndra } },
+            // D085-S1 END
             ...(visibility ? { visibility } : {}),
             // The typed page keeps its own axes record; there is no product view to ask.
             ...(this.view && !this.canopyActive() ? {} : { axes: this.axes,
