@@ -640,6 +640,11 @@ export class V2Page {
     private topologyIndra = false;
     // D085-S1 BEGIN: witness the last presented law while another selection is preparing.
     private committedTaxonomy: { topology: TopologyId; indra: boolean } = { topology: 'natural', indra: false };
+    // D085-S1 BEGIN: the mounted view, not a provisional request, owns these axes.
+    private committedAxes: PageAxes | null = null;
+    get committedViewAxes(): PageAxes { return { ...(this.committedAxes ?? this.view?.witness?.().axes ?? this.axes) }; }
+    get committedViewTaxonomy() { return { ...this.committedTaxonomy }; }
+    // D085-S1 END
     // D085-S1 BEGIN: a toolbar transition is complete only after main presents its committed law.
     private taxonomyPresentationPending = false;
     confirmTaxonomyPresentation(topology: TopologyId, indra: boolean): void {
@@ -2179,6 +2184,10 @@ export class V2Page {
         }
         this.projectionRevision = visibility.revision;
         this.projectionResult = result;
+        // D085-S1 BEGIN: typed projection mounts commit the same page truth as product views.
+        this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
+        this.committedAxes = { ...this.axes };
+        // D085-S1 END
         this.projectionSnapshot = snapshot;
         this.projectionDomain = domain;
         this.projectionVisibility = visibility;
@@ -3679,11 +3688,14 @@ export class V2Page {
             this.detailCache.set(passage.id, { detail: item });
         }
     }
-    refresh(ownedByGeometry = false): Promise<void> {
+    refresh(ownedByGeometry = false, detailSwitch = false): Promise<void> {
         // D085-S1 BEGIN: appearance, relation detail and zoom cannot invalidate an accepted mount.
         if (this.geometryTransitionActive && !ownedByGeometry)
-            return this.transitions.enqueue(() => this.refresh());
+            return this.transitions.enqueue(() => this.refresh(false, detailSwitch));
         // D085-S1 END
+        // D085-S7 BEGIN: only this refresh may reuse the last mounted representatives.
+        if (detailSwitch) this.relationDetailSwitchPending = true;
+        // D085-S7 END
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
         this.refreshPending++;
         // D082-A-HUD BEGIN: publish the requested scene as in recovery while its new view is pending.
@@ -4472,6 +4484,7 @@ export class V2Page {
                 if (applied) {
                     // D085-S1 BEGIN
                     this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
+                    this.committedAxes = { ...this.axes };
                     // D085-S1 END
                     // The same commit a successful mount makes, minus everything a remount owns
                     // (positions, camera bookkeeping, layout keys — the scene did not change).
@@ -4718,6 +4731,7 @@ export class V2Page {
             this.view = mounted;
             // D085-S1 BEGIN
             this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
+            this.committedAxes = { ...this.axes };
             // D085-S1 END
             this.viewHost = nextHost;
             this.canopyRailLayer = nextRailLayer;
@@ -4876,6 +4890,9 @@ export class V2Page {
             // D082-A-DENSITY END
             this.renderPanel();
         }).finally(() => {
+            // D085-S7 BEGIN
+            if (detailSwitch) this.relationDetailSwitchPending = false;
+            // D085-S7 END
             this.refreshPending--;
             if (this.d081Quality === 'recupero' && this.refreshPending === 0) {
                 this.d081FinishIfReady();
@@ -5066,15 +5083,19 @@ export class V2Page {
     async setRelationDetail(value: RelationDetail) {
         if (this.relationDetail === value) return;
         this.relationDetail = value;
-        this.relationDetailSwitchPending = true;
-        try { await this.refresh(); }
-        finally { this.relationDetailSwitchPending = false; }
+        await this.refresh(false, true);
     }
     // D085-S7 END
     /** D-072 L1: change the density setting (Essenziale · Bilanciata · Completa); the budgets are
      * recomputed on the next refresh and the coordinates never move. */
     // D085-S1 BEGIN: density participates in the same page transition lane.
     setDensity(value: Density): Promise<void | 'superseded'> {
+        // D085-S1 BEGIN: carry an unfinished organization choice into the density mount;
+        // a provisional projection still returns to the committed dimension.
+        const inheritedOrganization = this.geometryTransitionActive
+            && this.axes.organization !== (this.committedAxes?.organization ?? this.axes.organization)
+            ? this.axes.organization : null;
+        // D085-S1 END
         this.supersedeGeometry();
         const intent = this.geometryIntent;
         // D085-S1 BEGIN: a stale density is never reported as a committed change.
@@ -5083,7 +5104,7 @@ export class V2Page {
             const previousDensity = this.density;
             this.geometryTransitionActive = true;
             try {
-                await this.applyDensity(value);
+                await this.applyDensity(value, inheritedOrganization);
                 if (intent !== this.geometryIntent) {
                     this.density = previousDensity;
                     return 'superseded' as const;
@@ -5095,9 +5116,9 @@ export class V2Page {
         });
         // D085-S1 END
     }
-    private async applyDensity(value: Density) {
+    private async applyDensity(value: Density, inheritedOrganization: PageAxes['organization'] | null = null) {
         const next = normalizeDensity(value);
-        if (next === this.density)
+        if (next === this.density && !inheritedOrganization)
             return;
         // D082-A-DENSITY BEGIN: a density switch is a filter change, never a fit intent.
         this.densitySwitchPending = true;
@@ -5121,7 +5142,10 @@ export class V2Page {
             // D081-P3c END
         }
         // D081-P3b END
-        await this.refresh(true);
+        // D085-S1 BEGIN: the successor applies the inherited organization in its own refresh.
+        if (inheritedOrganization) await this.applyAxes({ organization: inheritedOrganization });
+        else await this.refresh(true);
+        // D085-S1 END
     }
     // D085-S1 END
     get densitySetting() { return this.density; }
@@ -5314,7 +5338,8 @@ export class V2Page {
     }
     // D082-B2 BEGIN: validate the requested row before changing either taxonomy axis.
     // D085-S1 BEGIN: queue the whole mutation/refresh/commit, not merely the worker response.
-    setTaxonomy(topology: TopologyId, indra: boolean, requirePresentation = false): Promise<void> {
+    setTaxonomy(topology: TopologyId, indra: boolean, requirePresentation = false,
+        targetAxes?: AxesInput, targetDensity?: Density): Promise<void> {
         this.supersedeGeometry();
         const intent = this.geometryIntent;
         // D085-S1 BEGIN: keep the witness in transition until main updates URL and controls.
@@ -5324,7 +5349,7 @@ export class V2Page {
         return this.transitions.enqueue(async () => {
             if (intent !== this.geometryIntent) throw new GeometrySupersededError();
             this.geometryTransitionActive = true;
-            try { await this.applyTaxonomy(topology, indra, intent); }
+            try { await this.applyTaxonomy(topology, indra, intent, targetAxes, targetDensity); }
             catch (error) {
                 if (intent === this.geometryIntent) this.taxonomyPresentationPending = false;
                 throw error;
@@ -5333,30 +5358,38 @@ export class V2Page {
         });
         // D085-S1 END
     }
-    private async applyTaxonomy(topology: TopologyId, indra: boolean, intent: number): Promise<void> {
-        const support = topologySupport(topology, this.axes.projection, indra);
+    private async applyTaxonomy(topology: TopologyId, indra: boolean, intent: number,
+        targetAxes?: AxesInput, targetDensity?: Density): Promise<void> {
+        const support = topologySupport(topology, targetAxes?.projection ?? this.axes.projection, indra);
         if (!support.ok) throw new Error(support.reason);
         const previousAxes = this.axes;
         const previous = { topology: this.topology, indra: this.topologyIndra,
             legacyIndra: this.legacyIndra, explicit: this.taxonomyExplicit };
+        // D085-S1 BEGIN: a restore request applies its final axes and density in one mount.
+        const priorAxisState = this.captureAxisState();
+        const committedBefore = this.committedAxes;
+        // D085-S1 END
         // D085-S1 BEGIN: a cancelled provisional taxonomy cannot outlive its task.
         const restore = () => {
             this.axes = previousAxes; this.topology = previous.topology; this.topologyIndra = previous.indra;
             this.legacyIndra = previous.legacyIndra; this.taxonomyExplicit = previous.explicit;
+            this.restoreAxisState(priorAxisState);
         };
         // D085-S1 END
         this.topology = topology;
         this.topologyIndra = indra;
         this.taxonomyExplicit = true;
         if (topology === 'natural') this.legacyIndra = true;
+        if (targetDensity !== undefined) this.density = targetDensity;
         // D085-S1 BEGIN: compose the selected law inside Indra in this single mount.
         const organization = indra ? 'indra' : topology === 'canopy-ifs' ? 'fractal' : 'natural';
         // D085-S1 END
         try {
-            await this.applyAxes({ organization });
+            await this.applyAxes({ ...targetAxes, organization });
             // D085-S1 BEGIN: cancellation can resolve refresh() before a mount commits.
             if (intent !== this.geometryIntent) {
-                if (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra) restore();
+                if (this.committedAxes === committedBefore &&
+                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore();
                 throw new GeometrySupersededError();
             }
             // D085-S1 END
@@ -5369,33 +5402,73 @@ export class V2Page {
         catch (error) {
             // D085-S1 BEGIN
             if (intent !== this.geometryIntent) {
-                if (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra) restore();
+                if (this.committedAxes === committedBefore &&
+                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore();
                 throw new GeometrySupersededError();
             }
-            restore();
+            // D085-S1 BEGIN: a post-commit error must not put old state over a mounted law.
+            if (this.committedAxes === committedBefore &&
+                (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore();
+            // D085-S1 END
             // D085-S1 END
             throw error;
         }
     }
     // D082-B2 END
+    // D085-S1 BEGIN: provisional axis mutations are restored only when no view committed.
+    private captureAxisState() {
+        return { axes: this.axes, density: this.density, lod: this.lod, pendingLod: this.pendingLod,
+            canopyDetailStep: this.canopyDetailStep, auto: this.auto ? new Set(this.auto) : null,
+            autoPageCounts: this.autoPageCounts ? new Map(this.autoPageCounts) : null,
+            revealState: this.revealState, revealCamera: this.revealCamera,
+            overviewRatio: this.overviewRatio, lastRevealSampleKey: this.lastRevealSampleKey,
+            wheelGesture: this.wheelGesture,
+            indraRequestedLevelRefusals: this.indraRequestedLevelRefusals ? new Map(this.indraRequestedLevelRefusals) : null,
+            brainChoices: this.brainChoices ? new Map(this.brainChoices) : null };
+    }
+    private restoreAxisState(state: ReturnType<V2Page['captureAxisState']>): void {
+        this.axes = state.axes;
+        this.density = state.density; this.lod = state.lod; this.pendingLod = state.pendingLod;
+        this.canopyDetailStep = state.canopyDetailStep;
+        if (state.auto) this.auto = state.auto;
+        if (state.autoPageCounts) this.autoPageCounts = state.autoPageCounts;
+        this.revealState = state.revealState; this.revealCamera = state.revealCamera;
+        this.overviewRatio = state.overviewRatio; this.lastRevealSampleKey = state.lastRevealSampleKey;
+        this.wheelGesture = state.wheelGesture;
+        if (state.indraRequestedLevelRefusals) {
+            this.indraRequestedLevelRefusals.clear();
+            for (const [level, refusal] of state.indraRequestedLevelRefusals)
+                this.indraRequestedLevelRefusals.set(level, refusal);
+        }
+        if (state.brainChoices) {
+            this.brainChoices.clear();
+            for (const [mode, enabled] of state.brainChoices) this.brainChoices.set(mode, enabled);
+            saveBrainChoices(this.brainChoices);
+        }
+    }
+    // D085-S1 END
     setAxes(value: AxesInput): Promise<void | 'superseded'> {
         this.supersedeGeometry();
         const intent = this.geometryIntent;
         return this.transitions.enqueue(async () => {
             // D085-S1 BEGIN: only a mounted projection resolves successfully.
             if (intent !== this.geometryIntent) return 'superseded' as const;
-            const previousAxes = this.axes;
+            const previousState = this.captureAxisState();
+            const committedBefore = this.committedAxes;
             this.geometryTransitionActive = true;
             try {
                 await this.applyAxes(value);
-                if (intent !== this.geometryIntent) return 'superseded' as const;
+                if (intent !== this.geometryIntent) {
+                    if (this.committedAxes === committedBefore) this.restoreAxisState(previousState);
+                    return 'superseded' as const;
+                }
                 // D085-S1 BEGIN: a protected mount may resolve while keeping the old dimension.
                 if (intent === this.geometryIntent && this.view?.witness().axes.projection !== undefined
                     && this.view.witness().axes.projection !== this.axes.projection)
                     throw new Error('La nuova proiezione non è stata montata');
                 // D085-S1 END
             } catch (error) {
-                if (intent === this.geometryIntent) this.axes = previousAxes;
+                if (this.committedAxes === committedBefore) this.restoreAxisState(previousState);
                 throw error;
             } finally { this.geometryTransitionActive = false; }
             // D085-S1 END
