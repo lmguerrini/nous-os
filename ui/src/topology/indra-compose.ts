@@ -73,9 +73,33 @@ function locate(
   if (law.id === 'lull') {
     const gap = Math.max(7, frames.reduce((sum, frame) => sum + frame.radius, 0) / frames.length * 0.08);
     const packed = packDiscs(frames.map(frame => ({ id: frame.node.id, radius: frame.radius })), gap);
+    // D086-F4 BEGIN: the first disc of a multi-child pack sits at the parent's
+    // centre. Translate the whole pack so equal-class containment links remain
+    // measurable, without changing any sibling distance or certified height.
+    let shift = { x: 0, y: 0 };
+    if (lullClasses && frames.length > 1) {
+      const clearance = gap / 2;
+      const start = depthOf(frames[0]!.node.id) * Math.PI;
+      let found = false;
+      for (let i = 0; i < 32; i++) {
+        const angle = start + i * 2 * Math.PI / 32;
+        const candidate = { x: gap * Math.cos(angle), y: gap * Math.sin(angle) };
+        if (frames.every(frame => { const p = packed.get(frame.node.id)!;
+          return Math.hypot(p.x + candidate.x, p.y + candidate.y) >= clearance; })) {
+          shift = candidate;
+          found = true;
+          break;
+        }
+      }
+      if (!found) shift = { x: Math.max(...frames.map(frame => {
+        const p = packed.get(frame.node.id)!;
+        return Math.hypot(p.x, p.y);
+      })) + gap, y: 0 };
+    }
+    // D086-F4 END
     // D086-F4 BEGIN: one scene-wide certified class height, also used by the Figure.
     const offsets = new Map<string, Point3>(frames.map(frame => { const p = packed.get(frame.node.id)!;
-      return [frame.node.id, { x: p.x, y: p.y, z: lullClasses
+      return [frame.node.id, { x: p.x + shift.x, y: p.y + shift.y, z: lullClasses
         ? LULL_3D_LIFT * (lullClasses.get(frame.node.id)! - parentClass) : 0 }] as const; }));
     // D086-F4 END
     // D085-S5 BEGIN: a unary Llull container needs the same visible contains
@@ -429,6 +453,25 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
     radius: Math.max(extent * globalScale / 0.94, 1), radius2d: radius2d * globalScale, open: true, title: 'NousOS' });
   // D086-F4 BEGIN: acceptance-gated geometry certificate, measured after final fit.
   let clearance = Infinity, containment = Infinity, zResidual = 0;
+  // D086-F4 BEGIN: source edge endpoints and all guide paths must survive final fit.
+  let edgeLength = Infinity, guideLength = Infinity, guideSegmentLength = Infinity;
+  if (lull3d) {
+    for (const edge of snapshot.edges) {
+      const a = positions.get(edge.source)!, b = positions.get(edge.target)!;
+      edgeLength = Math.min(edgeLength, Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z));
+    }
+    for (const guide of guides) {
+      let pathLength = 0;
+      for (let i = 1; i < guide.points.length; i++) {
+        const a = guide.points[i - 1]!, b = guide.points[i]!;
+        const segmentLength = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+        pathLength += segmentLength;
+        guideSegmentLength = Math.min(guideSegmentLength, segmentLength);
+      }
+      guideLength = Math.min(guideLength, pathLength);
+    }
+  }
+  // D086-F4 END
   if (lull3d) {
     const shellById = new Map(containers.map(shell => [shell.id, shell]));
     // D086-F4 BEGIN: leaves still have real glyph/pearl seed radii.
@@ -470,6 +513,14 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
         { code: 'lull-indra3d.sibling-root-clearance-min', value: clearance, acceptable: clearance > -1e-7 },
         { code: 'lull-indra3d.shell-containment-margin-min', value: containment, acceptable: containment > -1e-7 },
         { code: 'lull-indra3d.z-residual-max', value: zResidual, acceptable: zResidual < 1e-7 },
+        // D086-F4 BEGIN: every density and reading draws a subset of these real
+        // source edges; route hints are checked as guides even when suppressed.
+        { code: 'lull-indra3d.real-edge-length-min', value: snapshot.edges.length ? edgeLength : 0,
+          acceptable: snapshot.edges.length === 0 || edgeLength > 0 },
+        { code: 'lull-indra3d.guide-path-length-min', value: guideLength, acceptable: guideLength > 0 },
+        { code: 'lull-indra3d.guide-segment-length-min', value: guideSegmentLength,
+          acceptable: guideSegmentLength > 0 },
+        // D086-F4 END
         { code: 'lull-indra3d.class-step-fitted', value: globalScale * LULL_3D_LIFT, acceptable: globalScale > 0 },
         { code: 'lull-indra3d.figure-pair-guides', value: guides.filter(g => g.kind === 'lull-pair-chord').length,
           acceptable: guides.filter(g => g.kind === 'lull-pair-chord').length === 36 },
