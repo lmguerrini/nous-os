@@ -694,6 +694,10 @@ export class V2Page {
     }
     // D085-S1 END
     private readonly lawSnapshot: TopologySnapshot;
+    // D085-X9 BEGIN: membership is fixed before zoom can append fetched passages.
+    private readonly lawIndex: V2Index;
+    private readonly lawSnapshotNodeIds: ReadonlySet<string>;
+    // D085-X9 END
     private lawLayout: TopologyLayout | null = null;
     private guideLayer: { destroy(): void; invalidate(): void } | null = null;
     // D085-S4 BEGIN: the state of the Llull overview fold.
@@ -1024,7 +1028,11 @@ export class V2Page {
             // D085-S7 BEGIN / D085-S4 BEGIN: relation detail counts, and the Llull overview's
             // aggregated share of the drawn edges — the counter's «archi» and these fields partition exactly.
             edges: { drawn: route.drawn.length, ...bundleCounts, eligible: eligibleEdges,
-                total: this.index.edges.length + this.index.nodes.filter(node => node.parent !== null).length,
+                // D085-X9 BEGIN: the law status keeps the fixed source denominator.
+                total: this.index.edges.length + (this.topology !== undefined && this.lawActive()
+                    ? this.lawIndex.nodes : this.index.nodes)
+                    .filter(node => node.parent !== null).length,
+                // D085-X9 END
                 ...(route.detail ? { detail: route.detail } : {}),
                 aggregatedIntoBundles: this.lullOverviewFold ? this.lullOverviewFold.foldedEdges : 0,
                 aggregatedRelationsIntoBundles: this.lullOverviewFold ? this.lullOverviewFold.foldedRelations : 0,
@@ -1417,7 +1425,11 @@ export class V2Page {
         this.manifest = manifest;
         this.index = index;
         // D082-B2 BEGIN
-        this.lawSnapshot = topologySnapshot(manifest, index);
+        // D085-X9 BEGIN
+        this.lawIndex = { ...index, nodes: [...index.nodes], edges: [...index.edges] };
+        this.lawSnapshot = topologySnapshot(manifest, this.lawIndex);
+        this.lawSnapshotNodeIds = new Set(this.lawSnapshot.nodes.map(node => node.id));
+        // D085-X9 END
         this.topology = deps.taxonomy?.topology ?? 'natural';
         this.topologyIndra = deps.taxonomy?.indra ?? false;
         this.taxonomyExplicit = deps.taxonomy !== undefined;
@@ -1646,6 +1658,25 @@ export class V2Page {
         });
     }
     private visible() {
+        // D085-X9 BEGIN: every law consumer (selection, routing and scene assembly)
+        // sees the fixed snapshot, including when Natural fetched passages earlier.
+        const disclosed = this.unfilteredVisible();
+        if (!this.lawActive()) return disclosed;
+        const nodes = disclosed.nodes.filter(node => this.lawSnapshotNodeIds.has(node.id));
+        const counts: Record<number, number> = {};
+        for (const node of nodes) counts[node.level] = (counts[node.level] ?? 0) + 1;
+        return { ...disclosed,
+            nodes, counts,
+            edges: disclosed.edges.filter(edge => this.lawSnapshotNodeIds.has(edge.source)
+                && this.lawSnapshotNodeIds.has(edge.target)) };
+        // D085-X9 END
+    }
+    // D085-X9 BEGIN
+    private unfilteredVisible() {
+    // D085-X9 END
+        // D085-X9 BEGIN: selection reads the fixed law domain before any budget is applied.
+        const source = this.lawActive() ? this.lawIndex : this.index;
+        // D085-X9 END
         // D082-B1 BEGIN: Canopy Completa uses the immutable full dataset, never V2_CAP.
         if (this.canopyActive() && this.density === 'complete') {
             const counts: Record<number, number> = {};
@@ -1655,7 +1686,9 @@ export class V2Page {
         }
         // D082-B1 END.
         // D081-P3b BEGIN complete Indra domain
-        if (this.density === 'complete' && !this.canopyActive() && (!this.typedActive() || this.indraPearlsView())) return completeVisible(this.index);
+        // D085-X9 BEGIN
+        if (this.density === 'complete' && !this.canopyActive() && (!this.typedActive() || this.indraPearlsView())) return completeVisible(source);
+        // D085-X9 END
         // D081-P3b END
         // D085-S2 BEGIN: the live Essenziale law disclosure is also the Bilanciata seed.
         // Both paths must include zoom admissions and their page counts.
@@ -1663,40 +1696,49 @@ export class V2Page {
         // D085-S2 END
         // D085-S2 BEGIN: Bilanciata may draw from the full fixed law layout.
         if (this.lawActive() && !this.canopyActive() && this.density === 'balanced' &&
-            this.index.nodes.length > V2_CAP) return completeVisible(this.index);
+            source.nodes.length > V2_CAP) return completeVisible(source);
         // D085-S2 END
         // D085-S2 BEGIN: law Essenziale admits the current semantic-zoom disclosure
         // before the stable candidate fill. Natural and Indra retain their explicit-only pool.
         if (this.lawActive() && !this.canopyActive() && this.density === 'essential' &&
-            this.index.nodes.length > V2_CAP) return this.lawEssentialDisclosure();
+            source.nodes.length > V2_CAP) return this.lawEssentialDisclosure();
         // D085-S2 END
         // D082-A-DENSITY BEGIN: the two lower levels share one semantic disclosure.
-        return this.density === 'complete' || this.index.nodes.length <= V2_CAP ||
+        // D085-X9 BEGIN
+        return this.density === 'complete' || source.nodes.length <= V2_CAP ||
             (this.axes.organization !== 'natural' && this.axes.organization !== 'indra')
-            ? base : densityDisclosure(this.index, this.densityManualVisible(), this.selected,
+            ? base : densityDisclosure(source, this.densityManualVisible(), this.selected,
                 // D085-S2 BEGIN: the pool grows with the topology-aware Bilanciata budget,
                 // except for the typed pipeline, whose analytical domain keeps the verified
                 // 850-node contract (`selectAnalyticalDomain`'s policy gate is outside this
                 // stream's ceiling). The pool's fill order is unchanged, so the first 850
                 // candidates — and every coordinate computed over them — stay identical.
                 this.typedActive() ? undefined : densityPoolLimit(this.densityBudgetFor().nodes));
+        // D085-X9 END
         // D085-S2 END
         // D082-A-DENSITY END
     }
     // D085-S2 BEGIN: one disclosure path for a law's live Essenziale and its Bilanciata seed.
     private liveDensityDisclosure(): V2Visible {
+        // D085-X9 BEGIN
+        const source = this.lawActive() ? this.lawIndex : this.index;
+        // D085-X9 END
         const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
         for (const [id, count] of this.autoPageCounts) pages.set(id, count);
         for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
         const state = this.canopyActive() ? { ...this.history.state,
             expanded: new Set([...this.history.state.expanded,
                 ...this.index.nodes.filter(node => node.level <= 2).map(node => node.id)]) } : this.history.state;
-        const base = v2Visible(this.index, state, pages, V2_CAP,
+        // D085-X9 BEGIN
+        const base = v2Visible(source, state, pages, V2_CAP,
             this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId);
+        // D085-X9 END
         return base;
     }
     private lawEssentialDisclosure(): V2Visible {
-        return densityDisclosure(this.index, this.liveDensityDisclosure(), this.selected);
+        // D085-X9 BEGIN
+        return densityDisclosure(this.lawIndex, this.liveDensityDisclosure(), this.selected);
+        // D085-X9 END
     }
     // D085-S2 END
     // D082-A-DENSITY BEGIN: use the unchanged D-081 disclosure as the overview
@@ -1725,7 +1767,18 @@ export class V2Page {
         reading: Reading; nodes: number; edges: number;
         result: ReturnType<typeof completeRelations>;
     } | null = null;
+    // D085-X9 BEGIN: a law's relation domain does not grow with fetched passages.
+    private lawRelationsMemo: { reading: Reading; result: ReturnType<typeof completeRelations> } | null = null;
+    // D085-X9 END
     private densityRelations(reading: Reading): ReturnType<typeof completeRelations> {
+        // D085-X9 BEGIN
+        if (this.topology !== undefined && this.lawActive()) {
+            if (this.lawRelationsMemo?.reading === reading) return this.lawRelationsMemo.result;
+            const result = completeRelations(this.lawIndex, reading);
+            this.lawRelationsMemo = { reading, result };
+            return result;
+        }
+        // D085-X9 END
         const memo = this.densityRelationsMemo;
         if (memo && memo.reading === reading && memo.nodes === this.index.nodes.length &&
             memo.edges === this.index.edges.length) return memo.result;
@@ -1915,7 +1968,9 @@ export class V2Page {
         this.auto = new Set(decision.auto.keys());
         // D081-P6c BEGIN: a passage fetched for a close zoom cannot replay that zoom after Adatta.
         const requestedBeforeFit = this.fitRequestEpoch;
-        if (decision.passageRequests.length) for (const id of decision.passageRequests)
+        // D085-X9 BEGIN: a fixed law has no coordinates for newly fetched passages.
+        if (!this.lawActive() && decision.passageRequests.length) for (const id of decision.passageRequests)
+        // D085-X9 END
             void this.passages(id, this.index.nodes.filter(node => node.parent === id).length).then(() => {
                 if (requestedBeforeFit !== this.fitRequestEpoch) return;
                 const after = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled: true,
@@ -3977,8 +4032,11 @@ export class V2Page {
             // D085-S1 BEGIN: classic worker results obey the same last-request gate.
             if (projectionEpoch !== this.projectionEpoch) return;
             // D085-S1 END
-            if (lawResult && sceneNodes.some(node => !result.positions.has(node.id)))
-                throw new Error(`${this.topology}: un dettaglio caricato non appartiene allo snapshot topologico fisso`);
+            // D085-X9 BEGIN: missing fixed-snapshot coordinates remain a genuine law error.
+            // Post-snapshot nodes were excluded before selection and routing.
+            if (lawResult && this.lawSnapshot.nodes.some(node => !result.positions.has(node.id)))
+                throw new Error(`${this.topology}: coordinata mancante per un nodo dello snapshot topologico fisso`);
+            // D085-X9 END
             // D082-B2 END
             // D081-P3c END
             // D081-FRACTAL-MERGE END.
@@ -4396,17 +4454,22 @@ export class V2Page {
             // published through the visibility witness (`window.__d067.witness()`).
             {
                 const budgetTopology = this.budgetTopologyOf();
-                const totalNodes = canopy ? this.canopyDatasetNodes.length : this.index.nodes.length;
+                // D085-X9 BEGIN
+                const isLaw = !canopy && this.lawActive();
+                const totalNodes = canopy || isLaw ? this.lawIndex.nodes.length : this.index.nodes.length;
+                // D085-X9 END
                 // D085-S2 BEGIN: all topology rows account against the same kind of pool:
                 // the full snapshot's eligible source/containment relations for this reading.
                 // Cache its total because Complete constructs the pool only once per reading.
-                let eligibleRelations = this.eligibleRelationTotals.get(this.axes.reading);
+                // D085-X9 BEGIN: law totals use only relations in the fixed snapshot.
+                let eligibleRelations = isLaw ? this.densityRelations(this.axes.reading).total
+                    : this.eligibleRelationTotals.get(this.axes.reading);
+                // D085-X9 END
                 if (eligibleRelations === undefined) {
                     eligibleRelations = completeRelations(this.index, this.axes.reading).total;
                     this.eligibleRelationTotals.set(this.axes.reading, eligibleRelations);
                 }
                 // D085-S2 END
-                const isLaw = !canopy && this.lawActive();
                 // D085-S2 BEGIN: describe the density actually drawn, including Complete.
                 const nodeReason = this.density === 'complete'
                     ? 'Completa richiede tutti i nodi reali dello snapshot immutabile.'
@@ -5983,13 +6046,19 @@ export class V2Page {
         const productVisibility = (viewWitness as typeof viewWitness & { visibility?: { stars: { drawn: number }; labels: { drawn: number } } })?.visibility;
         const drawnSourceIds = new Set([...this.renderedRelations.values()].flatMap(edge =>
             [edge.id, ...edge.underlying.map(source => source.id)]));
-        const omitted = countExcludedRelations({ nodes: this.index.nodes, renderedNodeIds: this.rendered,
+        // D085-X9 BEGIN: excluded law nodes cannot also count as aggregates or
+        // omitted containment relations of the fixed law snapshot.
+        const witnessNodes = this.lawActive() ? this.lawIndex.nodes : this.index.nodes;
+        const witnessEdges = this.lawActive() ? this.lawIndex.edges : this.index.edges;
+        // D085-X9 END
+        // D085-X9 BEGIN
+        const omitted = countExcludedRelations({ nodes: witnessNodes, renderedNodeIds: this.rendered,
             relations: [
-                ...this.index.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+                ...witnessEdges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
                     class: edge.type === 'classified_in' ? 'structural' as const : edge.class, type: edge.type })),
-                ...this.index.nodes.filter(node => node.parent).map(node => ({ id: `contains:${node.id}`,
+                ...witnessNodes.filter(node => node.parent).map(node => ({ id: `contains:${node.id}`,
                     source: node.parent!, target: node.id, class: 'structural' as const, type: 'contains' })),
-                ...coMembership(this.index.nodes, new Set(this.index.nodes.filter(node => node.level === 1).map(node => node.id)))
+                ...coMembership(witnessNodes, new Set(witnessNodes.filter(node => node.level === 1).map(node => node.id)))
                     .map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
                         class: 'structural' as const, type: 'co_membership' })),
             ], drawnSourceIds,
@@ -6002,11 +6071,16 @@ export class V2Page {
             detailFilteredSourceIds: new Set(this.revealRoute?.detailFilteredSourceIds ?? []),
             // D085-S7 END
         });
-        const represented = countAggregateRepresentation(this.index.nodes, this.rendered);
+        // D085-X9 END
+        // D085-X9 BEGIN
+        const represented = countAggregateRepresentation(witnessNodes, this.rendered);
+        // D085-X9 END
         const canopyRailStats = this.canopyActive() ? this.canopyRailLayer?.stats() : undefined;
         let visibility: (ReturnType<typeof buildVisibilityWitness> & { zeroDegreeReasons?: { reading: string[] } }) | undefined = this.view ? buildVisibilityWitness({
             axes: this.axes as Axes, relationDetail: this.relationDetail, density: this.density,
-            nodes: this.index.nodes, renderedNodeIds: this.rendered,
+            // D085-X9 BEGIN
+            nodes: witnessNodes, renderedNodeIds: this.rendered,
+            // D085-X9 END
             submittedEdges: [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
                 source: edge.source, target: edge.target, class: edge.class })),
             sourceEdges: [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
@@ -6018,7 +6092,10 @@ export class V2Page {
             aggregateCount: represented.drawn,
             representedCount: represented.represented,
             starCount: productVisibility?.stars.drawn ?? 0,
-            excluded: omitted,
+            // D085-X9 BEGIN: real fetched nodes remain in the index and return in Natural.
+            excluded: { ...omitted, outsideLawSnapshot: this.lawActive()
+                ? this.index.nodes.filter(node => !this.lawSnapshotNodeIds.has(node.id)).length : 0 },
+            // D085-X9 END
             // D085-S2 BEGIN: the per-topology budget record, when the page has drawn one.
             ...(this.densityBudgetRecord ? { budgetRecord: this.densityBudgetRecord } : {}),
             // D085-S2 END

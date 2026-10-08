@@ -32,7 +32,9 @@ import type { RelationDetailCounts } from './relation-routing.ts';
 
 export type VisibilityEdge = Readonly<{ id: string; source: string; target: string; class: RelationClass }>;
 export type VisibilityNode = Readonly<{ id: string; level?: number | undefined; kind?: string | undefined; parent?: string | null | undefined }>;
-export type VisibilityCause = 'budget' | 'hiddenEndpoint' | 'readingFilter' | 'detailFilter';
+// D085-X9 BEGIN: a fetched real node has no coordinate in the fixed law snapshot.
+export type VisibilityCause = 'budget' | 'hiddenEndpoint' | 'readingFilter' | 'detailFilter' | 'outsideLawSnapshot';
+// D085-X9 END
 // D085-S2 BEGIN: the per-topology, per-dimension density budget record the
 // holds requested, visible, aggregated and excluded counts with the reason
 // the policy applied, in a shape a tool can read straight out of the visibility witness.
@@ -172,6 +174,9 @@ export function buildVisibilityWitness(input: VisibilityWitnessInput) {
       hiddenEndpoint: input.excluded?.hiddenEndpoint ?? 0,
       readingFilter: input.excluded?.readingFilter ?? 0,
       detailFilter: input.excluded?.detailFilter ?? 0,
+      // D085-X9 BEGIN
+      outsideLawSnapshot: input.excluded?.outsideLawSnapshot ?? 0,
+      // D085-X9 END
     } },
     // D085-S2 BEGIN: present exactly when the page recorded the budget it applied.
     ...(input.budgetRecord ? { densityBudget: input.budgetRecord } : {}),
