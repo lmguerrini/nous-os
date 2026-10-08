@@ -99,8 +99,9 @@ import { mountTopologyGuides } from '../topology/guide-layer.ts';
 // D085-S4 BEGIN: the Llull overview fold — while the camera is
 // in the overview band the relation routing folds its cross-sector strokes into the
 // pair bundles instead of drawing them one by one under the guides.
-import { lullOverviewAggregated } from '../topology/guide-layer.ts';
-import { lullFoldOverviewRelations, type LullOverviewFold } from '../topology/lull-overview.ts';
+import { lullOverviewMode } from '../topology/guide-layer.ts';
+import { lullFoldOverviewRelations, lullOverviewBudget, lullRouteExempt,
+    type LullOverviewFold } from '../topology/lull-overview.ts';
 import { indexLullSnapshot, type LullIndex } from '../topology/lull-inquiry.ts';
 import type { LullBundleGuide } from '../topology/lull.ts';
 // D085-S4 END
@@ -662,7 +663,8 @@ export class V2Page {
         foldedRelations: number;
         pairs: readonly Readonly<{ letters: string; roots: readonly [string, string];
             drawnEdgeIds: readonly string[]; relationIds: readonly string[] }>[];
-        layoutBundles: readonly Readonly<{ letters: string; weight: number; relationIds: readonly string[] }>[];
+        layoutBundles: readonly Readonly<{ scope: 'full-snapshot'; letters: string; weight: number;
+            relationIds: readonly string[] }>[];
     }> | null = null;
     // D085-S4 END
     // D085-S1 BEGIN: only two completed laws may remain resident, within a byte cap.
@@ -792,7 +794,10 @@ export class V2Page {
         nodes: { visible: 0, represented: 0, total: 0, eligible: 0, aggregated: 0, aggregates: 0 },
         // D085-S4 BEGIN: drawn edges folded into the Llull overview bundles —
         // additive, 0 everywhere the fold is not active.
-        edges: { drawn: 0, bundled: 0, bundles: 0, eligible: 0, total: 0, aggregatedIntoBundles: 0 },
+        // D085-S4 BEGIN: visual strokes and source relations stay separate.
+        edges: { drawn: 0, bundled: 0, bundles: 0, eligible: 0, total: 0,
+            aggregatedIntoBundles: 0, aggregatedRelationsIntoBundles: 0, lullBundleCount: 0 },
+        // D085-S4 END
         // D085-S4 END
         depth: { level: 1, label: 'Panoramica' },
         limit: null as null | { kind: string; value: number; reason: string },
@@ -948,7 +953,9 @@ export class V2Page {
             // the drawn edges — the counter's «archi» and this field partition exactly.
             edges: { drawn: route.drawn.length, ...bundleCounts, eligible: eligibleEdges,
                 total: this.index.edges.length + this.index.nodes.filter(node => node.parent !== null).length,
-                aggregatedIntoBundles: this.lullOverviewFold ? this.lullOverviewFold.foldedEdges : 0 },
+                aggregatedIntoBundles: this.lullOverviewFold ? this.lullOverviewFold.foldedEdges : 0,
+                aggregatedRelationsIntoBundles: this.lullOverviewFold ? this.lullOverviewFold.foldedRelations : 0,
+                lullBundleCount: this.lullOverviewFold?.pairs.filter(pair => pair.relationIds.length).length ?? 0 },
             // D085-S4 END
             depth: { level: this.lod === 'far' ? 1 : this.lod === 'intermediate' ? 2 : 3,
                 label: this.lod === 'far' ? 'Panoramica' : this.lod === 'intermediate' ? 'Intermedia' : 'Ravvicinata' },
@@ -996,7 +1003,7 @@ export class V2Page {
         // D085-S4 BEGIN: at the Llull overview the folded strokes are named as
         // such — «in fasci» — instead of silently disappearing from the drawn count.
         const lullFolded = this.lullOverviewFold ? this.lullOverviewFold.foldedEdges : 0;
-        if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.datasetNodeCount)} rappresentati · ${formatCount(route.drawn.length)} archi${lullFolded > 0 ? ` (${formatCount(lullFolded)} in fasci)` : ''}`;
+        if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.datasetNodeCount)} rappresentati · ${formatCount(route.drawn.length)} archi${lullFolded > 0 ? ` (${formatCount(lullFolded)} tratti / ${formatCount(this.lullOverviewFold!.foldedRelations)} relazioni in ${formatCount(this.lullOverviewFold!.pairs.length)} fasci Llull)` : ''}`;
         // D085-S4 END
         if (this.d081Quality !== 'movimento' && this.d081LastInteraction) this.d081FinishIfReady();
         else if (!this.d081LastInteraction) this.d081Quality = 'completa';
@@ -4127,13 +4134,16 @@ export class V2Page {
                 this.lullIndex ??= indexLullSnapshot(this.lawSnapshot);
                 const lullView = this.view;
                 const lullHost = document.getElementById('render-root');
-                this.lullOverviewFolded = lullView?.projectPoint && lullHost
-                    ? lullOverviewAggregated(lullView, lullHost.clientWidth, lullHost.clientHeight, this.lullOverviewFolded)
-                    : true;
+                // D085-S4 BEGIN: disabling semantic zoom releases the route and
+                // clears the active guide bundles in this same refresh.
+                this.lullOverviewFolded = this.zoomOn && (lullView?.projectPoint && lullHost
+                    ? lullOverviewMode(true, lullView, lullHost.clientWidth,
+                        lullHost.clientHeight, this.lullOverviewFolded) : true);
+                // D085-S4 END
                 if (this.lullOverviewFolded) {
                     const pinnedArcIdsNow = this.pinnedArcIds(tiers);
                     const fold = lullFoldOverviewRelations(shown, this.lullIndex,
-                        rootId => renderedIds.has(rootId), edge => pinnedArcIdsNow.has(edge.id));
+                        rootId => renderedIds.has(rootId), edge => lullRouteExempt(edge, pinnedArcIdsNow));
                     const foldedIds = new Set(fold.pairs.flatMap(pair => pair.drawnEdgeIds));
                     if (foldedIds.size) {
                         shown = [...fold.edges];
@@ -4154,7 +4164,8 @@ export class V2Page {
                         .filter(guide => guide.kind === 'lull-pair-bundle')
                         .map(guide => {
                             const bundle = guide as LullBundleGuide;
-                            return { letters: bundle.id.slice('lull:bundle:'.length),
+                            return { scope: 'full-snapshot' as const,
+                                letters: bundle.id.slice('lull:bundle:'.length),
                                 weight: bundle.weight, relationIds: bundle.relationIds };
                         }),
                 };
@@ -4188,9 +4199,16 @@ export class V2Page {
                     nodes: { requested: budget.nodes, visible: renderedIds.size,
                         aggregated: canopy ? canopyViewMarks.reduce((sum, mark) => sum + mark.memberCount - 1, 0) : 0,
                         excluded: Math.max(0, totalNodes - renderedIds.size), reason: nodeReason },
-                    edges: { requested: budget.arcs, drawn: shown.length,
-                        aggregated: route.aggregates.length,
-                        excluded: Math.max(0, availableArcs.total - shown.length), reason: edgeReason },
+                    // D085-S4 BEGIN: Llull partitions eligible source IDs into
+                    // individual, visibly bundled, and excluded relations.
+                    edges: this.lullOverviewRecord
+                        ? { requested: budget.arcs,
+                            ...lullOverviewBudget(availableArcs.total, route.drawn, this.lullOverviewFold),
+                            reason: `${edgeReason} I fasci Llull aggregano relazioni reali per coppia; i conteggi dei tratti visivi sono separati.` }
+                        : { requested: budget.arcs, drawn: shown.length,
+                            aggregated: route.aggregates.length,
+                            excluded: Math.max(0, availableArcs.total - shown.length), reason: edgeReason },
+                    // D085-S4 END
                 };
             }
             // D085-S2 END
@@ -4452,7 +4470,13 @@ export class V2Page {
                 });
                 // D081-P7b END.
                 // D082-B2 BEGIN: guide IDs are visual only, never counted as source edges.
-                if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides);
+                // D085-S4 BEGIN: only the committed fold's exact active pairs
+                // contribute visible bundle ink, including after camera motion.
+                const committedLullPairs = this.lullOverviewFold?.pairs ?? [];
+                if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides,
+                    this.topology === 'lull' && organization === 'natural'
+                        ? () => committedLullPairs : undefined);
+                // D085-S4 END
                 // D082-B2 END
                 if (canopy) {
                     // D081-P7b BEGIN: one measured viewport owns labels, evidence, and status.
@@ -5288,6 +5312,10 @@ export class V2Page {
             this.lastRevealSampleKey = '';
             void this.refresh();
         }
+        // D085-S4 BEGIN: re-enable the overview fold at the current camera.
+        else if (this.topology === 'lull' && this.lawActive() && this.axes.organization === 'natural')
+            void this.refresh();
+        // D085-S4 END
     }
     get semanticZoomEnabled() { return this.zoomOn; }
     /** After an automatic refit, check once that every visible node landed in view (the panel and insets can settle
@@ -5375,7 +5403,7 @@ export class V2Page {
             if (lullView?.projectPoint && lullHost) {
                 const lullSettled = lodRefreshDue({ nowMs: performance.now(), pending: true,
                     lastCameraChangeMs: this.cameraChangedAt });
-                const aggregatedNow = lullOverviewAggregated(lullView, lullHost.clientWidth,
+                const aggregatedNow = lullOverviewMode(this.zoomOn, lullView, lullHost.clientWidth,
                     lullHost.clientHeight, this.lullOverviewFolded);
                 if (lullSettled && aggregatedNow !== this.lullOverviewFolded) void this.refresh();
             }
@@ -5502,7 +5530,11 @@ export class V2Page {
                 ...coMembership(this.index.nodes, new Set(this.index.nodes.filter(node => node.level === 1).map(node => node.id)))
                     .map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
                         class: 'structural' as const, type: 'co_membership' })),
-            ], drawnSourceIds, reading: this.axes.reading, relationDetail: this.relationDetail,
+            ], drawnSourceIds,
+            // D085-S4 BEGIN: aggregated source IDs are visible in the guide layer.
+            aggregatedSourceIds: new Set(this.lullOverviewFold?.pairs.flatMap(pair => pair.relationIds) ?? []),
+            // D085-S4 END
+            reading: this.axes.reading, relationDetail: this.relationDetail,
             organization: this.axes.organization as Axes['organization'], activeId: this.selected });
         const represented = countAggregateRepresentation(this.index.nodes, this.rendered);
         const canopyRailStats = this.canopyActive() ? this.canopyRailLayer?.stats() : undefined;

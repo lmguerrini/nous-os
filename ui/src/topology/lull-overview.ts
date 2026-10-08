@@ -26,6 +26,31 @@ export type LullOverviewFold = Readonly<{
   foldedRelations: number;
 }>;
 
+// D085-S4 BEGIN: budget units are source relations. Keep visual stroke and
+// bundle counts alongside them so grouped routes cannot distort the partition.
+export function lullOverviewBudget(available: number,
+  drawn: readonly Readonly<{ sourceRelationIds: readonly string[] }>[], fold: LullOverviewFold | null) {
+  const drawnIds = new Set(drawn.flatMap(edge => edge.sourceRelationIds));
+  const foldedIds = new Set(fold?.pairs.flatMap(pair => pair.relationIds) ?? []);
+  for (const id of foldedIds) if (drawnIds.has(id))
+    throw new Error(`Llull relation both drawn and folded: ${id}`);
+  if (drawnIds.size + foldedIds.size > available)
+    throw new Error('Llull route exceeds available relations');
+  return { drawn: drawnIds.size, drawnVisualEdges: drawn.length,
+    aggregated: foldedIds.size, aggregatedVisualEdges: fold?.foldedEdges ?? 0,
+    aggregateBundles: fold?.pairs.filter(pair => pair.relationIds.length).length ?? 0,
+    excluded: available - drawnIds.size - foldedIds.size };
+}
+// D085-S4 END
+
+// D085-S4 BEGIN: route IDs may group several real source IDs. Selection or a
+// pinned source protects the entire visible stroke from the overview fold.
+export function lullRouteExempt(edge: LiftedRelation, pinnedSourceIds: ReadonlySet<string>): boolean {
+  return pinnedSourceIds.has(edge.id)
+    || edge.underlying.some(source => pinnedSourceIds.has(source.id));
+}
+// D085-S4 END
+
 /** Fold the cross-sector strokes of one routed `shown` list into their pair
  * compartments. `isRootDrawn` gates every fold on both aggregate endpoints being
  * drawn; `exempt` passes through edges the page must keep (pinned, selected). */
@@ -38,10 +63,13 @@ export function lullFoldOverviewRelations(edges: readonly LiftedRelation[], inde
     const sourceRoot = index.rootOf.get(edge.source);
     const targetRoot = index.rootOf.get(edge.target);
     const crossSector = sourceRoot !== undefined && targetRoot !== undefined && sourceRoot !== targetRoot;
-    if (!crossSector || exempt(edge) || !isRootDrawn(sourceRoot!) || !isRootDrawn(targetRoot!)) {
+    // D085-S4 BEGIN: a source-free visual stroke has no real relation to aggregate.
+    if (!crossSector || edge.underlying.length === 0 || exempt(edge)
+      || !isRootDrawn(sourceRoot!) || !isRootDrawn(targetRoot!)) {
       kept.push(edge);
       continue;
     }
+    // D085-S4 END
     const [a, b] = letterIndexOf.get(sourceRoot!)! <= letterIndexOf.get(targetRoot!)!
       ? [sourceRoot!, targetRoot!] : [targetRoot!, sourceRoot!];
     const letters = `${index.letterOf.get(a)!}${index.letterOf.get(b)!}`;

@@ -252,7 +252,10 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
   // approach the exact individual relations return as the bundles fade. No veil: the
   // retained marks keep their true ink. Llull-only, like the guides.
   if (topology === "lull") {
-    entry("Fascio d’insieme · coppia", "Zoom semantico: a distanza d’insieme le relazioni fra due settori non vengono disegnate una per una — l’instradamento le ritira e ogni compartimento con evidenza le sostituisce con un fascio spesso fra le sue due lettere, che rappresenta esattamente quelle relazioni reali del snapshot completo (larghezza e opacità proporzionali al numero esatto; gli id sono elencati nel fascio e nella tavola d’inchiesta). I compartimenti senza evidenza non disegnano nulla; le relazioni dentro lo stesso settore restano disegnate, brevi e locali. Avvicinando la vista i fasci sfumano e le relazioni singole tornano al loro posto, come la densità e la lettura attive le filtrano; nulla viene mai oscurato o attenuato. In 3D gli stessi fasci siedono alle quattro tavole d’offset d=1–4.", (svg) => {
+    // D085-S4 BEGIN: active aggregate IDs are in the visibility witness; the
+    // inquiry table deliberately describes the entire immutable snapshot.
+    entry("Fascio d’insieme · coppia", "Zoom semantico: a distanza d’insieme le relazioni attive fra due settori non vengono disegnate una per una: sono ritirate e sostituite da un fascio spesso fra le loro lettere. Il fascio rappresenta esattamente gli id aggregati nella vista corrente (witness Llull); larghezza e opacità seguono quel conteggio. La tavola d’inchiesta elenca invece gli id dello snapshot completo. I compartimenti senza relazioni attive non disegnano nulla; le relazioni dentro lo stesso settore restano disegnate e nulla viene mai oscurato. Avvicinando la vista le relazioni singole tornano al loro posto; con zoom semantico disattivato restano solo le relazioni singole. In 3D i fasci siedono alle quattro tavole d’offset d=1–4.", (svg) => {
+    // D085-S4 END
       svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.16)", 6));
       svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.8)", 2.6));
     });

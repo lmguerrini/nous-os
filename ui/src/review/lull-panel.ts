@@ -16,7 +16,9 @@ export const LULL_PANEL_HYPOTHESIS_NOTE = 'Le combinazioni senza evidenza sono i
 // one — each evidenced row below is exactly one bundle in the figure, its relation
 // count is the bundle's weight, and its relation ids are the bundle's ids; on
 // approach the routing redraws the exact individual relations as the bundle fades.
-export const LULL_PANEL_GUIDE_NOTE = 'Nella figura: le 36 corde tratteggiate fra le lettere del cerchio esterno sono i compartimenti binari elencati qui sotto (guide strutturali della Terza Figura, non relazioni); le relazioni reali restano le linee continue. A distanza d’insieme le relazioni fra due settori non vengono disegnate una per una: ogni riga con evidenza è sostituita da un fascio spesso fra le sue due lettere — il numero di relazioni qui riportato è esattamente il peso del fascio e i loro id sono quelli del fascio — e avvicinando la vista le relazioni singole tornano al suo posto, come la densità e la lettura attive le filtrano.';
+// D085-S4 BEGIN: distinguish the full inquiry audit from the active routed fold.
+export const LULL_PANEL_GUIDE_NOTE = 'Nella figura: le 36 corde tratteggiate fra le lettere del cerchio esterno sono i compartimenti binari elencati qui sotto (guide strutturali della Terza Figura, non relazioni); le relazioni reali restano le linee continue. A distanza d’insieme le relazioni attive fra due settori non vengono disegnate una per una: possono essere sostituite da un fascio spesso fra le lettere. I numeri e gli id qui sotto descrivono lo snapshot completo; il peso del fascio visibile segue solo le relazioni effettivamente aggregate nella densità e lettura attive, registrate nel witness. Avvicinando la vista ogni relazione singola torna al suo posto.';
+// D085-S4 END
 // D085-S4 END
 
 /** Ninth-of-a-turn wheel offsets rendered as human-readable alignments. */

@@ -117,7 +117,7 @@ export type LullBundleGuide = GuideCurve & Readonly<{ weight: number; relationId
 export const LULL_BUNDLE_KIND = 'lull-pair-bundle';
 /** The disclosure sentence of the bundles, with the two audit numbers interpolated. */
 export const LULL_BUNDLE_DISCLOSURE = (count: number, total: number): string =>
-  `Fasci d’insieme: a distanza i ${count} compartimenti con evidenza sostituiscono le loro corde singole con un fascio ciascuno — ${total} relazioni reali fra domini del snapshot completo, elencate per id nel fascio e nella tavola d’inchiesta (larghezza e opacità proporzionali al conteggio; un fascio rappresenta relazioni reali già esistenti, mai una nuova); i compartimenti senza evidenza non disegnano nulla, le relazioni entro lo stesso settore restano disegnate e brevi, e avvicinando la vista le relazioni singole tornano al posto dei fasci, come la densità e la lettura attive le filtrano.`;
+  `Fasci d’insieme: a distanza fino a ${count} compartimenti con evidenza sostituiscono le loro corde singole della vista attiva con un fascio ciascuno — ${total} relazioni reali fra domini nel snapshot completo sono elencate per id nella tavola d’inchiesta; il witness distingue questi id completi dagli id effettivamente aggregati nella vista (larghezza e opacità seguono solo il conteggio attivo; un fascio rappresenta relazioni reali già esistenti, mai una nuova); i compartimenti senza relazioni attive non disegnano nulla, le relazioni entro lo stesso settore restano disegnate e brevi, e avvicinando la vista le relazioni singole tornano al posto dei fasci, come la densità e la lettura attive le filtrano.`;
 // D085-S4 END
 
 type SectorGeometry = Readonly<{ spans: readonly number[]; starts: readonly number[] }>;
