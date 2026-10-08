@@ -69,7 +69,9 @@ test('the 3D flow overlay prepares only its selected visible edge paints', () =>
   } as unknown as CanvasRenderingContext2D;
   try {
     setFlowMotionAllowed(true);
-    setFlowNow(3000);
+    // D086-F5 BEGIN: sample the D-079 long beam while its centre crosses these short edges.
+    setFlowNow(500);
+    // D086-F5 END
     drawFlowLayer(context, geometry, project, style,
       { ...DEFAULT_APPEARANCE, flowIntensity: 1, flowSpeed: 1 }, '3d');
     assert.equal(fills, 60);
@@ -96,7 +98,9 @@ test('flow priority prefix expands past clipped edges to keep 60 visible pulses'
   } as unknown as CanvasRenderingContext2D;
   try {
     setFlowMotionAllowed(true);
-    setFlowNow(3000);
+    // D086-F5 BEGIN: sample the D-079 long beam while its centre crosses these short edges.
+    setFlowNow(500);
+    // D086-F5 END
     drawFlowLayer(context, geometry, point => ({ x: point.x, y: point.y, scale: 1 }), style,
       { ...DEFAULT_APPEARANCE, flowIntensity: 1, flowSpeed: 1 }, '3d');
     assert.equal(fills, 60);
