@@ -73,17 +73,32 @@ test('legacy Fractal link migration is visible in the notice region', () => {
   assert.equal(message.textContent, 'Fractal è una vista sperimentale: caricata Natural.');
 });
 
-test('a 3D Lull view2 link visibly explains the 2D fallback', () => {
+// D085-INT2 BEGIN: the unsupported pair is Llull 3D with Indra enabled.
+test('a 3D Llull plus Indra view2 link visibly explains the 2D fallback', () => {
   const { naturalArrangement: _naturalArrangement, compatibility: _compatibility, ...defaults } = defaultGeometryView2();
-  const view = { ...defaults, rendering: '3d' as const, topology: 'circular-combinatorial' as const };
+  const view = { ...defaults, rendering: '3d' as const, topology: 'circular-combinatorial' as const, indra: 'on' as const };
   const linked = resolveGeometryView2('', `#view2=${encodeURIComponent(serializeGeometryView2(view))}`, null, null);
   const supported = resolveSupportedGeometryView2(linked.value, topologySupport);
   assert.equal(supported.value.rendering, '2d');
+  assert.ok(!('mode' in supported.value));
+  if ('mode' in supported.value) throw new Error('Expected a topology view');
+  assert.equal(supported.value.topology, 'circular-combinatorial');
+  assert.equal(supported.value.indra, 'on');
   assert.equal(supported.notice, 'lull non supporta 3D: caricata la vista 2D per mantenere la topologia.');
   showLabNotice(supported.notice!);
   assert.equal(host.hidden, false);
   assert.equal(message.textContent, supported.notice);
 });
+
+test('a standalone 3D Llull view2 link loads without a fallback notice', () => {
+  const { naturalArrangement: _naturalArrangement, compatibility: _compatibility, ...defaults } = defaultGeometryView2();
+  const view = { ...defaults, rendering: '3d' as const, topology: 'circular-combinatorial' as const };
+  const linked = resolveGeometryView2('', `#view2=${encodeURIComponent(serializeGeometryView2(view))}`, null, null);
+  const supported = resolveSupportedGeometryView2(linked.value, topologySupport);
+  assert.equal(supported.value.rendering, '3d');
+  assert.equal(supported.notice, undefined);
+});
+// D085-INT2 END
 
 test('ordinary loads remain quiet and Escape dismisses the active notice', () => {
   const ordinary = resolveGeometryView2('', '', null, null);
