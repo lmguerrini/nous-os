@@ -95,7 +95,7 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
   const ratioLine = readiness?.pixelRatio === undefined || readiness.fullPixelRatio === undefined ? ''
     : ` · pixel ${readiness.pixelRatio.toLocaleString('it-IT', { maximumFractionDigits: 2 })}× / ${readiness.fullPixelRatio.toLocaleString('it-IT', { maximumFractionDigits: 2 })}×`;
   // D085-S3 END
-  const renderRows = readiness ? `<dt title="Stima lato renderer di intervalli richiesti, pronti e visibili; pubblicata due frame dopo il tentativo di disegno. Non conferma la presentazione al compositor.">Render</dt><dd>${renderPercent(readiness)}% · ${readiness.quality}${ratioLine}</dd>
+  const renderRows = readiness ? `<dt title="Stima lato renderer di intervalli richiesti, pronti e visibili; pubblicata dopo il frame successivo al disegno. Non conferma la presentazione al compositor.">Render</dt><dd>${renderPercent(readiness)}% · ${readiness.quality}${ratioLine}</dd>
     <dt>Nodi pronti / disegnati / richiesti · totali</dt><dd>${readiness.nodes.loaded.toLocaleString("it-IT")} / ${readiness.nodes.drawn.toLocaleString("it-IT")} / ${readiness.nodes.required.toLocaleString("it-IT")} · ${nodes?.total?.toLocaleString("it-IT") ?? "—"}</dd>
     <dt>Archi pronti / disegnati / richiesti · totali</dt><dd>${readiness.allEdges.loaded.toLocaleString("it-IT")} / ${readiness.allEdges.drawn.toLocaleString("it-IT")} / ${readiness.allEdges.required.toLocaleString("it-IT")} · ${edges?.total?.toLocaleString("it-IT") ?? "—"}</dd>
     <dt>LOD · profondità</dt><dd>${readiness.ladder} · ${readiness.depthLabel ?? "—"}</dd>` : "<dt>Render</dt><dd>in attesa dei dati renderer</dd>";

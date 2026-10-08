@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { QualityLadder, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, nativeLabSkeleton } from '../src/render-common/quality-ladder.ts';
+import { QualityLadder, labAnchorInstanceIndices, labDenseInteraction, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, nativeLabSkeleton } from '../src/render-common/quality-ladder.ts';
 import { readFileSync } from 'node:fs';
 import { currentRenderReadiness, renderPercent, reportRenderReadiness } from '../src/review/render-readiness.ts';
 import { preserveRenderProgress, withRenderProgress } from '../src/review/toolbar-status.ts';
@@ -23,10 +23,62 @@ test('every committed Lab law, including Indra compositions, reaches the native 
   assert.match(page, /this\.createView\(\{[^\n]*labTopology, labIndra/);
   assert.match(page, /mount3f\(host, emptyTypedVisualGraph\(\),[\s\S]*labTopology: page\.topology, labIndra: page\.topologyIndra/);
   assert.match(product, /labTopology: input\.labTopology, labIndra: input\.labIndra/);
-  assert.match(mount, /const nativeLab = labInteractionEnabled\(options\.labTopology\)/);
-  assert.match(mount, /typedPicker \|\| nativeLab \? labPixelRatio/);
+  assert.match(mount, /const labView = labInteractionEnabled\(options\.labTopology\);[\s\S]*const nativeLab = labView && typedPicker === null/);
+  assert.match(mount, /const denseLab = typedPicker \? labDense\(\) : labDenseInteraction\(options\.labTopology/);
+  assert.match(mount, /const ratio = denseLab \? labPixelRatio/);
   assert.match(mount, /applyNativeLabPolicy\(stage\)/);
   assert.match(mount, /nativeProxy\.visible = reduced;[\s\S]*nodeResources\.mesh\.visible = stage !== 1;[\s\S]*filamentResources\.mesh\.visible = !reduced;/);
+});
+
+test('the Lab ratio and projected-canvas suspension require a dense declared Lab view', () => {
+  const threshold = 1200;
+  for (const topology of ['julia', 'sierpinski', 'lull', 'canopy-ifs']) {
+    assert.equal(labDenseInteraction(topology, threshold - 1, threshold), false);
+    assert.equal(labDenseInteraction(topology, threshold, threshold), true);
+  }
+  for (const topology of ['natural', undefined])
+    assert.equal(labDenseInteraction(topology, threshold * 10, threshold), false);
+  const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.match(mount, /const labDense = \(\): boolean => typedPicker !== null\s*&& labDenseInteraction\(options\.labTopology, requestedNodes, DENSE_SCENE_THRESHOLD\)/);
+  assert.match(mount, /const syncVisualsSuspension = \(stage: 1 \| 2 \| 3 \| 4\): void => \{[\s\S]*if \(labDense\(\) && stage < 4\)/);
+  assert.match(mount, /else if \(visualsSuspended\) \{\s*visualsSuspended = false;\s*visuals\.canvas\.style\.visibility = ""/);
+  assert.match(mount, /acceptVisuals\(update\);[\s\S]*syncVisualsSuspension\(ladder\.state\.stage\)/);
+  assert.match(mount, /if \(!typedPicker \|\| !labDense\(\) \|\| ladder\.state\.stage === 4\) visuals\?\.draw\(\)/);
+  assert.match(mount, /const ratio = denseLab \? labPixelRatio\(ladder\.state\.stage, fullRenderDpr\) : fullRenderDpr/);
+});
+
+test('anchor instances follow opacity bucket ID order even when float32 positions lose precision', () => {
+  const source = [
+    { id: 'anchor-a', alpha: 1, x: 1536.123456 },
+    { id: 'secondary', alpha: 0.5, x: -1800.654321 },
+    { id: 'anchor-b', alpha: 1, x: 1999.987654 },
+    { id: 'hidden', alpha: 0, x: 1200.123456 },
+  ];
+  const buckets = [source.filter(node => node.alpha === 1), source.filter(node => node.alpha === 0.5)];
+  const meshes = buckets.map(bucket => {
+    const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(), new THREE.MeshBasicMaterial(), bucket.length);
+    bucket.forEach((node, index) => mesh.setMatrixAt(index,
+      new THREE.Matrix4().makeTranslation(node.x, 1024.123456, -2048.654321)));
+    return mesh;
+  });
+  const readback = new THREE.Matrix4();
+  meshes[0]!.getMatrixAt(0, readback);
+  assert.notEqual(readback.elements[12]!.toFixed(5), source[0]!.x.toFixed(5));
+  const selected = labAnchorInstanceIndices(source, new Set(['anchor-a', 'anchor-b']), meshes.map(mesh => mesh.count));
+  assert.deepEqual(selected, [[0, 1], []]);
+  assert.equal(labAnchorInstanceIndices(source, new Set(['anchor-a']), [1, 2]), null);
+  meshes.forEach(mesh => { mesh.geometry.dispose(); (mesh.material as THREE.Material).dispose(); });
+  const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.match(mount, /const anchorIndices = labAnchorInstanceIndices\(typedPicker\.geometry\.nodes/);
+  assert.match(mount, /const selected = anchorIndices\[bucketIndex\+\+\]!;/);
+  assert.doesNotMatch(mount, /positionKey\(/);
+});
+
+test('moving readiness reports the actual submitted anchor and main relation counts', () => {
+  const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.match(mount, /const skeletonAnchors = proxyActive && stage === 1 \? labProxyNodes/);
+  assert.match(mount, /const skeletonMainRelations = proxyActive \? labProxyEdges : nativeProxyActive \? nativeProxyEdges : 0/);
+  assert.match(mount, /skeleton: \{ anchors: skeletonAnchors, mainRelations: skeletonMainRelations \}/);
 });
 
 test('native Lab skeleton contains only mounted real IDs and preserves relation endpoints', () => {

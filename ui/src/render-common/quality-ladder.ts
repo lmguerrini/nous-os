@@ -21,6 +21,28 @@ export function labPixelRatio(stage: QualityStage, fullPixelRatio: number): numb
 export function labInteractionEnabled(topology: string | undefined): boolean {
   return topology !== undefined && topology !== 'natural';
 }
+/** Sparse and non-Lab scenes retain their existing interaction presentation. */
+export function labDenseInteraction(topology: string | undefined, nodes: number, threshold: number): boolean {
+  return labInteractionEnabled(topology) && nodes >= threshold;
+}
+/** Mirror typed-layer's opacity buckets and insertion order, then select by node ID.
+ * A count mismatch refuses the proxy rather than associating an instance with another node. */
+export function labAnchorInstanceIndices(nodes: readonly { id: string; alpha: number }[],
+  anchors: ReadonlySet<string>, bucketCounts: readonly number[],
+): readonly (readonly number[])[] | null {
+  const buckets = new Map<number, string[]>();
+  for (const node of nodes) {
+    const alpha = Math.max(0, Math.min(1, Number.isFinite(node.alpha) ? node.alpha : 1));
+    if (alpha <= 0) continue;
+    const bucket = buckets.get(alpha) ?? [];
+    bucket.push(node.id);
+    buckets.set(alpha, bucket);
+  }
+  const ordered = [...buckets.values()];
+  if (ordered.length !== bucketCounts.length || ordered.some((bucket, index) => bucket.length !== bucketCounts[index]))
+    return null;
+  return ordered.map(bucket => bucket.flatMap((id, index) => anchors.has(id) ? [index] : []));
+}
 /** Native Lab skeleton: only real node and relation IDs from the mounted scene. */
 export function nativeLabSkeleton(nodes: readonly { id: string; kind: string; interaction?: string }[],
   edges: readonly { id: string; source: string; target: string }[],

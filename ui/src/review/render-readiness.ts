@@ -22,6 +22,7 @@ export type RenderReadiness = {
   // D085-S3 BEGIN
   readonly pixelRatio?: number;
   readonly fullPixelRatio?: number;
+  readonly skeleton?: { readonly anchors: number; readonly mainRelations: number };
   // D085-S3 END
   readonly nodes: StageCounts;
   readonly mainEdges: StageCounts;
@@ -36,7 +37,7 @@ export type RenderReadiness = {
 // D082-A-STALE BEGIN
 /**
  * The percentage is a coalesced renderer-side estimate of requested, loaded, and visible ranges,
- * published two animation frames after a submission attempt. It is not a compositor acknowledgement.
+ * published after the next animation frame following a submission. It is not a compositor acknowledgement.
  */
 // D082-A-STALE END
 
@@ -82,16 +83,14 @@ export function renderPercent(readiness: RenderReadiness): number {
   ));
   const countsComplete = [readiness.nodes, readiness.mainEdges, readiness.allEdges]
     .every(counts => counts.drawn === counts.required);
-  // D085-S3 BEGIN: a reduced draw tier cannot claim completion even when its counts happen to match.
-  // D085-S3 BEGIN: the page's interim 3D counts cannot certify a presented GPU frame.
+  // D085-S3 BEGIN: a reduced draw tier or interim page counts cannot certify completion.
   const presented = !readiness.view.includes('/3d/') || readiness.origin === 'renderer';
-  // D085-S3 BEGIN: reduced resolution is still an interaction frame.
+  // Reduced resolution is still an interaction frame.
   const fullBuffer = readiness.pixelRatio === undefined || readiness.fullPixelRatio === undefined
     || readiness.pixelRatio === readiness.fullPixelRatio;
   return countsComplete && decor.complete && presented && fullBuffer
     && readiness.quality === 'completa' && readiness.ladder === 4
     ? 100 : Math.min(99, Math.max(0, value));
-  // D085-S3 END
   // D085-S3 END
 }
 
