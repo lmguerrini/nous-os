@@ -3,6 +3,31 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildSceneBuffers } from "#render3f/buffers.ts";
+// D085-S6 BEGIN: exercise the native mount driver's viewport eligibility and timer lifecycle.
+import type { FilamentBuffers } from "#render3f/buffers.ts";
+import * as THREE from "three";
+import { transformSync } from "esbuild";
+import {
+  FLOW_LAYER_FRAME_MS, NATIVE_BEAM_WATCH_BUDGET_MS, NATIVE_BEAM_WATCH_MS,
+} from "#render-common/flow.ts";
+import type { createNativeBeamDriver as DriverFactory,
+  nativeBeamVisibleEdgeCount as VisibleEdgeCounter } from "#render3f/mount.tsx";
+// Node strips .ts but cannot execute .tsx. Compile only the exact pure beam block from mount in
+// memory; the actual browser mount uses these same exported functions without test substitutes.
+const mountSource = readFileSync(new URL("../src/render3f/mount.tsx", import.meta.url), "utf8");
+const helperStart = mountSource.indexOf("// D085-S6 BEGIN: clip the drawn quadratic");
+const helperEnd = mountSource.indexOf("// D085-S6 END", helperStart);
+assert.ok(helperStart >= 0 && helperEnd > helperStart);
+const helperCode = transformSync(mountSource.slice(helperStart, helperEnd),
+  { loader: "ts", format: "cjs" }).code;
+const beamModule: { exports: Record<string, unknown> } = { exports: {} };
+new Function("module", "THREE", "NATIVE_BEAM_SUSPENDED_MS", "FLOW_LAYER_FRAME_MS",
+  "NATIVE_BEAM_WATCH_BUDGET_MS", "NATIVE_BEAM_WATCH_MS", helperCode)(
+  beamModule, THREE, NATIVE_BEAM_SUSPENDED_MS, FLOW_LAYER_FRAME_MS,
+  NATIVE_BEAM_WATCH_BUDGET_MS, NATIVE_BEAM_WATCH_MS);
+const nativeBeamVisibleEdgeCount = beamModule.exports.nativeBeamVisibleEdgeCount as typeof VisibleEdgeCounter;
+const createNativeBeamDriver = beamModule.exports.createNativeBeamDriver as typeof DriverFactory;
+// D085-S6 END
 import {
   FILAMENT_FRAGMENT_SHADER,
   FILAMENT_VERTEX_SHADER,
@@ -144,6 +169,94 @@ test("D085-S6 an advancing shared clock keeps the native beam live and renews th
     motionAllowed: true, lastClockMs: expired.clockMs, liveUntilWallMs: expired.liveUntilWallMs });
   assert.equal(resumed.elapsedMs, 1_050);
 });
+
+// D085-S6 BEGIN: these relations are already packed for the native filament pass; visibility is
+// decided by the camera, not by the fact that their ids remain in the drawn set.
+test("D085-S6 native beam eligibility clips exploratory curves against the actual viewport", () => {
+  const buffers = {
+    edgeIds: ["exploratory", "attested"],
+    startPositions: new Float32Array([-2, 0, 0, 10, 0, 0]),
+    controlPositions: new Float32Array([2, 0, 0, 10, 0, 0]),
+    endPositions: new Float32Array([-2, 0, 0, 10, 0, 0]),
+  } as unknown as FilamentBuffers;
+  const exploratory = new Set(["exploratory"]);
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
+  camera.position.set(0, 0, 10); camera.lookAt(0, 0, 0);
+  assert.equal(nativeBeamVisibleEdgeCount(buffers, exploratory, camera), 1,
+    "a curved segment can enter the viewport with both endpoints offscreen");
+  camera.position.set(10, 0, 10); camera.lookAt(10, 0, 0);
+  assert.equal(nativeBeamVisibleEdgeCount(buffers, exploratory, camera), 0,
+    "the attested relation can remain onscreen without arming the beam");
+  camera.position.set(0, 0, 10); camera.lookAt(0, 0, 0);
+  assert.equal(nativeBeamVisibleEdgeCount(buffers, exploratory, camera), 1);
+  assert.equal(nativeBeamVisibleEdgeCount(buffers, new Set(), camera), 0);
+});
+
+test("D085-S6 native driver retires offscreen, schedules no idle frame, and re-arms on return", () => {
+  const buffers = {
+    edgeIds: ["exploratory"],
+    startPositions: new Float32Array([-0.5, 0, 0]),
+    controlPositions: new Float32Array([0, 0, 0]),
+    endPositions: new Float32Array([0.5, 0, 0]),
+  } as unknown as FilamentBuffers;
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
+  camera.position.set(0, 0, 10); camera.lookAt(0, 0, 0);
+  let moving = false, renders = 0, samples = 0, retired = 0, nextId = 0;
+  const scheduled = new Map<number, { tick: () => void; delay: number }>();
+  const driver = createNativeBeamDriver({
+    eligible: () => !moving && nativeBeamVisibleEdgeCount(buffers, new Set(["exploratory"]), camera) > 0,
+    sample: () => { samples += 1; return 1_000; },
+    render: () => { renders += 1; },
+    onRetire: () => { retired += 1; },
+    now: () => 1_000,
+    schedule: (tick, delay) => {
+      const id = ++nextId; scheduled.set(id, { tick, delay });
+      return id as unknown as ReturnType<typeof setTimeout>;
+    },
+    cancel: timer => { scheduled.delete(timer as unknown as number); },
+  });
+  const runNext = () => {
+    const [id, task] = scheduled.entries().next().value!;
+    scheduled.delete(id); task.tick();
+  };
+  driver.wake();
+  assert.equal(driver.armed, true);
+  runNext();
+  assert.equal(renders, 1);
+  assert.equal(scheduled.size, 1, "the visible beam repeats at its frame cadence");
+  camera.position.set(10, 0, 10); camera.lookAt(10, 0, 0);
+  runNext();
+  assert.equal(driver.armed, false);
+  assert.equal(scheduled.size, 0);
+  assert.equal(renders, 1, "offscreen retirement submits no frame");
+  assert.equal(samples, 1, "the offscreen tick never samples the clock");
+  driver.wake();
+  assert.equal(scheduled.size, 0, "resting offscreen has no scheduled frame");
+  camera.position.set(0, 0, 10); camera.lookAt(0, 0, 0);
+  driver.wake();
+  assert.equal(driver.armed, true, "returning to the viewport re-arms the timer");
+  moving = true;
+  driver.retire();
+  assert.equal(scheduled.size, 0, "camera motion cancels the pending frame");
+  driver.wake();
+  assert.equal(driver.armed, false);
+  moving = false;
+  driver.wake(); runNext();
+  assert.equal(renders, 2, "settling resumes the visible beam");
+  driver.retire();
+  assert.ok(retired >= 2);
+});
+
+test("D085-S6 the mounted driver invalidates visibility on camera and native-pass changes", () => {
+  assert.match(mountSource, /const syncCameraState = \(\): void => \{[\s\S]*?invalidateNativeBeamVisibility\(\);[\s\S]*?ladder\.touch\(\)/);
+  assert.match(mountSource, /rig\.resize\(next\.width, next\.height, renderDpr\);[\s\S]*?invalidateNativeBeamVisibility\(\)/);
+  assert.match(mountSource, /world\.visible = false;[\s\S]{0,300}?invalidateNativeBeamVisibility\(\)/);
+  assert.match(mountSource, /const refreshNativeBeamVisibility = \(\): void => \{\s*if \(!nativeBeamVisibilityDirty\) return;/);
+  assert.match(mountSource, /nativeBeamVisibleEdgeCount\(live\.buffers\.filaments, nativeBeamEdgeIds, rig\.camera\)/);
+  assert.match(mountSource, /visibleExploratory: nativeBeamVisibilityDirty \? null : nativeBeamVisibleEdges/,
+    "an invalidated camera must not publish zero as a measured visible count");
+});
+// D085-S6 END
 
 test("D085-S6 the reading group is user-named Connessione and the reserved word is gone from the visible UI", () => {
   const markup = readFileSync(`${uiRoot}review/index.html`, "utf8");

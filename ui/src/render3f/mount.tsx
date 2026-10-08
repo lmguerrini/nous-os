@@ -182,6 +182,111 @@ type RelationGeometryWitness = {
   readonly widthEndPx: number;
 };
 
+// D085-S6 BEGIN: clip the drawn quadratic relation against all six viewport planes. A plane
+// evaluated along a transformed quadratic is itself quadratic; its roots partition the path into
+// intervals whose inside/outside state is constant. This catches crossings even when both ends
+// and the control point are offscreen, without scheduling any work on a resting frame.
+export function nativeBeamVisibleEdgeCount(
+  buffers: Parameters<typeof createFilamentRenderResources>[0],
+  beamEdgeIds: ReadonlySet<string>, camera: THREE.Camera,
+): number {
+  if (beamEdgeIds.size === 0) return 0;
+  camera.updateMatrixWorld(true);
+  const clip = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  const start = new THREE.Vector4(), control = new THREE.Vector4(), end = new THREE.Vector4();
+  const plane = (point: THREE.Vector4, axis: number): number => {
+    switch (axis) {
+      case 0: return point.w + point.x;
+      case 1: return point.w - point.x;
+      case 2: return point.w + point.y;
+      case 3: return point.w - point.y;
+      case 4: return point.w + point.z;
+      default: return point.w - point.z;
+    }
+  };
+  const inside = (t: number): boolean => {
+    const u = 1 - t, a = u * u, b = 2 * u * t, c = t * t;
+    for (let axis = 0; axis < 6; axis += 1) {
+      if (a * plane(start, axis) + b * plane(control, axis) + c * plane(end, axis) < 0) return false;
+    }
+    return true;
+  };
+  let visible = 0;
+  for (const [index, id] of buffers.edgeIds.entries()) {
+    if (!beamEdgeIds.has(id)) continue;
+    const offset = index * 3;
+    start.set(buffers.startPositions[offset]!, buffers.startPositions[offset + 1]!,
+      buffers.startPositions[offset + 2]!, 1).applyMatrix4(clip);
+    control.set(buffers.controlPositions[offset]!, buffers.controlPositions[offset + 1]!,
+      buffers.controlPositions[offset + 2]!, 1).applyMatrix4(clip);
+    end.set(buffers.endPositions[offset]!, buffers.endPositions[offset + 1]!,
+      buffers.endPositions[offset + 2]!, 1).applyMatrix4(clip);
+    const boundaries = [0, 1];
+    let excluded = false;
+    for (let axis = 0; axis < 6; axis += 1) {
+      const p = plane(start, axis), q = plane(control, axis), r = plane(end, axis);
+      if (p < 0 && q < 0 && r < 0) { excluded = true; break; }
+      const a = p - 2 * q + r, b = 2 * (q - p);
+      if (Math.abs(a) < 1e-12) {
+        if (Math.abs(b) >= 1e-12) {
+          const root = -p / b;
+          if (root > 0 && root < 1) boundaries.push(root);
+        }
+      } else {
+        const discriminant = b * b - 4 * a * p;
+        if (discriminant >= 0) {
+          const rootA = (-b - Math.sqrt(discriminant)) / (2 * a);
+          const rootB = (-b + Math.sqrt(discriminant)) / (2 * a);
+          if (rootA > 0 && rootA < 1) boundaries.push(rootA);
+          if (rootB > 0 && rootB < 1) boundaries.push(rootB);
+        }
+      }
+    }
+    if (excluded) continue;
+    boundaries.sort((a, b) => a - b);
+    if (boundaries.some((t, i) => inside(t)
+      || (i < boundaries.length - 1 && inside((t + boundaries[i + 1]!) / 2)))) visible += 1;
+  }
+  return visible;
+}
+
+export function createNativeBeamDriver(input: {
+  readonly eligible: () => boolean;
+  readonly sample: () => number;
+  readonly render: () => void;
+  readonly onRetire: () => void;
+  readonly now: () => number;
+  readonly schedule: (tick: () => void, delay: number) => ReturnType<typeof setTimeout>;
+  readonly cancel: (timer: ReturnType<typeof setTimeout>) => void;
+}) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let lastLiveWallMs = 0;
+  const retire = (): void => {
+    if (timer !== undefined) input.cancel(timer);
+    timer = undefined;
+    input.onRetire();
+  };
+  const tick = (): void => {
+    timer = undefined;
+    if (!input.eligible()) { retire(); return; }
+    if (input.sample() !== NATIVE_BEAM_SUSPENDED_MS) {
+      lastLiveWallMs = input.now();
+      timer = input.schedule(tick, FLOW_LAYER_FRAME_MS);
+      input.render();
+    } else if (input.now() - lastLiveWallMs <= NATIVE_BEAM_WATCH_BUDGET_MS) {
+      timer = input.schedule(tick, NATIVE_BEAM_WATCH_MS);
+    } else input.onRetire();
+  };
+  return {
+    wake(): void {
+      if (timer === undefined && input.eligible()) timer = input.schedule(tick, 0);
+    },
+    retire,
+    get armed(): boolean { return timer !== undefined; },
+  };
+}
+// D085-S6 END
+
 /** This mounts one shared Three scene behind two cameras and does not derive a second supplied placement. */
 // D081-P6 BEGIN: keep the product-page gesture anchor in the actual wheel adapter.
 export function reviewGestureWheelAnchor(
@@ -296,6 +401,8 @@ export function mount(
     .filter(([, presentation]) => presentation.category === "exploratory")
     .map(([id]) => id));
   let nativeBeamGatedEdges = 0;
+  let nativeBeamVisibleEdges = 0;
+  let nativeBeamVisibilityDirty = true;
   let nativeBeamClockMs = 0;
   let nativeBeamLiveUntilWallMs = 0;
   let nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;
@@ -881,6 +988,8 @@ export function mount(
       // how many drawn relations are exploratory (the only ones that may animate) and whether the
       // last sampled flow clock was live or suspended.
       beam: { exploratory: nativeBeamGatedEdges,
+        visibleExploratory: nativeBeamVisibilityDirty ? null : nativeBeamVisibleEdges,
+        timerArmed: nativeBeamDriver.armed,
         suspended: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS,
         elapsedMs: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS ? null : Math.round(nativeBeamLastSampleMs) },
       // D085-S6 END
@@ -958,6 +1067,10 @@ export function mount(
       if (layer) layer.style.visibility = stage >= 4 ? "" : "hidden";
     }
     if (!moving) {
+      // D085-S6 BEGIN: the settled camera makes the cached viewport count authoritative before
+      // readiness is published, even if the motion preference keeps the timer disarmed.
+      refreshNativeBeamVisibility();
+      // D085-S6 END
       renderFrame();
       // D085-S6 BEGIN: the camera settled — the overlay loop is about to resume the shared
       // clock, so the native beam driver may have a live clock to follow again.
@@ -977,43 +1090,49 @@ export function mount(
   // so a resting frame would otherwise freeze the travelling pulse wherever the last camera frame
   // left it. While the shared flow clock advances — exactly while the canvas overlay beam animates
   // — the driver repaints at the overlay's own cadence, sampling that same clock; when the clock
-  // stops (camera motion, no visible exploratory relation, motion disallowed, hidden tab) the next
-  // sample suspends the shader to its quiet profile and the driver retires: no render, no timer.
-  let nativeBeamTimer: ReturnType<typeof setTimeout> | undefined;
-  let nativeBeamLastLiveWallMs = 0;
-  const nativeBeamPreconditions = (): boolean =>
-    nativeBeamGatedEdges > 0 && !nativeBeamCameraMoving() && flowMotionAllowedNow();
-  const nativeBeamDriverTick = (): void => {
-    nativeBeamTimer = undefined;
-    if (destroyed) return;
-    const preconditions = nativeBeamPreconditions();
-    if (!preconditions) {
-      if (nativeBeamLastSampleMs !== NATIVE_BEAM_SUSPENDED_MS) renderFrame();
-      return;
-    }
-    sampleNativeBeam();
-    if (nativeBeamLastSampleMs !== NATIVE_BEAM_SUSPENDED_MS) {
-      nativeBeamLastLiveWallMs = performance.now();
-      renderFrame();
-      nativeBeamTimer = setTimeout(nativeBeamDriverTick, FLOW_LAYER_FRAME_MS);
-      return;
-    }
-    const wallMs = performance.now();
-    if (wallMs - nativeBeamLastLiveWallMs <= NATIVE_BEAM_WATCH_BUDGET_MS) {
-      nativeBeamTimer = setTimeout(nativeBeamDriverTick, NATIVE_BEAM_WATCH_MS);
-    }
+  // stops (camera motion, no visible exploratory relation, motion disallowed, hidden tab), the
+  // driver retires. Camera frames sample the quiet profile during motion; an offscreen relation
+  // needs no corrective draw, so the idle state has no beam render and no beam timer.
+  const refreshNativeBeamVisibility = (): void => {
+    if (!nativeBeamVisibilityDirty) return;
+    nativeBeamVisibilityDirty = false;
+    nativeBeamVisibleEdges = !document.hidden && !typedPicker && world.visible && filamentResources.mesh.visible
+      ? nativeBeamVisibleEdgeCount(live.buffers.filaments, nativeBeamEdgeIds, rig.camera) : 0;
   };
+  const nativeBeamPreconditions = (): boolean => {
+    if (destroyed || nativeBeamCameraMoving() || !flowMotionAllowedNow()) return false;
+    refreshNativeBeamVisibility();
+    return nativeBeamVisibleEdges > 0;
+  };
+  const nativeBeamDriver = createNativeBeamDriver({
+    eligible: nativeBeamPreconditions,
+    sample: sampleNativeBeam,
+    render: renderFrame,
+    onRetire: () => { nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS; },
+    now: () => performance.now(),
+    schedule: (tick, delay) => setTimeout(tick, delay),
+    cancel: timer => clearTimeout(timer),
+  });
   const wakeNativeBeam = (): void => {
-    if (destroyed || nativeBeamTimer !== undefined || !nativeBeamPreconditions()) return;
-    nativeBeamTimer = setTimeout(nativeBeamDriverTick, 0);
+    nativeBeamDriver.wake();
+  };
+  const invalidateNativeBeamVisibility = (): void => {
+    nativeBeamVisibilityDirty = true;
+    nativeBeamVisibleEdges = 0;
+    nativeBeamDriver.retire();
   };
   const onNativeBeamVisibility = (): void => {
+    invalidateNativeBeamVisibility();
     if (!document.hidden) wakeNativeBeam();
   };
   document.addEventListener("visibilitychange", onNativeBeamVisibility);
+  wakeNativeBeam();
   // D085-S6 END
   brainEnvelope?.setRefitCallback(renderFrame);
   const syncCameraState = (): void => {
+    // D085-S6 BEGIN: retire immediately during camera motion; settle rechecks the new viewport.
+    invalidateNativeBeamVisibility();
+    // D085-S6 END
     // D082-A-PERF BEGIN: keep the shared derived layer in its documented moving tier.
     if (visuals) visuals.setQuality("moving", false);
     // D082-A-PERF END
@@ -1090,11 +1209,20 @@ export function mount(
     // D085-S3 BEGIN
     syncDrawingBuffer(next.width, next.height);
     // D085-S3 END
+    // D085-S6 BEGIN: a resized frustum changes beam eligibility.
+    invalidateNativeBeamVisibility();
+    // D085-S6 END
     fiberStore?.setState({
       size: { width: next.width, height: next.height, top: 0, left: 0 },
       viewport: fiberStore.getState().viewport,
     });
+    // D085-S6 BEGIN
+    refreshNativeBeamVisibility();
+    // D085-S6 END
     renderFrame();
+    // D085-S6 BEGIN
+    wakeNativeBeam();
+    // D085-S6 END
   });
   resizeObserver.observe(container);
 
@@ -1136,7 +1264,6 @@ export function mount(
         { beamEdgeIds: nativeBeamEdgeIds, flowElapsedMs: sampleNativeBeam });
       nativeBeamGatedEdges = 0;
       for (const id of live.buffers.filaments.edgeIds) if (nativeBeamEdgeIds.has(id)) nativeBeamGatedEdges += 1;
-      wakeNativeBeam();
       // D085-S6 END
       // D082-A-NODES BEGIN
       applyNativeEdgeVeil();
@@ -1146,7 +1273,14 @@ export function mount(
     rig.setWorldFramingSubjects(sceneCameraFramingSubjects(live.scene));
     picker.replaceScene(live.scene);
     updateField(renderer, live.scene);
+    // D085-S6 BEGIN: refresh after both buffers and camera framing have settled.
+    invalidateNativeBeamVisibility();
+    refreshNativeBeamVisibility();
+    // D085-S6 END
     renderFrame();
+    // D085-S6 BEGIN
+    wakeNativeBeam();
+    // D085-S6 END
     // D082-B-CANOPYN BEGIN
     if (markCanopyMaterial) { performance.mark('d082-canopyn:material:end');
       performance.measure('d082-canopyn:material', 'd082-canopyn:material:start', 'd082-canopyn:material:end'); }
@@ -1167,10 +1301,14 @@ export function mount(
   proofWindow.__d080Renderer = brainProof;
   // D085-S6 BEGIN: the native beam's live witness on the existing renderer proof channel —
   // the exploratory gate count of the drawn set and the last sampled shared-clock phase.
-  (brainProof as { nativeBeam?: () => { exploratory: number; suspended: boolean; elapsedMs: number | null } })
-    .nativeBeam = () => ({ exploratory: nativeBeamGatedEdges,
+  (brainProof as { nativeBeam?: () => { exploratory: number; visibleExploratory: number | null;
+    timerArmed: boolean; suspended: boolean; elapsedMs: number | null } })
+    .nativeBeam = () => { if (!nativeBeamCameraMoving()) refreshNativeBeamVisibility();
+      return ({ exploratory: nativeBeamGatedEdges,
+      visibleExploratory: nativeBeamVisibilityDirty ? null : nativeBeamVisibleEdges,
+      timerArmed: nativeBeamDriver.armed,
       suspended: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS,
-      elapsedMs: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS ? null : Math.round(nativeBeamLastSampleMs) });
+      elapsedMs: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS ? null : Math.round(nativeBeamLastSampleMs) }); };
   // D085-S6 END
   return {
     readPlacedLabelIds(): readonly string[] { return typedLabelOverlay?.readLabelIds() ?? []; },
@@ -1237,6 +1375,10 @@ export function mount(
         distinct?.destroy();
         distinct = null;
         world.visible = false;
+        // D085-S6 BEGIN: the typed view removes the native filament pass without rebuilding it.
+        // Retire its timer on that visibility transition as well.
+        invalidateNativeBeamVisibility();
+        // D085-S6 END
         currentStyled = update.styled;
         const nextScope = readProjectionStyle(update.styled);
         if (nextScope !== null) {
@@ -1439,8 +1581,7 @@ export function mount(
     destroy(): void {
       if (labelTimer !== undefined) clearTimeout(labelTimer);
       // D085-S6 BEGIN: retire the native beam driver with the mount — no timer outlives the view.
-      if (nativeBeamTimer !== undefined) clearTimeout(nativeBeamTimer);
-      nativeBeamTimer = undefined;
+      nativeBeamDriver.retire();
       document.removeEventListener("visibilitychange", onNativeBeamVisibility);
       // D085-S6 END
       ladder.destroy();
