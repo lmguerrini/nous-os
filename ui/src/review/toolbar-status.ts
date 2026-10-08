@@ -75,13 +75,16 @@ export function formatD081GraphStatus(status: D081GraphStatus): { line: string; 
   // D085-S3 END
   // D085-S7 BEGIN
   const detail = edges.detail;
+  // D085-X2 BEGIN: relation detail precedes the Llull overview fold.
+  const foldQualifier = (edges.aggregatedIntoBundles ?? 0) > 0 ? ' prima del raggruppamento Llull' : '';
+  // D085-X2 END
   const detailText = detail ? ` · Rel. Essenziali: ${count(detail.essentialRepresented)}; Tutte: ${count(detail.availableRepresented)}` : '';
   const line = `Nodi ${count(nodes.visible)} visibili · ${count(nodes.represented)} rappresentati / ${count(nodes.total)} totali; Archi ${count(edges.drawn)} disegnati / ${count(edges.eligible)} eleggibili / ${count(edges.total)} totali${detailText}`;
   // D085-S7 END
   const details: [string, string, string, string, string, string, string] = [
     `Nodi: ${count(nodes.visible)} visibili, ${count(nodes.represented)} rappresentati su ${count(nodes.total)} totali (${count(nodes.eligible)} eleggibili).`,
     // D085-S7 BEGIN
-    `Archi: ${count(edges.drawn)} disegnati, ${count(edges.eligible)} eleggibili su ${count(edges.total)} totali${edges.bundles > 0 ? `; ${count(edges.bundled)} in ${count(edges.bundles)} fasci contati` : ""}${detail ? `; dettaglio ${detail.setting === 'essential' ? 'Essenziali' : 'Tutte'}: ${count(detail.represented)} relazioni sorgente e ${count(detail.guideDrawn)} guide strutturali; Essenziali ${count(detail.essentialDrawn)} tracciati / ${count(detail.essentialRepresented)} relazioni, Tutte ${count(detail.availableDrawn)} tracciati / ${count(detail.availableRepresented)} relazioni; ${count(detail.additionalDrawn)} tracciati esclusivi di Tutte` : ''}.`,
+    `Archi: ${count(edges.drawn)} disegnati, ${count(edges.eligible)} eleggibili su ${count(edges.total)} totali${edges.bundles > 0 ? `; ${count(edges.bundled)} in ${count(edges.bundles)} fasci contati` : ""}${detail ? `; dettaglio ${detail.setting === 'essential' ? 'Essenziali' : 'Tutte'}: ${count(detail.represented)} relazioni sorgente e ${count(detail.guideDrawn)} guide strutturali; Essenziali ${count(detail.essentialDrawn)} tracciati${foldQualifier} / ${count(detail.essentialRepresented)} relazioni, Tutte ${count(detail.availableDrawn)} tracciati${foldQualifier} / ${count(detail.availableRepresented)} relazioni; ${count(detail.additionalDrawn)} tracciati esclusivi di Tutte${foldQualifier}` : ''}.`,
     // D085-S7 END
     `Profondità: ${depth.label || `livello ${depth.level}`}.`,
     `Aggregati: ${count(nodes.aggregates)} gruppi con ${count(nodes.aggregated)} elementi rappresentati.`,

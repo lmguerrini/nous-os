@@ -74,3 +74,16 @@ test("performance HUD stays in the lower-left safe area and above reading surfac
   assert.doesNotMatch(css, /(?:^|;)\s*(?:top|right):(?:48px|12px)/,
     "HUD no longer occupies the obstructed top-right corner");
 });
+
+// D085-X2 BEGIN: the HUD uses the same pre-fold qualifier as the graph status.
+test('HUD distinguishes relation-detail strokes before a Llull fold', () => {
+  const detail = { setting: 'all', essentialDrawn: 12000, essentialRepresented: 12000,
+    availableDrawn: 14155, availableRepresented: 14155, guideDrawn: 0 } as never;
+  const folded = formatHud({ edges: { drawn: 12502, detail, aggregatedIntoBundles: 1653 } }, [], undefined, null);
+  assert.match(folded, /Archi \/ bundle<\/dt><dd>12502/);
+  assert.match(folded, /Tutte 14155 tracciati prima del raggruppamento Llull/);
+  const natural = formatHud({ edges: { drawn: 12502, detail } }, [], undefined, null);
+  assert.match(natural, /Tutte 14155 tracciati \/ 14155 relazioni/);
+  assert.doesNotMatch(natural, /raggruppamento Llull/);
+});
+// D085-X2 END

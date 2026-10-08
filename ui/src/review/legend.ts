@@ -232,7 +232,7 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
   // D085-S6 END
     svg.append(line(2, 7, 24, 7, palette.container, 0.8, 0.5));
   });
-  // D085-S4 BEGIN (fix 2): the Llull Figure A guides get their own legend entry with a
+  // D085-S4 BEGIN: the Llull Figure A guides get their own legend entry with a
   // dashed sample, so the structural pair compartments are told apart from the real
   // relations on the legend surface too (hierarchy: guide < relazioni reali < radici).
   // Only the Llull topology carries it; every other topology keeps its pixels.
@@ -246,7 +246,7 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
   // D085-S4 END
   // D085-S4 BEGIN: the overview bundles get their own
   // entry, so the aggregate ink is told apart from the dashed compartments and from the
-  // single real relations on the legend surface too. It states the mechanism
+  // single real relations on the legend surface too. The entry states the mechanism
   // truthfully: at distance the cross-sector strokes are not drawn at all — the routing
   // folds them into these bundles, which carry the compartment's relation ids — and on
   // approach the exact individual relations return as the bundles fade. No veil: the

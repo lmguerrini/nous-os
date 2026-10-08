@@ -24,7 +24,7 @@ const densityRelationSequenceCache = new WeakMap<CanopyLayout, WeakMap<object, r
 // D085-S2 END
 
 // D085-S2 BEGIN: the Bilanciata mark sequence continues the structural scaffold with the
-// endpoints of the strongest real evidence relations (fix 3: branches carry
+// endpoints of the strongest real evidence relations («i rami portano
 // real relations). Ranking is (class weight, summed endpoint importance, id) — the same
 // semantic features `densitySourceRelations` uses — and every appended id is a real node
 // that has not been chosen yet, so the sequence stays a deterministic total order over the
@@ -68,7 +68,7 @@ export function canopyDensityMarks(layout: CanopyLayout, nodes: readonly CanopyI
   density: Density, _band: CanopyBand, focusId: string | null, _pixelsPerUnit: number,
   projection: '2d' | '3d', _projectPoint?: (point: CanopyPoint) => Readonly<{ x: number; y: number }>,
   // D085-S2 BEGIN: `evidence` continues the sequence after the structural scaffold. It is
-  // optional so the verified D-082 callers keep their exact behaviour when absent.
+  // optional so existing callers keep their exact behaviour when absent.
   evidence?: readonly CanopyEvidenceCandidate[]): CanopyMark[] {
   // D085-S2 END
   if (density === 'complete') return nodes.map(node => ({ id: node.id, memberCount: 1,

@@ -16,7 +16,7 @@ export type D081Status = {
   nodes?: { visible?: number; represented?: number; total?: number; eligible?: number; aggregated?: number };
   // D085-S7 BEGIN
   edges?: { drawn?: number; bundled?: number; eligible?: number; total?: number;
-    detail?: RelationDetailCounts };
+    detail?: RelationDetailCounts; aggregatedIntoBundles?: number };
   // D085-S7 END
   depth?: { level?: number; label?: string };
   quality?: "movimento" | "recupero" | "completa" | string;
@@ -90,6 +90,9 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
   const edgeDrawn = edges?.drawn ?? fallback?.edges?.rendered ?? 0;
   const edgeEligible = edges?.eligible ?? fallback?.edges?.available ?? 0;
   const edgeTotal = edges?.total ?? edgeEligible;
+  // D085-X2 BEGIN: label pre-fold relation detail only when Llull aggregation is active.
+  const foldQualifier = (edges?.aggregatedIntoBundles ?? 0) > 0 ? ' prima del raggruppamento Llull' : '';
+  // D085-X2 END
   // D085-S3 BEGIN: the presented renderer phase owns the visible 3D quality label.
   const quality = readiness?.view.includes('/3d/') ? readiness.quality
     : status?.quality ?? "dati in attesa";
@@ -114,7 +117,7 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
     <dt>Nodi visibili / rappr.</dt><dd>${nodeDrawn} / ${nodes?.represented ?? nodeDrawn} · ${nodeEligible} elegg. / ${nodeTotal} tot. · +${nodes?.aggregated ?? 0}</dd>
     <dt>Archi / bundle</dt><dd>${edgeDrawn} / ${edges?.bundled ?? 0} · ${edgeEligible} elegg. / ${edgeTotal} tot.</dd>
     <!-- D085-S7 BEGIN -->
-    ${edges?.detail ? `<dt>Relazioni ${edges.detail.setting === 'essential' ? 'Essenziali' : 'Tutte'}</dt><dd>Essenziali ${edges.detail.essentialDrawn} tracciati / ${edges.detail.essentialRepresented} relazioni · Tutte ${edges.detail.availableDrawn} tracciati / ${edges.detail.availableRepresented} relazioni · ${edges.detail.guideDrawn} guide ora</dd>` : ''}
+    ${edges?.detail ? `<dt>Relazioni ${edges.detail.setting === 'essential' ? 'Essenziali' : 'Tutte'}</dt><dd>Essenziali ${edges.detail.essentialDrawn} tracciati${foldQualifier} / ${edges.detail.essentialRepresented} relazioni · Tutte ${edges.detail.availableDrawn} tracciati${foldQualifier} / ${edges.detail.availableRepresented} relazioni · ${edges.detail.guideDrawn} guide ora</dd>` : ''}
     <!-- D085-S7 END -->
     <dt>Qualità · LOD</dt><dd>${quality} · ${depth}</dd>
     <dt>Ultima interazione</dt><dd>${formatDuration(status?.msSinceInteraction)} fa</dd>

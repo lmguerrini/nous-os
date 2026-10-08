@@ -14,7 +14,7 @@ test('toolbar groups follow the review workflow and expose clear group labels', 
   assert.ok(positions.every(position => position >= 0), `missing toolbar group: ${positions}`);
   // D082-B2 BEGIN: P6 renames Vista and splits Organizzazione into Topologia and Indra.
   assert.deepEqual(positions, [...positions].sort((a, b) => a - b), 'Rendering, Morfologia, Topologia, Connessione, Relazioni, Densità, tools, Aspetto');
-  // D085-S6 BEGIN: the rename of the reading group label.
+  // D085-S6 BEGIN: the reading group label is Connessione.
   for (const label of ['Rendering', 'Morfologia', 'Topologia', 'Connessione', 'Relazioni', 'Densità']) assert.ok(header.includes(`<strong>${label}</strong>`), label);
   // D085-S6 END
   // D082-B2 END
@@ -48,7 +48,7 @@ test('whole-bar collapse is a DOM-only toggle with a live state summary', () => 
 
 test('fullscreen keeps Rendering, Morfologia, Topologia, Connessione and Colori reachable', () => {
   // D082-B2 BEGIN: P6 toolbar labels.
-  // D085-S6 BEGIN: the rename of the reading group label.
+  // D085-S6 BEGIN: the reading group label is Connessione.
   for (const label of ['Rendering', 'Morfologia', 'Topologia', 'Connessione', 'Colori']) assert.ok(fullscreen.includes(`>${label}<`), label);
   // D085-S6 END
   // D082-B2 END
