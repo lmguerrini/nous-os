@@ -27,7 +27,8 @@ export type RouteSuppression = Readonly<{ id: string; cause: RouteCause }>;
 export type EndpointViolation = Readonly<{ edgeId: string; endpoint: 'from' | 'to'; reason: string }>;
 export type RouteInvariant = Readonly<{ ok: boolean; violations: readonly EndpointViolation[] }>;
 // D085-S7 BEGIN
-export type RelationDetailCounts = Readonly<{ setting: 'essential' | 'all'; drawn: number; represented: number;
+export type RelationDetailCounts = Readonly<{ setting: 'essential' | 'all'; rule: 'd084-projection' | 'selector';
+  drawn: number; represented: number;
   essentialDrawn: number; essentialRepresented: number; availableDrawn: number; availableRepresented: number;
   additionalDrawn: number; additionalRepresented: number; guideDrawn: number; guideRepresented: number;
   bundles: number; bundled: number; classes: Readonly<Record<RelationClass,
@@ -78,7 +79,7 @@ export function checkRouteInvariant(
 // D085-S7 BEGIN
 /** Report the two actual routed sets. Lab can have separately budgeted sets whose IDs differ. */
 export function measureRelationDetail(essential: RouteResult, all: RouteResult,
-  setting: 'essential' | 'all'): RouteResult {
+  setting: 'essential' | 'all', rule: RelationDetailCounts['rule'] = 'd084-projection'): RouteResult {
   const chosen = setting === 'essential' ? essential : all;
   const guide = (edge: RoutedEdge) => edge.type === 'contains' || edge.type === 'synthetic-containment'
     || edge.type === 'co_membership' || edge.type === 'co-membership';
@@ -96,13 +97,24 @@ export function measureRelationDetail(essential: RouteResult, all: RouteResult,
       essentialRepresented: sourceCount(first), allRepresented: sourceCount(complete),
       additionalDrawn: extra.length, additionalRepresented: sourceCount(extra) }];
   })) as RelationDetailCounts['classes'];
-  return { ...chosen, detail: { setting, drawn: chosen.drawn.length,
+  return { ...chosen, detail: { setting, rule, drawn: chosen.drawn.length,
     represented: sourceCount(chosen.drawn), essentialDrawn: essential.drawn.length,
     essentialRepresented: sourceCount(essential.drawn), availableDrawn: all.drawn.length,
     availableRepresented: sourceCount(all.drawn), additionalDrawn: added.length,
     additionalRepresented: sourceCount(added), guideDrawn: guideEdges.length,
     guideRepresented: guideEdges.reduce((sum, edge) => sum + edge.count, 0),
     bundles: bundles.length, bundled: bundles.reduce((sum, edge) => sum + edge.count, 0), classes } };
+}
+
+/** Apply the established Lab projection when it changes the drawn view. An equal
+ * routed ID set needs the bounded selector to give detail a visible meaning. */
+export function resolveLabRelationDetail(essential: RouteResult, all: RouteResult,
+  setting: 'essential' | 'all'): RouteResult {
+  const essentialIds = new Set(essential.drawn.map(edge => edge.id));
+  const sameDrawnIds = essentialIds.size === all.drawn.length
+    && all.drawn.every(edge => essentialIds.has(edge.id));
+  return sameDrawnIds ? selectRelationDetail(all, setting)
+    : measureRelationDetail(essential, all, setting);
 }
 
 /** Keep containment and a bounded maximum-strength edge cover in each admitted relation class.
@@ -119,6 +131,7 @@ export function selectRelationDetail(route: RouteResult, setting: 'essential' | 
     cover.get(edge.class)!.add(edge.to.id);
   };
   for (const edge of route.drawn) if (edge.type === 'contains' || edge.type === 'synthetic-containment'
+    || edge.type === 'co_membership' || edge.type === 'co-membership'
     || (essentialEdgeIds === undefined && edge.type === 'lifted-route'
       && edge.sourceRelationIds.some(id => id.startsWith('visual:')))) retain(edge);
   if (essentialEdgeIds) for (const edge of route.drawn) if (essentialEdgeIds.has(edge.id)) retain(edge);
@@ -148,7 +161,7 @@ export function selectRelationDetail(route: RouteResult, setting: 'essential' | 
       ...route.drawn.filter(edge => !retained.has(edge.id)).map(edge => ({ id: edge.id, cause: 'detail-filter' as const }))],
     invariant: checkRouteInvariant(drawn, new Set(route.renderedNodeIds), aggregates) };
   return measureRelationDetail(setting === 'essential' ? selected : { ...selected,
-    drawn: route.drawn.filter(edge => retained.has(edge.id)) }, route, setting);
+    drawn: route.drawn.filter(edge => retained.has(edge.id)) }, route, setting, 'selector');
 }
 // D085-S7 END
 

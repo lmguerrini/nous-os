@@ -1,7 +1,7 @@
 // D085-S7 BEGIN
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { checkRouteInvariant, measureRelationDetail, selectRelationDetail } from '../../src/review/relation-routing.ts';
+import { checkRouteInvariant, measureRelationDetail, resolveLabRelationDetail, selectRelationDetail } from '../../src/review/relation-routing.ts';
 import { readFileSync } from 'node:fs';
 import type { RouteResult, RoutedEdge } from '../../src/review/relation-routing.ts';
 import { formatD081GraphStatus } from '../../src/review/toolbar-status.ts';
@@ -35,6 +35,7 @@ test('Essenziali keeps real high-count coverage; Tutte adds deterministic admitt
   assert.ok(essential.drawn.some(item => item.class === 'exploratory'));
   assert.ok(essential.drawn.every(item => all.drawn.includes(item)));
   assert.equal(essential.detail?.availableDrawn, all.drawn.length);
+  assert.equal(essential.detail?.rule, 'selector');
   assert.equal(essential.detail?.additionalDrawn, all.drawn.length - essential.drawn.length);
   assert.equal(essential.detail?.represented, essential.drawn.filter(item => item.type !== 'contains')
     .reduce((sum, item) => sum + item.count, 0));
@@ -88,10 +89,35 @@ test('Lab detail reports independently routed D-084 sets without changing their 
   assert.deepEqual(essential.drawn.map(item => item.id), ['lab-essential']);
   assert.deepEqual(all.drawn.map(item => item.id), ['lab-all', 'lab-extra']);
   assert.equal(essential.detail?.essentialDrawn, 1);
+  assert.equal(essential.detail?.rule, 'd084-projection');
   assert.equal(essential.detail?.availableDrawn, 2);
   assert.equal(essential.detail?.additionalDrawn, 2);
   assert.equal(all.detail?.essentialRepresented, 2);
   assert.equal(all.detail?.availableRepresented, 4);
+});
+
+test('Lab falls back per routed view only when the drawn IDs are equal', () => {
+  const reordered = { ...route, drawn: [...route.drawn].reverse() };
+  const essential = resolveLabRelationDetail(route, reordered, 'essential');
+  const all = resolveLabRelationDetail(route, reordered, 'all');
+  assert.equal(essential.detail?.rule, 'selector');
+  assert.equal(all.detail?.rule, 'selector');
+  assert.ok(essential.drawn.length < all.drawn.length);
+  assert.ok(essential.drawn.every(item => all.drawn.some(candidate => candidate.id === item.id)));
+  const sparse = { ...route, drawn: route.drawn.slice(0, 2) };
+  assert.equal(resolveLabRelationDetail(sparse, route, 'essential').detail?.rule, 'd084-projection');
+  assert.deepEqual(resolveLabRelationDetail(sparse, route, 'essential').drawn, sparse.drawn);
+});
+
+test('the selector retains structural guides when Lab Complete needs a fallback', () => {
+  const guided = { ...route, drawn: [
+    edge('guide', 'a', 'b', 1, 'structural', 'co_membership'),
+    ...route.drawn.filter(item => item.class === 'attested'),
+  ] };
+  const selected = resolveLabRelationDetail(guided, guided, 'essential');
+  assert.equal(selected.detail?.rule, 'selector');
+  assert.ok(selected.drawn.some(item => item.id === 'guide'));
+  assert.ok(selected.drawn.length < guided.drawn.length);
 });
 
 test('classic Indra retains the established essential routing cap', () => {
@@ -106,7 +132,7 @@ test('Lab pages route the requested detail before measuring and preserve Complet
   assert.match(page, /const lab = this\.topology !== 'natural'/);
   assert.match(page, /const canopyDetailInput = lab && canopy && this\.relationDetail === 'essential'/);
   assert.match(page, /const canopyArcs = canopy \? this\.density === 'complete'\s*\? projectedArcs\.edges : canopyEvidenceArcs\(projectedArcs\.edges\)/);
-  assert.match(page, /let route = lab \? measureRelationDetail\(/);
+  assert.match(page, /let route = lab \? resolveLabRelationDetail\(/);
 });
 
 test('lifted endpoints retain only the aggregates used by drawn detail and the status separates guides', () => {

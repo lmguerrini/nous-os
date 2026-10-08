@@ -2,7 +2,7 @@ import { styleProjection } from '../render-common/projection-style.ts';
 import { cameraRevealZoom, emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
 import type { RevealDecision, RevealState } from './reveal-controller.ts';
 // D085-S7 BEGIN
-import { buildRevealWitness, measureRelationDetail, routeRelationsAfterLOD, selectRelationDetail } from './relation-routing.ts';
+import { buildRevealWitness, resolveLabRelationDetail, routeRelationsAfterLOD, selectRelationDetail } from './relation-routing.ts';
 // D085-S7 END
 import { COMPLETE_IDLE_MS, completeQuality, completeRelations, completeRoute, completeVisible } from './completa.ts';
 import { completeIndraOverlay } from './completa-indra.ts';
@@ -3029,7 +3029,7 @@ export class V2Page {
             suppressed: [...routed.suppressed, ...droppedByClass.map(id => ({ id, cause: 'line-budget' as const }))] };
         const selectedRoute: RouteResult = this.topology === 'natural'
             ? selectRelationDetail(typedCandidate, this.relationDetail)
-            : measureRelationDetail(typedCandidate, typedCandidate, this.relationDetail);
+            : resolveLabRelationDetail(typedCandidate, typedCandidate, this.relationDetail);
         const selectedIds = new Set(selectedRoute.drawn.map(edge => edge.id));
         const detailFilteredSourceIds = [...new Set(drawn.filter(edge => !selectedIds.has(edge.id))
             .flatMap(edge => edge.sourceRelationIds.flatMap(id => {
@@ -4121,7 +4121,7 @@ export class V2Page {
                 focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers),
             }) : candidateRoute;
             const allRoute = lab && this.relationDetail === 'essential' ? otherRoute : candidateRoute;
-            let route = lab ? measureRelationDetail(
+            let route = lab ? resolveLabRelationDetail(
                 this.relationDetail === 'essential' ? candidateRoute : otherRoute, allRoute, this.relationDetail)
                 : selectRelationDetail(candidateRoute, this.relationDetail);
             // D085-S7 END
