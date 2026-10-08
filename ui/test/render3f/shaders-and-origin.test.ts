@@ -459,6 +459,20 @@ test("renderer source traversal reaches a material literal in a subdirectory", (
   }
 });
 
+// D086-F5 BEGIN: the filament material's flow imports have an exact symbol contract.
+test("filament flow symbol allow-list rejects added and missing imports", () => {
+  const source = requiredRendererSource(rendererSources(), "filament-material.ts");
+  assert.doesNotThrow(() => assertNoRendererMaterialLiterals([source]));
+  const widened = source.source.replace("FLOW_BEAM_CORE_MIN_PX, FLOW_BEAM_SHOULDER_FRACTION",
+    "FLOW_ANIMATED_EDGE_BUDGET, FLOW_BEAM_CORE_MIN_PX, FLOW_BEAM_SHOULDER_FRACTION");
+  assert.throws(() => assertNoRendererMaterialLiterals([{ name: source.name, source: widened }]),
+    /filament-material\.ts imports forbidden renderer symbols from #render-common\/flow\.ts: FLOW_ANIMATED_EDGE_BUDGET/);
+  const narrowed = source.source.replace("FLOW_BEAM_CORE_MIN_PX, ", "");
+  assert.throws(() => assertNoRendererMaterialLiterals([{ name: source.name, source: narrowed }]),
+    /filament-material\.ts renderer import symbol allow-list drift for #render-common\/flow\.ts: missing=FLOW_BEAM_CORE_MIN_PX/);
+});
+// D086-F5 END
+
 test("renderer source carries no governed value into depth and the depth-routing control fails", () => {
   const sources = rendererSources();
   assert.doesNotThrow(() => assertNoSemanticDepthRouting(sources));

@@ -8,8 +8,11 @@ import { neuralRibbonProfile, readNeuralShapeCacheStats, somaLobeAreaScale,
   somaLobeFactor } from '../render-common/morphology-canvas.ts';
 import { canopySemanticCandidates, placeCanopyLabels, type CanopyRect } from './canopy-overlay.ts';
 // D086-F5 BEGIN: the real evidence strokes, rather than the generated tree rails, carry flow.
-import { FLOW_BEAM_CORE_MIN_PX, FLOW_WAVE_MAX_ALPHA, flowHeadAlpha, flowWaveAlpha,
+import { FLOW_BEAM_CORE_MIN_PX, FLOW_WAVE_MAX_ALPHA, flowBeamCoreChannels, flowHeadAlpha, flowWaveAlpha,
   selectFlowEdges } from '../render-common/flow.ts';
+const CANOPY_EVIDENCE_EXPLORATORY_CHANNELS = [165, 159, 185] as const;
+const CANOPY_EVIDENCE_EXPLORATORY_INK = `rgba(${CANOPY_EVIDENCE_EXPLORATORY_CHANNELS.join(', ')}, .45)`;
+const CANOPY_BEAM_CORE_CHANNELS = flowBeamCoreChannels(CANOPY_EVIDENCE_EXPLORATORY_CHANNELS);
 
 export type CanopyFlowStroke = Readonly<{ edge: CanopyEvidenceStroke;
   from: Readonly<{ x: number; y: number }>; to: Readonly<{ x: number; y: number }> }>;
@@ -37,7 +40,7 @@ export function drawCanopyEvidenceFlow(context: CanvasRenderingContext2D,
       const fraction = index / samples;
       const alpha = flowHeadAlpha(intensity)
         * flowWaveAlpha(length * fraction, length, now, speed, intensity) / FLOW_WAVE_MAX_ALPHA;
-      gradient.addColorStop(fraction, `rgba(248, 248, 248, ${alpha})`);
+      gradient.addColorStop(fraction, `rgba(${CANOPY_BEAM_CORE_CHANNELS.join(', ')}, ${alpha})`);
     }
     context.beginPath();
     context.moveTo(row.from.x, row.from.y);
@@ -576,7 +579,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       else {
         context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y);
         context.lineWidth = Math.min(1.5, 0.55 + Math.log1p(edge.count) * 0.14);
-        context.strokeStyle = edge.class === 'exploratory' ? 'rgba(165, 159, 185, .45)' : 'rgba(199, 205, 214, .34)';
+        context.strokeStyle = edge.class === 'exploratory' ? CANOPY_EVIDENCE_EXPLORATORY_INK : 'rgba(199, 205, 214, .34)';
         context.stroke();
         context.fillStyle = context.strokeStyle;
         for (const endpoint of [from, to]) {
@@ -589,7 +592,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     }
     if (attestedPath) {
       context.lineWidth = 0.65; context.strokeStyle = 'rgba(199, 205, 214, .34)'; context.stroke(attestedPath);
-      context.strokeStyle = 'rgba(165, 159, 185, .45)'; context.stroke(exploratoryPath!);
+      context.strokeStyle = CANOPY_EVIDENCE_EXPLORATORY_INK; context.stroke(exploratoryPath!);
     }
     for (const rail of motionIds ? drawOrder.filter(rail => rail.address.length <= 10) : drawOrder) {
       if (rail.address === 'root') continue; // D081-P7d: no unlabeled terminal stem.

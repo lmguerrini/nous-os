@@ -106,6 +106,20 @@ test("D086-F5 a cancelled handle that already fired its frame callback does noth
 // ---------------------------------------------------------------- the native driver on that scheduler
 
 const mountSource = readFileSync(new URL("../src/render3f/mount.tsx", import.meta.url), "utf8");
+// D086-F5 BEGIN: dense native beams own one paced frame; their callback retains the canvas composite.
+test("D086-F5C dense 3D native beam drives the shared clock and canvas composite on one frame loop", () => {
+  const page = readFileSync(new URL("../src/review/product-view.ts", import.meta.url), "utf8");
+  assert.ok(/const nativeBeamOwnsFlow = \(\).*nativeBeamVisibleExploratory\(\)/s.test(page), "page reads native visibility");
+  assert.ok(/const startFlowLoop = \(\) => \{[\s\S]{0,140}if \(destroyed \|\| flowLoop\.running \|\| nativeBeamOwnsFlow\(\)\) return;/.test(page), "page does not start a duplicate loop");
+  assert.ok(/if \(allowed && flowLoop\.origin === null\) flowLoop\.origin = performance\.now\(\);/.test(page), "native first frame gets a live origin");
+  assert.ok(/nativeFlowClockAt: .*setFlowNow\(elapsed\)/s.test(page), "native frame advances shared phase");
+  assert.ok(/onNativeBeamFrame: .*drawFlowOverlay\(/s.test(page), "native frame retains canvas composite");
+  assert.ok(/render: \(\) => renderFrame\(true\)/.test(mountSource), "one driver requests a visual-only frame");
+  assert.ok(/const onNativeBeamFrame = options\.onNativeBeamFrame/.test(mountSource), "mount receives the canvas composite callback");
+  assert.ok(/if \(beamOnly && nativeBeamLastRenderedLive && typeof onNativeBeamFrame === 'function'\) onNativeBeamFrame\(\)/.test(mountSource), "that frame also draws the canvas composite");
+  assert.ok(/clockMs: options\.nativeFlowClockAt\?\.\(wallMs\) \?\? flowNow\(\)/.test(mountSource), "driver samples live clock");
+});
+// D086-F5 END
 const helperStart = mountSource.indexOf("// D085-S6 BEGIN: clip the drawn quadratic");
 const helperEnd = mountSource.indexOf("// D085-S6 END", helperStart);
 assert.ok(helperStart >= 0 && helperEnd > helperStart);

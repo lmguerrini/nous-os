@@ -126,6 +126,10 @@ export type Render3fOptions = {
   readonly elapsedMilliseconds: number;
   readonly calibration?: CalibrationProfile;
   readonly presentation?: PresentationOptions;
+  // D086-F5 BEGIN: the product view supplies the shared phase and the composited canvas pass.
+  readonly nativeFlowClockAt?: (wallMs: number) => number;
+  readonly onNativeBeamFrame?: () => void;
+  // D086-F5 END
   /**
    * This is the render input `buildScene` accepts as its own optional trailing `phase` argument (see
    * scene/build.ts) and has no Sigma equivalent: motion-grammar phase only exists on this renderer's
@@ -170,6 +174,9 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   // D085-S6 BEGIN: the product motion control synchronizes the native beam without a remount.
   syncNativeBeamMotion(): void;
   // D085-S6 END
+  // D086-F5 BEGIN: lets the page choose a single frame owner for visible native beams.
+  nativeBeamVisibleExploratory(): number;
+  // D086-F5 END
   setEmphasis(ids: ReadonlySet<string> | null): void;
   setAppearance(options: AppearanceOptions): void;
   /** Appearance of the derived geometry (containers, curves, field rings) of a typed projection; never moves it. */
@@ -437,9 +444,12 @@ export function mount(
       nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;
       return NATIVE_BEAM_SUSPENDED_MS;
     }
+    // D086-F5 BEGIN: native frames advance the shared clock when the canvas loop stands down.
+    const wallMs = performance.now();
     const sample = nativeBeamElapsedSample({
-      clockMs: flowNow(),
-      wallMs: performance.now(),
+      clockMs: options.nativeFlowClockAt?.(wallMs) ?? flowNow(),
+      wallMs,
+    // D086-F5 END
       cameraMoving: nativeBeamCameraMoving(),
       motionAllowed: flowMotionAllowedNow(),
       lastClockMs: nativeBeamClockMs,
@@ -1008,6 +1018,9 @@ export function mount(
   };
   // D085-X8 BEGIN: the native beam repaints an existing view; it does not move the camera or
   // invalidate the label pass. Keep those frames out of the readiness revision stream too.
+  // D086-F5 BEGIN: an optional page composite rides the native beam frame without another loop.
+  const onNativeBeamFrame = options.onNativeBeamFrame;
+  // D086-F5 END
   const renderFrame = (beamOnly = nativeBeamForceQuiet): void => {
     if (destroyed) {
       return;
@@ -1071,6 +1084,9 @@ export function mount(
     // D085-S3 END
     if (!beamOnly) publishPresentedFrame();
     if (perfMarksEnabled) { performance.mark('d082:render3d:end'); performance.measure('d082:render3d', 'd082:render3d:start', 'd082:render3d:end'); }
+    // D086-F5 BEGIN: the same native visual-only frame keeps the approved canvas composite.
+    if (beamOnly && nativeBeamLastRenderedLive && typeof onNativeBeamFrame === 'function') onNativeBeamFrame();
+    // D086-F5 END
   };
   // D085-X8 END
   let presentationRevision = 0;
@@ -1486,6 +1502,12 @@ export function mount(
       elapsedMs: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS ? null : Math.round(nativeBeamLastSampleMs) }); };
   // D085-S6 END
   return {
+    // D086-F5 BEGIN
+    nativeBeamVisibleExploratory(): number {
+      refreshNativeBeamVisibility();
+      return nativeBeamVisibleEdges;
+    },
+    // D086-F5 END
     readPlacedLabelIds(): readonly string[] { return typedLabelOverlay?.readLabelIds() ?? []; },
     // D085-S6 BEGIN: the page has already claimed the shared motion state before calling this.
     syncNativeBeamMotion(): void {
