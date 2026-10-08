@@ -4,7 +4,11 @@ import { relationVisible, type RelationClass } from './reading.ts';
 import type { RevealBand, RevealSource } from './reveal-controller.ts';
 
 export type RouteChannel = 'semantic' | 'lifted' | 'visual';
-export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-budget' | 'fan-degree' | 'reading-filter';
+// D085-S4 BEGIN: the Llull overview folds a drawn cross-sector
+// stroke into its pair bundle; the suppressed entry names the drawn edge id so the
+// exact set that was aggregated stays auditable in the reveal witness.
+export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-budget' | 'fan-degree' | 'reading-filter' | 'lull-overview-aggregate';
+// D085-S4 END
 export type RouteNode = Readonly<{ id: string; parent: string | null; level: 1 | 2 | 3 | 4 | 5; passageCount?: number }>;
 export type RouteRelation = Readonly<{
   id: string; channel: RouteChannel; source: string; target: string;

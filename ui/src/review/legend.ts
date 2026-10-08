@@ -244,12 +244,15 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
     });
   }
   // D085-S4 END
-  // D085-S4 BEGIN: the overview bundles and the record veil get their own
-  // entry, so the aggregate ink is told apart from the dashed compartments and from
-  // the single real relations on the legend surface too. Llull-only, like the guides:
-  // every other topology keeps its pixels.
+  // D085-S4 BEGIN: the overview bundles get their own
+  // entry, so the aggregate ink is told apart from the dashed compartments and from the
+  // single real relations on the legend surface too. It states the mechanism
+  // truthfully: at distance the cross-sector strokes are not drawn at all — the routing
+  // folds them into these bundles, which carry the compartment's relation ids — and on
+  // approach the exact individual relations return as the bundles fade. No veil: the
+  // retained marks keep their true ink. Llull-only, like the guides.
   if (topology === "lull") {
-    entry("Fascio d’insieme · coppia", "Zoom semantico: a distanza d’insieme ogni compartimento con evidenza è disegnato come un fascio spesso fra le sue due lettere — larghezza e opacità proporzionali al numero esatto di relazioni reali del compartimento nel snapshot completo; un fascio rappresenta N relazioni reali, mai una nuova relazione. I compartimenti senza evidenza non disegnano nulla; le relazioni dentro lo stesso settore restano brevi e locali. Avvicinando la vista i fasci svaniscono e prendono il posto le relazioni singole, che la densità e la lettura attive filtrano; un velo attenua intanto le fasce dei record, senza mai rimuovere un segno. In 3D gli stessi fasci siedono alle quattro tavole d’offset d=1–4.", (svg) => {
+    entry("Fascio d’insieme · coppia", "Zoom semantico: a distanza d’insieme le relazioni fra due settori non vengono disegnate una per una — l’instradamento le ritira e ogni compartimento con evidenza le sostituisce con un fascio spesso fra le sue due lettere, che rappresenta esattamente quelle relazioni reali del snapshot completo (larghezza e opacità proporzionali al numero esatto; gli id sono elencati nel fascio e nella tavola d’inchiesta). I compartimenti senza evidenza non disegnano nulla; le relazioni dentro lo stesso settore restano disegnate, brevi e locali. Avvicinando la vista i fasci sfumano e le relazioni singole tornano al loro posto, come la densità e la lettura attive le filtrano; nulla viene mai oscurato o attenuato. In 3D gli stessi fasci siedono alle quattro tavole d’offset d=1–4.", (svg) => {
       svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.16)", 6));
       svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.8)", 2.6));
     });

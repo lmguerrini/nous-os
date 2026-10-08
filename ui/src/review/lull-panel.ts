@@ -11,10 +11,12 @@ export const LULL_PANEL_HYPOTHESIS_NOTE = 'Le combinazioni senza evidenza sono i
 
 // D085-S4 BEGIN (fix 2): the note tying the figure's dashed pair chords to the
 // compartments listed in this table — the panel and the view explain each other.
-// D085-S4: the same note now names the overview bundles: each evidenced
-// row below is exactly one bundle in the figure, and the row's relation count is
-// the bundle's weight.
-export const LULL_PANEL_GUIDE_NOTE = 'Nella figura: le 36 corde tratteggiate fra le lettere del cerchio esterno sono i compartimenti binari elencati qui sotto (guide strutturali della Terza Figura, non relazioni); le relazioni reali restano le linee continue. A distanza d’insieme ogni riga con evidenza è anche un fascio spesso fra le sue due lettere: il numero di relazioni qui riportato è esattamente il peso del fascio, e avvicinando la vista il fascio lascia il posto alle relazioni singole.';
+// D085-S4: the same note now names the overview
+// bundles truthfully: at distance the cross-sector relations are not drawn one by
+// one — each evidenced row below is exactly one bundle in the figure, its relation
+// count is the bundle's weight, and its relation ids are the bundle's ids; on
+// approach the routing redraws the exact individual relations as the bundle fades.
+export const LULL_PANEL_GUIDE_NOTE = 'Nella figura: le 36 corde tratteggiate fra le lettere del cerchio esterno sono i compartimenti binari elencati qui sotto (guide strutturali della Terza Figura, non relazioni); le relazioni reali restano le linee continue. A distanza d’insieme le relazioni fra due settori non vengono disegnate una per una: ogni riga con evidenza è sostituita da un fascio spesso fra le sue due lettere — il numero di relazioni qui riportato è esattamente il peso del fascio e i loro id sono quelli del fascio — e avvicinando la vista le relazioni singole tornano al suo posto, come la densità e la lettura attive le filtrano.';
 // D085-S4 END
 
 /** Ninth-of-a-turn wheel offsets rendered as human-readable alignments. */

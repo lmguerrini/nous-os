@@ -37,7 +37,13 @@ export const LAB_CONTAINER_DESCRIPTION =
   + 'sistema dinamico complesso, topologia combinatoria; nessuna etichetta unica le raggruppa.';
 // D085-S5 BEGIN: snapshot-derived Julia legibility refusals are shared by toolbar controls.
 export const JULIA_INDRA_REFUSAL = 'Julia con Indra non è disponibile: alla scala adattata le perle non mostrano abbastanza figli reali separati e curve guida leggibili. Usa Julia senza Indra.';
-export const LULL_INDRA_3D_REFUSAL = 'Llull con Indra in 3D non è disponibile: la regola verificata assegna ai nove domini lettere e posizioni sul cerchio, ma non una terza coordinata ai nodi reali. Ruotare o estrudere il diagramma non rappresenterebbe una nuova operazione combinatoria. Usa Llull con Indra in 2D.';
+// D085-S4 BEGIN: the 3D lift now assigns real nodes a third coordinate (the
+// Third Figure's offset class), so the old reason — «non una terza coordinata ai nodi
+// reali» — described a diagram it no longer draws. The gate stays (the lifted law was
+// certified for the whole-snapshot wheel; composing it inside per-pearl unit frames
+// was never designed or verified); only the stated reason becomes the truthful one.
+export const LULL_INDRA_3D_REFUSAL = 'Llull con Indra in 3D non è disponibile: la quota 3D della regola è la classe d’offset della Terza Figura, certificata per la ruota del snapshot completo; la composizione dentro le perle (i fotogrammi unitari per dominio con la stessa quota) non è stata progettata né verificata, e non verrà improvvisata. Usa Llull con Indra in 2D.';
+// D085-S4 END
 const juliaIndraGate = new Map<TopologyDimension, boolean>();
 // D085-S5 BEGIN: the selector and graph status share the evaluated gate record.
 type JuliaGateMetric = Readonly<{ eligible: number; passing: number; share: number }>;

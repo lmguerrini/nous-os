@@ -3,29 +3,52 @@ import type { GuideCurve } from './contract.ts';
 import type { ProductView } from '../review/view-contract.ts';
 import { LULL_OUTER_RADIUS } from './lull.ts';
 
-// D085-S4 BEGIN: the Llull semantic zoom. The pair bundles and the
-// overview veil exist only while the Figure A wheel is seen from a distance:
-// as the camera closes in they fade to nothing and the individual real chords
-// take over. The fade is a pure function of the projected world scale and the
-// viewport, so the same camera always draws the same ink.
+// D085-S4 BEGIN: the Llull semantic zoom is now real
+// aggregation. While the camera is in the overview band the page's relation
+// routing does not draw the cross-sector strokes one by one — they are folded
+// into these pair bundles, which are the visible aggregates — and on approach
+// the exact individual relations return while the bundles fade. The earlier
+// veil is gone: nothing darkens the retained marks. The fade and the fold share
+// one projected-scale curve, so the same camera always draws the same ink.
 type LullWeightedGuide = GuideCurve & Readonly<{ weight: number }>;
-const LULL_ZOOM_FADE_BEGIN = 1.5;
+const LULL_ZOOM_FADE_BEGIN = 2.15;
 const LULL_ZOOM_FADE_END = 2.5;
-/** Overview share: 1 while the fitted wheel is at or inside the viewport, easing
- * to 0 by LULL_ZOOM_FADE_END times the fitted size. Unprojectable cameras give 0,
- * which leaves only the ever-present guides — never a wrong veil. Exported for
- * the earlier tests: the release curve itself is part of the disclosed law. */
-export function lullOverviewFade(view: ProductView, width: number, height: number): number {
+/** The fitted-wheel scale of the current camera: the projected wheel diameter
+ * over the viewport's smaller side (≈ 1 when the wheel exactly fits). 0 when the
+ * camera cannot be projected — callers must treat that as "not overview". */
+function lullOverviewFactor(view: ProductView, width: number, height: number): number {
   const origin = view.projectPoint!({ x: 0, y: 0, z: 0 });
   const east = view.projectPoint!({ x: 1000, y: 0, z: 0 });
   if (!Number.isFinite(origin.x) || !Number.isFinite(origin.y)
     || !Number.isFinite(east.x) || !Number.isFinite(east.y)) return 0;
   const scale = Math.hypot(east.x - origin.x, east.y - origin.y) / 1000;
   if (!(scale > 0)) return 0;
-  const factor = scale * 2 * LULL_OUTER_RADIUS / Math.max(1, Math.min(width, height));
+  return scale * 2 * LULL_OUTER_RADIUS / Math.max(1, Math.min(width, height));
+}
+/** Overview share of the bundle ink: full while the wheel is seen from up to
+ * LULL_ZOOM_FADE_BEGIN times its fitted size, easing to 0 by LULL_ZOOM_FADE_END —
+ * the same window in which the folded relations return, so bundle and relations
+ * cross-fade and no band of the zoom is ever left empty. Unprojectable cameras
+ * give 0. Exported for the tests: the release curve is part of the disclosed law. */
+export function lullOverviewFade(view: ProductView, width: number, height: number): number {
+  const factor = lullOverviewFactor(view, width, height);
+  if (factor <= 0) return 0;
   if (factor <= LULL_ZOOM_FADE_BEGIN) return 1;
   if (factor >= LULL_ZOOM_FADE_END) return 0;
   return (LULL_ZOOM_FADE_END - factor) / (LULL_ZOOM_FADE_END - LULL_ZOOM_FADE_BEGIN);
+}
+/** Whether the relation routing must fold the cross-sector strokes into the
+ * pair bundles for this camera. Hysteresis like the LOD bands (the previous
+ * state decides inside the gap) so a camera parked at the threshold cannot
+ * oscillate: aggregated while the fitted wheel is at or under 2.2×, individual
+ * above 2.4× — inside the fade window, where both inks cross-fade. */
+export function lullOverviewAggregated(view: ProductView, width: number, height: number,
+  previous: boolean): boolean {
+  const factor = lullOverviewFactor(view, width, height);
+  if (factor <= 0) return previous;
+  if (factor <= 2.2) return true;
+  if (factor >= 2.4) return false;
+  return previous;
 }
 // D085-S4 END
 
@@ -66,11 +89,13 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     context.clearRect(0, 0, width, height);
     // D085-S4 BEGIN: the overview share of the Llull semantic zoom, the
     // heaviest bundle (which sets the width/opacity scale of all of them) and whether
-    // this is the flat view — only it carries the veil, so the lifted view styles its
-    // bundles lighter and keeps its four tables readable.
-    const lullZoom = guides.some(guide => guide.kind === 'lull-overview-veil' || guide.kind === 'lull-pair-bundle');
+    // this is the flat view — the flat bundles sit at z=0, the lifted ones at their
+    // offset-class tables, so the lifted view styles its bundles lighter and keeps
+    // its four tables readable.
+    const lullZoom = guides.some(guide => guide.kind === 'lull-pair-bundle');
     const overview = lullZoom ? lullOverviewFade(view, width, height) : 0;
-    const flatView = guides.some(guide => guide.kind === 'lull-overview-veil');
+    const flatView = guides.some(guide => guide.kind === 'lull-pair-bundle'
+      && guide.points.every(point => !point.z));
     let bundleMax = 0;
     for (const guide of guides)
       if (guide.kind === 'lull-pair-bundle') bundleMax = Math.max(bundleMax, (guide as LullWeightedGuide).weight);
@@ -93,27 +118,6 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       // D085-S5 END
       // D085-S5 END
       if (guide.points.length < 2) continue;
-      // D085-S4 BEGIN: the overview veil — the law emits it first, so this
-      // translucent fill lands beneath every other mark of the figure and lightens
-      // the record band at a distance. It never removes a mark and is skipped
-      // entirely once the zoom has passed the fade.
-      if (guide.kind === 'lull-overview-veil') {
-        if (overview <= 0) continue;
-        context.beginPath();
-        let veiled = false;
-        for (const point of guide.points) {
-          const projected = view.projectPoint!(point);
-          if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) continue;
-          if (!veiled) { context.moveTo(projected.x, projected.y); veiled = true; }
-          else context.lineTo(projected.x, projected.y);
-        }
-        if (veiled) {
-          context.fillStyle = `rgba(5,7,11,${(0.55 * overview).toFixed(3)})`;
-          context.fill();
-        }
-        continue;
-      }
-      // D085-S4 END
       // D084-LLULL BEGIN: distinguish the outer rim and the radial hub without
       // changing the appearance of guides belonging to any other topology.
       if (guide.kind === 'lull-figure-a' || guide.kind === 'lull-letter') {
@@ -141,12 +145,13 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
         context.strokeStyle = 'rgba(205,215,230,.26)';
         context.lineWidth = 0.8;
         // D085-S4 END
-      // D085-S4 BEGIN: a pair bundle — the aggregate of one compartment's
-      // real relations. Width and opacity follow the square root of the weight's
-      // share of the heaviest bundle, scaled by the overview share: at close zoom
-      // the share is 0 and the bundle is fully transparent, leaving only the
-      // individual real chords. The stroke is solid and much thicker than any
-      // relation line, so the rosette of the overview reads as its own ink.
+      // D085-S4 BEGIN: a pair bundle — the aggregate that replaces one
+      // compartment's individual strokes while the camera is in the overview band.
+      // Width and opacity follow the square root of the weight's share of the
+      // heaviest bundle, scaled by the overview share: at close zoom the share is
+      // 0 and the bundle is fully transparent, leaving only the individual real
+      // chords the routing has restored. The stroke is solid and much thicker
+      // than any relation line, so the rosette of the overview reads as its own ink.
       } else if (guide.kind === 'lull-pair-bundle') {
         const weight = (guide as LullWeightedGuide).weight;
         const share = bundleMax > 0 ? Math.sqrt(weight / bundleMax) : 0;
