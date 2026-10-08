@@ -49,7 +49,7 @@ import type { D081GraphStatus } from "./toolbar-status.ts";
 import { NodeDrawer } from "./node-drawer.ts";
 import { observeToolbarSectionVisibility } from "./toolbar-sections.ts";
 // D082-B2 BEGIN
-import { geometryToLegacyAxes, lawTopology, resolveGeometryView2, resolveSupportedGeometryView2, rewriteGeometryUrl, serializeGeometryView2, wireTopology } from './geometry-view2.ts'; // D082-LAB-FIX4
+import { createGeometryTransitionQueue, geometryToLegacyAxes, lawTopology, resolveGeometryView2, resolveSupportedGeometryView2, rewriteGeometryUrl, serializeGeometryView2, wireTopology } from './geometry-view2.ts'; // D082-LAB-FIX4
 import type { GeometryView2, SavedGeometryView2 } from './geometry-view2.ts';
 // D084-W3-LABELS BEGIN: the selector keeps the short names; tooltips carry the classification.
 import { LAB_CONTAINER_DESCRIPTION, TOPOLOGY_IDS, topologyLabel, topologyRowState, topologySupport, topologyTooltip } from '../topology/registry.ts';
@@ -427,6 +427,9 @@ function syncToolbarSummary(): void {
 }
 syncToolbarSummary();
 // D082-B2 BEGIN: both toolbar placements and fullscreen use the same closed law register.
+// D085-S1 BEGIN: toolbar state, URL and renderer commit in the same ordered transition.
+const geometryTransitions = createGeometryTransitionQueue();
+// D085-S1 END
 function installTaxonomyControls(): void {
   for (const organizationAxis of document.querySelectorAll<HTMLElement>('[data-axis="organization"]')) {
     const full = organizationAxis.classList.contains('fullscreen-axis');
@@ -446,9 +449,11 @@ function installTaxonomyControls(): void {
       button.id = `lab-topology-${id}-${full ? 'fullscreen' : 'toolbar'}`;
       button.dataset.topology = id;
       button.textContent = topologyLabel(id, axes.projection);
+      // D085-S1 BEGIN
       button.addEventListener('click', () => {
-        if (button.getAttribute('aria-disabled') !== 'true') void chooseTaxonomy(id);
+        if (button.getAttribute('aria-disabled') !== 'true') void chooseTaxonomy(id).catch(reportTaxonomyTransitionError);
       });
+      // D085-S1 END
       organizationAxis.append(button);
     }
     const indraAxis = document.createElement(full ? 'span' : 'div');
@@ -461,7 +466,10 @@ function installTaxonomyControls(): void {
       const button = document.createElement('button');
       button.dataset.indra = value;
       button.textContent = value.toUpperCase();
-      button.addEventListener('click', () => { if (!('mode' in geometry)) void chooseTaxonomy(lawTopology(geometry.topology), value === 'on'); });
+      // D085-S1 BEGIN
+      button.addEventListener('click', () => { if (!('mode' in geometry))
+        void chooseTaxonomy(lawTopology(geometry.topology), value === 'on').catch(reportTaxonomyTransitionError); });
+      // D085-S1 END
       indraAxis.append(button);
     }
     organizationAxis.after(indraAxis);
@@ -550,7 +558,21 @@ function syncLoadedAxisButtons(): void {
     button.setAttribute('aria-pressed', 'false'));
 }
 // D082-LAB-FIX4 END
-async function chooseTaxonomy(topology: TopologyId, indra = 'mode' in geometry ? false : geometry.indra === 'on'): Promise<void> {
+// D085-S1 BEGIN: defer reading the current Indra axis until this click reaches the renderer.
+let taxonomyErrorShown = false;
+function reportTaxonomyTransitionError(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  errors.push(message);
+  taxonomyErrorShown = true;
+  status.textContent = `Errore: ${message}`;
+  get<HTMLElement>('error').hidden = false;
+  get<HTMLElement>('error').textContent = message;
+}
+function chooseTaxonomy(topology: TopologyId, indra?: boolean): Promise<void> {
+  return geometryTransitions.enqueue(() => applyTaxonomy(topology, indra));
+}
+async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Promise<void> {
+  const indra = requestedIndra ?? ('mode' in geometry ? false : geometry.indra === 'on');
   const support = topologySupport(topology, axes.projection, indra);
   if (!support.ok) return;
   const organization = topology === 'canopy-ifs' && !indra ? 'fractal' : topology === 'natural' && indra ? 'indra' : 'natural';
@@ -564,6 +586,7 @@ async function chooseTaxonomy(topology: TopologyId, indra = 'mode' in geometry ?
       : topology === 'canopy-ifs' && !indra ? { compatibility: 'd081-canopy' as const } : {}) };
   view2WriteAllowed = true;
   persistView(); updateButtons(); syncToolbarSummary();
+  if (taxonomyErrorShown) { get<HTMLElement>('error').hidden = true; taxonomyErrorShown = false; }
   // D084-W3-LABELS BEGIN: the legend surfaces follow the taxonomy change, so the classification
   // block appears with the lab topology and leaves with it.
   refreshFlowLegends();
@@ -572,6 +595,7 @@ async function chooseTaxonomy(topology: TopologyId, indra = 'mode' in geometry ?
   showSelectedGeometryDescription();
   // D082-B-NOTICE END
 }
+// D085-S1 END
 installTaxonomyControls();
 // D082-B2 END
 // D084-W6-TOOLBAR BEGIN: the toolbar's layout must be final before the graph load's first
@@ -1118,7 +1142,11 @@ function center(): Promise<void> {
     keepNodeAt.call(view, targetId, { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 });
   });
 }
+// D085-S1 BEGIN: projection and other axes use the same lane as topology selection.
 function setAxes(input: AxesInput): Promise<void> {
+  return geometryTransitions.enqueue(() => applyAxes(input));
+}
+function applyAxes(input: AxesInput): Promise<void> {
   let partial = normalizeAxesInput(input);
   // D082-B2 BEGIN: rendering never silently changes a law or Indra state.
   if (partial.projection && !('mode' in geometry)) {
@@ -1192,10 +1220,16 @@ function setAxes(input: AxesInput): Promise<void> {
     }
   });
 }
+// D085-S1 END
 // D082-LAB-FIX4 BEGIN: browser back/forward and external hash navigation restore schema-2 state
 // through the same support gate as initial link boot.
-async function restoreGeometryFromLocation(): Promise<void> {
-  const resolved = resolveGeometryView2(location.search, location.hash,
+// D085-S1 BEGIN: location navigation cannot interleave a toolbar transition.
+function restoreGeometryFromLocation(): Promise<void> {
+  const search = location.search, hash = location.hash;
+  return geometryTransitions.enqueue(() => applyGeometryFromLocation(search, hash));
+}
+async function applyGeometryFromLocation(search: string, hash: string): Promise<void> {
+  const resolved = resolveGeometryView2(search, hash,
     readLocal<string>(storage, VIEW_STORAGE_KEY, '') || null, density);
   if (resolved.error) {
     experimentalSuspensionNotice = `view2 rifiutata: ${resolved.error}. URL conservato per la riparazione.`;
@@ -1230,6 +1264,7 @@ async function restoreGeometryFromLocation(): Promise<void> {
   syncToolbarSummary();
   if (support.notice) showExperimentalSuspensionNotice();
 }
+// D085-S1 END
 function restoreGeometryFromLocationSafely(): void {
   void restoreGeometryFromLocation().catch((error: unknown) => {
     experimentalSuspensionNotice = `Vista dal link non applicata: ${error instanceof Error ? error.message : String(error)}.`;
@@ -1703,16 +1738,20 @@ function syncDensity(): void {
 }
 function applyDensity(next: unknown): void {
   const value = normalizeDensity(next);
-  if (value === density) return;
-  density = value;
-  // D082-B2 BEGIN
-  geometry = { ...geometry, density };
-  view2WriteAllowed = true;
-  persistView();
-  // D082-B2 END
-  writeLocal(storage, "d072.density", density);
-  syncDensity();
-  void v2?.setDensity(density);
+  // D085-S1 BEGIN: density must reach the renderer before the next topology intent.
+  void geometryTransitions.enqueue(async () => {
+    if (value === density) return;
+    density = value;
+    // D082-B2 BEGIN
+    geometry = { ...geometry, density };
+    view2WriteAllowed = true;
+    persistView();
+    // D082-B2 END
+    writeLocal(storage, "d072.density", density);
+    syncDensity();
+    await v2?.setDensity(density);
+  }).catch(reportTaxonomyTransitionError);
+  // D085-S1 END
 }
 for (const button of densityButtons)
   button.addEventListener("click", () => { applyDensity(button.dataset.density); });

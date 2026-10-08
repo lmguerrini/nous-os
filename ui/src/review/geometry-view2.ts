@@ -6,6 +6,18 @@ import type { Density } from './lod.ts';
 import type { TopologyId, TopologySupport } from '../topology/contract.ts';
 import { defaultNaturalArrangement } from '../projection/natural-bridge.ts';
 
+// D085-S1 BEGIN: commit each requested geometry transition before the next reads its axes.
+// A failed transition releases the lane while its own caller still receives the error.
+export function createGeometryTransitionQueue(): { enqueue<T>(work: () => Promise<T>): Promise<T> } {
+  let tail: Promise<void> = Promise.resolve();
+  return { enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const task = tail.then(work);
+    tail = task.then(() => {}, () => {});
+    return task;
+  } };
+}
+// D085-S1 END
+
 export type Compatibility = 'd081-natural' | 'typed-natural-v1' | 'd081-indra-recursive' | 'indras-pearls-v1' | 'd081-canopy';
 export type WireTopology = Exclude<TopologyId, 'lull'> | 'circular-combinatorial';
 export const lawTopology = (id: WireTopology): TopologyId => id === 'circular-combinatorial' ? 'lull' : id;
