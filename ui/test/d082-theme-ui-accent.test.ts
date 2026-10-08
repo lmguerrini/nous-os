@@ -47,7 +47,9 @@ test("selected chrome, keyboard focus, drawer tabs and quote borders all use the
   assert.match(html, /\.node-drawer-passage blockquote[^}]*border-left:2px solid var\(--ui-accent\)/);
   assert.match(html, /\.node-drawer-quote[^}]*border-left:2px solid var\(--ui-accent\)/);
   assert.match(main, /function syncUIAccent\([\s\S]*?setProperty\("--ui-accent", resolveUIAccent/);
-  assert.match(main, /syncUIAccent\(next\);[\s\S]*?void setAxes\(\{ colour: next \}\)/, "accent updates immediately on palette change");
+  // D085 integration: the palette request now runs through ownDisplayedRemount (a failed remount is shown, never unhandled);
+  // the guarantee is unchanged — the accent is synced before the asynchronous colour request.
+  assert.match(main, /syncUIAccent\(next\);[\s\S]*?(?:void |ownDisplayedRemount\()setAxes\(\{ colour: next \}\)/, "accent updates immediately on palette change");
   assert.match(main, /writeLocal\(storage, "d069\.palette", partial\.colour\)/, "palette persistence stays on its existing localStorage path");
 });
 
