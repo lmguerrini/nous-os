@@ -1849,7 +1849,7 @@ export const createProductView: CreateProductView = async (input) => {
       nativeLabels: false,
       windowGeometryFromAnchors: true,
       // D086-F1 BEGIN
-      ...(labNativeSizeLawApplies(input.labTopology, input.labIndra ?? false, input.data.nodes.length, state.visible.size)
+      ...(labNativeSizeLawApplies(input.labTopology, input.data.nodes.length, state.visible.size)
         ? { nativeNodeSizeLaw: true } : {}),
       // D086-F1 END
       ...(containers ? { containers } : {}),
