@@ -607,7 +607,9 @@ function chooseTaxonomy(topology: TopologyId, indra?: boolean): Promise<void> {
 async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Promise<void> {
   const indra = requestedIndra ?? ('mode' in geometry ? false : geometry.indra === 'on');
   const support = topologySupport(topology, axes.projection, indra);
-  if (!support.ok) return;
+  // D085-S1 BEGIN: an accepted click cannot silently finish without a page task.
+  if (!support.ok) throw new Error(support.reason);
+  // D085-S1 END
   // D085-S5 BEGIN: keep the organization axis aligned with the Indra control.
   const organization = topology === 'canopy-ifs' && !indra ? 'fractal' : indra ? 'indra' : 'natural';
   // D085-S5 END

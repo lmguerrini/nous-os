@@ -369,16 +369,27 @@ export type RenderModelProgress = {
   readonly mainEdgesRequired: number;
 };
 
-function* renderModelSteps(
+// Final-polish switch BEGIN: exported for the slice-budget regression test; the
+// generator itself is unchanged.
+export function* renderModelSteps(
   graph: VisualGraph, options: RenderOptions, visualState?: VisualState,
   suppliedAnchors?: LayoutAnchors,
 ): Generator<RenderModelProgress, RenderModel, void> {
   let sliceBegan = performance.now();
+  // Final-polish switch BEGIN: the slice budget must measure only the work done
+  // since this generator was last resumed. The suspension between yields — the
+  // caller's task boundary, where a resident heavy renderer draws its own frames —
+  // is not preparation work; charging it to the budget collapsed the slice to a
+  // single node per task and a law-sized mount to minutes. Every yield below is
+  // followed by this restart, so each resumption begins with a full budget while
+  // the emitted payload and insertion order stay exactly as before.
+  const resumeSlice = () => { sliceBegan = performance.now(); };
   const sliceDue = () => {
     if (performance.now() - sliceBegan < MODEL_PREP_SLICE_MS) return false;
     sliceBegan = performance.now();
     return true;
   };
+  // Final-polish switch END
 // "D082-A-PERF END"
   // "D082-A-PERF BEGIN": explicit debug runs keep the exhaustive boundary audit.
   if (renderDebugAssertionsEnabled()) assertVisualGraphFieldRegister(graph);
@@ -497,11 +508,13 @@ function* renderModelSteps(
       ),
     } : resolvedNode);
     // "D082-A-PERF BEGIN"
-    if (sliceDue()) yield progress('nodes', 0, 0);
+    // Final-polish switch: restart the budget on resumption (see resumeSlice).
+    if (sliceDue()) { yield progress('nodes', 0, 0); resumeSlice(); }
     // "D082-A-PERF END"
   }
   // "D082-A-PERF BEGIN"
-  yield progress('nodes', 0, 0);
+  // Final-polish switch: restart the budget on resumption (see resumeSlice).
+  yield progress('nodes', 0, 0); resumeSlice();
   // "D082-A-PERF END"
   // Pass the shared endpoint degree grammar to the Sigma filament.
   const neuralDegree = new Map<string, number>();
@@ -581,22 +594,27 @@ function* renderModelSteps(
         } : resolvedEdge });
       edgesLoaded++;
       // "D082-A-PERF BEGIN"
-      if (sliceDue()) yield progress(pass === 0 ? 'mainEdges' : 'allEdges',
-        Math.min(edgesLoaded, mainEdges.length), edgesLoaded);
+      // Final-polish switch: restart the budget on resumption (see resumeSlice).
+      if (sliceDue()) { yield progress(pass === 0 ? 'mainEdges' : 'allEdges',
+        Math.min(edgesLoaded, mainEdges.length), edgesLoaded); resumeSlice(); }
       // "D082-A-PERF END"
     }
-    if (pass === 0) yield progress('mainEdges', mainEdges.length, edgesLoaded);
+    // Final-polish switch: restart the budget on resumption (see resumeSlice).
+    if (pass === 0) { yield progress('mainEdges', mainEdges.length, edgesLoaded); resumeSlice(); }
   }
   // "D082-A-PERF BEGIN"
-  yield progress('allEdges', mainEdges.length, edgesLoaded);
+  // Final-polish switch: restart the budget on resumption (see resumeSlice).
+  yield progress('allEdges', mainEdges.length, edgesLoaded); resumeSlice();
   for (const edge of engineGraph.edges) {
     const prepared = preparedEdges.get(edge.id)!;
     filaments.set(edge.id, prepared.filament);
     propagation.set(edge.id, prepared.propagation);
     sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, prepared.attributes);
-    if (sliceDue()) yield progress('allEdges', mainEdges.length, edgesLoaded);
+    // Final-polish switch: restart the budget on resumption (see resumeSlice).
+    if (sliceDue()) { yield progress('allEdges', mainEdges.length, edgesLoaded); resumeSlice(); }
   }
   // "D082-A-PERF END"
+  // Final-polish switch END
   // "D082-A-PERF BEGIN"
   if (renderDebugAssertionsEnabled()) assertEngineAccessTrace(engineAccessTrace);
   // "D082-A-PERF END"

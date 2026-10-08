@@ -150,6 +150,95 @@ test('the page law cache and early toolbar focus read have explicit bounds and g
 });
 // D085-S1 END
 
+// D085-S1 BEGIN: reproduce Completa pending, topology selection, then Indra ON.
+test('a slow Completa mount releases the page lane for the newest Indra request', async () => {
+  const bundled = await build({ entryPoints: [fileURLToPath(new URL('../../src/review/v2-page.ts', import.meta.url))],
+    bundle: true, platform: 'node', format: 'esm', target: 'es2022', write: false });
+  const directory = await mkdtemp(join(tmpdir(), 'd085-indra-lane-'));
+  const source = join(directory, 'page.mjs');
+  await writeFile(source, bundled.outputFiles[0]!.text);
+  Object.assign(globalThis, { WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3,
+    SHORT: 4, UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 },
+    WebGLRenderingContext: { TRIANGLES: 1 } });
+  const { V2Page } = await import(pathToFileURL(source).href);
+  await rm(directory, { recursive: true, force: true });
+  const page = Object.create(V2Page.prototype) as Record<string, any>;
+  page.transitions = createGeometryTransitionQueue();
+  page.geometryIntent = 0;
+  page.projectionEpoch = 0;
+  page.axes = { projection: '2d', organization: 'natural' };
+  page.topology = 'natural'; page.topologyIndra = false;
+  page.committedTaxonomy = { topology: 'natural', indra: false };
+  page.legacyIndra = false; page.taxonomyExplicit = false;
+  page.view = {};
+  page.cancelProjectionWork = () => {};
+  let releaseDensity!: () => void;
+  const densityGate = new Promise<void>(resolve => { releaseDensity = resolve; });
+  let releaseTopology!: () => void;
+  const topologyGate = new Promise<void>(resolve => { releaseTopology = resolve; });
+  let cancelledMount = false;
+  const entered: string[] = [];
+  page.applyDensity = async () => { entered.push('complete'); await densityGate; };
+  page.applyAxes = async () => {
+    entered.push(`${page.topology}/${page.topologyIndra}`);
+    if (!page.topologyIndra) {
+      page.cancelActiveMount = () => { cancelledMount = true; releaseTopology(); };
+      await topologyGate;
+    } else page.committedTaxonomy = { topology: page.topology, indra: page.topologyIndra };
+  };
+  const density = page.setDensity('complete');
+  await Promise.resolve();
+  const topology = page.setTaxonomy('sierpinski', false);
+  releaseDensity();
+  await density;
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(entered, ['complete', 'sierpinski/false']);
+  const indra = page.setTaxonomy('sierpinski', true);
+  try {
+    assert.equal(cancelledMount, true, 'the newest click releases the slow mount immediately');
+    assert.equal(entered.length, 2);
+    assert.equal(page.topologyIndra, false);
+    assert.equal(page.projectionEpoch > 0, true);
+    await Promise.all([topology, indra]);
+    assert.equal(entered.includes('sierpinski/true'), true);
+    assert.deepEqual(page.committedTaxonomy, { topology: 'sierpinski', indra: true });
+  } finally {
+    releaseTopology();
+    await Promise.allSettled([topology, indra]);
+  }
+});
+
+test('a superseded provisional taxonomy is restored when no replacement page task starts', async () => {
+  const bundled = await build({ entryPoints: [fileURLToPath(new URL('../../src/review/v2-page.ts', import.meta.url))],
+    bundle: true, platform: 'node', format: 'esm', target: 'es2022', write: false });
+  const directory = await mkdtemp(join(tmpdir(), 'd085-taxonomy-restore-'));
+  const source = join(directory, 'page.mjs');
+  await writeFile(source, bundled.outputFiles[0]!.text);
+  Object.assign(globalThis, { WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3,
+    SHORT: 4, UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 },
+    WebGLRenderingContext: { TRIANGLES: 1 } });
+  const { V2Page } = await import(pathToFileURL(source).href);
+  await rm(directory, { recursive: true, force: true });
+  const page = Object.create(V2Page.prototype) as Record<string, any>;
+  page.transitions = createGeometryTransitionQueue(); page.geometryIntent = 0; page.projectionEpoch = 0;
+  page.axes = { projection: '2d', organization: 'natural' };
+  page.topology = 'natural'; page.topologyIndra = false;
+  page.committedTaxonomy = { topology: 'natural', indra: false };
+  page.legacyIndra = false; page.taxonomyExplicit = false; page.view = {};
+  page.cancelProjectionWork = () => {};
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  page.applyAxes = async () => { await gate; };
+  const pending = page.setTaxonomy('sierpinski', true);
+  await Promise.resolve();
+  page.supersedeGeometry();
+  release();
+  await pending;
+  assert.deepEqual({ topology: page.topology, indra: page.topologyIndra }, page.committedTaxonomy);
+});
+// D085-S1 END
+
 test('page taxonomy setters do not overwrite an in-flight topology', async () => {
   const bundled = await build({ entryPoints: [fileURLToPath(new URL('../../src/review/v2-page.ts', import.meta.url))],
     bundle: true, platform: 'node', format: 'esm', target: 'es2022', write: false });
