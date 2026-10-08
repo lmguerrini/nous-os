@@ -7,13 +7,15 @@ import { stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
  * Geometry Lab scenes above the native-tier threshold draw their nodes twice: the morphology
  * canvas paints the settled core and Sigma's GPU layer paints a disc from the raw encoded radius.
  * Below the threshold only the canvas draws, so the GPU disc must not outgrow the canvas core.
- * Completa keeps its own dense size policy; Natural and Indra are not Lab scenes.
+ * Completa keeps its own dense size policy; Natural and standalone Indra are not Lab scenes.
  */
-export function labNativeSizeLawApplies(labTopology: string | undefined, labIndra: boolean,
+// D086-F1 BEGIN: an Indra composition retains its encoded pearl/member radii as inputs to this law.
+export function labNativeSizeLawApplies(labTopology: string | undefined,
   nodeCount: number, visibleCount: number): boolean {
-  return labTopology !== undefined && labTopology !== "natural" && !labIndra
+  return labTopology !== undefined && labTopology !== "natural"
     && !isReferenceCompleta(nodeCount, visibleCount);
 }
+// D086-F1 END
 
 /** The settled drawn radius, in CSS px, that the morphology canvas gives one node at this projected scale. */
 export function canvasNodeRadiusPx(morphology: Morphology, givenRadiusPx: number, projectedScale: number,
