@@ -369,8 +369,8 @@ export type RenderModelProgress = {
   readonly mainEdgesRequired: number;
 };
 
-// Final-polish switch BEGIN: exported for the slice-budget regression test; the
-// generator itself is unchanged.
+// Final-polish switch BEGIN: exposed so the preparation progress contract can
+// be checked across a suspended slice.
 export function* renderModelSteps(
   graph: VisualGraph, options: RenderOptions, visualState?: VisualState,
   suppliedAnchors?: LayoutAnchors,
@@ -381,8 +381,10 @@ export function* renderModelSteps(
   // caller's task boundary, where a resident heavy renderer draws its own frames —
   // is not preparation work; charging it to the budget collapsed the slice to a
   // single node per task and a law-sized mount to minutes. Every yield below is
-  // followed by this restart, so each resumption begins with a full budget while
-  // the emitted payload and insertion order stay exactly as before.
+  // followed by this restart, so each resumption begins with a full budget.
+  // Progress emission cadence may change; counts remain monotonic, stages stay
+  // ordered, final progress reaches the totals, and final model insertion order
+  // remains the same.
   const resumeSlice = () => { sliceBegan = performance.now(); };
   const sliceDue = () => {
     if (performance.now() - sliceBegan < MODEL_PREP_SLICE_MS) return false;
@@ -516,12 +518,16 @@ export function* renderModelSteps(
   // Final-polish switch: restart the budget on resumption (see resumeSlice).
   yield progress('nodes', 0, 0); resumeSlice();
   // "D082-A-PERF END"
+  // Final-polish switch BEGIN: degree accumulation belongs to the node phase.
+  // Check the budget between edges so this pass can yield before edge preparation.
   // Pass the shared endpoint degree grammar to the Sigma filament.
   const neuralDegree = new Map<string, number>();
   for (const edge of engineGraph.edges) {
     neuralDegree.set(edge.source, (neuralDegree.get(edge.source) ?? 0) + 1);
     neuralDegree.set(edge.target, (neuralDegree.get(edge.target) ?? 0) + 1);
+    if (sliceDue()) { yield progress('nodes', 0, 0); resumeSlice(); }
   }
+  // Final-polish switch END
   // "D082-A-PERF BEGIN"
   const preparedEdges = new Map<string, { filament: FilamentGeometry;
     propagation: FilamentPropagation; attributes: RenderEdgeAttributes }>();
