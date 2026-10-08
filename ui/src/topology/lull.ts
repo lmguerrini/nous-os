@@ -262,7 +262,10 @@ function lullWitnesses(snapshot: TopologySnapshot, index: LullIndex, placements:
       + `Settore ${letter}: ${(sectorStart * 180 / Math.PI).toFixed(2)}\u00b0\u2013${(sectorEnd * 180 / Math.PI).toFixed(2)}\u00b0. `
       + `Relazioni reali: ${degree ? degree.ids.length : 0} (${degree ? degree.cross : 0} fra domini${shownIds ? `; id: ${shownIds}${moreIds > 0 ? ` \u2026 +${moreIds} nella tavola d'inchiesta` : ''}` : ''}). `
       + `Tipo di evidenza: ${degree ? degree.attested : 0} attestate, ${degree ? degree.exploratory : 0} esplorative, ${degree ? degree.structural : 0} strutturali (${degree ? degree.directedCount : 0} direzionali, ${degree ? degree.undirected : 0} senza direzione). `
-      + `Lettura dei conteggi: tutte le relazioni del snapshot completo; la lettura attiva della vista filtra la tavola d'inchiesta, mai i vertici. `
+      // D085-S6 BEGIN: the control's user name is Connessione; the epistemic reading of the counts
+      // keeps its own verb, so the reserved control word disappears from the witness text.
+      + `Come leggere i conteggi: tutte le relazioni del snapshot completo; la connessione attiva della vista filtra la tavola d'inchiesta, mai i vertici. `
+      // D085-S6 END
       + `${LULL_LIMIT_COMPACT} ${LULL_SOURCE_CITATION}`;
     witnesses.set(node.id, {
       law: `combinatoria-lulliana/${LULL_RING_POLICY_VERSION}`,

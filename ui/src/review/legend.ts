@@ -73,7 +73,9 @@ export function renderLegend(host: HTMLElement, colour: Colour, debug: boolean, 
     }
     if (reading !== "exploratory") add(`${RELATION_TEXT.name}. ${RELATION_TEXT.meaning} ${RELATION_TEXT.why}`);
     if (reading !== "attested") add("Connessioni esplorative · non canoniche. Linea continua con alone e flusso luminoso; sono collegamenti interpretativi della revisione.");
-    add("Strutturale · provenienza. Contenimento, classificazione e co-appartenenza restano visibili in ogni lettura.");
+    // D085-S6 BEGIN: the control's user-visible name is Connessione; the epistemic reading keeps its own noun.
+    add("Strutturale · provenienza. Contenimento, classificazione e co-appartenenza restano visibili in ogni connessione.");
+    // D085-S6 END
     add("Relazioni: essenziali/tutte regola il dettaglio dei collegamenti; non cambia la lettura epistemica.");
     add("Dinamico · stessa famiglia e stato semantico; alone attenuato e anello sottile. Origine e attestazione nel pannello.");
     if (colour === "semantic")
@@ -225,7 +227,9 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
     svg.append(line(2, 7, 24, 7, palette.exploratory, 3.4, 0.26));
     svg.append(line(2, 7, 24, 7, palette.exploratory, 1.3));
   });
-  entry("Strutturale · provenienza", "Contenimento, classificazione e co-appartenenza; visibile in ogni lettura.", (svg) => {
+  // D085-S6 BEGIN: the control's user-visible name is Connessione.
+  entry("Strutturale · provenienza", "Contenimento, classificazione e co-appartenenza; visibile in ogni connessione.", (svg) => {
+  // D085-S6 END
     svg.append(line(2, 7, 24, 7, palette.container, 0.8, 0.5));
   });
   const detailNote = document.createElement("p");

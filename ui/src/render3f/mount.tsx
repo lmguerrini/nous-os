@@ -40,7 +40,18 @@ import { brainViewCameraState, brainViewFramingState, createBrainEnvelope } from
 import type { BrainWitness } from "#render3f/brain-envelope.ts";
 import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
+// D085-S6 BEGIN: the native Neural beam follows the shared flow clock and the exploratory class.
 import { DENSE_SCENE_THRESHOLD } from "#render-common/morphology-canvas.ts";
+import {
+  FLOW_LAYER_FRAME_MS,
+  NATIVE_BEAM_SUSPENDED_MS,
+  NATIVE_BEAM_WATCH_BUDGET_MS,
+  NATIVE_BEAM_WATCH_MS,
+  flowMotionAllowedNow,
+  flowNow,
+  nativeBeamElapsedSample,
+} from "#render-common/flow.ts";
+// D085-S6 END
 import { createProjectionVisualsLayer } from "#render-common/projection-visuals-layer.ts";
 import { projectedWorldScale } from "#render-common/container-canvas.ts";
 import type { ProjectionVisualsLayer, ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
@@ -270,7 +281,35 @@ export function mount(
 
   const registry = new ResourceRegistry();
   const aggregateResources = createAggregateRenderResources(live.buffers.aggregates);
-  const filamentResources = createFilamentRenderResources(live.buffers.filaments);
+  // D085-S6 BEGIN: the travelling native beam belongs to the exploratory connection alone. The
+  // page's presentation edges carry each relation's class; only the exploratory ids open the
+  // shader's per-relation beam gate, so an attested relation can never animate (fix 7).
+  const nativeBeamEdgeIds = new Set<string>([...(options.presentation?.edges ?? [])]
+    .filter(([, presentation]) => presentation.category === "exploratory")
+    .map(([id]) => id));
+  let nativeBeamGatedEdges = 0;
+  let nativeBeamClockMs = 0;
+  let nativeBeamLiveUntilWallMs = 0;
+  let nativeBeamLastSampleMs = NATIVE_BEAM_SUSPENDED_MS;
+  const nativeBeamCameraMoving = (): boolean => ladder.state.moving;
+  const sampleNativeBeam = (): number => {
+    const sample = nativeBeamElapsedSample({
+      clockMs: flowNow(),
+      wallMs: performance.now(),
+      cameraMoving: nativeBeamCameraMoving(),
+      motionAllowed: flowMotionAllowedNow(),
+      lastClockMs: nativeBeamClockMs,
+      liveUntilWallMs: nativeBeamLiveUntilWallMs,
+    });
+    nativeBeamClockMs = sample.clockMs;
+    nativeBeamLiveUntilWallMs = sample.liveUntilWallMs;
+    nativeBeamLastSampleMs = sample.elapsedMs;
+    return sample.elapsedMs;
+  };
+  const filamentResources = createFilamentRenderResources(live.buffers.filaments,
+    { beamEdgeIds: nativeBeamEdgeIds, flowElapsedMs: sampleNativeBeam });
+  for (const id of live.buffers.filaments.edgeIds) if (nativeBeamEdgeIds.has(id)) nativeBeamGatedEdges += 1;
+  // D085-S6 END
   setFilamentNeuralWidthPx(filamentResources.material, options.presentation?.appearance?.edgeWidth ?? 1);
   const nodeResources = createNodeRenderResources(live.buffers.nodes);
   // D082-A-N3D BEGIN: only the full Natural/Indra Neural 3D scene receives the point floor.
@@ -675,6 +714,13 @@ export function mount(
       decor: { labels: stage === 4 && labelTimer === undefined,
         background: stage === 4, glow: stage === 4, animation: true },
       decorApplicable: { animation: false },
+      // D085-S6 BEGIN: the native travelling beam's own phase in the existing readiness witness —
+      // how many drawn relations are exploratory (the only ones that may animate) and whether the
+      // last sampled flow clock was live or suspended.
+      beam: { exploratory: nativeBeamGatedEdges,
+        suspended: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS,
+        elapsedMs: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS ? null : Math.round(nativeBeamLastSampleMs) },
+      // D085-S6 END
     } as const;
   };
   const publishPresentedFrame = (): void => {
@@ -705,6 +751,10 @@ export function mount(
     }
     if (!moving) {
       renderFrame();
+      // D085-S6 BEGIN: the camera settled — the overlay loop is about to resume the shared
+      // clock, so the native beam driver may have a live clock to follow again.
+      wakeNativeBeam();
+      // D085-S6 END
       if (stage === 4) {
         if (labelTimer !== undefined) clearTimeout(labelTimer);
         labelTimer = undefined;
@@ -715,6 +765,45 @@ export function mount(
     }
   });
   // D082-A-PERF END
+  // D085-S6 BEGIN: the native beam driver. The WebGL scene draws on demand (frameloop "never"),
+  // so a resting frame would otherwise freeze the travelling pulse wherever the last camera frame
+  // left it. While the shared flow clock advances — exactly while the canvas overlay beam animates
+  // — the driver repaints at the overlay's own cadence, sampling that same clock; when the clock
+  // stops (camera motion, no visible exploratory relation, motion disallowed, hidden tab) the next
+  // sample suspends the shader to its quiet profile and the driver retires: no render, no timer.
+  let nativeBeamTimer: ReturnType<typeof setTimeout> | undefined;
+  let nativeBeamLastLiveWallMs = 0;
+  const nativeBeamPreconditions = (): boolean =>
+    nativeBeamGatedEdges > 0 && !nativeBeamCameraMoving() && flowMotionAllowedNow();
+  const nativeBeamDriverTick = (): void => {
+    nativeBeamTimer = undefined;
+    if (destroyed) return;
+    const preconditions = nativeBeamPreconditions();
+    if (!preconditions) {
+      if (nativeBeamLastSampleMs !== NATIVE_BEAM_SUSPENDED_MS) renderFrame();
+      return;
+    }
+    sampleNativeBeam();
+    if (nativeBeamLastSampleMs !== NATIVE_BEAM_SUSPENDED_MS) {
+      nativeBeamLastLiveWallMs = performance.now();
+      renderFrame();
+      nativeBeamTimer = setTimeout(nativeBeamDriverTick, FLOW_LAYER_FRAME_MS);
+      return;
+    }
+    const wallMs = performance.now();
+    if (wallMs - nativeBeamLastLiveWallMs <= NATIVE_BEAM_WATCH_BUDGET_MS) {
+      nativeBeamTimer = setTimeout(nativeBeamDriverTick, NATIVE_BEAM_WATCH_MS);
+    }
+  };
+  const wakeNativeBeam = (): void => {
+    if (destroyed || nativeBeamTimer !== undefined || !nativeBeamPreconditions()) return;
+    nativeBeamTimer = setTimeout(nativeBeamDriverTick, 0);
+  };
+  const onNativeBeamVisibility = (): void => {
+    if (!document.hidden) wakeNativeBeam();
+  };
+  document.addEventListener("visibilitychange", onNativeBeamVisibility);
+  // D085-S6 END
   brainEnvelope?.setRefitCallback(renderFrame);
   const syncCameraState = (): void => {
     // D082-A-PERF BEGIN: keep the shared derived layer in its documented moving tier.
@@ -837,7 +926,13 @@ export function mount(
     retainedSceneReferences.add(scenes.perspective);
     if (!typedPicker) {
       updateNodeRenderResources(nodeResources, live.buffers.nodes);
-      updateFilamentRenderResources(filamentResources, live.buffers.filaments);
+      // D085-S6 BEGIN: the exploratory gate follows the freshly built relation set.
+      updateFilamentRenderResources(filamentResources, live.buffers.filaments,
+        { beamEdgeIds: nativeBeamEdgeIds, flowElapsedMs: sampleNativeBeam });
+      nativeBeamGatedEdges = 0;
+      for (const id of live.buffers.filaments.edgeIds) if (nativeBeamEdgeIds.has(id)) nativeBeamGatedEdges += 1;
+      wakeNativeBeam();
+      // D085-S6 END
       // D082-A-NODES BEGIN
       applyNativeEdgeVeil();
       // D082-A-NODES END
@@ -865,12 +960,23 @@ export function mount(
   };
   const proofWindow = window as typeof window & { __d080Renderer?: typeof brainProof };
   proofWindow.__d080Renderer = brainProof;
+  // D085-S6 BEGIN: the native beam's live witness on the existing renderer proof channel —
+  // the exploratory gate count of the drawn set and the last sampled shared-clock phase.
+  (brainProof as { nativeBeam?: () => { exploratory: number; suspended: boolean; elapsedMs: number | null } })
+    .nativeBeam = () => ({ exploratory: nativeBeamGatedEdges,
+      suspended: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS,
+      elapsedMs: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS ? null : Math.round(nativeBeamLastSampleMs) });
+  // D085-S6 END
   return {
     readPlacedLabelIds(): readonly string[] { return typedLabelOverlay?.readLabelIds() ?? []; },
     setAppearance(appearance: AppearanceOptions): void {
       setFilamentNeuralWidthPx(filamentResources.material, appearance.edgeWidth);
       distinct?.setAppearance(appearance);
       if (filamentResources.mesh.visible) renderFrame();
+      // D085-S6 BEGIN: a flow-intensity or speed change retimes the shared clock's owner loop;
+      // the native driver re-checks whether the beam is live again.
+      wakeNativeBeam();
+      // D085-S6 END
     },
     setDerivedMorphology(morphology: ProjectionVisualsMorphology): void {
       derivedMorphology = morphology;
@@ -1118,6 +1224,11 @@ export function mount(
     },
     destroy(): void {
       if (labelTimer !== undefined) clearTimeout(labelTimer);
+      // D085-S6 BEGIN: retire the native beam driver with the mount — no timer outlives the view.
+      if (nativeBeamTimer !== undefined) clearTimeout(nativeBeamTimer);
+      nativeBeamTimer = undefined;
+      document.removeEventListener("visibilitychange", onNativeBeamVisibility);
+      // D085-S6 END
       ladder.destroy();
       if (destroyed) {
         return;

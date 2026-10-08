@@ -92,6 +92,9 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     // D082-A-PERF BEGIN: scheduled presentation quality is renderer-local, never graph policy.
     "#render-common/quality-ladder.ts",
     // D082-A-PERF END
+    // D085-S6: the native travelling beam samples the shared flow clock — the same pure time
+    // source the canvas overlay reads; no colour, opacity or depth value crosses.
+    "#render-common/flow.ts",
     "#render-common/typed-layer.ts",
     "#render3f/camera.tsx",
     "#render3f/camera-framing.ts",
@@ -286,6 +289,18 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
       "typedLabelTexts",
     ])],
     ["#render-common/typed-layer.ts", new Set(["createTypedProjectionLayer"])],
+    // D085-S6 BEGIN: exactly the shared-clock reads and pure beam-sample scheduling — no drawing
+    // or material value crosses from the flow layer into the renderer.
+    ["#render-common/flow.ts", new Set([
+      "FLOW_LAYER_FRAME_MS",
+      "NATIVE_BEAM_SUSPENDED_MS",
+      "NATIVE_BEAM_WATCH_BUDGET_MS",
+      "NATIVE_BEAM_WATCH_MS",
+      "flowMotionAllowedNow",
+      "flowNow",
+      "nativeBeamElapsedSample",
+    ])],
+    // D085-S6 END
     // D082-A-PERF BEGIN
     ["#render-common/quality-ladder.ts", new Set(["QualityLadder", "mainRelation", "presentRenderReadiness"])],
     // D082-A-PERF END

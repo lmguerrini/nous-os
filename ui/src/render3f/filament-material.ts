@@ -56,6 +56,16 @@ export type FilamentRenderResources = {
   readonly mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.RawShaderMaterial>;
 };
 
+// D085-S6 BEGIN: the travelling Neural beam contract. `beamEdgeIds` names the relations whose
+// presentation class is exploratory — the only ones the shader pulse may animate; absent means
+// no relation animates. `flowElapsedMs` supplies the shared flow clock (negative suspends the
+// beam); absent keeps wall time so non-product mounts and tests behave exactly as before.
+export type FilamentBeamOptions = {
+  readonly beamEdgeIds?: ReadonlySet<string>;
+  readonly flowElapsedMs?: () => number;
+};
+// D085-S6 END
+
 /** This measures the shader's signed medial displacement relative to span and does not move a relation endpoint. */
 export function filamentMedialOffsetFraction(
   parameter: number,
@@ -423,9 +433,18 @@ void main() {
       ? 0.5 + 0.5 * cos(3.14159265 * pulseDistance / pulseHalfParameter)
       : 0.0;
     pulse *= smoothstep(0.0, pulseHalfParameter, lightPosition);
+    // D085-S6 BEGIN: the travelling beam belongs to the exploratory connection alone. The gate
+    // rides the propagation attribute's spare flag range — above the endpoint flag's own permille,
+    // the same packing the Neural profile uses for its veil — because this pass already fills every
+    // one of the sixteen vertex-attribute slots the WebGL floor guarantees. A negative flow clock
+    // suspends the animation (heavy interaction freezes the shared clock, reduced motion and
+    // motion-off report it explicitly), leaving the quiet uniform profile every non-beam uses.
+    bool beamAnimates = u_flowElapsedMs >= 0.0 && v_propagationPermille.w > 1.5 * u_permilleScale;
+    // D085-S6 END
     // Reduced motion is a uniform, quiet edge. The moving profile peaks 80% above base.
+    float travellingCue = v_propagationPermille.z > 0.0 ? pulse : 0.35;
     float hot = min(0.8, 0.8 * v_hotAndWobble.x / (0.95 * u_permilleScale))
-      * (v_propagationPermille.z > 0.0 ? pulse : 0.35);
+      * (beamAnimates ? travellingCue : 0.35);
     float alpha = clamp(v_opacity * radial * longitudinal
       * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
     // D082-A-NEURAL: match the pure root profile, including opacity and white-to-edge colour.
@@ -475,7 +494,12 @@ void main() {
 }`;
 
 /** This creates the deterministic instanced filament pass and does not alter any buffer value. */
-export function createFilamentRenderResources(buffers: FilamentBuffers): FilamentRenderResources {
+export function createFilamentRenderResources(
+  buffers: FilamentBuffers,
+  // D085-S6 BEGIN: the travelling beam gate per relation and the shared flow clock source.
+  beam?: FilamentBeamOptions,
+  // D085-S6 END
+): FilamentRenderResources {
   const geometry = new THREE.InstancedBufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(quadVertices(), coordinateCount()));
   geometry.setAttribute("a_start", instanced(buffers.startPositions, coordinateCount()));
@@ -492,7 +516,12 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
   geometry.setAttribute("a_sheathAndCorePermille", instanced(buffers.sheathAndCorePermille, packedChannelCount()));
   geometry.setAttribute("a_hotAndWobble", instanced(buffers.hotAndWobble, packedChannelCount()));
   geometry.setAttribute("a_phaseAndLuminancePermille", instanced(buffers.phaseAndLuminancePermille, packedChannelCount()));
-  geometry.setAttribute("a_propagationPermille", instanced(buffers.endLuminanceAndPropagation, packedChannelCount()));
+  // D085-S6 BEGIN: the exploratory-class gate decides alone which relations may animate, packed
+  // into the propagation attribute's spare flag range instead of a seventeenth vertex attribute
+  // (the pass already fills the sixteen slots the WebGL floor guarantees).
+  geometry.setAttribute("a_propagationPermille",
+    instanced(propagationPermilleWithBeamGate(buffers, beam?.beamEdgeIds), packedChannelCount()));
+  // D085-S6 END
   geometry.instanceCount = buffers.edgeIds.length;
   const material = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -529,14 +558,26 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
   const mesh = new THREE.Mesh(geometry, material);
   // The canvas overlay owns the product's 30 fps clock. This shader samples the same 32 CSS
   // px/s cadence whenever the 3D renderer draws, without starting another full-scene loop.
-  mesh.onBeforeRender = () => { requiredUniform(material, "u_flowElapsedMs").value = performance.now(); };
+  // D085-S6 BEGIN: with a shared-clock source the sample really is that clock, so the native
+  // beam freezes while the overlay loop is suspended and goes quiet when motion is disallowed.
+  const flowElapsedMs = beam?.flowElapsedMs;
+  mesh.onBeforeRender = () => {
+    requiredUniform(material, "u_flowElapsedMs").value = flowElapsedMs ? flowElapsedMs() : performance.now();
+  };
+  // D085-S6 END
   mesh.frustumCulled = false;
   mesh.renderOrder = FILAMENT_RENDER_ORDER;
   return { geometry, material, mesh };
 }
 
 /** This updates filament material attributes in place and does not move a mounted relation path. */
-export function updateFilamentRenderResources(resources: FilamentRenderResources, buffers: FilamentBuffers): void {
+export function updateFilamentRenderResources(
+  resources: FilamentRenderResources,
+  buffers: FilamentBuffers,
+  // D085-S6 BEGIN: the travelling beam gate follows the freshly built relation set.
+  beam?: FilamentBeamOptions,
+  // D085-S6 END
+): void {
   // D082-A-NEURALe BEGIN
   resources.material.blendEquation = buffers.neuralProfile.some((value, index) => index % 4 === 3 && value > 0.5)
     ? THREE.MaxEquation : THREE.AddEquation;
@@ -555,8 +596,29 @@ export function updateFilamentRenderResources(resources: FilamentRenderResources
   copyAttribute(resources.geometry, "a_sheathAndCorePermille", buffers.sheathAndCorePermille);
   copyAttribute(resources.geometry, "a_hotAndWobble", buffers.hotAndWobble);
   copyAttribute(resources.geometry, "a_phaseAndLuminancePermille", buffers.phaseAndLuminancePermille);
-  copyAttribute(resources.geometry, "a_propagationPermille", buffers.endLuminanceAndPropagation);
+  // D085-S6 BEGIN: rebuild the exploratory gate for the new relation set.
+  copyAttribute(resources.geometry, "a_propagationPermille",
+    propagationPermilleWithBeamGate(buffers, beam?.beamEdgeIds));
+  // D085-S6 END
 }
+
+// D085-S6 BEGIN
+/** One gate per drawn relation: animated beam only where the presentation class is exploratory.
+ * The gate adds its own permille range on top of the endpoint flag the fourth component already
+ * carries (a component no shader reads), so both flags survive in one packed float. The fresh
+ * copy never writes through to the cached scene buffer. */
+function propagationPermilleWithBeamGate(
+  buffers: FilamentBuffers,
+  beamEdgeIds?: ReadonlySet<string>,
+): Float32Array {
+  const packed = new Float32Array(buffers.endLuminanceAndPropagation);
+  if (beamEdgeIds === undefined) return packed;
+  for (const [index, id] of buffers.edgeIds.entries()) {
+    if (beamEdgeIds.has(id)) packed[index * packedChannelCount() + 3]! += 2 * SCENE_PERMILLE_SCALE;
+  }
+  return packed;
+}
+// D085-S6 END
 
 /** This updates only live filament projection uniforms and does not change relation attributes. */
 export function updateFilamentProjectionUniforms(

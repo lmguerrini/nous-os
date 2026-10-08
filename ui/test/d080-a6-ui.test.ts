@@ -8,8 +8,10 @@ const popover = readFileSync(new URL('../src/review/popover.ts', import.meta.url
 
 test('toolbar presents named groups and keeps graph diagnostics out of its visible status line', () => {
   // D082-B2 BEGIN: P6 replaces the old Vista and Organizzazione headings.
-  for (const group of ['Rendering', 'Topologia', 'Morfologia', 'Lettura', 'Relazioni', 'Densità', 'Aspetto', 'Ambiente'])
+  // D085-S6 BEGIN: the rename of the reading group label.
+  for (const group of ['Rendering', 'Topologia', 'Morfologia', 'Connessione', 'Relazioni', 'Densità', 'Aspetto', 'Ambiente'])
     assert.match(html, new RegExp(`>${group}<`), `group ${group}`);
+  // D085-S6 END
   // D082-B2 END
   assert.match(html, /id="graph-status-toggle"[^>]*aria-controls="graph-status-panel"/);
   assert.match(html, /id="graph-status-panel"[^>]*hidden/);
