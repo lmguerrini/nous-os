@@ -98,6 +98,37 @@ test('native Lab skeleton contains only mounted real IDs and preserves relation 
     new Set(['only-real']));
 });
 
+test('a native law moving tier submits its real upper levels and every required main relation', () => {
+  const nodes = [{ id: 'domain-root', kind: 'subject' }, { id: 'upper', kind: 'subject' },
+    ...Array.from({ length: 979 }, (_, i) => ({ id: `leaf-${i}`, kind: 'subject' }))];
+  const edges = Array.from({ length: 979 }, (_, i) =>
+    ({ id: `relation-${i}`, source: 'upper', target: `leaf-${i}` }));
+  const levels = new Map([['domain-root', 1], ['upper', 2]]);
+  const skeleton = nativeLabSkeleton(nodes, edges, levels, new Set(), true);
+  assert.equal(skeleton.edgeIds.size, 979);
+  assert.equal(skeleton.nodeIds.size, 981);
+  assert.ok(skeleton.nodeIds.has('domain-root'));
+  for (const edge of edges) {
+    assert.ok(skeleton.edgeIds.has(edge.id));
+    assert.ok(skeleton.nodeIds.has(edge.source));
+    assert.ok(skeleton.nodeIds.has(edge.target));
+  }
+  const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.match(mount, /nativeLabSkeleton\(live\.scene\.nodes, live\.scene\.edges,\s*nativeLevels, emphasisIds \?\? new Set\(\), true\)/);
+  assert.match(mount, /const nativeProxyActive = typedPicker === null && world\.visible && nativeProxy\.visible/);
+  assert.match(mount, /nativeProxyEdges = edgeIndices\.length/);
+});
+
+test('native law hubs are selected by degree and ID, independent of node order or position', () => {
+  const nodes = [{ id: 'z', kind: 'subject' }, { id: 'a', kind: 'subject' },
+    { id: 'leaf', kind: 'subject' }];
+  const edges = [{ id: 'e-a', source: 'a', target: 'leaf' },
+    { id: 'e-z', source: 'z', target: 'a' }];
+  assert.ok(nativeLabSkeleton(nodes, edges).nodeIds.has('a'));
+  assert.deepEqual(nativeLabSkeleton(nodes, edges).edgeIds, new Set(['e-a', 'e-z']));
+  assert.deepEqual(nativeLabSkeleton([...nodes].reverse(), edges).edgeIds, new Set(['e-a', 'e-z']));
+});
+
 test('Lab 3D stages retain anchor and real structural ribbons before progressively restoring all geometry', () => {
   assert.deepEqual(labDrawPolicy(1), { nodes: 'anchors', semanticEdges: 'main', visualEdges: false, decor: false });
   assert.deepEqual(labDrawPolicy(2), { nodes: 'all', semanticEdges: 'main', visualEdges: false, decor: false });
@@ -222,6 +253,31 @@ test('the 3D toolbar phase follows the renderer witness through recovery and com
       'Nodi 20 visibili · Render 100% · Completa');
   } finally {
     Object.defineProperty(globalThis, 'window', { configurable: true, value: previous });
+  }
+});
+
+test('3D status updates keep the custom tooltip live without a native title', () => {
+  const previous = (globalThis as { document?: unknown }).document;
+  const status = {
+    textContent: 'Nodi 20 visibili', title: 'old native title', dataset: { tooltip: 'old custom text' },
+    removeAttribute(name: string) { if (name === 'title') this.title = ''; },
+  };
+  Object.defineProperty(globalThis, 'document', { configurable: true,
+    value: { getElementById: (id: string) => id === 'human-status' ? status : null } });
+  try {
+    reportRenderReadiness({ frame: 1, view: 'lab/julia/3d/stellar/micro',
+      quality: 'movimento', ladder: 1,
+      nodes: { required: 20, loaded: 20, drawn: 3 },
+      mainEdges: { required: 4, loaded: 4, drawn: 2 },
+      allEdges: { required: 6, loaded: 6, drawn: 2 },
+      decor: { labels: false, background: false, glow: false, animation: false } });
+    assert.equal(status.dataset.tooltip, status.textContent);
+    assert.equal(status.title, '');
+    const page = readFileSync(new URL('../src/review/v2-page.ts', import.meta.url), 'utf8');
+    assert.match(page, /statusLine\.dataset\.tooltip = statusLine\.textContent \?\? '';/);
+    assert.match(page, /statusLine\.removeAttribute\('title'\)/);
+  } finally {
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: previous });
   }
 });
 // D085-S3 END

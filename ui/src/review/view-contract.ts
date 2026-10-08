@@ -487,8 +487,15 @@ export const VIEW_INPUT_FIELD_REGISTER = {
   input: [
     "container", "data", "v2Prepared", "v2Colours", "layoutContainers", "visibleNodeIds", "visibleEdgeIds",
     "axes", "brain", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget",
+    // D085-S3 BEGIN: the live Lab taxonomy belongs to this exact input envelope.
+    "labTopology", "labIndra",
+    // D085-S3 END
   ],
-  optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "brain", "flowMotion", "appearance", "customPalette", "labelBudget"],
+  optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "brain", "flowMotion", "appearance", "customPalette", "labelBudget",
+    // D085-S3 BEGIN
+    "labTopology", "labIndra",
+    // D085-S3 END
+  ],
   axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],
   /** Producer-optional axes: the explicit Natural arrangement, absent until a producer resolves it. */
   optionalAxes: ["arrangement", "brain"],

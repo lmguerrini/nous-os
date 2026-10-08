@@ -933,7 +933,10 @@ export class V2Page {
             const statusLine = typeof document !== 'undefined' ? document.getElementById('human-status') : null;
             if (!statusLine) return;
             statusLine.textContent = withRenderProgress(statusLine.textContent ?? '', renderPercent(next));
-            statusLine.title = statusLine.textContent;
+            // D085-S3 BEGIN: follow the header's live custom-tooltip contract.
+            statusLine.dataset.tooltip = statusLine.textContent ?? '';
+            statusLine.removeAttribute('title');
+            // D085-S3 END
         }
     }
     // D082-A-HUD END

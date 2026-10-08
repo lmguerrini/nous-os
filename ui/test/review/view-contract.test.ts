@@ -37,8 +37,8 @@ function inputFixture(): Record<string, unknown> {
 
 test("ViewInput has an exact envelope, axes, insets, and event register", () => {
   assert.deepEqual(VIEW_INPUT_FIELD_REGISTER, {
-    input: ["container", "data", "v2Prepared", "v2Colours", "layoutContainers", "visibleNodeIds", "visibleEdgeIds", "axes", "brain", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget"],
-    optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "brain", "flowMotion", "appearance", "customPalette", "labelBudget"],
+    input: ["container", "data", "v2Prepared", "v2Colours", "layoutContainers", "visibleNodeIds", "visibleEdgeIds", "axes", "brain", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget", "labTopology", "labIndra"],
+    optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "brain", "flowMotion", "appearance", "customPalette", "labelBudget", "labTopology", "labIndra"],
     axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],
     optionalAxes: ["arrangement", "brain"],
     insets: ["top", "right", "bottom", "left"],
@@ -46,6 +46,9 @@ test("ViewInput has an exact envelope, axes, insets, and event register", () => 
     optionalEvents: ["onDoublePick"],
   });
   assert.doesNotThrow(() => assertViewInputFieldRegister(inputFixture()));
+  // D085-S3 BEGIN: both committed Lab fields are optional, governed input keys.
+  assert.doesNotThrow(() => assertViewInputFieldRegister({ ...inputFixture(), labTopology: 'julia', labIndra: false }));
+  // D085-S3 END
   const axesFixture = '{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":true,"reading":"attested"}';
   assert.equal(JSON.stringify(JSON.parse(axesFixture)), axesFixture, "the current UI input fixture preserves its registered field order and values");
   assert.deepEqual(JSON.parse(axesFixture), DEFAULT_AXES);

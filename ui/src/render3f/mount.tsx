@@ -647,6 +647,10 @@ export function mount(
     acceptVisuals(typedInput!);
   }
   let emphasisIds = options.presentation?.emphasisIds ?? null;
+  // D085-S3 BEGIN: native law levels arrive as identity-bearing container IDs.
+  const nativeLevels = new Map(options.presentation?.containers?.map(container =>
+    [container.id, container.level] as const) ?? []);
+  // D085-S3 END
   // D082-A-PERF BEGIN: count the prepared scene once per revision, never in a camera frame.
   let requestedNodes = live.buffers.nodes.ids.length;
   let requestedMainEdges = live.buffers.filaments.edgeIds.length;
@@ -678,14 +682,22 @@ export function mount(
       requestedNodes = live.buffers.nodes.ids.length;
       requestedSemanticEdges = live.buffers.filaments.edgeIds.length;
       requestedVisualEdges = 0;
-      const byId = new Map(live.scene.nodes.map(node => [node.id, node]));
-      requestedMainEdges = live.scene.edges.filter(edge => {
-        const sourceMark = byId.get(edge.source), targetMark = byId.get(edge.target);
-        return mainRelation({ attested: true,
-          selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
-          sourceHub: sourceMark?.kind === 'hub', targetHub: targetMark?.kind === 'hub',
-          sourceDomain: sourceMark?.kind === 'domain', targetDomain: targetMark?.kind === 'domain' });
-      }).length;
+      // D085-S3 BEGIN: the required main-relation census uses the same real-ID
+      // selection as the resident moving proxy.
+      if (labInteractionEnabled(options.labTopology))
+        requestedMainEdges = nativeLabSkeleton(live.scene.nodes, live.scene.edges,
+          nativeLevels, emphasisIds ?? new Set(), true).edgeIds.size;
+      else {
+        const byId = new Map(live.scene.nodes.map(node => [node.id, node]));
+        requestedMainEdges = live.scene.edges.filter(edge => {
+          const sourceMark = byId.get(edge.source), targetMark = byId.get(edge.target);
+          return mainRelation({ attested: true,
+            selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
+            sourceHub: sourceMark?.kind === 'hub', targetHub: targetMark?.kind === 'hub',
+            sourceDomain: sourceMark?.kind === 'domain', targetDomain: targetMark?.kind === 'domain' });
+        }).length;
+      }
+      // D085-S3 END
     }
   };
   refreshPresentedCounts();
@@ -834,7 +846,8 @@ export function mount(
     clearNativeProxy();
     if (!nativeLab || typedPicker || !labDenseInteraction(options.labTopology,
       live.scene.nodes.length, DENSE_SCENE_THRESHOLD)) return;
-    const skeleton = nativeLabSkeleton(live.scene.nodes, live.scene.edges);
+    const skeleton = nativeLabSkeleton(live.scene.nodes, live.scene.edges,
+      nativeLevels, emphasisIds ?? new Set(), true);
     const nodeIndices = live.buffers.nodes.ids.flatMap((id, index) => skeleton.nodeIds.has(id) ? [index] : []);
     const edgeIndices = live.buffers.filaments.edgeIds.flatMap((id, index) => skeleton.edgeIds.has(id) ? [index] : []);
     if (nodeIndices.length === 0) return;
@@ -1050,7 +1063,7 @@ export function mount(
     const prepared = typedPicker ? typedLayer.preparedCounts() : null;
     // D085-S3 BEGIN: the typed layer does not own the resident interaction proxies.
     const proxyActive = labDense() && labProxyReady && labProxy.visible;
-    const nativeProxyActive = nativeLab && nativeProxy.visible;
+    const nativeProxyActive = typedPicker === null && world.visible && nativeProxy.visible;
     const skeletonAnchors = proxyActive && stage === 1 ? labProxyNodes
       : nativeProxyActive && stage === 1 ? nativeProxyNodes : 0;
     const skeletonMainRelations = proxyActive ? labProxyEdges : nativeProxyActive ? nativeProxyEdges : 0;
@@ -1476,6 +1489,24 @@ export function mount(
       if (!("styled" in update)) {
         if (typedPicker) throw new TypeError("Legacy subset cannot replace typed 3D visibility");
         distinct?.updateVisibleSubset(update);
+        // D085-S3 BEGIN: an in-place density slice can change the mounted
+        // hierarchy without changing the native scene or its materials.
+        const nextLevels = new Map(update.input.containers.map(container =>
+          [container.id, container.level] as const));
+        const levelsChanged = nextLevels.size !== nativeLevels.size
+          || [...nextLevels].some(([id, level]) => nativeLevels.get(id) !== level);
+        if (levelsChanged) {
+          nativeLevels.clear();
+          for (const [id, level] of nextLevels) nativeLevels.set(id, level);
+          refreshPresentedCounts();
+          if (!(live.scene.nodes.length === 11_199 && update.nodeEntries.size)
+            && nativeEdgeVeilById.size === 0) {
+            rebuildNativeProxy();
+            applyNativeLabPolicy(ladder.state.stage);
+            renderFrame();
+          }
+        }
+        // D085-S3 END
         // D082-A-NODES BEGIN
         if (live.scene.nodes.length === 11_199 && update.nodeEntries.size) {
           const indexById = new Map(live.buffers.nodes.ids.map((id, nodeIndex) => [id, nodeIndex] as const));
