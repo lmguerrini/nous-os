@@ -48,12 +48,28 @@ function renderer3dProgress(): { percent: number; quality: D081GraphStatus['qual
 }
 // D085-S3 END
 
+// D085-X6 BEGIN: all status-line suffixes use the accepted readiness snapshot.
+function acceptedRenderProgress(): { percent: number; view: string } | null {
+  if (typeof window === 'undefined') return null;
+  const witness = (window as Window & { __d082?: {
+    render?: () => { view: string } | null;
+    renderPercent?: () => number | null;
+  } }).__d082;
+  const readiness = witness?.render?.();
+  const percent = witness?.renderPercent?.();
+  if (!readiness || percent === null || percent === undefined) return null;
+  return { percent: Math.max(0, Math.min(100, Math.trunc(percent))), view: readiness.view };
+}
+// D085-X6 END
+
 /** Compact progress shown in the main status line only while requested quality is incomplete. */
 export function withRenderProgress(line: string, percent: number): string {
   // D085-S3 BEGIN
   const base = line.replace(/ · Render \d+%(?: · (?:Movimento|Recupero|Completa))?$/, "");
   const renderer = renderer3dProgress();
-  const bounded = renderer?.percent ?? Math.max(0, Math.min(100, Math.trunc(percent)));
+  // D085-X6 BEGIN
+  const bounded = renderer?.percent ?? acceptedRenderProgress()?.percent ?? Math.max(0, Math.min(100, Math.trunc(percent)));
+  // D085-X6 END
   if (renderer) return `${base} · Render ${bounded}% · ${{ movimento: 'Movimento', recupero: 'Recupero', completa: 'Completa' }[renderer.quality]}`;
   return bounded < 100 ? `${base} · Render ${bounded}%` : base;
   // D085-S3 END
@@ -64,7 +80,10 @@ export function preserveRenderProgress(line: string, current: string): string {
   // D085-S3 BEGIN
   const match = current.match(/ · Render (\d+)%(?: · (?:Movimento|Recupero|Completa))?$/);
   // D085-S3 END
-  return match ? withRenderProgress(line, Number(match[1])) : line;
+  // D085-X6 BEGIN: a refresh must also clear a suffix after 2D reaches completion.
+  return match || acceptedRenderProgress()?.view.includes('/2d/')
+    ? withRenderProgress(line, match ? Number(match[1]) : 100) : line;
+  // D085-X6 END
 }
 
 /** Contract-backed status used by the toolbar and its expanded explanation panel. */

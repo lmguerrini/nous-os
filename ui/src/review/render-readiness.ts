@@ -143,12 +143,10 @@ export function reportRenderReadiness(next: RenderReadiness): void {
     ? { ...counted, quality: 'recupero' } : counted;
   // D085-S3 END
   current = coherent;
-  // D085-S3 BEGIN: renderer presentations refresh the toolbar even when the page
-  // has no new graph-status event. The witness guards 100% until a drawn frame.
-  if (coherent.view.includes('/3d/') && typeof document !== 'undefined'
-    && typeof document.getElementById === 'function') {
+  // D085-X6 BEGIN: accepted readiness refreshes the status line in both dimensions.
+  // The witness guards 100% until the required drawing stages are present.
+  if (typeof document !== 'undefined' && typeof document.getElementById === 'function') {
     const percent = renderPercent(coherent);
-    const phase = percent === 100 ? 'Completa' : coherent.quality === 'movimento' ? 'Movimento' : 'Recupero';
     const statusLine = document.getElementById('human-status');
     if (statusLine) {
       const line = withRenderProgress(statusLine.textContent ?? '', percent);
@@ -158,14 +156,19 @@ export function reportRenderReadiness(next: RenderReadiness): void {
       statusLine.removeAttribute('title');
       // D085-S3 END
     }
-    const graphStatus = document.getElementById('graph-status-cap');
-    if (graphStatus?.textContent) {
-      const line = graphStatus.textContent.replace(/Qualità: (?:Movimento|Recupero|Completa)\./,
-        `Qualità: ${phase}.`);
-      if (graphStatus.textContent !== line) graphStatus.textContent = line;
+    // D085-S3 BEGIN: the 3D quality line keeps its renderer-owned phase.
+    if (coherent.view.includes('/3d/')) {
+      const phase = percent === 100 ? 'Completa' : coherent.quality === 'movimento' ? 'Movimento' : 'Recupero';
+      const graphStatus = document.getElementById('graph-status-cap');
+      if (graphStatus?.textContent) {
+        const line = graphStatus.textContent.replace(/Qualità: (?:Movimento|Recupero|Completa)\./,
+          `Qualità: ${phase}.`);
+        if (graphStatus.textContent !== line) graphStatus.textContent = line;
+      }
     }
+    // D085-S3 END
   }
-  // D085-S3 END
+  // D085-X6 END
   pending = coherent;
   if (pendingTimer !== null) return;
   const wait = Math.max(0, 100 - (Date.now() - lastDispatchAt));
