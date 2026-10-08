@@ -126,7 +126,9 @@ import { withRenderProgress } from './toolbar-status.ts';
 import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import { centeringNodeId } from './panel.ts';
 import type { V2Category } from './palette.ts';
-import { v2CategoryColour } from './palette.ts';
+// D086-F3 BEGIN
+import { PALETTES, v2CategoryColour } from './palette.ts';
+// D086-F3 END
 import type { Axes, AxesInput, CreateProductView, ExperimentalOrganization, FullAxesInput, Organization, PageAxes, ProductView, ViewOrganization } from './view-contract.ts';
 import { LEGACY_INDRA_PROJECTION_ID, normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS, experimentalOrganizationsEnabled, requestedProjectionId } from './view-contract.ts';
 import { brainForMode, brainModeKey, emptyBrainWitness, readBrainChoices, saveBrainChoices } from '../render3f/brain-envelope.ts';
@@ -4866,7 +4868,10 @@ export class V2Page {
                 // contribute visible bundle ink, including after camera motion.
                 if (lawResult) nextGuideLayer = mountTopologyGuides(nextHost, mounted, lawResult.guides,
                     this.topology === 'lull' && organization === 'natural'
-                        ? () => this.committedLullPairs : undefined);
+                        ? () => this.committedLullPairs : undefined,
+                    // D086-F3 BEGIN: the guide ink follows the active palette, as the graph marks do.
+                    () => this.activePalette());
+                    // D086-F3 END
                 // D085-S4 END
                 // D082-B2 END
                 if (canopy) {
@@ -5800,6 +5805,9 @@ export class V2Page {
         return equilibrate(this.canonicalPositions);
     }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
+    // D086-F3 BEGIN: the palette the graph is drawn with: the preset named by the colour axis, or the custom one.
+    private activePalette(): PaletteValues { return this.axes.colour === 'custom' ? this.palette : PALETTES[this.axes.colour]; }
+    // D086-F3 END
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
     async fit() {
         // D081-P6c BEGIN: drain any queued semantic refresh before framing and make late

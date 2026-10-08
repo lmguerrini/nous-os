@@ -202,6 +202,8 @@ const legendDocument = {
 };
 const legendPalette = {
   attested: '#cccccc', exploratory: '#cccccc', container: '#cccccc', selection: '#cccccc',
+  // D086-F3: the Llull legend swatches take their ink from the aggregate token.
+  aggregate: '#cccccc',
 } as PaletteValues;
 const CLASSIFICATION_KINDS: readonly string[] = ['container', 'canopy-ifs', 'julia', 'sierpinski', 'lull'];
 /** The legend entries of one rendered flow legend: [dataset entry kind, title/text]. */
