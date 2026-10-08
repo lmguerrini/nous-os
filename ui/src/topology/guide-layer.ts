@@ -1,5 +1,5 @@
 /** Non-semantic law guides, projected with the active classic camera only when it changes. */
-import type { GuideCurve } from './contract.ts';
+import type { GuideCurve, TopologyLayout } from './contract.ts';
 import type { ProductView } from '../review/view-contract.ts';
 import { LULL_OUTER_RADIUS } from './lull.ts';
 // D085-S4 BEGIN: a drawn bundle uses the exact active routed fold.
@@ -14,6 +14,14 @@ import type { LullOverviewPairFold } from './lull-overview.ts';
 // overview veil is absent. Bundle ink follows the committed fold so a moving
 // camera never fades it before the individual relations return.
 type LullWeightedGuide = GuideCurve & Readonly<{ weight: number }>;
+// D086-F4 BEGIN: standalone and composed bundle IDs share one source compartment key.
+export function lullGuideBundleLetters(id: string): string {
+  const prefix = 'lull:bundle:';
+  const at = id.indexOf(prefix);
+  if (at < 0) throw new Error('Llull bundle guide without a source compartment key');
+  return id.slice(at + prefix.length);
+}
+// D086-F4 END
 // The active visual weights are taken only from replaced sources.
 export function lullVisibleBundleWeights(pairs: readonly LullOverviewPairFold[]): ReadonlyMap<string, number> {
   return new Map(pairs.filter(pair => pair.relationIds.length)
@@ -24,22 +32,32 @@ const LULL_ZOOM_FADE_END = 2.5;
 /** The fitted-wheel scale of the current camera: the projected wheel diameter
  * over the viewport's smaller side (≈ 1 when the wheel exactly fits). 0 when the
  * camera cannot be projected — callers must treat that as "not overview". */
-function lullOverviewFactor(view: ProductView, width: number, height: number): number {
+// D086-F4 BEGIN: fold and canvas consume the same fitted root radius.
+export function lullGuideRadius(layout: TopologyLayout | null): number {
+  if (!layout) return LULL_OUTER_RADIUS;
+  for (const witness of layout.witnesses.values()) {
+    const r = Number(witness.values.rootRingRadius);
+    const s = Number(witness.values.globalScale);
+    if (Number.isFinite(r) && r > 0 && Number.isFinite(s) && s > 0) return r * s;
+  }
+  return LULL_OUTER_RADIUS;
+}
+function lullOverviewFactor(view: ProductView, width: number, height: number, radius = LULL_OUTER_RADIUS): number {
   const origin = view.projectPoint!({ x: 0, y: 0, z: 0 });
   const east = view.projectPoint!({ x: 1000, y: 0, z: 0 });
   if (!Number.isFinite(origin.x) || !Number.isFinite(origin.y)
     || !Number.isFinite(east.x) || !Number.isFinite(east.y)) return 0;
   const scale = Math.hypot(east.x - origin.x, east.y - origin.y) / 1000;
   if (!(scale > 0)) return 0;
-  return scale * 2 * LULL_OUTER_RADIUS / Math.max(1, Math.min(width, height));
+  return scale * 2 * radius / Math.max(1, Math.min(width, height));
 }
 /** Diagnostic overview share of the projected scale: full while the wheel is seen from up to
  * LULL_ZOOM_FADE_BEGIN times its fitted size, easing to 0 by LULL_ZOOM_FADE_END —
  * the same window in which the settled fold releases. The mounted layer uses
  * its committed active pairs for visibility to avoid hiding edges during a
  * camera gesture. Unprojectable cameras give 0. */
-export function lullOverviewFade(view: ProductView, width: number, height: number): number {
-  const factor = lullOverviewFactor(view, width, height);
+export function lullOverviewFade(view: ProductView, width: number, height: number, radius = LULL_OUTER_RADIUS): number {
+  const factor = lullOverviewFactor(view, width, height, radius);
   if (factor <= 0) return 0;
   if (factor <= LULL_ZOOM_FADE_BEGIN) return 1;
   if (factor >= LULL_ZOOM_FADE_END) return 0;
@@ -51,8 +69,8 @@ export function lullOverviewFade(view: ProductView, width: number, height: numbe
  * oscillate: aggregated while the fitted wheel is at or under 2.2×, individual
  * above 2.4× — inside the fade window, where both inks cross-fade. */
 export function lullOverviewAggregated(view: ProductView, width: number, height: number,
-  previous: boolean): boolean {
-  const factor = lullOverviewFactor(view, width, height);
+  previous: boolean, radius = LULL_OUTER_RADIUS): boolean {
+  const factor = lullOverviewFactor(view, width, height, radius);
   if (factor <= 0) return previous;
   if (factor <= 2.2) return true;
   if (factor >= 2.4) return false;
@@ -61,13 +79,15 @@ export function lullOverviewAggregated(view: ProductView, width: number, height:
 // Disabling semantic zoom releases every folded stroke at the
 // next refresh; the guide layer then has no active bundle ink at any scale.
 export function lullOverviewMode(semanticZoom: boolean, view: ProductView,
-  width: number, height: number, previous: boolean): boolean {
-  return semanticZoom && lullOverviewAggregated(view, width, height, previous);
+  width: number, height: number, previous: boolean, radius = LULL_OUTER_RADIUS): boolean {
+  return semanticZoom && lullOverviewAggregated(view, width, height, previous, radius);
 }
+// D086-F4 END
 // D085-S4 END
 
 export function mountTopologyGuides(host: HTMLElement, view: ProductView,
-  guides: readonly GuideCurve[], activeLullPairs?: () => readonly LullOverviewPairFold[]): { destroy(): void; invalidate(): void } {
+  guides: readonly GuideCurve[], activeLullPairs?: () => readonly LullOverviewPairFold[],
+  lullRadius = LULL_OUTER_RADIUS): { destroy(): void; invalidate(): void } {
   // D085-S4 BEGIN: the page invalidates this live source after every committed fold.
   if (!guides.length || !view.projectPoint) return { destroy() {}, invalidate() {} };
   if (guides.some(guide => guide.semantic !== false || !guide.id))
@@ -76,7 +96,10 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
   // compete for a visible chart budget without drawn-edge eligibility tokens.
   const drawableGuides = guides.filter(guide => guide.kind !== 'indra-real-edge-route');
   // D085-S5 END
+  // D086-F4 BEGIN
   const canvas = document.createElement('canvas');
+  canvas.dataset.lullRootRadius = String(lullRadius);
+  // D086-F4 END
   canvas.dataset.topologyGuides = 'true';
   // D085-S5 BEGIN: the mounted guide surface exposes actual stroke accounting.
   canvas.dataset.guideRequested = String(guides.length);
@@ -114,13 +137,13 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     const activePairs = activeLullPairs?.() ?? [];
     const activeWeights = lullVisibleBundleWeights(activePairs);
     const overview = activeLullPairs ? (activePairs.length ? 1 : 0)
-      : lullZoom ? lullOverviewFade(view, width, height) : 0;
+      : lullZoom ? lullOverviewFade(view, width, height, lullRadius) : 0;
     const flatView = guides.some(guide => guide.kind === 'lull-pair-bundle'
       && guide.points.every(point => !point.z));
     let bundleMax = 0;
     for (const guide of guides)
       if (guide.kind === 'lull-pair-bundle') {
-        const active = activeWeights.get(guide.id.slice('lull:bundle:'.length));
+        const active = activeWeights.get(lullGuideBundleLetters(guide.id));
         bundleMax = Math.max(bundleMax, activeLullPairs ? active ?? 0
           : (guide as LullWeightedGuide).weight);
       }
@@ -146,7 +169,7 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       // D085-S4 BEGIN: zero active source IDs means no bundle is drawn. The
       // full-snapshot guide remains a geometry/provenance template only.
       if (guide.kind === 'lull-pair-bundle' && activeLullPairs
-        && !activeWeights.has(guide.id.slice('lull:bundle:'.length))) {
+        && !activeWeights.has(lullGuideBundleLetters(guide.id))) {
         suppressed++; continue;
       }
       // D085-S4 END
@@ -190,7 +213,7 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       // than any relation line, so the rosette of the overview reads as its own ink.
       } else if (guide.kind === 'lull-pair-bundle') {
         const weight = activeLullPairs
-          ? activeWeights.get(guide.id.slice('lull:bundle:'.length))!
+          ? activeWeights.get(lullGuideBundleLetters(guide.id))!
           : (guide as LullWeightedGuide).weight;
         const share = bundleMax > 0 ? Math.sqrt(weight / bundleMax) : 0;
         // Two aggregate inks, one per view. Flat: a solid core chord, wider and

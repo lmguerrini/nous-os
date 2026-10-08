@@ -66,7 +66,10 @@ test('standalone guides restore fully at rest; composed guides keep budgets and 
     const composed = [...Array.from({ length: 4001 }, (_, i) => valid(`indra:parent:${i}`)),
       { ...valid('indra:parent:short'), points: [point] },
       { ...valid('indra-route:real'), kind: 'indra-real-edge-route' }];
-    layer = mountTopologyGuides(host as unknown as HTMLElement, view, composed);
+    // D086-F4 BEGIN: the fitted radius passed by the page reaches the canvas.
+    layer = mountTopologyGuides(host as unknown as HTMLElement, view, composed, undefined, 137);
+    assert.equal(currentCanvas().dataset.lullRootRadius, '137');
+    // D086-F4 END
     flushFrame();
     assert.equal(currentCanvas().dataset.guideRequested, '4003');
     assert.equal(currentCanvas().dataset.guideDrawn, '3999');
