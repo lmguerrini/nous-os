@@ -77,7 +77,7 @@ export function flowPulseAlpha(distanceNormalised: number, centre: number, inten
 
 // ---------------------------------------------------------------- travelling flow
 // The older head/tail helpers remain exported for historical evidence tests. The live light is a
-// single, compact raised-cosine envelope; its entire width modulates the same radial edge profile.
+// single travelling envelope; its entire width modulates the same radial edge profile.
 
 /** Head travel speed at speed 1, in screen px/s. Every edge shares it: uniform speed, per-edge cycle. */
 export const FLOW_HEAD_SPEED_PX_S = 32;
@@ -85,9 +85,26 @@ export const FLOW_HEAD_SPEED_PX_S = 32;
 export const FLOW_WAVE_PERIOD_LENGTHS = 2;
 /** Peak light relative to the edge's own alpha at the default intensity (0.6). */
 export const FLOW_WAVE_MAX_ALPHA = 0.8;
-/** Full visible length, approximately 20% of the edge and bounded in screen pixels. */
+// D086-F5 BEGIN: D-079's approved long beam used the 82–190 px stretch below.
+// Keep a broad, even core with soft shoulders, so a beam reads as a moving span.
+export const FLOW_BEAM_LENGTH_FACTOR = 1.7;
+export const FLOW_BEAM_SHOULDER_FRACTION = 0.3;
+export const FLOW_PULSE_MIN_PX = 48 * FLOW_BEAM_LENGTH_FACTOR;
+export const FLOW_PULSE_MAX_PX = 112 * FLOW_BEAM_LENGTH_FACTOR;
+export const FLOW_PULSE_LENGTH_FRACTION = 0.28 * FLOW_BEAM_LENGTH_FACTOR;
+/** Full visible length from the D-079 approved beam, bounded in screen pixels. */
 export function flowPulseLengthPx(edgeLengthPx: number): number {
-  return Math.max(40, Math.min(120, edgeLengthPx * 0.2));
+  return Math.max(FLOW_PULSE_MIN_PX, Math.min(FLOW_PULSE_MAX_PX,
+    edgeLengthPx * FLOW_PULSE_LENGTH_FRACTION));
+}
+export function flowPulseEnvelope(distancePx: number, pulseLengthPx: number): number {
+  if (!(pulseLengthPx > 0) || !Number.isFinite(distancePx)) return 0;
+  const half = pulseLengthPx * 0.5;
+  const distance = Math.abs(distancePx);
+  if (distance >= half) return 0;
+  const shoulder = half * FLOW_BEAM_SHOULDER_FRACTION;
+  const t = Math.min(1, Math.max(0, (half - distance) / shoulder));
+  return t * t * (3 - 2 * t);
 }
 /** One pulse travels from source to target, drains beyond the end, then restarts. */
 export function flowWaveAlpha(atPx: number, edgeLengthPx: number, elapsedMilliseconds: number,
@@ -95,13 +112,12 @@ export function flowWaveAlpha(atPx: number, edgeLengthPx: number, elapsedMillise
   if (!(edgeLengthPx > 0) || !(speed > 0) || !(intensity > 0)) return 0;
   const pulseLength = flowPulseLengthPx(edgeLengthPx);
   const centre = flowHeadPositionPx(elapsedMilliseconds, speed, edgeLengthPx + pulseLength);
-  const distance = Math.abs(atPx - centre);
-  if (distance >= pulseLength * 0.5) return 0;
-  const envelope = 0.5 + 0.5 * Math.cos(2 * Math.PI * distance / pulseLength);
+  const envelope = flowPulseEnvelope(atPx - centre, pulseLength);
   const entering = Math.min(1, Math.max(0, centre / (pulseLength * 0.5)));
   const restartFade = entering * entering * (3 - 2 * entering);
   return FLOW_WAVE_MAX_ALPHA * Math.min(1, Math.max(0, intensity / 0.6)) * envelope * restartFade;
 }
+// D086-F5 END
 /** Reach of the bright head, in px along the path from the head backwards. */
 export const FLOW_HEAD_PX = 24;
 /** A narrow core can be substantially brighter than its base filament without obscuring nodes. */
@@ -116,7 +132,6 @@ export function flowTailLengthPx(arcLengthPx: number): number {
   return Math.max(48, Math.min(112, arcLengthPx * 0.28));
 }
 /** Historical beam-length helper retained for older evidence tests. */
-export const FLOW_BEAM_LENGTH_FACTOR = 1.7;
 export function flowBeamLengthPx(arcLengthPx: number): number {
   return flowTailLengthPx(arcLengthPx) * FLOW_BEAM_LENGTH_FACTOR;
 }
@@ -260,6 +275,7 @@ export function nativeBeamElapsedSample(input: {
 // envelope and the speed stay the ones above.
 /** Share of white mixed into the edge colour for the beam core. */
 export const FLOW_BEAM_WHITE_MIX = 0.72;
+export const FLOW_BEAM_WHITE_CHANNEL = 1;
 /** The beam envelope as a share of its peak: the pulse alpha divided by the peak the intensity allows. */
 export function flowBeamEnvelope(pulseAlpha: number, intensity: number): number {
   const peak = FLOW_WAVE_MAX_ALPHA * Math.min(1, Math.max(0, intensity) / 0.6);

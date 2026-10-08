@@ -7,6 +7,49 @@ import type { Morphology } from '../review/view-contract.ts';
 import { neuralRibbonProfile, readNeuralShapeCacheStats, somaLobeAreaScale,
   somaLobeFactor } from '../render-common/morphology-canvas.ts';
 import { canopySemanticCandidates, placeCanopyLabels, type CanopyRect } from './canopy-overlay.ts';
+// D086-F5 BEGIN: the real evidence strokes, rather than the generated tree rails, carry flow.
+import { FLOW_BEAM_CORE_MIN_PX, FLOW_WAVE_MAX_ALPHA, flowHeadAlpha, flowWaveAlpha,
+  selectFlowEdges } from '../render-common/flow.ts';
+
+export type CanopyFlowStroke = Readonly<{ edge: CanopyEvidenceStroke;
+  from: Readonly<{ x: number; y: number }>; to: Readonly<{ x: number; y: number }> }>;
+type CanopyFlowLayer = Readonly<{ draw(context: CanvasRenderingContext2D, now: number,
+  speed: number, intensity: number): number; eligible(): number }>;
+const canopyFlowLayers = new WeakMap<HTMLElement, CanopyFlowLayer>();
+export function canopyFlowLayer(host: HTMLElement): CanopyFlowLayer | undefined {
+  return canopyFlowLayers.get(host);
+}
+/** Draw at most the shared flow budget of real, visible exploratory evidence strokes. */
+export function drawCanopyEvidenceFlow(context: CanvasRenderingContext2D,
+  strokes: readonly CanopyFlowStroke[], reading: Reading, now: number,
+  speed: number, intensity: number): number {
+  if (reading === 'attested' || !(speed > 0) || !(intensity > 0)) return 0;
+  const eligible = strokes.filter(row => row.edge.class === 'exploratory'
+    && Math.hypot(row.to.x - row.from.x, row.to.y - row.from.y) > 0);
+  const chosen = selectFlowEdges(eligible.map(row => ({ edgeId: row.edge.id,
+    visible: true, priority: 0 })));
+  for (const row of eligible) {
+    if (!chosen.has(row.edge.id)) continue;
+    const length = Math.hypot(row.to.x - row.from.x, row.to.y - row.from.y);
+    const gradient = context.createLinearGradient(row.from.x, row.from.y, row.to.x, row.to.y);
+    const samples = Math.max(8, Math.min(32, Math.ceil(length / 12)));
+    for (let index = 0; index <= samples; index++) {
+      const fraction = index / samples;
+      const alpha = flowHeadAlpha(intensity)
+        * flowWaveAlpha(length * fraction, length, now, speed, intensity) / FLOW_WAVE_MAX_ALPHA;
+      gradient.addColorStop(fraction, `rgba(248, 248, 248, ${alpha})`);
+    }
+    context.beginPath();
+    context.moveTo(row.from.x, row.from.y);
+    context.lineTo(row.to.x, row.to.y);
+    context.lineWidth = FLOW_BEAM_CORE_MIN_PX;
+    context.lineCap = 'round';
+    context.strokeStyle = gradient;
+    context.stroke();
+  }
+  return chosen.size;
+}
+// D086-F5 END
 
 const STRUCTURAL_INK = 'rgba(199, 205, 214, .63)';
 const EXPLORATORY_INK = 'rgba(165, 159, 185, .67)';
@@ -404,6 +447,12 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   let drawnRails: CanopyRail[] = [];
   let drawnEvidence: { edge: CanopyEvidenceStroke; from: { x: number; y: number };
     to: { x: number; y: number } }[] = [];
+  // D086-F5 BEGIN
+  canopyFlowLayers.set(host, { draw: (target, now, speed, intensity) =>
+    drawCanopyEvidenceFlow(target, drawnEvidence, reading, now, speed, intensity),
+  eligible: () => reading === 'attested' ? 0
+    : drawnEvidence.filter(row => row.edge.class === 'exploratory').length });
+  // D086-F5 END
   let projectedNodeGrid = new Map<string, { x: number; y: number }[]>();
   let currentIds = ids;
   let currentMarks = marks;
@@ -749,6 +798,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     } });
     // D082-B1c END.
     onDraw?.();
+    // D086-F5 BEGIN: the product loop may have found an empty scene before Canopy painted.
+    host.dispatchEvent(new Event('d086:canopy-flow-ready'));
+    // D086-F5 END
     // D082-B-CANOPYN2 BEGIN: camera changes emit their own motion event. A
     // complete scene has no time-based overlay animation to repaint at rest.
     if (!completeScene && performance.now() < activeUntil) frame = requestAnimationFrame(draw);
@@ -871,6 +923,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       labels, badges: badgeCount, ...railAudit, paletteValid }),
     destroy() {
       destroyed = true;
+      // D086-F5 BEGIN
+      canopyFlowLayers.delete(host);
+      // D086-F5 END
       if (restoreTimer) clearTimeout(restoreTimer);
       if (frame !== null) cancelAnimationFrame(frame);
       observer.disconnect();

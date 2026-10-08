@@ -40,7 +40,9 @@ test("root taper and edge density are continuous and contain the exploratory lig
   assert.match(FILAMENT_FRAGMENT_SHADER, /float radial = 1\.0 - smoothstep\(0\.0, 1\.0, distance \/ max\(bodyHalfWidth, feather\)\)/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /outputColor = vec4\(color \* alpha, alpha\)/);
   assert.match(FILAMENT_FRAGMENT_SHADER, /pulseDistance < pulseHalfParameter/);
-  assert.match(FILAMENT_FRAGMENT_SHADER, /0\.5 \+ 0\.5 \* cos\(3\.14159265 \* pulseDistance \/ pulseHalfParameter\)/);
+  // D086-F5 BEGIN: D-079's approved long homogeneous beam uses a plateau with soft shoulders.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /1\.0 - smoothstep\(pulseHalfParameter \* 0\.70,/);
+  // D086-F5 END
   assert.match(NODE_FRAGMENT_SHADER, /rootLobe/);
 });
 
@@ -52,8 +54,10 @@ test("one long wave keeps a continuous edge with at most one still-frame maximum
     const maxima = samples.slice(1, -1).filter((value, index) =>
       value > samples[index]! && value >= samples[index + 2]!).length;
     assert.ok(maxima <= 1, `length=${length} time=${now}: ${maxima} peaks`);
+    // D086-F5 BEGIN: the long beam's shoulders span more pixels than the compact D-081 pulse.
     for (let index = 1; index < samples.length; index++)
-      assert.ok(Math.abs(samples[index]! - samples[index - 1]!) < 0.03);
+      assert.ok(Math.abs(samples[index]! - samples[index - 1]!) < 0.05);
+    // D086-F5 END
     assert.ok(samples.every(value => value >= 0 && value <= FLOW_WAVE_MAX_ALPHA));
   }
   assert.equal(flowWaveAlpha(40, 100, 800, 1, 0), 0);

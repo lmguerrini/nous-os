@@ -53,7 +53,11 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#render3f/camera-framing.ts",
   ])],
   // D084-W2-NEURAL-R3 BEGIN: shader geometry constants originate in the engine.
-  ["filament-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts", "#engine/morphology-geometry.ts"])],
+  ["filament-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts", "#engine/morphology-geometry.ts",
+    // D086-F5 BEGIN: exact shared beam law; no renderer-local material values.
+    "#render-common/flow.ts",
+    // D086-F5 END
+  ])],
   // D084-W2-NEURAL-R3 END
   ["distinct-overlay.ts", new Set([
     "#engine/contract.ts", "#engine/morphology-geometry.ts", "#render-common/morphology-canvas.ts",

@@ -1,5 +1,10 @@
 import * as THREE from "three";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+// D086-F5 BEGIN: the native Neural beam uses the approved shared length, shoulder and speed law.
+import { FLOW_BEAM_CORE_MIN_PX, FLOW_BEAM_SHOULDER_FRACTION, FLOW_BEAM_WHITE_CHANNEL,
+  FLOW_BEAM_WHITE_MIX, FLOW_HEAD_MAX_ALPHA, FLOW_HEAD_SPEED_PX_S, FLOW_PULSE_LENGTH_FRACTION,
+  FLOW_PULSE_MAX_PX, FLOW_PULSE_MIN_PX } from "#render-common/flow.ts";
+// D086-F5 END
 // D084-W2-NEURAL-R3 BEGIN: both GPU shaders use the engine's junction geometry.
 // D084-W5-SHADER BEGIN: the junction table reaches this material as texture bytes.
 import { NEURAL_PROFILE_GLSL, NEURAL_PROFILE_SAMPLES, NEURAL_PROFILE_TABLE, NEURAL_PROFILE_TEXTURE_BYTES, NEURAL_ROOT_ANCHOR_RADII } from "#engine/morphology-geometry.ts";
@@ -202,6 +207,11 @@ void main() {
   // Its quad must cover the minimum continuous ribbon even when the encoded width is tiny.
   if (a_neuralProfile.w >= 3.0)
     maximumBodyHalfWidth = max(maximumBodyHalfWidth, 0.75);
+  // D086-F5 BEGIN: reserve the approved beam's minimum core width only for gated relations.
+  if (a_propagationPermille.w > 1.5 * u_permilleScale)
+    maximumBodyHalfWidth = max(maximumBodyHalfWidth,
+      ${FLOW_BEAM_CORE_MIN_PX.toFixed(1)} * u_devicePixelRatio * 0.5);
+  // D086-F5 END
   // D082-A-N3D END
   if (a_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio;
@@ -422,17 +432,20 @@ void main() {
     float longitudinal = (v_neuralProfile.y > 0.0 ? 1.0 : smoothstep(0.0, fade, parameter))
       * (v_neuralProfile.z > 0.0 ? 1.0 : smoothstep(0.0, fade, 1.0 - parameter));
     // D081-P1F END
-    // One compact raised-cosine pulse, 20% of the projected span (40–120 CSS px).
+    // D086-F5 BEGIN: D-079's long beam has a broad even core and soft shoulders.
     // The same scalar multiplies the whole radial density: no inner stroke or bar.
-    float pulseLengthPx = clamp(span / u_devicePixelRatio * 0.2, 40.0, 120.0) * u_devicePixelRatio;
+    float pulseLengthPx = clamp(span / u_devicePixelRatio * ${FLOW_PULSE_LENGTH_FRACTION.toFixed(3)},
+      ${FLOW_PULSE_MIN_PX.toFixed(1)}, ${FLOW_PULSE_MAX_PX.toFixed(1)}) * u_devicePixelRatio;
     float pulseHalfParameter = pulseLengthPx / (2.0 * span);
-    float lightPosition = mod(u_flowElapsedMs * 0.032 * u_devicePixelRatio,
+    float lightPosition = mod(u_flowElapsedMs * ${(FLOW_HEAD_SPEED_PX_S / 1000).toFixed(3)} * u_devicePixelRatio,
       span + pulseLengthPx) / span;
     float pulseDistance = abs(parameter - lightPosition);
     float pulse = pulseDistance < pulseHalfParameter
-      ? 0.5 + 0.5 * cos(3.14159265 * pulseDistance / pulseHalfParameter)
+      ? 1.0 - smoothstep(pulseHalfParameter * ${(1 - FLOW_BEAM_SHOULDER_FRACTION).toFixed(2)},
+        pulseHalfParameter, pulseDistance)
       : 0.0;
     pulse *= smoothstep(0.0, pulseHalfParameter, lightPosition);
+    // D086-F5 END
     // D085-S6 BEGIN: the travelling beam belongs to the exploratory connection alone. The gate
     // rides the propagation attribute's spare flag range — above the endpoint flag's own permille,
     // the same packing the Neural profile uses for its veil — because this pass already fills every
@@ -454,9 +467,23 @@ void main() {
     alpha = mix(alpha, rootSomaOpacity * longitudinal * radial * denseRootFactor, rootSomaMix);
     // D084-W7-DENSE END
     // D084-W2-NEURAL-R6 END
+    // D086-F5 BEGIN: the native gated beam carries the same bright near-white core
+    // and width floor as the separate canvas flow layer; the resting profile is exact.
+    float beamHalfWidth = max(bodyHalfWidth,
+      ${FLOW_BEAM_CORE_MIN_PX.toFixed(1)} * u_devicePixelRatio * 0.5);
+    float beamRadial = 1.0 - smoothstep(beamHalfWidth - feather,
+      beamHalfWidth + feather, distance);
+    float beamCoverage = beamAnimates ? pulse * beamRadial * longitudinal
+      * (1.0 - rootSomaMix) : 0.0;
+    alpha = max(alpha, beamCoverage * ${FLOW_HEAD_MAX_ALPHA.toFixed(2)});
+    // D086-F5 END
     if (alpha <= 0.0) discard;
     vec3 color = mix(v_color, v_hotColor, clamp(hot * 0.35, 0.0, 0.35));
     color = mix(color, rootSomaColor, rootSomaMix);
+    // D086-F5 BEGIN
+    color = mix(color, vec3(${FLOW_BEAM_WHITE_CHANNEL.toFixed(1)}),
+      beamCoverage * ${FLOW_BEAM_WHITE_MIX.toFixed(2)});
+    // D086-F5 END
     outputColor = vec4(color * alpha, alpha);
     return;
     // D081-P1 END

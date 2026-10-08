@@ -42,6 +42,9 @@ import { LABEL_BUDGET, disambiguateLabels, footprintDisc, labelCandidateKind, oc
 import type { DepthSample, LabelRim, PlacedLabel } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
+// D086-F5 BEGIN
+import { canopyFlowLayer } from "../fractal/renderer-adapter.ts";
+// D086-F5 END
 import { buildMorphologyGeometry } from "../engine/morphology-geometry.ts";
 import type { MorphologyInput } from "../engine/morphology-geometry.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
@@ -125,9 +128,15 @@ import {
   flowLayerFrameDue,
   flowLayerResumeAlpha,
   flowLayerShouldRun,
+  // D086-F5 BEGIN
+  flowNow,
+  // D086-F5 END
   claimFlowMotion,
   ownsFlowMotion,
   releaseFlowMotion,
+  // D086-F5 BEGIN
+  setFlowAnimatedEdgeCount,
+  // D086-F5 END
   setFlowNow,
 } from "#render-common/flow.ts";
 
@@ -906,6 +915,12 @@ export const createProductView: CreateProductView = async (input) => {
     // A forced draw (the test hook, captures) never fades: the phase is the caller's, full alpha.
     flowContext.globalAlpha = force ? 1 : flowLayerResumeAlpha(now - flowLoop.resumedAtMs);
     drawFlowLayer(flowContext, flowScene.geometry, flowScene.project, flowScene.style, appearance, axes.projection);
+    // D086-F5 BEGIN: Canopy's source-backed evidence is drawn by its own renderer.
+    // Use this same overlay and clock so movement, visibility and idle gating stay shared.
+    const canopy = canopyFlowLayer(container);
+    if (canopy) setFlowAnimatedEdgeCount(flowAnimatesNow()
+      ? canopy.draw(flowContext, flowNow(), appearance.flowSpeed, appearance.flowIntensity) : 0);
+    // D086-F5 END
     flowContext.globalAlpha = 1;
     // D082-A-PERF BEGIN
     if (perfMarksEnabled) { performance.mark('d082:flow:end'); performance.measure('d082:flow', 'd082:flow:start', 'd082:flow:end'); }
@@ -994,6 +1009,14 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-PERF END
     else if (!allowed && flowLoop.running) { stopFlowLoop(); if (!document.hidden) redrawMorphology(); }
   };
+  // D086-F5 BEGIN: the rail layer mounts after the product view, so its first paint
+  // wakes a loop that may already have retired after seeing an empty product edge set.
+  const onCanopyFlowReady = () => {
+    if ((canopyFlowLayer(container)?.eligible() ?? 0) > 0 && flowAnimatesNow() && !flowLoop.running
+      && !document.hidden && morphologyInteraction.quality !== "moving") startFlowLoop();
+  };
+  container.addEventListener('d086:canopy-flow-ready', onCanopyFlowReady);
+  // D086-F5 END
   const onVisibilityChange = () => {
     if (document.hidden) stopFlowLoop();
     else syncFlowLoop();
@@ -3081,6 +3104,9 @@ export const createProductView: CreateProductView = async (input) => {
       flowCanvas = null;
       flowContext = null;
       flowScene = null;
+      // D086-F5 BEGIN
+      container.removeEventListener('d086:canopy-flow-ready', onCanopyFlowReady);
+      // D086-F5 END
       // The devicePixelRatio shadow lives exactly as long as the view.
       removeDevicePixelRatioShadow();
       handle = null;

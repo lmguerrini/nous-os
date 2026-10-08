@@ -461,11 +461,14 @@ test("M1b flow: the highlight head advances monotonically from source to target"
   }
   // The single broad maximum moves toward the target without a trail of short strokes.
   const centres: number[] = [];
-  for (const milliseconds of [200, 400, 600, 800, 1000]) {
+  // D086-F5 BEGIN: the D-079 beam's even interior initially covers the source.
+  // Sample after its long plateau has entered the edge, then follow it.
+  for (const milliseconds of [1500, 1700, 1900, 2100, 2300]) {
     const samples = Array.from({ length: 201 }, (_, distance) =>
       flowWaveAlpha(distance, 200, milliseconds, 1, 1));
     centres.push(samples.indexOf(Math.max(...samples)));
   }
+  // D086-F5 END
   for (let index = 1; index < centres.length; index += 1)
     assert.ok(centres[index]! > centres[index - 1]! + 1e-6,
       `the highlight did not advance: ${centres.map(value => value.toFixed(1)).join(" → ")}`);
