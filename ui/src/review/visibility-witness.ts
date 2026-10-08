@@ -58,7 +58,10 @@ export type VisibilityWitnessInput = Readonly<{
   budgetRecord?: VisibilityBudgetRecord;
   // D085-S2 END
   // D085-S7 BEGIN
-  relationCounts?: RelationDetailCounts;
+  relationCounts?: RelationDetailCounts & Readonly<{
+    drawnBeforeLullFold?: number; drawnAfterLullFold?: number;
+    aggregatedIntoLullBundles?: number;
+  }>;
   // D085-S7 END
   // D085-S4 BEGIN
   lullOverview?: LullOverviewVisibility;

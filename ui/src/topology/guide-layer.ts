@@ -14,12 +14,11 @@ import type { LullOverviewPairFold } from './lull-overview.ts';
 // earlier veil is gone. Bundle ink follows the committed fold so a moving
 // camera never fades it before the individual relations return.
 type LullWeightedGuide = GuideCurve & Readonly<{ weight: number }>;
-// D085-S4 BEGIN: the active visual weights are taken only from replaced sources.
+// The active visual weights are taken only from replaced sources.
 export function lullVisibleBundleWeights(pairs: readonly LullOverviewPairFold[]): ReadonlyMap<string, number> {
   return new Map(pairs.filter(pair => pair.relationIds.length)
     .map(pair => [pair.letters, pair.relationIds.length]));
 }
-// D085-S4 END
 const LULL_ZOOM_FADE_BEGIN = 2.15;
 const LULL_ZOOM_FADE_END = 2.5;
 /** The fitted-wheel scale of the current camera: the projected wheel diameter
@@ -59,18 +58,18 @@ export function lullOverviewAggregated(view: ProductView, width: number, height:
   if (factor >= 2.4) return false;
   return previous;
 }
-// D085-S4 BEGIN: disabling semantic zoom releases every folded stroke at the
+// Disabling semantic zoom releases every folded stroke at the
 // next refresh; the guide layer then has no active bundle ink at any scale.
 export function lullOverviewMode(semanticZoom: boolean, view: ProductView,
   width: number, height: number, previous: boolean): boolean {
   return semanticZoom && lullOverviewAggregated(view, width, height, previous);
 }
 // D085-S4 END
-// D085-S4 END
 
 export function mountTopologyGuides(host: HTMLElement, view: ProductView,
-  guides: readonly GuideCurve[], activeLullPairs?: () => readonly LullOverviewPairFold[]): { destroy(): void } {
-  if (!guides.length || !view.projectPoint) return { destroy() {} };
+  guides: readonly GuideCurve[], activeLullPairs?: () => readonly LullOverviewPairFold[]): { destroy(): void; invalidate(): void } {
+  // D085-S4 BEGIN: the page invalidates this live source after every committed fold.
+  if (!guides.length || !view.projectPoint) return { destroy() {}, invalidate() {} };
   if (guides.some(guide => guide.semantic !== false || !guide.id))
     throw new Error('Topology guide must be non-semantic');
   // D085-S5 BEGIN: source-ID routes stay in the layout contract but cannot
@@ -88,8 +87,9 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     pointerEvents: 'none', zIndex: '1' });
   host.append(canvas);
   const context = canvas.getContext('2d');
-  if (!context) { canvas.remove(); return { destroy() {} }; }
+  if (!context) { canvas.remove(); return { destroy() {}, invalidate() {} }; }
   let frame = 0;
+  let destroyed = false;
   let settleTimer: number | null = null;
   // D085-S5 BEGIN: sample guides across all pearls during motion, then restore
   // the density's deterministic guide budget after the camera settles.
@@ -103,19 +103,18 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, width, height);
-    // D085-S4 BEGIN: the committed share of the Llull semantic zoom, the
+    // The committed share of the Llull semantic zoom, the
     // heaviest bundle (which sets the width/opacity scale of all of them) and whether
     // this is the flat view — the flat bundles sit at z=0, the lifted ones at their
     // offset-class tables, so the lifted view styles its bundles lighter and keeps
     // its four tables readable.
     const lullZoom = guides.some(guide => guide.kind === 'lull-pair-bundle');
-    // D085-S4 BEGIN: the route's committed fold owns bundle visibility. A camera
+    // The route's committed fold owns bundle visibility. A camera
     // move cannot fade an aggregate before its source strokes are released.
     const activePairs = activeLullPairs?.() ?? [];
     const activeWeights = lullVisibleBundleWeights(activePairs);
     const overview = activeLullPairs ? (activePairs.length ? 1 : 0)
       : lullZoom ? lullOverviewFade(view, width, height) : 0;
-    // D085-S4 END
     const flatView = guides.some(guide => guide.kind === 'lull-pair-bundle'
       && guide.points.every(point => !point.z));
     let bundleMax = 0;
@@ -125,7 +124,6 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
         bundleMax = Math.max(bundleMax, activeLullPairs ? active ?? 0
           : (guide as LullWeightedGuide).weight);
       }
-    // D085-S4 END
     context.strokeStyle = 'rgba(180,190,210,.22)';
     context.lineWidth = 0.75;
     // D085-S5 BEGIN: route hints have no eligibility token at this surface; never
@@ -240,6 +238,7 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     // D085-S5 END
   };
   const schedule = (motion = false) => {
+    if (destroyed) return;
     if (motion) interacting = true;
     if (!frame) frame = requestAnimationFrame(draw);
     if (settleTimer !== null) window.clearTimeout(settleTimer);
@@ -260,6 +259,8 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
   const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(() => schedule()) : null;
   resize?.observe(host);
   schedule();
-  return { destroy() { abort.abort(); resize?.disconnect(); if (frame) cancelAnimationFrame(frame);
-    if (settleTimer !== null) window.clearTimeout(settleTimer); canvas.remove(); } };
+  return { invalidate() { if (!destroyed && !frame) frame = requestAnimationFrame(draw); },
+    destroy() { destroyed = true; abort.abort(); resize?.disconnect(); if (frame) cancelAnimationFrame(frame);
+      if (settleTimer !== null) window.clearTimeout(settleTimer); canvas.remove(); } };
+  // D085-S4 END
 }
