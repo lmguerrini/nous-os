@@ -108,6 +108,9 @@ export type DistinctSubsetUpdate = {
     readonly radiusPx?: number | undefined; readonly haloRadiusPx?: number | undefined }>;
   // D082-A-NODES END
   readonly edgeEntries: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
+  // D086-F1 BEGIN: whether the revised subset is a Lab scene whose native discs follow the canvas core.
+  readonly nativeNodeSizeLaw?: boolean;
+  // D086-F1 END
 };
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 /** Parsed channel triples, memoised per colour string: the hot loops meet the same handful of

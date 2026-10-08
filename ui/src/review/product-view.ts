@@ -73,6 +73,9 @@ import { clipNeuralCompletaScreenSegment, neuralCompletaFirstSceneScreen } from 
 import { nonNeuralCompletaScreenDensities } from './non-neural-completa-fit.ts';
 // D082-A-VEIL2 END
 // D082-A-NODES BEGIN
+// D086-F1 BEGIN
+import { labNativeSizeLawApplies } from "../render-common/native-node-law.ts";
+// D086-F1 END
 import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta } from "../render-common/dense-node-scale.ts";
 import type { DenseEdgeScreenSegment } from '../render-common/dense-node-scale.ts';
 // D082-A-VEIL BEGIN
@@ -1831,6 +1834,10 @@ export const createProductView: CreateProductView = async (input) => {
       morphologyLanguage: "distinct" as const,
       nativeLabels: false,
       windowGeometryFromAnchors: true,
+      // D086-F1 BEGIN
+      ...(labNativeSizeLawApplies(input.labTopology, input.labIndra ?? false, input.data.nodes.length, state.visible.size)
+        ? { nativeNodeSizeLaw: true } : {}),
+      // D086-F1 END
       ...(containers ? { containers } : {}),
       emphasisIds: emphasis,
       appearance,
@@ -2255,6 +2262,9 @@ export const createProductView: CreateProductView = async (input) => {
     // D085-S3 BEGIN: moving native law skeletons read semantic ranks and hierarchy
     // independently of the Indra-only drawing containers.
     const nextOverlay: DistinctSubsetUpdate = { input: morphologyInput, geometry, nodeEntries, edgeEntries,
+      // D086-F1 BEGIN
+      nativeNodeSizeLaw: presentation.nativeNodeSizeLaw === true,
+      // D086-F1 END
       ...(input.labTopology && input.labTopology !== 'natural' ? {
         labLevels: nativeLawLevels(nextContainers),
         labRelationRanks: new Map(nextEdges.map(edge => [edge.id, {
@@ -2267,6 +2277,9 @@ export const createProductView: CreateProductView = async (input) => {
     // entries before its canvas draw threw. The old geometry hides any newly introduced ids.
     const restoreOverlay: DistinctSubsetUpdate = {
       input: oldScene.morphologyInput, geometry: oldScene.geometry,
+      // D086-F1 BEGIN
+      nativeNodeSizeLaw: oldScene.presentation.nativeNodeSizeLaw === true,
+      // D086-F1 END
       // D085-S3 BEGIN
       ...(input.labTopology && input.labTopology !== 'natural' ? {
         labLevels: nativeLawLevels(layoutContainers),

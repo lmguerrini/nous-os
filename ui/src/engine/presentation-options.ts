@@ -138,6 +138,10 @@ export type PresentationOptions = {
   readonly nativeLabels?: boolean;
   readonly windowGeometryFromAnchors?: boolean;
   readonly appearance?: AppearanceOptions;
+  // D086-F1 BEGIN
+  /** Lab scenes in the native node tier: the GPU disc takes the radius the morphology canvas draws. */
+  readonly nativeNodeSizeLaw?: boolean;
+  // D086-F1 END
 };
 /** Convert the review tint into the token colour space used by the 3D renderer. */
 export function tintToken(srgb: readonly [number, number, number]) {
