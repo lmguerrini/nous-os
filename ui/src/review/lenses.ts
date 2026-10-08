@@ -83,7 +83,9 @@ export function renderLensPopover(host: HTMLElement, register: LensRegister | nu
     return;
   }
   const reading = register.reading_mode;
-  add("h3", "Lettura attiva");
+  // D085-S6 BEGIN: the control's user-visible name is Connessione.
+  add("h3", "Connessione attiva");
+  // D085-S6 END
   add("p", `${reading.label} · predefinita`);
   add("p", reading.meaning);
   add("p", `Perché predefinita: ${reading.why_default}`);

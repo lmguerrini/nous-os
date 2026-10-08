@@ -2736,6 +2736,10 @@ function flowProjectionAnchors(geometry: MorphologyGeometry,
  * them, on the overlay's own 2D context; the base scene pass should run with
  * `style.interaction.flowLayer = "separate"` so the highlights are not drawn twice.
  */
+// D085-S6: the native 3D beam's clock sampler lives with the shared clock it reads
+// (`nativeBeamElapsedSample` in render-common/flow.ts); the canvas layer keeps drawing
+// from `flowNow()` directly, as before.
+
 export function drawFlowLayer(context: CanvasRenderingContext2D, geometry: MorphologyGeometry,
   project: (point: Coordinates) => ProjectedPoint, style: MorphologyCanvasStyle,
   appearance: AppearanceOptions = DEFAULT_APPEARANCE, projection: "2d" | "3d" = "2d"): void {

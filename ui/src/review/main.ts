@@ -586,7 +586,9 @@ const toolbarSections = new Map<HTMLElement, HTMLDetailsElement>();
 function installToolbarSections(): void {
   const labels = new Map<string, string>([
     ['projection', 'Rendering'], ['view-presets', 'Orientamento'], ['morphology', 'Morfologia'],
-    ['topology', 'Topologia'], ['indra', 'Indra'], ['reading', 'Lettura'], ['v2-relation-control', 'Relazioni'],
+    // D085-S6 BEGIN: the reading group is user-named Connessione; the axis key stays "reading".
+    ['topology', 'Topologia'], ['indra', 'Indra'], ['reading', 'Connessione'], ['v2-relation-control', 'Relazioni'],
+    // D085-S6 END
     ['density-control', 'Densità'], ['environment-control', 'Ambiente'], ['appearance-group', 'Aspetto'],
   ]);
   const controls = get<HTMLElement>('toolbar-controls');

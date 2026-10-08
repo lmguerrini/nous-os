@@ -120,7 +120,9 @@ export function renderLullPanel(host: HTMLElement, model: LullPanelModel): void 
     + `${model.summary.triples} triple della Quarta Figura: ${model.summary.triplesSupported} con testimoni \u00b7 spigoli generati: ${model.summary.generatedGraphEdges}.`;
   const reading = doc.createElement('p');
   reading.className = 'lull-panel__reading';
-  reading.textContent = `Lettura attiva: ${model.reading}.`;
+  // D085-S6 BEGIN: the control's user-visible name is Connessione.
+  reading.textContent = `Connessione attiva: ${model.reading}.`;
+  // D085-S6 END
   const note = doc.createElement('p');
   note.className = 'lull-panel__note';
   note.textContent = `${model.note} Livello ipotesi: ${model.hypothesesShown ? 'visibile' : 'nascosto (default)'}.`;

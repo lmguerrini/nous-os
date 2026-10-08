@@ -15,9 +15,11 @@ import type { LullPanelModel } from './lull-panel.ts';
 import { createLullPanel, renderLullPanel } from './lull-panel.ts';
 
 export const LULL_INQUIRY_SECTION_TITLE = 'Tabella delle combinazioni';
-export const LULL_INQUIRY_CLOSED_HINT = 'Sezione chiusa di default: apri per costruire la tavola d\u2019inchiesta sui nodi visibili e sulla lettura attiva.';
+// D085-S6 BEGIN: the control's user-visible name is Connessione.
+export const LULL_INQUIRY_CLOSED_HINT = 'Sezione chiusa di default: apri per costruire la tavola d\u2019inchiesta sui nodi visibili e sulla connessione attiva.';
 export const LULL_INQUIRY_HYPOTHESIS_LABEL = 'Mostra ipotesi — combinazioni senza evidenza; livello separato, mai conteggiate come spigoli del grafo';
-export const LULL_INQUIRY_HIGHLIGHT_TITLE = 'Evidenzia nel grafo esattamente le relazioni reali elencate dalla riga; restano visibili solo quelle che la lettura e la densit\u00e0 correnti gi\u00e0 disegnano.';
+export const LULL_INQUIRY_HIGHLIGHT_TITLE = 'Evidenzia nel grafo esattamente le relazioni reali elencate dalla riga; restano visibili solo quelle che la connessione e la densit\u00e0 correnti gi\u00e0 disegnano.';
+// D085-S6 END
 
 /** The inquiry-table selection the page highlights: a pair compartment or a
  * Fourth-Figure triple with the exact real relation IDs its row lists. */
@@ -195,7 +197,9 @@ export class LullInquiryMount {
                 this.pendingSignature = null;
                 this.inquiry = inquiry;
                 this.renderModel();
-                if (this.statusLine) this.statusLine.textContent = `Tavola costruita sui ${input.visibleIds.size} nodi visibili della densit\u00e0 corrente \u00b7 lettura ${input.reading}.`;
+                // D085-S6 BEGIN: the control's user-visible name is Connessione.
+                if (this.statusLine) this.statusLine.textContent = `Tavola costruita sui ${input.visibleIds.size} nodi visibili della densit\u00e0 corrente \u00b7 connessione ${input.reading}.`;
+                // D085-S6 END
             }).catch(error => {
                 if (generation !== this.requestGeneration || !this.active || this.key !== cacheKeyOf(input)) return;
                 this.pendingSignature = null;
@@ -214,7 +218,9 @@ export class LullInquiryMount {
             return;
         }
         this.renderModel();
-        this.statusLine.textContent = `Tavola costruita sui ${input.visibleIds.size} nodi visibili della densit\u00e0 corrente \u00b7 lettura ${input.reading}.`;
+        // D085-S6 BEGIN: the control's user-visible name is Connessione.
+        this.statusLine.textContent = `Tavola costruita sui ${input.visibleIds.size} nodi visibili della densit\u00e0 corrente \u00b7 connessione ${input.reading}.`;
+        // D085-S6 END
     }
 
     private renderModel(): void {

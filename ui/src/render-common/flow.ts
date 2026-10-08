@@ -214,6 +214,47 @@ export function flowLayerShouldRun(state: {
   return state.allowed && !state.hidden && state.animatedEdges > 0;
 }
 
+// D085-S6 BEGIN: the native 3D travelling beam samples the SAME shared clock the canvas overlay
+// loop advances, so the two beams suspend and resume together (fix 7).
+/** Elapsed sample meaning "suspended": the shader draws its quiet uniform profile, never a frozen bump. */
+export const NATIVE_BEAM_SUSPENDED_MS = -1;
+/** How long the native beam stays live after the shared clock last advanced: about three overlay
+ * frames, so a clock that is merely between ticks never reads as stopped. */
+export const NATIVE_BEAM_LIVE_GRACE_MS = 120;
+/** While the shared clock is stopped but every control still allows the beam, the native driver
+ * re-checks at this cadence before giving up (it renders nothing unless the clock advances). */
+export const NATIVE_BEAM_WATCH_MS = 300;
+/** The watch budget after the last live sample: bounded, so a page with no visible exploratory
+ * relation is back to zero timers well within any idle audit (idle-zero contract). */
+export const NATIVE_BEAM_WATCH_BUDGET_MS = 4000;
+
+/** The native 3D beam's elapsed sample on one render. Pure: the caller owns the clock memory.
+ * Camera motion, disallowed motion (toggle, reduced motion, intensity or speed at zero) suspend
+ * immediately, exactly as the canvas overlay clears; a shared clock that stopped advancing
+ * suspends after the grace window, so the resting frame never keeps a frozen bright bump. */
+export function nativeBeamElapsedSample(input: {
+  readonly clockMs: number;
+  readonly wallMs: number;
+  readonly cameraMoving: boolean;
+  readonly motionAllowed: boolean;
+  readonly lastClockMs: number;
+  readonly liveUntilWallMs: number;
+  readonly graceMs?: number;
+}): { readonly elapsedMs: number; readonly clockMs: number; readonly liveUntilWallMs: number } {
+  if (input.cameraMoving || !input.motionAllowed) {
+    return { elapsedMs: NATIVE_BEAM_SUSPENDED_MS, clockMs: input.lastClockMs, liveUntilWallMs: input.liveUntilWallMs };
+  }
+  const graceMs = input.graceMs ?? NATIVE_BEAM_LIVE_GRACE_MS;
+  const advanced = input.clockMs > input.lastClockMs;
+  const liveUntilWallMs = advanced ? input.wallMs + graceMs : input.liveUntilWallMs;
+  return {
+    elapsedMs: input.wallMs <= liveUntilWallMs ? input.clockMs : NATIVE_BEAM_SUSPENDED_MS,
+    clockMs: input.clockMs,
+    liveUntilWallMs,
+  };
+}
+// D085-S6 END
+
 // Module clock: driven by the product view's animation loop, read by the morphology canvas while it
 // draws. Kept here so both the 2D and 3D canvas layers share one time source without adding renderer
 // imports, and so the canvas can draw the static fallback when the loop is intentionally stopped.
