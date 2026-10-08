@@ -259,7 +259,7 @@ test('both legend mounts are wired to the lab taxonomy', async () => {
   assert.match(main, /const topology = 'mode' in geometry \? null : lawTopology\(geometry\.topology\);/);
   assert.match(main, /refreshFlowLegends\(\);\n  \/\/ D084-W3-LABELS END\n  \/\/ D082-B-NOTICE BEGIN/);
   assert.match(main, /appendFlowLegend\(details, activePalette\(\), axes\.organization === "indra" \? "indra" : "natural",\n    'mode' in geometry \? null : lawTopology\(geometry\.topology\)\);/);
-  assert.match(page, /appendFlowLegend\(host, this\.palette, this\.axes\.organization === 'indra' \? 'indra' : 'natural', this\.topology\);/);
+  assert.match(page, /appendFlowLegend\(host, this\.activePalette\(\), this\.axes\.organization === 'indra' \? 'indra' : 'natural', this\.topology\);/);
   // The classification entries wrap, so the fullscreen card stays a compact corner overlay.
   assert.match(css, /\.flow-legend-entry\[data-topology-classification\] \{[^}]*max-width:340px/);
 });

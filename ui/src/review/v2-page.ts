@@ -6500,7 +6500,7 @@ export class V2Page {
         host.append(search);
         // D084-W3-LABELS BEGIN: the panel «Legenda» carries the lab classification while a lab
         // topology governs the view; Natural and the legacy analytical view keep the plain legend.
-        appendFlowLegend(host, this.palette, this.axes.organization === 'indra' ? 'indra' : 'natural', this.topology);
+        appendFlowLegend(host, this.activePalette(), this.axes.organization === 'indra' ? 'indra' : 'natural', this.topology);
         // D084-W3-LABELS END
         // D-073 B8/B10e: the typed pipeline's structural pick controls. The legend owns its own
         // visibility (hidden until a structural relation is actually visible); without the flag the

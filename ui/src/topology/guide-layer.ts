@@ -24,15 +24,16 @@ export function lullVisibleBundleWeights(pairs: readonly LullOverviewPairFold[])
     .map(pair => [pair.letters, pair.relationIds.length]));
 }
 // D086-F3 BEGIN: Llull guides and bundles take their hue from the active palette's
-// aggregate token and keep the approved brightness and opacity. The levels are the
-// luma of the former fixed inks; a neutral palette therefore draws a pure grey
-// (R = G = B) and only a coloured palette tints the structure.
-export const LULL_INK_LEVEL = { strong: 214, faint: 189, bundle: 210 } as const;
+// aggregate token and keep the approved opacity, with a luma that never exceeds the
+// former fixed inks: the levels are those lumas rounded down and every channel is
+// floored. A neutral palette therefore draws a pure grey (R = G = B) and only a
+// coloured palette tints the structure.
+export const LULL_INK_LEVEL = { strong: 213, faint: 189, bundle: 210 } as const;
 export function lullInk(palette: PaletteValues, level: number, alpha: string): string {
   const [red, green, blue] = hexRgb(palette.aggregate).map(channel => channel * 255) as [number, number, number];
   const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
   const channels = luma > 0
-    ? [red, green, blue].map(channel => Math.min(255, Math.round(channel * level / luma)))
+    ? [red, green, blue].map(channel => Math.min(255, Math.floor(channel * level / luma + 1e-9)))
     : [level, level, level];
   return `rgba(${channels.join(',')},${alpha})`;
 }
