@@ -78,7 +78,9 @@ import type { Render3fTypedInput, TypedProjectionGeometry } from "#render3f/pick
 import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts";
 // D082-B-GPUFLOOR END
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
-import { QualityLadder, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+// D085-S3 BEGIN
+import { QualityLadder, labDrawPolicy, labMainSegmentRanges, labPixelRatio, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+// D085-S3 END
 
 /** How long the camera must be still before the derived geometry returns to full quality. */
 const DERIVED_STILL_MS = 200;
@@ -268,6 +270,10 @@ export function mount(
     options.presentation?.morphologyLanguage === "distinct" && scene.nodes.length < DENSE_SCENE_THRESHOLD
       ? 1 : pixelRatio;
   let currentRenderDpr = renderPixelRatio(live.scene, devicePixelRatio);
+  // D085-S3 BEGIN
+  let fullRenderDpr = currentRenderDpr;
+  let renderWidth = dimensions.width, renderHeight = dimensions.height;
+  // D085-S3 END
   const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
   const worldFramingSubjects = sceneCameraFramingSubjects(live.scene);
   const rig = new CameraRig(
@@ -275,7 +281,9 @@ export function mount(
     live.scene.camera,
     dimensions.width,
     dimensions.height,
-    devicePixelRatio,
+    // D085-S3 BEGIN
+    currentRenderDpr,
+    // D085-S3 END
     worldFramingSubjects,
   );
 
@@ -358,11 +366,13 @@ export function mount(
   updateField(renderer, live.scene);
 
   const labels = new LabelOverlayController(container);
+  // D085-S3 BEGIN
   let distinct = typedInput === undefined && options.presentation?.morphologyLanguage === "distinct"
     ? mountDistinctOverlay(container, live.scene, options.morphology, options.presentation, (point) => ({
       ...rig.graphToViewport(point), scale: rig.sizeScaleAt(point),
-    }))
+    }), () => currentRenderDpr)
     : null;
+  // D085-S3 END
   // D082-A-NODES BEGIN
   // The native filament is visible at Completa size beneath the structure canvas. Its alpha
   // attribute must receive the same per-edge factor as the canvas, including after LOD updates.
@@ -472,6 +482,22 @@ export function mount(
   let typedLabelBudget: number | undefined = initialScope?.labelBudget;
   let typedLabelOverlay: ProjectionLabelOverlay | null = null;
   let typedFittedCameraDistance: number | null = null;
+  // D085-S3 BEGIN: an empty derived layer needs no full-viewport compositor
+  // surface. Stellar's starfield counts as content even without guides.
+  const syncVisualsCanvas = (): void => {
+    const layer = visuals, overlay = layer?.canvas;
+    if (!layer || !overlay) return;
+    const witness = layer.readWitness();
+    const empty = derivedMorphology !== 'stellar' && witness.containerIds.length === 0
+      && witness.curveIds.length === 0 && witness.fieldIds.length === 0;
+    const wasHidden = overlay.style.display === 'none';
+    overlay.style.display = empty ? 'none' : '';
+    if (empty) {
+      overlay.setAttribute('width', '0');
+      overlay.setAttribute('height', '0');
+    } else if (wasHidden) layer.draw();
+  };
+  // D085-S3 END
   const acceptVisuals = (input: Render3fTypedInput): void => {
     if (visuals === null) {
       visuals = createProjectionVisualsLayer(container, "3d",
@@ -480,6 +506,9 @@ export function mount(
       const labelLayer = container.querySelector("[data-render3f-labels]");
       if (labelLayer && visuals.canvas) labelLayer.before(visuals.canvas);
     } else visuals.updateVisibleSubset(input);
+    // D085-S3 BEGIN
+    syncVisualsCanvas();
+    // D085-S3 END
   };
   if (typedPicker) {
     world.visible = false;
@@ -504,12 +533,15 @@ export function mount(
       requestedMainEdges = typedPicker.semanticIncidence.filter(edge => {
         if ((styled?.edgeStyle[edge.id]?.alpha ?? 1) === 0) return false;
         const sourceMark = styled?.nodeStyle[edge.source], targetMark = styled?.nodeStyle[edge.target];
-        const level = styled?.edgeStyle[edge.id]?.hierarchyLevel;
+        // D085-S3 BEGIN: a domain or upper-level endpoint keeps its real relation in the moving skeleton.
+        const endpointLevel = Math.min(Number(sourceMark?.level ?? Infinity), Number(targetMark?.level ?? Infinity));
+        const level = styled?.edgeStyle[edge.id]?.hierarchyLevel ?? endpointLevel;
         return mainRelation({ attested: true,
           selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
           sourceHub: sourceMark?.type === 'hub', targetHub: targetMark?.type === 'hub',
           sourceDomain: sourceMark?.type === 'domain', targetDomain: targetMark?.type === 'domain',
           ...(typeof level === 'number' ? { hierarchyLevel: level } : {}) });
+        // D085-S3 END
       }).length;
     } else {
       requestedNodes = live.buffers.nodes.ids.length;
@@ -527,6 +559,114 @@ export function mount(
   };
   refreshPresentedCounts();
   // D082-A-PERF END
+  // D085-S3 BEGIN: resident Lab interaction proxies retain only actual anchor nodes and
+  // whole morphology segments belonging to real upper-level relations. They are rebuilt
+  // on a visibility revision, never on a camera frame; released geometry is untouched.
+  const labProxy = new THREE.Group();
+  labProxy.visible = false;
+  threeScene.add(labProxy);
+  let labProxyDirty = true;
+  let labProxyReady = false;
+  let labProxyNodes = 0;
+  let labProxyEdges = 0;
+  const labDense = (): boolean => typedPicker !== null && requestedNodes >= DENSE_SCENE_THRESHOLD;
+  const positionKey = (point: Coordinates): string =>
+    `${point.x.toFixed(5)}:${point.y.toFixed(5)}:${point.z.toFixed(5)}`;
+  const clearLabProxy = (): void => {
+    for (const child of [...labProxy.children]) {
+      labProxy.remove(child);
+      if (child.userData.ownedGeometry && child instanceof THREE.Mesh) child.geometry.dispose();
+    }
+    labProxyNodes = 0;
+    labProxyEdges = 0;
+    labProxyReady = false;
+    labProxyDirty = true;
+  };
+  const rebuildLabProxy = (): void => {
+    clearLabProxy();
+    if (!labDense() || !typedPicker || !currentStyled) return;
+    if (typedLayer.preparedCounts().semanticEdges < requestedSemanticEdges) return;
+    const anchors = new Set(typedPicker.geometry.nodes.flatMap(point => {
+      if (point.pick.kind !== 'node') return [];
+      const style = currentStyled!.nodeStyle[point.pick.id];
+      return style && (Number(style.level) <= 2 || style.type === 'hub' || style.type === 'domain')
+        ? [positionKey(point.position)] : [];
+    }));
+    const main = new Set(typedPicker.semanticIncidence.flatMap(edge => {
+      const sourceStyle = currentStyled!.nodeStyle[edge.source], targetStyle = currentStyled!.nodeStyle[edge.target];
+      const level = Math.min(Number(sourceStyle?.level ?? Infinity), Number(targetStyle?.level ?? Infinity));
+      return (currentStyled!.edgeStyle[edge.id]?.alpha ?? 1) !== 0 && mainRelation({
+        attested: true, selectedIncident: !!(emphasisIds?.has(edge.source) || emphasisIds?.has(edge.target)),
+        sourceHub: sourceStyle?.type === 'hub', targetHub: targetStyle?.type === 'hub',
+        sourceDomain: sourceStyle?.type === 'domain', targetDomain: targetStyle?.type === 'domain',
+        hierarchyLevel: level,
+      }) ? [`semantic:${edge.id}`] : [];
+    }));
+    const drawnMain = new Set<string>();
+    const matrix = new THREE.Matrix4(), tint = new THREE.Color(), center = new THREE.Vector3();
+    for (const child of typedLayer.group.children) {
+      if (child instanceof THREE.InstancedMesh && child.name === 'typed-round-nodes') {
+        const selected: number[] = [];
+        for (let index = 0; index < child.count; index++) {
+          child.getMatrixAt(index, matrix);
+          center.setFromMatrixPosition(matrix);
+          if (anchors.has(positionKey(center))) selected.push(index);
+        }
+        if (!selected.length) continue;
+        const proxy = new THREE.InstancedMesh(child.geometry, child.material, selected.length);
+        proxy.name = 'lab-anchor-proxy';
+        proxy.frustumCulled = false;
+        selected.forEach((index, output) => {
+          child.getMatrixAt(index, matrix);
+          proxy.setMatrixAt(output, matrix);
+          if (child.instanceColor) { child.getColorAt(index, tint); proxy.setColorAt(output, tint); }
+        });
+        proxy.instanceMatrix.needsUpdate = true;
+        if (proxy.instanceColor) proxy.instanceColor.needsUpdate = true;
+        labProxy.add(proxy);
+        labProxyNodes += selected.length;
+      } else if (child instanceof THREE.Mesh && child.name === 'typed-semantic-morphology') {
+        const ends = child.userData.segmentEnds as number[] | undefined;
+        const ids = child.userData.segmentEdgeIds as string[] | undefined;
+        const positionAttribute = child.geometry.getAttribute('position');
+        if (!ends || !ids || !positionAttribute || positionAttribute.itemSize !== 3) continue;
+        const selected = labMainSegmentRanges(ends, ids, main);
+        for (const id of selected.relationIds) drawnMain.add(id);
+        if (!selected.vertices) continue;
+        const vertices = new Float32Array(selected.vertices * 3);
+        let offset = 0;
+        const raw = positionAttribute.array as Float32Array;
+        for (const [start, end] of selected.ranges) {
+          vertices.set(raw.subarray(start * 3, end * 3), offset);
+          offset += (end - start) * 3;
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+        const proxy = new THREE.Mesh(geometry, child.material);
+        proxy.name = 'lab-main-relation-proxy';
+        proxy.userData.ownedGeometry = true;
+        proxy.frustumCulled = false;
+        labProxy.add(proxy);
+      }
+    }
+    labProxyEdges = drawnMain.size;
+    labProxyReady = labProxyNodes > 0
+      && typedLayer.preparedCounts().semanticEdges >= requestedSemanticEdges
+      && (requestedMainEdges === 0 || labProxyEdges > 0);
+    labProxyDirty = false;
+  };
+  const applyLabPolicy = (stage: 1 | 2 | 3 | 4): void => {
+    const reduced = labDense() && labProxyReady && stage < 3;
+    const policy = labDrawPolicy(stage);
+    labProxy.visible = reduced;
+    for (const child of labProxy.children)
+      child.visible = child.name !== 'lab-anchor-proxy' || policy.nodes === 'anchors';
+    for (const child of typedLayer.group.children) {
+      if (child.name === 'typed-round-nodes') child.visible = !reduced || policy.nodes === 'all';
+      else if (child.name === 'typed-semantic-morphology') child.visible = !reduced;
+    }
+  };
+  // D085-S3 END
   let destroyed = false;
   const perfMarksEnabled = new URLSearchParams(location.search).has('perfmarks');
   let labelTimer: ReturnType<typeof setTimeout> | undefined;
@@ -660,12 +800,21 @@ export function mount(
         publishPresentedFrame();
       }
     }, 160);
+    // D085-S3 BEGIN: optional per-layer CPU submission marks for performance traces.
+    if (perfMarksEnabled) performance.mark('d085:webgl:start');
     renderer.render(threeScene, rig.camera);
+    if (perfMarksEnabled) { performance.mark('d085:webgl:end');
+      performance.measure('d085:webgl', 'd085:webgl:start', 'd085:webgl:end'); }
+    if (perfMarksEnabled) performance.mark('d085:overlays:start');
+    // D085-S3 END
     if (!typedPicker && (ladder.state.stage === 4 || live.scene.nodes.length < DENSE_SCENE_THRESHOLD)) distinct?.draw();
     // D082-A-PERF BEGIN: the GPU layer owns the structural moving frame.
     // Dense projection visuals are decorative and their canvas projection is
     // too costly to repeat for every wheel event; restore it at stage four.
-    if (!typedPicker || requestedNodes < DENSE_SCENE_THRESHOLD || ladder.state.stage === 4) visuals?.draw();
+    // D085-S3 BEGIN: the structural GPU tier moves; the optional projected
+    // canvas is restored once, at full quality, after the camera stops.
+    if (!typedPicker || ladder.state.stage === 4) visuals?.draw();
+    // D085-S3 END
     // D082-A-PERF END
     // D081-P3b BEGIN: labels live on the typed overlay and follow the camera.
     if (!typedMoving && typedBundleLabels.length && visuals?.canvas) {
@@ -684,6 +833,10 @@ export function mount(
       }
     }
     // D081-P3b END
+    // D085-S3 BEGIN
+    if (perfMarksEnabled) { performance.mark('d085:overlays:end');
+      performance.measure('d085:overlays', 'd085:overlays:start', 'd085:overlays:end'); }
+    // D085-S3 END
     publishPresentedFrame();
     if (perfMarksEnabled) { performance.mark('d082:render3d:end'); performance.measure('d082:render3d', 'd082:render3d:start', 'd082:render3d:end'); }
   };
@@ -693,18 +846,28 @@ export function mount(
     const stage = ladder.state.stage;
     const submitted = typedPicker ? typedLayer.submittedCounts() : null;
     const prepared = typedPicker ? typedLayer.preparedCounts() : null;
-    const drawnNodes = submitted ? submitted.nodes
+    // D085-S3 BEGIN: the typed layer does not own the resident interaction proxies.
+    const proxyActive = labDense() && labProxyReady && labProxy.visible;
+    const drawnNodes = submitted ? submitted.nodes + (proxyActive && stage === 1 ? labProxyNodes : 0)
       : world.visible && (nodeResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedNodes, nodeResources.mesh.visible ? nodeResources.geometry.instanceCount : requestedNodes) : 0;
-    const drawnSemantic = submitted ? submitted.semanticEdges
+    const drawnSemantic = submitted ? submitted.semanticEdges + (proxyActive ? labProxyEdges : 0)
       : world.visible && (filamentResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedSemanticEdges, filamentResources.mesh.visible ? filamentResources.geometry.instanceCount : requestedSemanticEdges) : 0;
+    // D085-S3 END
     const drawnVisual = submitted?.visualEdges ?? 0;
     const scope = currentStyled ? readProjectionStyle(currentStyled) : null;
+    // D085-S3 BEGIN: the phase is complete only after all requested resident ranges and decor draw.
+    const activePixelRatio = renderer.getPixelRatio();
+    const allDrawn = drawnNodes >= requestedNodes && drawnSemantic >= requestedSemanticEdges
+      && drawnVisual >= requestedVisualEdges && labelTimer === undefined
+      && activePixelRatio === fullRenderDpr;
     return {
       view: `${options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
-      quality: ladder.state.moving ? 'movimento' : stage === 4 ? 'completa' : 'recupero',
+      quality: ladder.state.moving ? 'movimento' : stage === 4 && allDrawn ? 'completa' : 'recupero',
       ladder: stage,
+      pixelRatio: activePixelRatio,
+      fullPixelRatio: fullRenderDpr,
       nodes: { required: requestedNodes, loaded: prepared?.nodes ?? requestedNodes, drawn: drawnNodes },
       mainEdges: { required: requestedMainEdges, loaded: Math.min(requestedMainEdges, prepared?.semanticEdges ?? requestedMainEdges),
         drawn: Math.min(requestedMainEdges, drawnSemantic) },
@@ -722,25 +885,70 @@ export function mount(
         elapsedMs: nativeBeamLastSampleMs === NATIVE_BEAM_SUSPENDED_MS ? null : Math.round(nativeBeamLastSampleMs) },
       // D085-S6 END
     } as const;
+    // D085-S3 END
   };
   const publishPresentedFrame = (): void => {
     const snapshot = readinessSnapshot();
-    // The draw boundary supplies counts. Two frames allow the submitted frame
-    // to pass the browser presentation boundary before the HUD can claim it.
     const revision = ++presentationRevision;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    // D085-S3 BEGIN: the stage-four renderer draw and settled label pass have
+    // both completed before this callback. One presentation tick avoids an
+    // extra GPU-bound frame on the path to the complete witness.
+    const publish = () => {
       if (!destroyed && revision === presentationRevision) presentRenderReadiness(snapshot);
-    }));
+    };
+    if (snapshot.ladder === 4 && snapshot.quality === 'completa') requestAnimationFrame(publish);
+    else requestAnimationFrame(() => requestAnimationFrame(publish));
+    // D085-S3 END
   };
   // D082-A-STALE END
-  typedLayer.setOnReady(renderFrame);
+  // D085-S3 BEGIN: finish the cached proxies only after the typed worker attaches whole ribbons.
+  typedLayer.setOnReady(() => {
+    rebuildLabProxy();
+    applyLabPolicy(ladder.state.stage);
+    renderFrame();
+  });
+  // D085-S3 END
+  // D085-S3 BEGIN: resize the Three buffer and the rig together, before the
+  // next draw. The ratio change shares that draw and schedules no extra frame.
+  const syncDrawingBuffer = (width: number, height: number): void => {
+    fullRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
+    const ratio = typedPicker ? labPixelRatio(ladder.state.stage, fullRenderDpr) : fullRenderDpr;
+    const ratioChanged = ratio !== renderer.getPixelRatio();
+    const sizeChanged = width !== renderWidth || height !== renderHeight;
+    if (!ratioChanged && !sizeChanged) return;
+    // setPixelRatio already resizes Three's current viewport. A second setSize
+    // is needed only when the CSS dimensions changed in the same turn.
+    if (ratioChanged) renderer.setPixelRatio(ratio);
+    if (sizeChanged) renderer.setSize(width, height, false);
+    rig.resize(width, height, ratio);
+    currentRenderDpr = ratio;
+    renderWidth = width;
+    renderHeight = height;
+  };
+  // D085-S3 END
   // D082-A-PERF BEGIN: three scheduled restores; no frame loop or scene rebuild at rest.
   const ladder = new QualityLadder(({ stage, moving }) => {
+    // D085-S3 BEGIN
+    syncDrawingBuffer(renderWidth, renderHeight);
+    // D085-S3 END
     typedMoving = stage < 4;
-    typedLayer.setQuality(stage >= 3 ? "full" : stage >= 2 ? "main" : "moving");
+    // D085-S3 BEGIN: stage three restores semantic ribbons; stage four restores visual relations.
+    if (stage < 4 && labProxyDirty) rebuildLabProxy();
+    typedLayer.setQuality(labDense() ? stage === 4 ? 'full' : stage === 3 ? 'main' : 'moving'
+      : stage >= 3 ? "full" : stage >= 2 ? "main" : "moving");
+    applyLabPolicy(stage);
+    // D085-S3 END
     visuals?.setQuality(stage >= 4 ? "full" : "moving", false);
-    if (visuals?.canvas && typedPicker && requestedNodes >= DENSE_SCENE_THRESHOLD)
+    // D085-S3 BEGIN: a hidden projected layer must not retain a full-screen
+    // composited bitmap during interaction. The stage-four draw restores it.
+    if (visuals?.canvas && typedPicker) {
       visuals.canvas.style.visibility = stage >= 4 ? "" : "hidden";
+      if (stage < 4) {
+        visuals.canvas.setAttribute('width', '0');
+        visuals.canvas.setAttribute('height', '0');
+      }
+    }
+    // D085-S3 END
     brainEnvelope?.setLod(stage >= 4 ? "full" : "moving");
     const suspendedLayers = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD
       ? ["[data-render3f-labels]", "[data-projection-labels]", "[data-morphology-canvas='distinct-3d']"]
@@ -840,7 +1048,9 @@ export function mount(
       return;
     }
     threeScene.add(world);
-    rig.resize(dimensions.width, dimensions.height, renderPixelRatio(live.scene, devicePixelRatio));
+    // D085-S3 BEGIN
+    rig.resize(dimensions.width, dimensions.height, currentRenderDpr);
+    // D085-S3 END
     renderFrame();
     requestAnimationFrame(renderWhileFiberConfigures);
   };
@@ -852,7 +1062,9 @@ export function mount(
     camera: rig.camera,
     frameloop: "never",
     size: { width: dimensions.width, height: dimensions.height, top: 0, left: 0 },
-    dpr: renderPixelRatio(live.scene, devicePixelRatio),
+    // D085-S3 BEGIN
+    dpr: currentRenderDpr,
+    // D085-S3 END
     onCreated: () => {
       renderFrame();
     },
@@ -864,7 +1076,9 @@ export function mount(
     fiberStore.setState({ camera: rig.camera });
     threeScene.add(world);
     threeScene.add(typedLayer.group);
-    rig.resize(dimensions.width, dimensions.height, renderPixelRatio(live.scene, devicePixelRatio));
+    // D085-S3 BEGIN
+    rig.resize(dimensions.width, dimensions.height, currentRenderDpr);
+    // D085-S3 END
     renderFrame();
   });
 
@@ -873,14 +1087,9 @@ export function mount(
       return;
     }
     const next = containerDimensions(container);
-    const nextDevicePixelRatio = requiredDevicePixelRatio();
-    const renderDpr = renderPixelRatio(live.scene, nextDevicePixelRatio);
-    if (renderDpr !== currentRenderDpr) {
-      renderer.setPixelRatio(renderDpr);
-      currentRenderDpr = renderDpr;
-    }
-    renderer.setSize(next.width, next.height, false);
-    rig.resize(next.width, next.height, renderDpr);
+    // D085-S3 BEGIN
+    syncDrawingBuffer(next.width, next.height);
+    // D085-S3 END
     fiberStore?.setState({
       size: { width: next.width, height: next.height, top: 0, left: 0 },
       viewport: fiberStore.getState().viewport,
@@ -909,14 +1118,10 @@ export function mount(
     live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
     brainEnvelope?.update(live.scene.nodes, live.scene.edges);
     refreshPresentedCounts();
-    const nextRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
-    if (nextRenderDpr !== currentRenderDpr) {
-      const nextDimensions = containerDimensions(container);
-      renderer.setPixelRatio(nextRenderDpr);
-      renderer.setSize(nextDimensions.width, nextDimensions.height, false);
-      rig.resize(nextDimensions.width, nextDimensions.height, nextRenderDpr);
-      currentRenderDpr = nextRenderDpr;
-    }
+    // D085-S3 BEGIN
+    const nextDimensions = containerDimensions(container);
+    syncDrawingBuffer(nextDimensions.width, nextDimensions.height);
+    // D085-S3 END
     if (distinct) {
       filamentResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
       nodeResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
@@ -981,6 +1186,9 @@ export function mount(
     setDerivedMorphology(morphology: ProjectionVisualsMorphology): void {
       derivedMorphology = morphology;
       visuals?.setMorphology(morphology);
+      // D085-S3 BEGIN
+      syncVisualsCanvas();
+      // D085-S3 END
       // D082-A-STALE BEGIN
       // A morphology mutation invalidates the previously complete visual state immediately.
       // This remains a renderer-side estimate, not compositor presentation evidence.
@@ -1035,7 +1243,10 @@ export function mount(
           typedLabelBudget = nextScope.labelBudget;
           derivedMorphology = nextScope.morphology;
         }
+        // D085-S3 BEGIN: release proxy geometry before its source buffers are replaced.
+        clearLabProxy();
         typedLayer.update(next.geometry, update.styled);
+        // D085-S3 END
         refreshPresentedCounts();
         // D081-P3b BEGIN
         updateBundleLabels(update);
@@ -1054,7 +1265,10 @@ export function mount(
           derivedMorphology = nextScope.morphology;
           visuals?.setMorphology(nextScope.morphology);
         }
+        // D085-S3 BEGIN
+        clearLabProxy();
         typedLayer.update(typedPicker.geometry, update.styled);
+        // D085-S3 END
         refreshPresentedCounts();
         // D081-P3b BEGIN
         updateBundleLabels(update);
@@ -1241,6 +1455,10 @@ export function mount(
       detachInteractions();
       labels.destroy();
       distinct?.destroy();
+      // D085-S3 BEGIN
+      clearLabProxy();
+      labProxy.removeFromParent();
+      // D085-S3 END
       typedLayer.dispose();
       brainEnvelope?.dispose();
       fiberRoot.unmount();

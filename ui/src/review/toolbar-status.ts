@@ -23,22 +23,47 @@ export type D081GraphStatus = {
 
 const count = (value: number): string => new Intl.NumberFormat("it-IT", { useGrouping: true }).format(Math.max(0, Math.trunc(value)));
 
+// D085-S3 BEGIN: the already installed renderer witness owns the 3D phase and percent.
+function renderer3dProgress(): { percent: number; quality: D081GraphStatus['quality'] } | null {
+  if (typeof window === 'undefined') return null;
+  const witness = (window as Window & { __d082?: {
+    render?: () => { view: string; quality: D081GraphStatus['quality'] } | null;
+    renderPercent?: () => number | null;
+  } }).__d082;
+  const readiness = witness?.render?.();
+  const percent = witness?.renderPercent?.();
+  if (!readiness?.view.includes('/3d/') || percent === null || percent === undefined) return null;
+  const bounded = Math.max(0, Math.min(100, Math.trunc(percent)));
+  return { percent: bounded,
+    quality: bounded === 100 ? 'completa' : readiness.quality === 'movimento' ? 'movimento' : 'recupero' };
+}
+// D085-S3 END
+
 /** Compact progress shown in the main status line only while requested quality is incomplete. */
 export function withRenderProgress(line: string, percent: number): string {
-  const base = line.replace(/ · Render \d+%$/, "");
-  const bounded = Math.max(0, Math.min(100, Math.trunc(percent)));
+  // D085-S3 BEGIN
+  const base = line.replace(/ · Render \d+%(?: · (?:Movimento|Recupero|Completa))?$/, "");
+  const renderer = renderer3dProgress();
+  const bounded = renderer?.percent ?? Math.max(0, Math.min(100, Math.trunc(percent)));
+  if (renderer) return `${base} · Render ${bounded}% · ${{ movimento: 'Movimento', recupero: 'Recupero', completa: 'Completa' }[renderer.quality]}`;
   return bounded < 100 ? `${base} · Render ${bounded}%` : base;
+  // D085-S3 END
 }
 
 /** Preserve the live readiness suffix when the graph status refreshes its base text. */
 export function preserveRenderProgress(line: string, current: string): string {
-  const match = current.match(/ · Render (\d+)%$/);
+  // D085-S3 BEGIN
+  const match = current.match(/ · Render (\d+)%(?: · (?:Movimento|Recupero|Completa))?$/);
+  // D085-S3 END
   return match ? withRenderProgress(line, Number(match[1])) : line;
 }
 
 /** Contract-backed status used by the toolbar and its expanded explanation panel. */
 export function formatD081GraphStatus(status: D081GraphStatus): { line: string; details: [string, string, string, string, string, string, string] } {
-  const { nodes, edges, depth, quality, limit, hint } = status;
+  const { nodes, edges, depth, limit, hint } = status;
+  // D085-S3 BEGIN
+  const quality = renderer3dProgress()?.quality ?? status.quality;
+  // D085-S3 END
   const line = `Nodi ${count(nodes.visible)} visibili · ${count(nodes.represented)} rappresentati / ${count(nodes.total)} totali; Archi ${count(edges.drawn)} disegnati / ${count(edges.eligible)} eleggibili / ${count(edges.total)} totali`;
   const details: [string, string, string, string, string, string, string] = [
     `Nodi: ${count(nodes.visible)} visibili, ${count(nodes.represented)} rappresentati su ${count(nodes.total)} totali (${count(nodes.eligible)} eleggibili).`,

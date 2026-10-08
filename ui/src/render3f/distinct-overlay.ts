@@ -21,6 +21,9 @@ export function mountDistinctOverlay(
   morphology: Morphology,
   presentation: PresentationOptions | undefined,
   project: (point: Coordinates) => { readonly x: number; readonly y: number; readonly scale: number },
+  // D085-S3 BEGIN
+  bufferPixelRatio: () => number = () => devicePixelRatio,
+  // D085-S3 END
 ): { draw(): void; setScene(scene: Scene): void; setAppearance(options: AppearanceOptions): void; updateVisibleSubset(update: DistinctSubsetUpdate): void; destroy(): void } {
   const canvas = document.createElement("canvas");
   canvas.dataset.morphologyCanvas = "distinct-3d";
@@ -73,8 +76,10 @@ export function mountDistinctOverlay(
     if (marked) performance.mark("d082:distinct3d:start");
     // D082-A-PERF END
     const box = canvas.getBoundingClientRect();
-    const width = Math.max(1, Math.round(box.width * devicePixelRatio));
-    const height = Math.max(1, Math.round(box.height * devicePixelRatio));
+    // D085-S3 BEGIN: the overlay follows the actual backing-store ratio.
+    const width = Math.max(1, Math.round(box.width * bufferPixelRatio()));
+    const height = Math.max(1, Math.round(box.height * bufferPixelRatio()));
+    // D085-S3 END
     if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
     const projected = new WeakMap<Coordinates, ReturnType<typeof project>>();
     const cachedProject = (point: Coordinates) => {

@@ -302,7 +302,11 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ])],
     // D085-S6 END
     // D082-A-PERF BEGIN
-    ["#render-common/quality-ladder.ts", new Set(["QualityLadder", "mainRelation", "presentRenderReadiness"])],
+    // D085-S3 BEGIN: exact Lab stage and complete-segment selectors are material-independent.
+    // D085-S3 BEGIN
+    ["#render-common/quality-ladder.ts", new Set(["QualityLadder", "labDrawPolicy", "labMainSegmentRanges", "labPixelRatio", "mainRelation", "presentRenderReadiness"])],
+    // D085-S3 END
+    // D085-S3 END
     // D082-A-PERF END
     ["#render3f/camera.tsx", new Set([
       "CameraRig",

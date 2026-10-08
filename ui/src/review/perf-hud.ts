@@ -65,8 +65,13 @@ export function formatDuration(ms: number | null | undefined): string {
 }
 
 /** A persisted open panel is display state, not a measurement session. */
-export function hudMeasurementActive(open: boolean, status: D081Status | null): boolean {
-  return open && (status?.quality === 'movimento' || status?.quality === 'recupero');
+export function hudMeasurementActive(open: boolean, status: D081Status | null,
+  readiness: RenderReadiness | null = null): boolean {
+  // D085-S3 BEGIN: the renderer witness can finish before the page status
+  // event. An open HUD must stop its sampler when that full draw is reported.
+  const quality = readiness?.view.includes('/3d/') ? readiness.quality : status?.quality;
+  return open && (quality === 'movimento' || quality === 'recupero');
+  // D085-S3 END
 }
 
 export function formatHud(status: D081Status | null, frames: readonly FrameSample[], fallback?: { nodes?: { rendered: number; available: number }; edges?: { rendered: number; available: number } }, readiness: RenderReadiness | null = currentRenderReadiness()): string {
@@ -79,11 +84,18 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
   const edgeDrawn = edges?.drawn ?? fallback?.edges?.rendered ?? 0;
   const edgeEligible = edges?.eligible ?? fallback?.edges?.available ?? 0;
   const edgeTotal = edges?.total ?? edgeEligible;
-  const quality = status?.quality ?? "dati in attesa";
+  // D085-S3 BEGIN: the presented renderer phase owns the visible 3D quality label.
+  const quality = readiness?.view.includes('/3d/') ? readiness.quality
+    : status?.quality ?? "dati in attesa";
+  // D085-S3 END
   const lastFullRecovery = formatDuration(status?.msToFullQuality);
   const depth = status?.depth?.label ?? (status?.depth?.level === undefined ? "—" : `livello ${status.depth.level}`);
   // D082-A-STALE BEGIN
-  const renderRows = readiness ? `<dt title="Stima lato renderer di intervalli richiesti, pronti e visibili; pubblicata due frame dopo il tentativo di disegno. Non conferma la presentazione al compositor.">Render</dt><dd>${renderPercent(readiness)}% · ${readiness.quality}</dd>
+  // D085-S3 BEGIN
+  const ratioLine = readiness?.pixelRatio === undefined || readiness.fullPixelRatio === undefined ? ''
+    : ` · pixel ${readiness.pixelRatio.toLocaleString('it-IT', { maximumFractionDigits: 2 })}× / ${readiness.fullPixelRatio.toLocaleString('it-IT', { maximumFractionDigits: 2 })}×`;
+  // D085-S3 END
+  const renderRows = readiness ? `<dt title="Stima lato renderer di intervalli richiesti, pronti e visibili; pubblicata due frame dopo il tentativo di disegno. Non conferma la presentazione al compositor.">Render</dt><dd>${renderPercent(readiness)}% · ${readiness.quality}${ratioLine}</dd>
     <dt>Nodi pronti / disegnati / richiesti · totali</dt><dd>${readiness.nodes.loaded.toLocaleString("it-IT")} / ${readiness.nodes.drawn.toLocaleString("it-IT")} / ${readiness.nodes.required.toLocaleString("it-IT")} · ${nodes?.total?.toLocaleString("it-IT") ?? "—"}</dd>
     <dt>Archi pronti / disegnati / richiesti · totali</dt><dd>${readiness.allEdges.loaded.toLocaleString("it-IT")} / ${readiness.allEdges.drawn.toLocaleString("it-IT")} / ${readiness.allEdges.required.toLocaleString("it-IT")} · ${edges?.total?.toLocaleString("it-IT") ?? "—"}</dd>
     <dt>LOD · profondità</dt><dd>${readiness.ladder} · ${readiness.depthLabel ?? "—"}</dd>` : "<dt>Render</dt><dd>in attesa dei dati renderer</dd>";
@@ -118,7 +130,9 @@ export function mountPerformanceHud(surface: HTMLElement, opener: HTMLButtonElem
   let open = false;
   let measuring = false;
   const syncMeasurement = () => {
-    const active = hudMeasurementActive(open, status);
+    // D085-S3 BEGIN
+    const active = hudMeasurementActive(open, status, readiness);
+    // D085-S3 END
     if (active === measuring) return;
     measuring = active;
     if (active) sampler.start(); else sampler.stop();
@@ -130,6 +144,9 @@ export function mountPerformanceHud(surface: HTMLElement, opener: HTMLButtonElem
   };
   const onRender = (event: Event) => {
     readiness = (event as CustomEvent<RenderReadiness>).detail ?? currentRenderReadiness();
+    // D085-S3 BEGIN
+    syncMeasurement();
+    // D085-S3 END
     refresh();
   };
   const refresh = () => {
