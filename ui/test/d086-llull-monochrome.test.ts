@@ -27,8 +27,18 @@ const APPROVED_ALPHA: Readonly<Record<string, number>> = {
   'lull-pair-bundle': 0.8,
 };
 const KINDS = Object.keys(APPROVED_ALPHA);
+/** The fixed inks of the D-085 build (c3b6390), the luma ceiling of every Llull stroke. */
+const OLD_INK: Readonly<Record<string, string>> = {
+  'lull-figure-a': 'rgba(205,215,230,.50)', 'lull-letter': 'rgba(205,215,230,.50)',
+  'lull-hub': 'rgba(205,215,230,.34)', 'lull-hub-spoke': 'rgba(205,215,230,.34)',
+  'lull-band': 'rgba(180,190,210,.19)', 'lull-sector-ray': 'rgba(180,190,210,.19)',
+  'lull-pair-chord': 'rgba(205,215,230,.42)', 'lull-riser': 'rgba(205,215,230,.26)',
+  'lull-pair-bundle': 'rgba(196,212,236,.80)',
+};
+const luma = (style: string) => { const { red, green, blue } = parse(style);
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue; };
 
-function mountLayer(activePalette: () => PaletteValues) {
+function mountLayer(activePalette: () => PaletteValues, lifted = false) {
   const originals = { document: globalThis.document, window: globalThis.window,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame, ResizeObserver: globalThis.ResizeObserver };
@@ -50,7 +60,7 @@ function mountLayer(activePalette: () => PaletteValues) {
   const flush = () => { const pending = [...frames]; frames.clear(); for (const [, callback] of pending) callback(0); };
   const guides: GuideCurve[] = KINDS.map((kind, index) => ({
     id: kind === 'lull-pair-bundle' ? 'lull:bundle:BC' : `lull:guide:${kind}`, kind, semantic: false as const,
-    points: [{ x: index, y: 0, z: 0 }, { x: index + 1, y: 1, z: 0 }] }));
+    points: [{ x: index, y: 0, z: lifted ? 1 : 0 }, { x: index + 1, y: 1, z: lifted ? 1 : 0 }] }));
   const pairs: readonly LullOverviewPairFold[] = [{ letters: 'BC', roots: ['b', 'c'],
     drawnEdgeIds: ['e1'], relationIds: ['r1', 'r2', 'r3'] }];
   const view = { projectPoint: (point: { x: number; y: number }) => point } as unknown as ProductView;
@@ -69,7 +79,7 @@ test('Monocromatico draws every Llull guide and bundle stroke with R = G = B at 
       const ink = parse(stroke.style);
       assert.equal(spread(stroke.style), 0, `${kind}: no chroma in ${stroke.style}`);
       assert.equal(ink.alpha, APPROVED_ALPHA[kind], `${kind}: alpha is the approved one`);
-      assert.ok(ink.red <= 214, `${kind}: no brighter than the former ink (${ink.red})`);
+      assert.ok(luma(stroke.style) <= luma(OLD_INK[kind]!), `${kind}: luma ${luma(stroke.style)} is not above the former ink ${luma(OLD_INK[kind]!)}`);
     }
   } finally { mount.restore(); }
 });
@@ -83,6 +93,22 @@ test('a coloured palette tints every Llull stroke from its own tokens at the sam
       assert.equal(ink.alpha, APPROVED_ALPHA[kind], `${kind}: alpha unchanged by the palette`);
     }
   } finally { mount.restore(); }
+});
+
+test('no palette draws a Llull stroke brighter than the former ink, and the lifted bundle keeps its alpha', () => {
+  for (const [name, palette] of Object.entries(PALETTES)) {
+    for (const lifted of [false, true]) {
+      const mount = mountLayer(() => palette, lifted);
+      try {
+        for (const [kind, stroke] of mount.byKind()) {
+          assert.ok(luma(stroke.style) <= luma(OLD_INK[kind]!) + 1e-9,
+            `${name}/${kind}: ${stroke.style} is brighter than ${OLD_INK[kind]}`);
+          if (kind === 'lull-pair-bundle' && lifted)
+            assert.equal(parse(stroke.style).alpha, 0.34, `${name}: the lifted bundle keeps its approved alpha`);
+        }
+      } finally { mount.restore(); }
+    }
+  }
 });
 
 test('a palette change repaints the same layer without a remount, both ways', () => {
