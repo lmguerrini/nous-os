@@ -142,27 +142,47 @@ test('main.ts boot preserves invalid explicit view2 and unknown legacy fields fo
 });
 
 // D082-LAB-FIX4 BEGIN
-test('unsupported linked topology/projection resolves to the nearest supported state before page construction', () => {
+// D085-INT2 BEGIN: Llull 3D is supported alone; its Indra composition takes the 2D fallback.
+test('unsupported linked Llull 3D with Indra resolves before page construction', () => {
   const view = { schema: 2 as const, rendering: '3d' as const, topology: 'circular-combinatorial' as const,
-    indra: 'off' as const, morphology: 'stellar' as const, density: 'complete' as const,
+    indra: 'on' as const, morphology: 'stellar' as const, density: 'complete' as const,
     reading: 'combined' as const, colour: 'bw' as const, labels: true };
   const resolved = resolveSupportedGeometryView2(view, topologySupport);
   assert.equal(resolved.value.rendering, '2d');
   assert.ok(!('mode' in resolved.value));
   if ('mode' in resolved.value) throw new Error('Expected the taxonomy view to remain a topology view');
   assert.equal(resolved.value.topology, 'circular-combinatorial');
+  assert.equal(resolved.value.indra, 'on');
   assert.equal(resolved.value.reading, 'combined');
-  assert.match(resolved.notice ?? '', /non supporta 3D.*caricata la vista 2D/i);
+  assert.equal(resolved.notice, 'lull non supporta 3D: caricata la vista 2D per mantenere la topologia.');
   const booted = boot({ hash: '#experimental=fractal&view2=' + encodeURIComponent(serializeGeometryView2(view)) });
   assert.equal((booted.axes as { projection?: string }).projection, '2d');
   assert.equal(booted.axes.reading, 'combined');
   assert.equal((booted.geometry as { topology?: string }).topology, 'circular-combinatorial');
   assert.equal((booted.geometry as { rendering?: string }).rendering, '2d');
-  assert.match(booted.notice ?? '', /non supporta 3D.*caricata la vista 2D/i);
+  assert.equal(booted.geometry.indra, 'on');
+  assert.equal(booted.notice, resolved.notice);
   const rewritten = new URLSearchParams(booted.location.hash.slice(1)).get('view2');
   assert.ok(rewritten);
-  assert.equal(JSON.parse(rewritten).rendering, '2d');
+  assert.equal(new URLSearchParams(booted.location.hash.slice(1)).get('experimental'), 'fractal');
+  const rewrittenView = JSON.parse(rewritten);
+  assert.equal(rewrittenView.rendering, '2d');
+  assert.equal(rewrittenView.topology, 'circular-combinatorial');
+  assert.equal(rewrittenView.indra, 'on');
 });
+
+test('a standalone 3D Llull link boots in 3D without a notice', () => {
+  const view = { schema: 2 as const, rendering: '3d' as const, topology: 'circular-combinatorial' as const,
+    indra: 'off' as const, morphology: 'stellar' as const, density: 'complete' as const,
+    reading: 'combined' as const, colour: 'bw' as const, labels: true };
+  const booted = boot({ hash: '#view2=' + encodeURIComponent(serializeGeometryView2(view)) });
+  assert.equal((booted.axes as { projection?: string }).projection, '3d');
+  assert.equal((booted.geometry as { rendering?: string }).rendering, '3d');
+  assert.equal(booted.geometry.topology, 'circular-combinatorial');
+  assert.equal(booted.geometry.indra, 'off');
+  assert.equal(booted.notice, null);
+});
+// D085-INT2 END
 
 test('loaded axis state exposes one pressed control per axis and moves it with the active toolbar', () => {
   const source = section('// D082-LAB-FIX4 BEGIN: legacy organization controls', '// D082-LAB-FIX4 END');
