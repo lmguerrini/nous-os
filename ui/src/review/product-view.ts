@@ -645,6 +645,16 @@ export const createProductView: CreateProductView = async (input) => {
   // style entries for drawn edges beyond this set.
   const mountedEdgeIds = new Set<string>();
   let layoutContainers = input.layoutContainers;
+  // D085-S3 BEGIN: Julia has no drawing containers, but its real v2 nodes
+  // retain hierarchy levels. Keep this identity-only index for native Lab anchors.
+  const nativeLawNodeLevels = input.labTopology && input.labTopology !== 'natural'
+    ? input.data.nodes.flatMap(node => {
+    const level = (node.v2 as { level?: number } | undefined)?.level;
+    return typeof level === 'number' && Number.isFinite(level) ? [{ id: node.id, level }] : [];
+    }) : [];
+  const nativeLawLevels = (containers: typeof layoutContainers) =>
+    [...(containers ?? []), ...nativeLawNodeLevels];
+  // D085-S3 END
   // D-072 R2: the label allowance is view state — an in-place density change moves it with the
   // subset instead of remounting.
   let labelBudget = input.labelBudget;
@@ -1899,6 +1909,13 @@ export const createProductView: CreateProductView = async (input) => {
     organization: input.v2Prepared ? "natural" as const : axes.organization,
     // D085-S3 BEGIN: preserve the page's Lab law across Natural/Indra renderer organization.
     ...(input.labTopology ? { labTopology: input.labTopology, labIndra: input.labIndra ?? false } : {}),
+    ...(input.labTopology && input.labTopology !== 'natural' ? {
+      labLevels: nativeLawLevels(layoutContainers),
+      labRelationRanks: new Map(drawnEdges.map(edge => [edge.id, {
+        evidenceCount: edge.evidence_ids.length || Math.max(0, edge.weight),
+        relationClass: edge.attested_by as 'attested' | 'exploratory' | 'structural',
+      }] as const)),
+    } : {}),
     // D085-S3 END
     reducedMotion: input.reducedMotion,
     brain: brainRendererEnabled(axes, input.brain),
@@ -2196,11 +2213,30 @@ export const createProductView: CreateProductView = async (input) => {
         // D082-A-NCOMPLETA3 END
         edgeEntries.set(id, { color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(220, 220, 220)", presentation: value });
     // D082-A-NODES END
-    const nextOverlay: DistinctSubsetUpdate = { input: morphologyInput, geometry, nodeEntries, edgeEntries };
+    // D085-S3 BEGIN: moving native law skeletons read semantic ranks and hierarchy
+    // independently of the Indra-only drawing containers.
+    const nextOverlay: DistinctSubsetUpdate = { input: morphologyInput, geometry, nodeEntries, edgeEntries,
+      ...(input.labTopology && input.labTopology !== 'natural' ? {
+        labLevels: nativeLawLevels(nextContainers),
+        labRelationRanks: new Map(nextEdges.map(edge => [edge.id, {
+          evidenceCount: edge.evidence_ids.length || Math.max(0, edge.weight),
+          relationClass: edge.attested_by as 'attested' | 'exploratory' | 'structural',
+        }] as const)),
+      } : {}) };
+    // D085-S3 END
     // Rollback sends complete old style entries: a renderer may have accepted all of its new
     // entries before its canvas draw threw. The old geometry hides any newly introduced ids.
     const restoreOverlay: DistinctSubsetUpdate = {
       input: oldScene.morphologyInput, geometry: oldScene.geometry,
+      // D085-S3 BEGIN
+      ...(input.labTopology && input.labTopology !== 'natural' ? {
+        labLevels: nativeLawLevels(layoutContainers),
+        labRelationRanks: new Map(drawnEdges.map(edge => [edge.id, {
+          evidenceCount: edge.evidence_ids.length || Math.max(0, edge.weight),
+          relationClass: edge.attested_by as 'attested' | 'exploratory' | 'structural',
+        }] as const)),
+      } : {}),
+      // D085-S3 END
       nodeEntries: new Map([...oldScene.presentation.nodes].map(([id, value]) => [id, {
         glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
         radiusPx: value.radiusPx,

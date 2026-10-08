@@ -44,26 +44,36 @@ export function labAnchorInstanceIndices(nodes: readonly { id: string; alpha: nu
   return ordered.map(bucket => bucket.flatMap((id, index) => anchors.has(id) ? [index] : []));
 }
 /** Native Lab skeleton: only real node and relation IDs from the mounted scene. */
+export type NativeRelationRank = Readonly<{ evidenceCount: number; relationClass: 'attested' | 'exploratory' | 'structural' }>;
+export type NativeAnchorRules = Readonly<{ kind: number; level: number; emphasis: number;
+  degree: number; relationEndpoint: number; fallback: number }>;
 export function nativeLabSkeleton(nodes: readonly { id: string; kind: string; interaction?: string }[],
   edges: readonly { id: string; source: string; target: string }[],
   levels: ReadonlyMap<string, number> = new Map(), emphasisIds: ReadonlySet<string> = new Set(),
-  wholeResidentRelations = false,
-): { nodeIds: ReadonlySet<string>; edgeIds: ReadonlySet<string> } {
+  wholeResidentRelations = false, relationRanks: ReadonlyMap<string, NativeRelationRank> = new Map(),
+): { nodeIds: ReadonlySet<string>; edgeIds: ReadonlySet<string>; anchorRules: NativeAnchorRules } {
   const byId = new Map(nodes.map(node => [node.id, node]));
   const degree = new Map<string, number>();
   for (const edge of edges) if (byId.has(edge.source) && byId.has(edge.target)) {
     degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
     degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
   }
-  const anchors = new Set(nodes.filter(node => node.kind === 'domain' || node.kind === 'hub'
-    || (levels.get(node.id) ?? Infinity) <= 2 || emphasisIds.has(node.id)
-    || node.interaction === 'selected' || node.interaction === 'focused').map(node => node.id));
+  const anchors = new Set<string>();
+  const rules = { kind: 0, level: 0, emphasis: 0, degree: 0, relationEndpoint: 0, fallback: 0 };
+  for (const node of nodes) {
+    if (node.kind === 'domain' || node.kind === 'hub') { anchors.add(node.id); rules.kind++; }
+    else if ((levels.get(node.id) ?? Infinity) <= 2) { anchors.add(node.id); rules.level++; }
+    else if (emphasisIds.has(node.id) || node.interaction === 'selected' || node.interaction === 'focused') {
+      anchors.add(node.id); rules.emphasis++;
+    }
+  }
   // The highest-degree real nodes remain recognizable even when the scene erases
   // source kinds. Degree ties use IDs, never layout position or insertion order.
   const hubs = nodes.filter(node => (degree.get(node.id) ?? 0) > 1)
     .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0)
       || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).slice(0, 48);
-  for (const hub of hubs) anchors.add(hub.id);
+  for (const hub of hubs) if (!anchors.has(hub.id)) { anchors.add(hub.id); rules.degree++; }
+  const priorityAnchors = new Set(anchors);
   let main = edges.filter(edge => {
     const source = byId.get(edge.source), target = byId.get(edge.target);
     return source !== undefined && target !== undefined && mainRelation({ attested: true,
@@ -73,18 +83,34 @@ export function nativeLabSkeleton(nodes: readonly { id: string; kind: string; in
       sourceDomain: source.kind === 'domain', targetDomain: target.kind === 'domain',
     });
   });
-  // A native law with a resident relation set within the interaction budget
-  // keeps every real relation, including those whose source kind was erased.
-  // Larger sets retain only the main classifier, bounded by stable ID order.
-  if (wholeResidentRelations && edges.length <= 1024)
-    main = edges.filter(edge => byId.has(edge.source) && byId.has(edge.target));
-  else if (main.length === 0) main = edges.filter(edge => byId.has(edge.source) && byId.has(edge.target)
+  // Small resident sets retain all real relations. Larger native sets offer
+  // both classified and anchor-incident relations to the semantic cap; a
+  // nonempty classifier must not suppress a real upper-level root relation.
+  if (wholeResidentRelations) {
+    const classifiedIds = new Set(main.map(edge => edge.id));
+    main = edges.filter(edge => byId.has(edge.source) && byId.has(edge.target)
+      && (edges.length <= 1024 || classifiedIds.has(edge.id)
+        || anchors.has(edge.source) || anchors.has(edge.target)));
+  } else if (main.length === 0) main = edges.filter(edge => byId.has(edge.source) && byId.has(edge.target)
     && (anchors.has(edge.source) || anchors.has(edge.target)));
-  main.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const rootIncident = (edge: typeof edges[number]): boolean => {
+    const source = byId.get(edge.source), target = byId.get(edge.target);
+    return source?.kind === 'domain' || target?.kind === 'domain'
+      || Math.min(levels.get(edge.source) ?? Infinity, levels.get(edge.target) ?? Infinity) <= 1;
+  };
+  const classRank = (value: NativeRelationRank | undefined): number =>
+    value?.relationClass === 'attested' ? 2 : value?.relationClass === 'structural' ? 1 : 0;
+  main.sort((a, b) => Number(rootIncident(b)) - Number(rootIncident(a))
+    || Number(priorityAnchors.has(b.source) || priorityAnchors.has(b.target))
+      - Number(priorityAnchors.has(a.source) || priorityAnchors.has(a.target))
+    || (relationRanks.get(b.id)?.evidenceCount ?? 0) - (relationRanks.get(a.id)?.evidenceCount ?? 0)
+    || classRank(relationRanks.get(b.id)) - classRank(relationRanks.get(a.id))
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   if (main.length > 1024) main = main.slice(0, 1024);
-  for (const edge of main) { anchors.add(edge.source); anchors.add(edge.target); }
-  if (anchors.size === 0 && nodes.length) anchors.add(nodes.map(node => node.id).sort()[0]!);
-  return { nodeIds: anchors, edgeIds: new Set(main.map(edge => edge.id)) };
+  for (const edge of main) for (const id of [edge.source, edge.target])
+    if (!anchors.has(id)) { anchors.add(id); rules.relationEndpoint++; }
+  if (anchors.size === 0 && nodes.length) { anchors.add(nodes.map(node => node.id).sort()[0]!); rules.fallback++; }
+  return { nodeIds: anchors, edgeIds: new Set(main.map(edge => edge.id)), anchorRules: rules };
 }
 // D085-S3 END
 
