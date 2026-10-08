@@ -32,7 +32,12 @@ import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
 // D085-S1 BEGIN: distinguish a superseded page task from a committed selection.
 // D085-S5 BEGIN: UI callbacks share the page's displayed-failure promise owner.
-import { GeometrySupersededError, V2Page, ownDisplayedRemount, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts";
+import { GeometrySupersededError, V2Page, isOwnedPageFailure, ownDisplayedRemount, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts";
+// D085-S5 END
+// D085-S5 BEGIN: fire-and-forget page calls may reject after displaying their recovery UI.
+window.addEventListener('unhandledrejection', event => {
+  if (isOwnedPageFailure(event.reason)) event.preventDefault();
+});
 // D085-S5 END
 // D085-S1 END
 import { bindSurfaces } from "./popover.ts";

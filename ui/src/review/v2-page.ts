@@ -634,8 +634,15 @@ export class GeometrySupersededError extends Error {
 }
 // D085-S1 END
 
-// D085-S5 BEGIN: the page has already displayed a failed remount before this task rejects.
-export function ownDisplayedRemount(task: Promise<unknown> | undefined): void { void task?.catch(() => { }); }
+// D085-S5 BEGIN: only a failure actually displayed by this page belongs to a UI callback.
+const displayedPageFailures = new WeakSet<object>();
+export function isOwnedPageFailure(error: unknown): boolean {
+    return error instanceof GeometrySupersededError ||
+        (typeof error === 'object' && error !== null && displayedPageFailures.has(error));
+}
+export function ownDisplayedRemount(task: Promise<unknown> | undefined): void {
+    void task?.catch(error => { if (!isOwnedPageFailure(error)) throw error; });
+}
 // D085-S5 END
 
 export class V2Page {
@@ -1617,6 +1624,9 @@ export class V2Page {
             retry.onclick = () => { void this.refresh().catch(() => { }); };
             // D085-S5 END
             element('error').append(retry);
+            // D085-S5 BEGIN: the error is owned only after its visible recovery UI exists.
+            if (typeof e === 'object' && e !== null) displayedPageFailures.add(e);
+            // D085-S5 END
             throw e;
         });
     }
