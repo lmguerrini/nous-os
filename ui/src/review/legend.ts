@@ -13,6 +13,9 @@ import {
 import type { FamilyId, Colour, Reading } from "./view-contract.ts";
 import type { PaletteValues } from "./palette.ts";
 import type { TopologyId } from "../topology/contract.ts";
+// D086-F3 BEGIN
+import { LULL_INK_LEVEL, lullInk } from "../topology/guide-layer.ts";
+// D086-F3 END
 import { LAB_CONTAINER_DESCRIPTION, TOPOLOGY_DESCRIPTIONS } from "../topology/registry.ts";
 import type { PickResult, ProjectionResult, RenderVisibility, VisualContainer, VisualRelation } from "../projection/contract-types.ts";
 type StructuralVisualRelation = VisualRelation & Readonly<{ kind: 'co-membership' | 'synthetic-containment' }>;
@@ -238,7 +241,7 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
   // Only the Llull topology carries it; every other topology keeps its pixels.
   if (topology === "lull") {
     entry("Guida Figura A · coppia", "Terza Figura: le 36 corde tratteggiate fra le nove lettere del cerchio esterno (domini reali a 40° esatti) sono compartimenti strutturali, non relazioni; non entrano nei conteggi. Le relazioni reali sono le linee continue più luminose; le radici restano i segni più intensi. In 3D le stesse corde salgono alle quattro tavole d'offset d=1–4 e i record si sollevano della classe massima attestata dalle loro relazioni reali fra domini.", (svg) => {
-      const sample = line(2, 7, 24, 7, "rgba(205,215,230,.55)", 1.25);
+      const sample = line(2, 7, 24, 7, lullInk(palette, LULL_INK_LEVEL.strong, ".55"), 1.25);
       sample.setAttribute("stroke-dasharray", "7 6");
       svg.append(sample);
     });
@@ -255,8 +258,8 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, orga
     // Active aggregate IDs are in the visibility witness; the
     // inquiry table deliberately describes the entire immutable snapshot.
     entry("Fascio d’insieme · coppia", "Zoom semantico: a distanza d’insieme le relazioni attive fra due settori non vengono disegnate una per una: sono ritirate e sostituite da un fascio spesso fra le loro lettere. Il fascio rappresenta esattamente gli id aggregati nella vista corrente (witness Llull); larghezza e opacità seguono quel conteggio. La tavola d’inchiesta elenca invece gli id dello snapshot completo. I compartimenti senza relazioni attive non disegnano nulla; le relazioni dentro lo stesso settore restano disegnate e nulla viene mai oscurato. Avvicinando la vista le relazioni singole tornano al loro posto; con zoom semantico disattivato restano solo le relazioni singole. In 3D i fasci siedono alle quattro tavole d’offset d=1–4.", (svg) => {
-      svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.16)", 6));
-      svg.append(line(2, 7, 24, 7, "rgba(196,212,236,.8)", 2.6));
+      svg.append(line(2, 7, 24, 7, lullInk(palette, LULL_INK_LEVEL.bundle, ".16"), 6));
+      svg.append(line(2, 7, 24, 7, lullInk(palette, LULL_INK_LEVEL.bundle, ".8"), 2.6));
     });
   }
   // D085-S4 END

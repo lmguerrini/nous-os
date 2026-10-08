@@ -2,6 +2,10 @@
 import type { GuideCurve } from './contract.ts';
 import type { ProductView } from '../review/view-contract.ts';
 import { LULL_OUTER_RADIUS } from './lull.ts';
+// D086-F3 BEGIN: Llull guide ink is derived from the active palette.
+import { PALETTES, hexRgb } from '../review/palette.ts';
+import type { PaletteValues } from '../review/palette.ts';
+// D086-F3 END
 // D085-S4 BEGIN: a drawn bundle uses the exact active routed fold.
 import type { LullOverviewPairFold } from './lull-overview.ts';
 // D085-S4 END
@@ -19,6 +23,20 @@ export function lullVisibleBundleWeights(pairs: readonly LullOverviewPairFold[])
   return new Map(pairs.filter(pair => pair.relationIds.length)
     .map(pair => [pair.letters, pair.relationIds.length]));
 }
+// D086-F3 BEGIN: Llull guides and bundles take their hue from the active palette's
+// aggregate token and keep the approved brightness and opacity. The levels are the
+// luma of the former fixed inks; a neutral palette therefore draws a pure grey
+// (R = G = B) and only a coloured palette tints the structure.
+export const LULL_INK_LEVEL = { strong: 214, faint: 189, bundle: 210 } as const;
+export function lullInk(palette: PaletteValues, level: number, alpha: string): string {
+  const [red, green, blue] = hexRgb(palette.aggregate).map(channel => channel * 255) as [number, number, number];
+  const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  const channels = luma > 0
+    ? [red, green, blue].map(channel => Math.min(255, Math.round(channel * level / luma)))
+    : [level, level, level];
+  return `rgba(${channels.join(',')},${alpha})`;
+}
+// D086-F3 END
 const LULL_ZOOM_FADE_BEGIN = 2.15;
 const LULL_ZOOM_FADE_END = 2.5;
 /** The fitted-wheel scale of the current camera: the projected wheel diameter
@@ -67,7 +85,10 @@ export function lullOverviewMode(semanticZoom: boolean, view: ProductView,
 // D085-S4 END
 
 export function mountTopologyGuides(host: HTMLElement, view: ProductView,
-  guides: readonly GuideCurve[], activeLullPairs?: () => readonly LullOverviewPairFold[]): { destroy(): void; invalidate(): void } {
+  guides: readonly GuideCurve[], activeLullPairs?: () => readonly LullOverviewPairFold[],
+  // D086-F3 BEGIN: the active «Aspetto» palette, read at every draw.
+  activePalette: () => PaletteValues = () => PALETTES.bw): { destroy(): void; invalidate(): void } {
+  // D086-F3 END
   // D085-S4 BEGIN: the page invalidates this live source after every committed fold.
   if (!guides.length || !view.projectPoint) return { destroy() {}, invalidate() {} };
   if (guides.some(guide => guide.semantic !== false || !guide.id))
@@ -124,6 +145,9 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
         bundleMax = Math.max(bundleMax, activeLullPairs ? active ?? 0
           : (guide as LullWeightedGuide).weight);
       }
+    // D086-F3 BEGIN
+    const palette = activePalette();
+    // D086-F3 END
     context.strokeStyle = 'rgba(180,190,210,.22)';
     context.lineWidth = 0.75;
     // D085-S5 BEGIN: route hints have no eligibility token at this surface; never
@@ -158,13 +182,13 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       // D084-LLULL BEGIN: distinguish the outer rim and the radial hub without
       // changing the appearance of guides belonging to any other topology.
       if (guide.kind === 'lull-figure-a' || guide.kind === 'lull-letter') {
-        context.strokeStyle = 'rgba(205,215,230,.50)';
+        context.strokeStyle = lullInk(palette, LULL_INK_LEVEL.strong, '.50');
         context.lineWidth = 1;
       } else if (guide.kind === 'lull-hub' || guide.kind === 'lull-hub-spoke') {
-        context.strokeStyle = 'rgba(205,215,230,.34)';
+        context.strokeStyle = lullInk(palette, LULL_INK_LEVEL.strong, '.34');
         context.lineWidth = 0.85;
       } else if (guide.kind === 'lull-band' || guide.kind === 'lull-sector-ray') {
-        context.strokeStyle = 'rgba(180,190,210,.19)';
+        context.strokeStyle = lullInk(palette, LULL_INK_LEVEL.faint, '.19');
         context.lineWidth = 0.65;
       // D085-S4 BEGIN: the Third Figure's 36 pair compartments are dashed
       // chords. The dash pattern is the primary distinguishability channel against the
@@ -172,14 +196,14 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       // rim so the hierarchy stays guides < real relations < roots. The dash is reset
       // after every stroke below, so no other guide inherits it.
       } else if (guide.kind === 'lull-pair-chord') {
-        context.strokeStyle = 'rgba(205,215,230,.42)';
+        context.strokeStyle = lullInk(palette, LULL_INK_LEVEL.strong, '.42');
         context.lineWidth = 1.25;
         context.setLineDash([7, 6]);
       } else if (guide.kind === 'lull-riser') {
         // D085-S4 BEGIN: the lifted view's letter risers — the faintest marks,
         // under the chords, so the four tables stay anchored to Figure A without
         // competing with the relation ink.
-        context.strokeStyle = 'rgba(205,215,230,.26)';
+        context.strokeStyle = lullInk(palette, LULL_INK_LEVEL.strong, '.26');
         context.lineWidth = 0.8;
         // D085-S4 END
       // D085-S4 BEGIN: a pair bundle — the aggregate that replaces one
@@ -200,10 +224,10 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
         // from an orbit angle would cross the four heights as one flat star and
         // hide the tables the aggregates belong to.
         if (flatView) {
-          context.strokeStyle = `rgba(196,212,236,${((0.38 + 0.42 * share) * overview).toFixed(3)})`;
+          context.strokeStyle = lullInk(palette, LULL_INK_LEVEL.bundle, ((0.38 + 0.42 * share) * overview).toFixed(3));
           context.lineWidth = 1.75 + 5.25 * share;
         } else {
-          context.strokeStyle = `rgba(196,212,236,${((0.12 + 0.22 * share) * overview).toFixed(3)})`;
+          context.strokeStyle = lullInk(palette, LULL_INK_LEVEL.bundle, ((0.12 + 0.22 * share) * overview).toFixed(3));
           context.lineWidth = 4 + 10 * share;
         }
       // D085-S4 END
