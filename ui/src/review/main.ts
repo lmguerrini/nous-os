@@ -31,7 +31,9 @@ import { mount3d } from "./view3d.ts";
 import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
 // D085-S1 BEGIN: distinguish a superseded page task from a committed selection.
-import { GeometrySupersededError, V2Page, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts";
+// D085-S5 BEGIN: UI callbacks share the page's displayed-failure promise owner.
+import { GeometrySupersededError, V2Page, ownDisplayedRemount, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts";
+// D085-S5 END
 // D085-S1 END
 import { bindSurfaces } from "./popover.ts";
 // D081-P4 BEGIN
@@ -1687,7 +1689,9 @@ function syncCustomColours(): void {
       error.textContent = ""; hex.removeAttribute("aria-invalid");
       customPalette = applyColour(customPalette, key, value); selectedColourPreset = ""; appliedHarmonyName = "";
       writeLocal(storage, "d069.customPalette", customPalette);
-      syncCustomColours(); void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+      // D085-S5 BEGIN
+      syncCustomColours(); ownDisplayedRemount(v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+      // D085-S5 END
     };
     picker.addEventListener("input", () => change(picker.value)); hex.addEventListener("input", () => change(hex.value));
     swatch.addEventListener("click", () => picker.click());
@@ -1777,7 +1781,9 @@ function changePalette(value: string): void {
   syncUIAccent(next);
   // D082-A-THEME END
   surfaceStack?.set("appearance", true);
-  void setAxes({ colour: next }).then(async () => { if (next === "custom") await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); }); updateInsets();
+  // D085-S5 BEGIN
+  ownDisplayedRemount(setAxes({ colour: next }).then(async () => { if (next === "custom") await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); })); updateInsets();
+  // D085-S5 END
 }
 get<HTMLSelectElement>("palette").addEventListener("change", (event) => changePalette((event.target as HTMLSelectElement).value));
 get<HTMLSelectElement>("fullscreen-palette").addEventListener("change", (event) => changePalette((event.target as HTMLSelectElement).value));
@@ -1797,7 +1803,9 @@ get<HTMLButtonElement>("edit-colours").addEventListener("click", () => {
     customPalette = { ...customOrigin }; selectedColourPreset = "";
     writeLocal(storage, "d070.customOrigin", { name: customOriginName, palette: customOrigin });
     writeLocal(storage, "d069.customPalette", customPalette);
-    void setAxes({ colour: "custom" }).then(async () => { await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); });
+    // D085-S5 BEGIN
+    ownDisplayedRemount(setAxes({ colour: "custom" }).then(async () => { await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); }));
+    // D085-S5 END
   }
   surfaceStack?.set("appearance", true);
   get<HTMLButtonElement>("edit-colours").setAttribute("aria-pressed", "true");
@@ -1813,7 +1821,9 @@ get<HTMLButtonElement>("custom-apply").addEventListener("click", () => {
   const saved = readColourPresets(storage)[get<HTMLSelectElement>("colour-preset-list").value];
   if (saved) { customPalette = { ...saved }; selectedColourPreset = get<HTMLSelectElement>("colour-preset-list").value; appliedHarmonyName = ""; }
   writeLocal(storage, "d069.customPalette", customPalette); syncCustomColours();
-  void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+  // D085-S5 BEGIN
+  ownDisplayedRemount(v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+  // D085-S5 END
 });
 get<HTMLButtonElement>("custom-save").addEventListener("click", () => {
   const name = get<HTMLInputElement>("colour-preset-name").value.trim();
@@ -1824,7 +1834,9 @@ get<HTMLButtonElement>("custom-save").addEventListener("click", () => {
 get<HTMLButtonElement>("custom-restore").addEventListener("click", () => {
   customPalette = { ...customOrigin }; selectedColourPreset = ""; appliedHarmonyName = "";
   writeLocal(storage, "d069.customPalette", customPalette); syncCustomColours();
-  void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+  // D085-S5 BEGIN
+  ownDisplayedRemount(v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+  // D085-S5 END
 });
 const harmonyRoleNames: Readonly<Record<keyof PaletteValues, string>> = { background: "Sfondo", aggregate: "Primari", concept: "Secondari",
   attested: "Archi attestati", exploratory: "Archi esplorativi", selection: "Selezione", hover: "Hover", container: "Contenitori", text: "Testo" };
@@ -1853,7 +1865,9 @@ get<HTMLButtonElement>("harmony-apply").addEventListener("click", () => {
   appliedHarmonyName = get<HTMLSelectElement>("harmony-name").selectedOptions[0]?.textContent ?? "";
   writeLocal(storage, "d069.customPalette", customPalette);
   syncCustomColours();
-  void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+  // D085-S5 BEGIN
+  ownDisplayedRemount(v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+  // D085-S5 END
   announce(`Armonia ${appliedHarmonyName} applicata`);
 });
 refreshColourPresetList();
@@ -1984,8 +1998,10 @@ get<HTMLSelectElement>("v2-relation-detail").addEventListener("change", event =>
   void v2?.setRelationDetail((event.target as HTMLSelectElement).value as "essential" | "all").catch(() => { });
   // D085-S5 END
 });
-get<HTMLButtonElement>("v2-undo").addEventListener("click", () => { void v2?.undo(); });
-get<HTMLButtonElement>("v2-redo").addEventListener("click", () => { void v2?.redo(); });
+// D085-S5 BEGIN
+get<HTMLButtonElement>("v2-undo").addEventListener("click", () => { ownDisplayedRemount(v2?.undo()); });
+get<HTMLButtonElement>("v2-redo").addEventListener("click", () => { ownDisplayedRemount(v2?.redo()); });
+// D085-S5 END
 get<HTMLButtonElement>("labels").addEventListener("click", () => {
   void setAxes({ labels: !axes.labels });
 });
@@ -1996,10 +2012,14 @@ get<HTMLButtonElement>("reset").addEventListener("click", () => {
   void reset();
 });
 get<HTMLButtonElement>("back").addEventListener("click", () => {
-  void back();
+  // D085-S5 BEGIN
+  ownDisplayedRemount(back());
+  // D085-S5 END
 });
 get<HTMLButtonElement>("expand").addEventListener("click", () => {
-  void expand();
+  // D085-S5 BEGIN
+  ownDisplayedRemount(expand());
+  // D085-S5 END
 });
 for (const id of ["filter-domain", "filter-family", "filter-standing", "filter-class"])
   get<HTMLSelectElement>(id).addEventListener("change", () => {
@@ -2049,18 +2069,24 @@ if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "perform
   openers: [performanceOpener], readOpen: () => !performanceSurface.hidden,
   writeOpen: open => { performanceSurface.hidden = !open; performanceHud?.setOpen(open); } });
 // D081-P4 END
-surfaceStack = bindSurfaces(surfaceBindings, () => Boolean(v2?.selectedId), () => { void v2?.exitFocus(); });
+// D085-S5 BEGIN
+surfaceStack = bindSurfaces(surfaceBindings, () => Boolean(v2?.selectedId), () => { ownDisplayedRemount(v2?.exitFocus()); });
+// D085-S5 END
 surfaceStack.subscribe(() => requestAnimationFrame(updateInsets));
 document.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "p" && !(event.target instanceof HTMLInputElement)) togglePanel();
   if (event.key.toLowerCase() === "t" && fullscreen() && !(event.target instanceof HTMLInputElement)) get<HTMLButtonElement>("fullscreen-collapse").click();
 });
-get<HTMLButtonElement>("selection-focus-chip").addEventListener("click", () => { void v2?.exitFocus(); });
+// D085-S5 BEGIN
+get<HTMLButtonElement>("selection-focus-chip").addEventListener("click", () => { ownDisplayedRemount(v2?.exitFocus()); });
+// D085-S5 END
 get<HTMLElement>("neighbourhood-control").addEventListener("click", event => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-depth]");
   if (!button || !v2) return;
   const depth = button.dataset.depth === "1" ? 1 : button.dataset.depth === "2" ? 2 : null;
-  void v2.setNeighbourhood(depth);
+  // D085-S5 BEGIN
+  ownDisplayedRemount(v2.setNeighbourhood(depth));
+  // D085-S5 END
 });
 const controlTip = document.createElement("div"); controlTip.id = "control-tooltip"; controlTip.hidden = true; document.body.append(controlTip);
 let tipTimer = 0;
