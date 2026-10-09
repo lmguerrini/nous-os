@@ -66,7 +66,7 @@ import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
-import { containerSphereLOD, containerTitleFont, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
+import { containerSphereLOD, containerTitleFont, juliaAtlas2dDrawnRimPx, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
@@ -822,7 +822,7 @@ export const createProductView: CreateProductView = async (input) => {
   let indraShellsSubmitted = 0;
   let indraShellsDrawn = 0;
   // D087-JULIA BEGIN
-  let juliaAtlasDrawnShells: readonly { id: string; radiusPx: number }[] = [];
+  let juliaAtlasDrawnShells: readonly { id: string; radiusPx: number; overlapRadiusPx?: number }[] = [];
   let juliaAtlasTitledIds = new Set<string>();
   // D087-JULIA END
   function refreshIndraShellCounts(containers = layoutContainers) {
@@ -834,11 +834,22 @@ export const createProductView: CreateProductView = async (input) => {
     }
     indraShellsSubmitted = 0;
     indraShellsDrawn = 0;
-    const drawnShells: { id: string; radiusPx: number }[] = [];
+    const drawnShells: { id: string; radiusPx: number; overlapRadiusPx?: number }[] = [];
+    // D087-JULIA BEGIN: the atlas flag the canvas layers draw with, as the one
+    // interaction object the counted ink shares with them.
+    const atlasInkInteraction = morphologyInteraction.forceJuliaAtlasRims === undefined ? undefined
+      : { forceJuliaAtlasRims: morphologyInteraction.forceJuliaAtlasRims };
     for (const shell of containers) {
       if (shell.id === ABSOLUTE_CONTAINER_ID) continue;
       indraShellsSubmitted++;
-      const radiusPx = Math.max(0.5, shell.radius * projectedWorldScale(shell.center, shell.radius, project));
+      const trueRadiusPx = Math.max(0.5, shell.radius * projectedWorldScale(shell.center, shell.radius, project));
+      // D087-JULIA BEGIN: a closed 2D atlas pearl reports the rim its ring
+      // really draws — floored at the badge threshold, exactly like the ring
+      // ink and the badge predicate — as its counted `radiusPx`, while
+      // `overlapRadiusPx` keeps the true projected rim so a legibility pin can
+      // never read as a layout overlap. Every other shell (3D included)
+      // reports its projected limb exactly as before.
+      const radiusPx = juliaAtlas2dDrawnRimPx(shell, trueRadiusPx, axes.projection, atlasInkInteraction);
       // D087-JULIA BEGIN: a submitted but offscreen pearl has no drawn rim.
       const centerPx = juliaAtlas ? project(shell.center) : null;
       const inFrame = !centerPx || centerPx.x + radiusPx >= 0 && centerPx.x - radiusPx <= container.clientWidth
@@ -848,7 +859,8 @@ export const createProductView: CreateProductView = async (input) => {
         morphologyInteraction.focusIds?.has(shell.id) ?? false, radiusPx)) {
         if (inFrame) {
           indraShellsDrawn++;
-          if (juliaAtlas) drawnShells.push({ id: shell.id, radiusPx });
+          if (juliaAtlas) drawnShells.push({ id: shell.id, radiusPx,
+            ...(radiusPx === trueRadiusPx ? {} : { overlapRadiusPx: trueRadiusPx }) });
         }
       }
     }

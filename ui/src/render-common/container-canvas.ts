@@ -394,6 +394,23 @@ const PEARL_TITLE_GAP_PX = 12;
 const juliaCount = (container: MorphologyContainerPath, interaction?: ContainerInteraction) =>
   interaction?.forceJuliaAtlasRims && container.open === false
     ? / · (\+\d+)$/.exec(container.title ?? '')?.[1] ?? null : null;
+/** The fitted 2D overview can land the composed rims a few percent under the
+ * badge threshold — the atlas frames the pearls at exactly 8 px only at its
+ * reference projection, and two ×1.05 framing widenings plus the window size
+ * decide where the fitted view lands. A closed atlas pearl therefore never
+ * draws below this screen-space minimum, the same value in the ring ink, in
+ * the badge predicate and in the counted ink, so an admitted pearl keeps its
+ * «+N» in any window. 3D is untouched: its fitted pose reads above 8 px. */
+export const JULIA_ATLAS_2D_MIN_DRAWN_RIM_PX = 8;
+/** The rim a closed atlas pearl actually draws in 2D: the projected rim, floored
+ * at the badge threshold. Anywhere else (3D, open pearls, non-atlas views) the
+ * caller's rim is returned unchanged. */
+export function juliaAtlas2dDrawnRimPx(container: { readonly open?: boolean }, rimPx: number,
+  projection: "2d" | "3d", interaction?: ContainerInteraction): number {
+  return projection === "2d" && interaction?.forceJuliaAtlasRims === true && container.open === false
+    ? Math.max(rimPx, JULIA_ATLAS_2D_MIN_DRAWN_RIM_PX)
+    : rimPx;
+}
 // D087-JULIA END
 
 /** The exact font a title of this level is drawn in — the measure must use it, so a title that
@@ -647,7 +664,13 @@ export function containerTitleRect(
   const badgeCount = juliaCount(container, interaction);
   if (badgeCount) {
     const center = project(container.center);
-    const rim = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
+    // D087-JULIA BEGIN: the badge predicate reads the rim the ring really draws
+    // — floored at the badge threshold for a closed 2D atlas pearl — so a
+    // fitted window that lands the composed rim just under 8 px cannot strip
+    // the pearl of its «+N». The threshold and the placement are unchanged.
+    const rim = juliaAtlas2dDrawnRimPx(container,
+      Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project)), projection, interaction);
+    // D087-JULIA END
     const width = Math.min(30, badgeCount.length * 4.7);
     if (rim < 8 || center.x + rim < 0 || center.y + rim < 0
       || center.x - rim > bounds.width || center.y - rim > bounds.height) return null;
@@ -748,12 +771,29 @@ export function drawContainers(
       context.lineWidth = 0.85 + Math.max(0, 4 - container.level) * 0.18;
       setDash(context, []);
       context.beginPath();
+      // D087-JULIA BEGIN: a closed atlas pearl's ring is pinned to the same
+      // screen-space minimum its badge predicate and counted ink read, by
+      // scaling the projected circle about its own centre. Only the ring's ink
+      // changes — no node, guide or Julia address moves, 3D and non-atlas
+      // views are untouched, and a window whose fitted rims already reach the
+      // threshold draws exactly the circle the geometry built (grow stays 1).
+      let grow = 1, originX = 0, originY = 0;
+      if (interaction?.forceJuliaAtlasRims === true && container.open === false) {
+        const trueRim = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
+        const pinnedRim = juliaAtlas2dDrawnRimPx(container, trueRim, projection, interaction);
+        if (pinnedRim > trueRim) {
+          const centre = project(container.center);
+          originX = centre.x; originY = centre.y;
+          grow = pinnedRim / trueRim;
+        }
+      }
       const first = project(outline[0]!);
-      context.moveTo(first.x, first.y);
+      context.moveTo(originX + (first.x - originX) * grow, originY + (first.y - originY) * grow);
       for (let index = 1; index < outline.length; index++) {
         const point = project(outline[index]!);
-        context.lineTo(point.x, point.y);
+        context.lineTo(originX + (point.x - originX) * grow, originY + (point.y - originY) * grow);
       }
+      // D087-JULIA END
       if (typeof context.fill === 'function') {
         context.fillStyle = `rgba(${ink}, ${container.level === 0 ? 0.012 : 0.014})`;
         context.fill();
@@ -977,7 +1017,11 @@ export function placeContainerTitles(
     // centre collides with an earlier title gets a nearby slot around its own rim.
     const badge = juliaCount(container, interaction);
     const center = badge ? project(container.center) : null;
-    const rim = badge ? Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project)) : 0;
+    // D087-JULIA BEGIN: the fallback slots sit around the rim the ring draws —
+    // the same pinned value the badge predicate and the ink use.
+    const rim = badge ? juliaAtlas2dDrawnRimPx(container,
+      Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project)), projection, interaction) : 0;
+    // D087-JULIA END
     const offset = rim + 5;
     const choices = center ? [rect,
       { ...rect, top: center.y - offset - rect.height },

@@ -798,14 +798,18 @@ export class V2Page {
         if (this.topology !== 'julia' || !this.topologyIndra || !isJuliaAtlasLayout(this.lawLayout) || !this.view?.projectPoint)
             return null;
         const ink = (this.view as ProductView & { readJuliaAtlasInk?: () => {
-            shells: readonly { id: string; radiusPx: number }[]; countedShellIds: readonly string[];
-            paintedNodeIds: readonly string[] } }).readJuliaAtlasInk?.();
+            shells: readonly { id: string; radiusPx: number; overlapRadiusPx?: number }[];
+            countedShellIds: readonly string[]; paintedNodeIds: readonly string[] } }).readJuliaAtlasInk?.();
         if (!ink) return null;
         const canvases = document.querySelectorAll<HTMLCanvasElement>('#render-root canvas[data-topology-guides]');
         const canvas = canvases.item(canvases.length - 1);
         let guideIds: string[] = [];
         try { guideIds = JSON.parse(canvas?.dataset.atlasDrawnIds ?? '[]') as string[]; } catch { /* no drawn guides */ }
         const radii = new Map(ink.shells.map(shell => [shell.id, shell.radiusPx]));
+        // D087-JULIA BEGIN: the overlap inequality measures the true projected
+        // rim; a closed 2D atlas pearl's `radiusPx` is its pinned drawn rim.
+        const overlapRadii = new Map(ink.shells.map(shell => [shell.id, shell.overlapRadiusPx ?? shell.radiusPx]));
+        // D087-JULIA END
         const host = document.getElementById('render-root');
         return certifyJuliaAtlasDrawing(this.lawLayout, this.lawSnapshot, {
             nodeIds: new Set(ink.paintedNodeIds), shellIds: new Set(ink.shells.map(shell => shell.id)),
@@ -813,6 +817,9 @@ export class V2Page {
                 this.containers.some(shell => shell.id === id && / · \+\d+$/.test(shell.title ?? '')))),
             guideIds: new Set(guideIds), project: point => this.view!.projectPoint!(point),
             shellRadiusPx: shell => radii.get(shell.id) ?? 0,
+            // D087-JULIA BEGIN
+            overlapShellRadiusPx: shell => overlapRadii.get(shell.id) ?? 0,
+            // D087-JULIA END
             ...(host ? { viewport: { width: host.clientWidth, height: host.clientHeight } } : {}),
         });
     }

@@ -315,15 +315,25 @@ export function certifyJuliaAtlasDrawing(layout: JuliaAtlasLayout, snapshot: Top
   nodeIds: ReadonlySet<string>; shellIds: ReadonlySet<string>; countedShellIds: ReadonlySet<string>;
   guideIds: ReadonlySet<string>; project(point: Point3): Readonly<{ x: number; y: number }>;
   shellRadiusPx(shell: LayoutContainer): number;
+  // D087-JULIA BEGIN: the radius the rim-overlap inequality measures. Absent —
+  // every historical caller — it is `shellRadiusPx` itself: the drawn rim is
+  // the layout rim. A caller that pins a screen-space minimum drawn rim in
+  // `shellRadiusPx` (the 2D atlas legibility floor) passes the true projected
+  // rim here, so a legibility pin can never read as a layout overlap.
+  overlapShellRadiusPx?(shell: LayoutContainer): number;
   viewport?: Readonly<{ width: number; height: number }>;
 }>): JuliaAtlasCertificate {
   const shells = layout.containers.filter(c => c.id !== ABSOLUTE_CONTAINER_ID && drawn.shellIds.has(c.id));
   const projected = (p: Point3) => drawn.project(p);
+  // D087-JULIA BEGIN: see the field above; the default keeps one radius for
+  // both gates exactly as before.
+  const overlapRadiusPx = drawn.overlapShellRadiusPx ?? drawn.shellRadiusPx;
+  // D087-JULIA END
   let overlap = 0;
   for (let i = 0; i < shells.length; i++) for (let j = i + 1; j < shells.length; j++) {
     const a = shells[i]!, b = shells[j]!;
     const pa = projected(a.center), pb = projected(b.center);
-    if (Math.hypot(pa.x - pb.x, pa.y - pb.y) < drawn.shellRadiusPx(a) + drawn.shellRadiusPx(b) + GAP_PX) overlap++;
+    if (Math.hypot(pa.x - pb.x, pa.y - pb.y) < overlapRadiusPx(a) + overlapRadiusPx(b) + GAP_PX) overlap++;
   }
   const closed = shells.filter(shell => !shell.open && drawn.nodeIds.has(shell.id)
     && drawn.countedShellIds.has(shell.id) && drawn.shellRadiusPx(shell) >= RIM_PX
