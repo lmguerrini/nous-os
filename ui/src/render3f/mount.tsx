@@ -702,16 +702,18 @@ export function mount(
   let requestedMainEdges = live.buffers.filaments.edgeIds.length;
   let requestedSemanticEdges = live.buffers.filaments.edgeIds.length;
   let requestedVisualEdges = 0;
-  // D086-BURST BEGIN: an in-place legacy subset has its own presented census.
+  // D086-BURST BEGIN: fresh and revised legacy scenes share the presented subset census.
+  const initialLegacyInput = distinct ? options.presentation?.morphologyInput : undefined;
   let subsetReadiness: { view: string; nodes: number; edges: number; main: number } | null = null;
   let activeLegacySubset: DistinctSubsetUpdate | null = null;
-  const legacySubsetCensus = (update: DistinctSubsetUpdate) => {
+  const legacySubsetCensus = (update: Pick<DistinctSubsetUpdate, 'input' | 'readinessView'>) => {
     const counts = nativeSubsetCounts(update.input.nodes, update.input.edges,
       new Map(live.scene.nodes.map(node => [node.id, node.kind])), emphasisIds);
     return { view: update.readinessView ?? options.readinessView ??
       `${options.organization}/3d/${derivedMorphology}/${options.lodBand}`,
       nodes: counts.nodes, edges: counts.allEdges, main: counts.mainEdges };
   };
+  if (initialLegacyInput) subsetReadiness = legacySubsetCensus({ input: initialLegacyInput });
   // D086-BURST END
   const refreshPresentedCounts = (): void => {
     if (typedPicker) {
@@ -752,10 +754,10 @@ export function mount(
       requestedMainEdges = nativeMainIds.size;
       // D085-S3 END
     }
-    // D086-BURST BEGIN: a focus rebuild replaces native buffers, but the drawn
-    // distinct subset and its key remain the accepted page state.
-    if (activeLegacySubset && !typedPicker) {
-      subsetReadiness = legacySubsetCensus(activeLegacySubset);
+    // D086-BURST BEGIN: focus rebuilds retain the presented initial or revised
+    // subset even when the resident native buffers contain extra candidates.
+    if (!typedPicker && subsetReadiness) {
+      if (activeLegacySubset) subsetReadiness = legacySubsetCensus(activeLegacySubset);
       requestedNodes = subsetReadiness.nodes;
       requestedSemanticEdges = subsetReadiness.edges;
       requestedMainEdges = subsetReadiness.main;
@@ -910,8 +912,21 @@ export function mount(
     clearNativeProxy();
     if (!nativeLab || typedPicker || !labDenseInteraction(options.labTopology,
       live.scene.nodes.length, DENSE_SCENE_THRESHOLD)) return;
-    const skeleton = nativeLabSkeleton(live.scene.nodes, live.scene.edges,
-      nativeLevels, emphasisIds ?? new Set(), true, nativeRelationRanks);
+    // D086-BURST BEGIN: the moving Lab skeleton belongs to the presented set,
+    // even when its native buffers retain candidates for a later density.
+    const presentedInput = activeLegacySubset?.input ?? initialLegacyInput;
+    const presentedNodeIds = presentedInput && new Set(presentedInput.nodes.map(node => node.id));
+    const presentedEdgeIds = presentedInput && new Set(presentedInput.edges.map(edge => edge.id));
+    const presentedNodes = presentedNodeIds
+      ? live.scene.nodes.filter(node => presentedNodeIds.has(node.id)) : live.scene.nodes;
+    const presentedEdges = presentedEdgeIds
+      ? live.scene.edges.filter(edge => presentedEdgeIds.has(edge.id)) : live.scene.edges;
+    const skeleton = presentedInput
+      ? nativeLabSkeleton(presentedNodes, presentedEdges,
+        nativeLevels, emphasisIds ?? new Set(), true, nativeRelationRanks)
+      : nativeLabSkeleton(live.scene.nodes, live.scene.edges,
+        nativeLevels, emphasisIds ?? new Set(), true, nativeRelationRanks);
+    // D086-BURST END
     nativeAnchorRules = skeleton.anchorRules;
     const nodeIndices = live.buffers.nodes.ids.flatMap((id, index) => skeleton.nodeIds.has(id) ? [index] : []);
     const edgeIndices = live.buffers.filaments.edgeIds.flatMap((id, index) => skeleton.edgeIds.has(id) ? [index] : []);
