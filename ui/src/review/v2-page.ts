@@ -2582,8 +2582,11 @@ export class V2Page {
             this.projectionHost?.remove();
             this.projectionRenderer = renderer;
             this.projectionHost = host;
-            // D086-BURST BEGIN
-            activateRenderReadinessHost(host);
+            // D086-BURST BEGIN: the mounted renderer may replay only its drawing.
+            const readinessOwner = this.topology !== 'natural'
+                ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
+            const expectedView = `${readinessOwner}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`;
+            activateRenderReadinessHost(host, expectedView);
             // D086-BURST END
             this.mountedCameraKey = cameraKey;
             this.overviewRatio = null;
@@ -5447,7 +5450,10 @@ export class V2Page {
             // D085-S1 END
             this.viewHost = nextHost;
             // D086-BURST BEGIN: replay the committed mount's own submitted frame.
-            activateRenderReadinessHost(nextHost);
+            const readinessOwner = this.topology !== 'natural'
+                ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
+            const expectedView = `${readinessOwner}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`;
+            activateRenderReadinessHost(nextHost, expectedView);
             // D086-BURST END
             this.canopyRailLayer = nextRailLayer;
             // D082-B2 BEGIN
@@ -6073,7 +6079,21 @@ export class V2Page {
             // D086-BURST END
             const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
             if (liveHost) {
-                const presented = activateRenderReadinessHost(liveHost);
+                // D086-BURST BEGIN: a resident host may still store another view's frame.
+                const committedAxes = this.committedAxes ?? this.axes;
+                const committedDensity = this.committedDensity ?? this.density;
+                const committedTaxonomy = this.committedAxes ? this.committedTaxonomy
+                    : { topology: this.topology, indra: this.topologyIndra };
+                const readinessOwner = committedTaxonomy.topology !== 'natural'
+                    ? `lab/${committedTaxonomy.topology}${committedTaxonomy.indra ? '+indra' : ''}`
+                    : committedAxes.organization;
+                const expectedView = `${readinessOwner}/${committedAxes.projection}/${committedAxes.morphology}/${committedDensity}/${committedAxes.reading}`;
+                const presented = activateRenderReadinessHost(liveHost, expectedView);
+                if (!presented) {
+                    if (this.committedAxes && this.committedDensity) this.replayRestoredRenderer();
+                    else this.ownDisplayedFailure(this.refresh(false, false, true));
+                }
+                // D086-BURST END
                 if (presented?.quality === 'completa' && this.refreshPending === 0
                     && this.d081Quality === 'recupero') {
                     this.d081Quality = 'completa';
