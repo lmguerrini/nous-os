@@ -815,21 +815,28 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       explanation.style.left = `${safe.left + 8}px`;
       explanation.style.top = `${safe.top + 8}px`;
     }
-    const measuredExplanation = explanation?.getBoundingClientRect();
-    const hostBounds = host.getBoundingClientRect();
-    const explanationBox = measuredExplanation && measuredExplanation.width > 0
+    // D087-LABELS BEGIN: the explanation reservation feeds only label placement; with the axis
+    // off the card is neither measured nor given a fallback reserved box (it stays visible).
+    const measuredExplanation = !showLabels ? undefined : explanation?.getBoundingClientRect();
+    const hostBounds = !showLabels ? null : host.getBoundingClientRect();
+    const explanationBox: CanopyRect | null = !showLabels ? null
+      : measuredExplanation && hostBounds && measuredExplanation.width > 0
       ? { left: measuredExplanation.left - hostBounds.left,
         top: measuredExplanation.top - hostBounds.top,
         right: measuredExplanation.right - hostBounds.left,
         bottom: measuredExplanation.bottom - hostBounds.top }
       : { left: safe.left + 8, top: safe.top + 8,
         right: safe.left + 280, bottom: safe.top + 140 };
+    // D087-LABELS END
     // D086-MOT BEGIN: only semantic tiers one and two participate in motion labels.
-    const labelIds = overlayMotionIds ? new Set([...overlayMotionIds]
+    // D087-LABELS BEGIN: the id scan feeds only the candidate build; with the labels axis off no
+    // position is scanned for it.
+    const labelIds = !showLabels ? new Set<string>() : overlayMotionIds ? new Set([...overlayMotionIds]
       .filter(id => (layout.positions.get(id)?.level ?? Infinity) <= 2))
       : completeScene ? new Set([...layout.positions.values()]
       .filter(row => row.level <= 3).map(row => row.id)) : currentIds;
     // D086-MOT END
+    // D087-LABELS END
     // D087-LABELS BEGIN: with the labels axis off no candidate is projected or measured at all —
     // neither the semantic names nor the root title nor the bundle-count badges.
     const candidates = !showLabels ? [] : [...canopySemanticCandidates(layout, labelIds, point => view.projectPoint!(point),
@@ -860,8 +867,10 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       if (!reservedBadges.some(other => box.left < other.right && box.right > other.left
         && box.top < other.bottom && box.bottom > other.top)) reservedBadges.push(box);
     }
-    const hostRect = host.getBoundingClientRect();
-    const reservedOverlay = ['performance-overlay', 'graph-status-panel', 'details',
+    // D087-LABELS BEGIN: the reserved overlay rectangles feed only label placement; with the
+    // axis off no overlay element is looked up or measured.
+    const hostRect = !showLabels ? null : host.getBoundingClientRect();
+    const reservedOverlay = !showLabels || hostRect === null ? [] : ['performance-overlay', 'graph-status-panel', 'details',
       'review-toolbar', 'fullscreen-bar', 'focus-chip', 'selection-focus-controls',
       'toast', 'gizmo', 'panel-edge-toggle'].flatMap(id => {
       const element = document.getElementById(id);
@@ -871,6 +880,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
         top: rect.top - hostRect.top, right: rect.right - hostRect.left,
         bottom: rect.bottom - hostRect.top }] : [];
     });
+    // D087-LABELS END
     const recordCount = candidates.filter(row => (layout.positions.get(row.id)?.level ?? 0) >= 4).length;
     // D086-MOT BEGIN: retain the chosen label IDs and offsets across camera frames.
     const placed = !showLabels ? [] : overlayMotionIds && motionLabelOffsets
@@ -879,7 +889,10 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
         return { ...candidate, left: candidate.x + offset.dx, top: candidate.y + offset.dy };
       })
       : placeCanopyLabels(candidates, safe,
-        [explanationBox, ...reservedOverlay, ...reservedBadges], overlayMotionIds ? 24 : recordCount > 12 ? 72 : 44);
+        // D087-LABELS BEGIN: the explanation reservation is nullable only while the axis is off,
+        // where this call never runs; on keeps today's reserved list unchanged.
+        [...(explanationBox ? [explanationBox] : []), ...reservedOverlay, ...reservedBadges],
+        overlayMotionIds ? 24 : recordCount > 12 ? 72 : 44);
     if (overlayMotionIds && !motionLabelOffsets) {
       motionLabelOffsets = new Map(placed.map(item => [item.id,
         { dx: item.left - item.x, dy: item.top - item.y }]));
