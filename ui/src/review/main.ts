@@ -47,8 +47,12 @@ import { mountPerformanceHud } from "./perf-hud.ts";
 import type { PopoverStack, SurfaceBinding } from "./popover.ts";
 import { displayLabel } from "./graph-v2.ts";
 import type { GraphManifest } from "./graph-v2.ts";
-import { normalizeDensity } from "./lod.ts";
+import { densityBudget, normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
+// D086-CUSTOM BEGIN
+import type { CustomAvailability, CustomCommitFact, CustomDensityCapability, CustomDensityIntent } from './custom-density-types.ts';
+import type { ViewDensity } from './geometry-view2.ts';
+// D086-CUSTOM END
 import { GIZMO_IDLE_GRACE_MS, gizmoShouldRun } from "./gizmo-schedule.ts";
 import { formatD081GraphStatus, formatGraphPanelCounts, formatLegacyToolbarStatus, parseGraphToolbarCounts } from "./toolbar-status.ts";
 // D082-A-HUD BEGIN: retain the readiness suffix across graph-status refreshes.
@@ -58,7 +62,7 @@ import type { D081GraphStatus } from "./toolbar-status.ts";
 import { NodeDrawer } from "./node-drawer.ts";
 import { observeToolbarSectionVisibility } from "./toolbar-sections.ts";
 // D082-B2 BEGIN
-import { createGeometryTransitionQueue, geometryToLegacyAxes, lawTopology, resolveGeometryView2, resolveSupportedGeometryView2, rewriteGeometryUrl, serializeGeometryView2, wireTopology } from './geometry-view2.ts'; // D082-LAB-FIX4
+import { createGeometryTransitionQueue, currentCustomCommit, geometryToLegacyAxes, lawTopology, parseCustomDraft, resolveGeometryView2, resolveSupportedGeometryView2, rewriteGeometryUrl, serializeGeometryView2, wireTopology } from './geometry-view2.ts'; // D082-LAB-FIX4
 import type { GeometryView2, SavedGeometryView2 } from './geometry-view2.ts';
 // D084-W3-LABELS BEGIN: the selector keeps the short names; tooltips carry the classification.
 import { LAB_CONTAINER_DESCRIPTION, TOPOLOGY_IDS, topologyLabel, topologyRowState, topologySupport, topologyTooltip } from '../topology/registry.ts';
@@ -337,7 +341,12 @@ function persistView(): void {
       ? { naturalArrangement: axes.arrangement } : {}) };
   // D082-B2 END
   // D082-B2 BEGIN: the same storage key now carries the canonical schema-2 record.
-  if (view2WriteAllowed) writeLocal(storage, VIEW_STORAGE_KEY, serializeGeometryView2(geometry));
+  if (view2WriteAllowed) {
+    writeLocal(storage, VIEW_STORAGE_KEY, serializeGeometryView2(geometry));
+    // D086-CUSTOM BEGIN: the legacy fallback retains the committed Custom choice; the view stores its amount.
+    writeLocal(storage, 'd072.density', geometry.density);
+    // D086-CUSTOM END
+  }
   // D082-B2 END
   writeViewUrl();
 }
@@ -447,7 +456,7 @@ function syncToolbarSummary(): void {
     'mode' in geometry ? 'Holographic · legacy' : `${topologyLabel(lawTopology(geometry.topology), axes.projection)}${geometry.indra === 'on' ? ' · Indra ON' : ''}`,
     // D082-B2 END
     BAR_LABELS.reading[axes.reading],
-    ({ essential: "Essenziale", balanced: "Bilanciata", complete: "Completa" } as const)[density as "essential" | "balanced" | "complete"],
+    ({ essential: "Essenziale", balanced: "Bilanciata", complete: "Completa", custom: "Custom" } as const)[density as ViewDensity],
     detail === "all" ? "Tutte" : "Essenziali",
   ].join(" · ");
 }
@@ -646,7 +655,11 @@ function reportTaxonomyTransitionError(error: unknown): void {
 function chooseTaxonomy(topology: TopologyId, indra?: boolean): Promise<void> {
   // D086-F2 BEGIN: carry a density click already accepted by the toolbar into
   // the next topology mount, even if that click's slow mount is superseded.
-  const densityIntent = pendingDensityIntent;
+  // D086-CUSTOM BEGIN: an active Custom amount travels with every topology request.
+  const densityIntent = pendingDensityIntent ?? (density === 'custom'
+    ? makeCustomIntent(customNodes, topology, indra ?? (!('mode' in geometry) && geometry.indra === 'on')) : null);
+  if (densityIntent && 'density' in densityIntent) pendingDensityIntent = densityIntent;
+  // D086-CUSTOM END
   // D086-F2 BEGIN: a later density or axis click still owns this topology choice.
   const topologyIntent = { topology, indra };
   pendingTopologyIntent = topologyIntent;
@@ -655,7 +668,7 @@ function chooseTaxonomy(topology: TopologyId, indra?: boolean): Promise<void> {
   return geometryTransitions.enqueue(() => applyTaxonomy(topology, indra, densityIntent, undefined, topologyIntent));
   // D086-F2 END
 }
-async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, densityIntent: { value: Density } | null = null, targetAxes?: AxesInput, topologyIntent: { topology: TopologyId; indra: boolean | undefined } | null = null): Promise<void> {
+async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, densityIntent: { value: Density; density?: never } | (CustomDensityIntent & { value?: undefined }) | null = null, targetAxes?: AxesInput, topologyIntent: { topology: TopologyId; indra: boolean | undefined } | null = null): Promise<void> {
   const indra = requestedIndra ?? ('mode' in geometry ? false : geometry.indra === 'on');
   const support = topologySupport(topology, targetAxes?.projection ?? axes.projection, indra);
   // D085-S1 BEGIN: an accepted click cannot silently finish without a page task.
@@ -674,8 +687,19 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, den
   // until the controls and URL have been presented below.
   // D086-F2 BEGIN
   try {
-    if (targetAxes) await v2?.setTaxonomy(topology, indra, true, targetAxes, densityIntent?.value);
+    // D086-CUSTOM BEGIN: Part A accepts the sixth argument as one intent and returns its commit fact.
+    const customIntent = densityIntent?.density === 'custom' ? densityIntent : null;
+    if (customIntent) {
+      const page = v2 as (typeof v2 & { setTaxonomy(topology: TopologyId, indra: boolean,
+        requirePresentation: boolean, axes?: AxesInput, density?: Density,
+        intent?: CustomDensityIntent): Promise<CustomCommitFact | 'superseded' | void> }) | null;
+      const result = await page?.setTaxonomy(topology, indra, true, targetAxes, undefined, customIntent);
+      if (result === 'superseded' || densityIntent !== pendingDensityIntent) throw new GeometrySupersededError();
+      if (!result || !('committed' in result) || !result.committed) throw new Error('Custom non confermato dalla pagina');
+      acceptCustomCommit(result);
+    } else if (targetAxes) await v2?.setTaxonomy(topology, indra, true, targetAxes, densityIntent?.value);
     else await v2?.setTaxonomy(topology, indra, true, undefined, densityIntent?.value);
+    // D086-CUSTOM END
   }
   // D086-F2 END
   catch (error) {
@@ -698,15 +722,24 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, den
       ...(committed.brain !== undefined ? { brain: committed.brain } : {}) });
   } else axes = appliedAxes({ organization });
   if (v2) density = v2.densitySetting ?? density;
+  // D086-CUSTOM BEGIN
+  if (densityIntent && 'density' in densityIntent) density = 'custom';
+  // D086-CUSTOM END
   // D085-S1 END
   geometry = { schema: 2, rendering: axes.projection, topology: wireTopology(topology), indra: indra ? 'on' : 'off',
     morphology: axes.morphology, density, reading: axes.reading, colour: axes.colour, labels: axes.labels,
+    // D086-CUSTOM BEGIN
+    ...(typeof customNodes !== 'undefined' && customNodes !== undefined ? { customNodes } : {}),
+    // D086-CUSTOM END
     ...(axes.brain !== undefined ? { brain: axes.brain } : {}),
     ...(topology === 'natural' && !indra && axes.arrangement !== undefined ? { naturalArrangement: axes.arrangement } : {}),
     ...(topology === 'natural' ? { compatibility: indra ? 'd081-indra-recursive' as const : 'd081-natural' as const }
       : topology === 'canopy-ifs' && !indra ? { compatibility: 'd081-canopy' as const } : {}) };
   view2WriteAllowed = true;
-  persistView(); updateButtons(); syncToolbarSummary();
+  persistView(); updateButtons();
+  // D086-F2 BEGIN: density chrome and the summary present the combined mount together.
+  if (typeof syncDensity === 'function') syncDensity();
+  // D086-F2 END
   // D086-F2 BEGIN
   if (pendingDensityIntent === densityIntent) pendingDensityIntent = null;
   if (pendingTopologyIntent === topologyIntent) pendingTopologyIntent = null;
@@ -1066,6 +1099,9 @@ function syncContractGraphStatus(): void {
   get<HTMLElement>('graph-status-levels').textContent = `${formatted.details[1]} ${formatted.details[2]} ${formatted.details[3]}`;
   get<HTMLElement>('graph-status-cap').textContent = `${formatted.details[4]} ${formatted.details[5]}`;
   get<HTMLElement>('graph-status-hint').textContent = formatted.details[6];
+  // D086-CUSTOM BEGIN: a focus or source change can raise the current minimum.
+  if (typeof syncCustomControls === 'function' && density === 'custom') syncCustomControls();
+  // D086-CUSTOM END
 }
 function syncGraphStatusRenderingRows(): void {
   const rows = [...details.querySelectorAll<HTMLElement>('#v2-controls > .detail-row')];
@@ -1318,6 +1354,10 @@ function syncCommittedPageGeometry(): void {
     ...(mounted.brain !== undefined ? { brain: mounted.brain } : {}) });
   // D085-S1 END
   density = v2.densitySetting ?? density;
+  // D086-CUSTOM BEGIN: a committed Custom fact is the source of the saved amount.
+  if (typeof customNodes !== 'undefined' && customNodes !== undefined && !('mode' in geometry))
+    geometry = { ...geometry, customNodes };
+  // D086-CUSTOM END
   if (!('mode' in geometry)) geometry = { ...geometry, rendering: axes.projection,
     topology: wireTopology(committed.topology), indra: committed.indra ? 'on' : 'off', density };
   syncBrainControls();
@@ -1341,7 +1381,12 @@ function syncCommittedPageGeometry(): void {
 function setAxes(input: AxesInput): Promise<void> {
   // D086-F2 BEGIN: an axis click supersedes the mount but carries its pending law.
   const topologyIntent = pendingTopologyIntent;
-  const densityIntent = pendingDensityIntent;
+  // D086-CUSTOM BEGIN
+  const densityIntent = pendingDensityIntent ?? (density === 'custom'
+    ? makeCustomIntent(customNodes, topologyIntent?.topology ?? lawTopology('mode' in geometry ? 'natural' : geometry.topology),
+      topologyIntent?.indra ?? (!('mode' in geometry) && geometry.indra === 'on')) : null);
+  if (densityIntent && 'density' in densityIntent) pendingDensityIntent = densityIntent;
+  // D086-CUSTOM END
   v2?.supersedeGeometry();
   if (topologyIntent) return geometryTransitions.enqueue(() =>
     applyTaxonomy(topologyIntent.topology, topologyIntent.indra, densityIntent, input, topologyIntent));
@@ -1455,6 +1500,10 @@ function applyAxes(input: AxesInput): Promise<void> {
 // D085-S1 BEGIN: location navigation cannot interleave a toolbar transition.
 function restoreGeometryFromLocation(): Promise<void> {
   const search = location.search, hash = location.hash;
+  // D086-F2 BEGIN: navigation owns the next view; earlier toolbar intents cannot reappear.
+  pendingDensityIntent = null;
+  pendingTopologyIntent = null;
+  // D086-F2 END
   v2?.supersedeGeometry();
   return geometryTransitions.enqueue(() => applyGeometryFromLocation(search, hash));
 }
@@ -1468,18 +1517,35 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
   }
   const support = resolveSupportedGeometryView2(resolved.value, topologySupport);
   const target = support.value;
+  // D086-CUSTOM BEGIN: a Custom URL waits for a page that can commit it.
+  if (target.density === 'custom' && !customCapability()) return;
+  view2WriteAllowed = true;
+  // D086-CUSTOM END
   const targetAxes = geometryToLegacyAxes(target);
   if (!('mode' in target) && v2) {
     const targetTopology = lawTopology(target.topology);
     const targetIndra = target.indra === 'on';
     // D085-S1 BEGIN: restore one final scene, then present its URL and controls.
-    try { await v2.setTaxonomy(targetTopology, targetIndra, true, targetAxes, target.density); }
+    // D086-CUSTOM BEGIN: location restore carries amount and density together.
+    const restoredCustom = target.density === 'custom' ? makeCustomIntent(target.customNodes, targetTopology, targetIndra) : null;
+    try {
+      const page = v2 as V2Page & { setTaxonomy(topology: TopologyId, indra: boolean,
+        requirePresentation: boolean, axes?: AxesInput, density?: Density,
+        intent?: CustomDensityIntent): Promise<CustomCommitFact | 'superseded' | void> };
+      const result = await page.setTaxonomy(targetTopology, targetIndra, true, targetAxes,
+        target.density === 'custom' ? undefined : target.density, restoredCustom ?? undefined);
+      if (result === 'superseded') throw new GeometrySupersededError();
+      if (restoredCustom) {
+        if (!result || !('committed' in result) || !result.committed) throw new Error('Custom non confermato dalla pagina');
+        acceptCustomCommit(result);
+      }
+    }
     catch (error) {
       syncCommittedPageGeometry(); persistView();
       throw error;
     }
     try {
-      geometry = target;
+      geometry = restoredCustom && customNodes !== undefined ? { ...target, customNodes } : target;
       // D085-S1 BEGIN: the restored target supplies Natural's resolved arrangement.
       const committed = v2.committedViewAxes;
       axes = appliedAxes({ ...targetAxes, projection: committed.projection,
@@ -1488,6 +1554,7 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
         ...(committed.brain !== undefined ? { brain: committed.brain } : {}) });
       // D085-S1 END
       density = v2.densitySetting ?? density;
+      if (restoredCustom) density = 'custom';
       if (support.notice) experimentalSuspensionNotice = support.notice;
       persistView();
       syncDensity();
@@ -1503,12 +1570,13 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
       syncToolbarSummary();
       if (support.notice) showExperimentalSuspensionNotice();
     } finally { v2.confirmTaxonomyPresentation(targetTopology, targetIndra); }
+    // D086-CUSTOM END
     return;
     // D085-S1 END
   }
   geometry = target;
   axes = targetAxes;
-  density = target.density;
+  density = target.density === 'custom' ? 'balanced' : target.density;
   if (support.notice) experimentalSuspensionNotice = support.notice;
   persistView();
   syncDensity();
@@ -1986,34 +2054,153 @@ get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.s
 // D-072 L1: the density selector — Essenziale · Bilanciata · Completa — a small segmented control
 // in the toolbar row, default Bilanciata and remembered like the other preferences.
 // D082-B2 BEGIN: a portable view2 carries its own density.
-let density = geometry.density;
+// D086-CUSTOM BEGIN: preserve the saved choice while the initial page prepares its Custom commit.
+let density: ViewDensity = geometry.density;
+// D086-CUSTOM END
 // D086-F2 BEGIN: click intent is distinct from the density last painted.
-let pendingDensityIntent: { value: Density } | null = null;
+let pendingDensityIntent: { value: Density } | CustomDensityIntent | null = null;
 // D086-F2 BEGIN: the last taxonomy request remains owned until a combined mount presents it.
 let pendingTopologyIntent: { topology: TopologyId; indra: boolean | undefined } | null = null;
 // D086-F2 END
 // D086-F2 END
 // D082-B2 END
 const densityButtons = [...document.querySelectorAll<HTMLButtonElement>("#density-control button[data-density]")];
+// D086-CUSTOM BEGIN: drafts do not enter the geometry lane until Apply or Enter.
+let customNodes = geometry.customNodes;
+let customDraftDirty = false;
+let customSerial = 0;
+let customAvailabilityKey = '';
+const customRange = get<HTMLInputElement>('custom-density-range');
+const customNumber = get<HTMLInputElement>('custom-density-number');
+const customApply = get<HTMLButtonElement>('custom-density-apply');
+const customAvailable = get<HTMLElement>('custom-density-available');
+const customMessage = get<HTMLElement>('custom-density-message');
+const customRow = get<HTMLElement>('custom-density-row');
+function customCapability(): CustomDensityCapability | null {
+  const page = v2 as (V2Page & Partial<CustomDensityCapability>) | null;
+  return page && typeof page.customAvailability === 'function' && typeof page.setDensityIntent === 'function'
+    ? page as CustomDensityCapability : null;
+}
+function customAvailability(): CustomAvailability | null { return customCapability()?.customAvailability() ?? null; }
+function boundedCustomAmount(value: number, availability: CustomAvailability): number {
+  return Math.max(availability.minimum, Math.min(availability.available, value));
+}
+function defaultCustomAmount(topology: TopologyId, indra: boolean): number {
+  return densityBudget('balanced', indra ? 'indra' : topology === 'canopy-ifs' ? 'canopy' : topology).nodes;
+}
+function makeCustomIntent(amount: number | undefined, topology: TopologyId, indra: boolean): CustomDensityIntent {
+  return { density: 'custom', requestedNodes: amount ?? defaultCustomAmount(topology, indra), serial: ++customSerial };
+}
+function acceptCustomCommit(fact: CustomCommitFact): void {
+  customNodes = fact.requestedNodes;
+  customDraftDirty = false;
+  customMessage.textContent = fact.clampedFrom === undefined ? `richiesti ${fact.requestedNodes.toLocaleString('it-IT')}`
+    : `richiesti ${fact.requestedNodes.toLocaleString('it-IT')} · adattati da ${fact.clampedFrom.toLocaleString('it-IT')}`;
+}
+function syncCustomControls(): void {
+  const availability = customAvailability();
+  const availabilityKey = availability ? `${availability.sourceDigest}:${availability.minimum}:${availability.available}` : '';
+  if (availabilityKey !== customAvailabilityKey) { customDraftDirty = false; customAvailabilityKey = availabilityKey; }
+  const active = density === 'custom';
+  const usable = active && !!availability && availability.available > 0;
+  customRow.setAttribute('aria-hidden', String(!active));
+  customAvailable.textContent = `disponibili ${(availability?.available ?? 0).toLocaleString('it-IT')}`;
+  const minimum = availability?.minimum ?? 1, maximum = Math.max(minimum, availability?.available ?? 1);
+  customRange.min = customNumber.min = String(minimum);
+  customRange.max = customNumber.max = String(maximum);
+  if (!customDraftDirty) {
+    const value = availability && availability.available > 0
+      ? boundedCustomAmount(customNodes ?? defaultCustomAmount(lawTopology('mode' in geometry ? 'natural' : geometry.topology),
+        !('mode' in geometry) && geometry.indra === 'on'), availability) : minimum;
+    customRange.value = customNumber.value = String(value);
+  }
+  customRange.disabled = customNumber.disabled = customApply.disabled = !usable;
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${availability?.available ?? 0}`);
+}
+function applyCustomDensity(initialAmount?: number): void {
+  const page = customCapability(), availability = customAvailability();
+  if (!page || !availability || availability.available === 0) return;
+  const raw = initialAmount === undefined ? customNumber.value.trim() : String(initialAmount);
+  const parsed = parseCustomDraft(raw, availability);
+  if (parsed === null) {
+    customMessage.textContent = 'Inserisci un numero intero valido.';
+    customNumber.setAttribute('aria-invalid', 'true');
+    return;
+  }
+  customNumber.removeAttribute('aria-invalid');
+  const requested = parsed;
+  const clampedDraft = Number(raw) !== requested ? Number(raw) : undefined;
+  const topology = lawTopology('mode' in geometry ? 'natural' : geometry.topology);
+  const indra = !('mode' in geometry) && geometry.indra === 'on';
+  const intent = makeCustomIntent(requested, topology, indra);
+  pendingDensityIntent = intent;
+  const topologyIntent = pendingTopologyIntent;
+  customMessage.textContent = `in attesa ${requested.toLocaleString('it-IT')}`;
+  v2?.supersedeGeometry();
+  void geometryTransitions.enqueue(async () => {
+    if (pendingDensityIntent !== intent) return;
+    if (topologyIntent) return applyTaxonomy(topologyIntent.topology, topologyIntent.indra, intent, undefined, topologyIntent);
+    const result = await page.setDensityIntent(intent);
+    if (!currentCustomCommit(intent, pendingDensityIntent && 'density' in pendingDensityIntent ? pendingDensityIntent : null, result)) return;
+    acceptCustomCommit(result);
+    if (clampedDraft !== undefined && result.clampedFrom === undefined)
+      customMessage.textContent = `richiesti ${result.requestedNodes.toLocaleString('it-IT')} · adattati da ${clampedDraft.toLocaleString('it-IT')}`;
+    syncCommittedPageGeometry();
+    density = 'custom';
+    if (!('mode' in geometry))
+      geometry = { ...geometry, density, ...(customNodes !== undefined ? { customNodes } : {}) };
+    view2WriteAllowed = true;
+    persistView();
+    syncDensity();
+    if (pendingDensityIntent === intent) pendingDensityIntent = null;
+  }).catch(reportTaxonomyTransitionError);
+}
+customRange.addEventListener('input', () => {
+  customNumber.value = customRange.value;
+  customDraftDirty = true;
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${customAvailability()?.available ?? 0}`);
+  customMessage.textContent = `bozza ${Number(customRange.value).toLocaleString('it-IT')}`;
+});
+customNumber.addEventListener('input', () => {
+  const value = Number(customNumber.value);
+  if (Number.isFinite(value)) customRange.value = String(value);
+  customDraftDirty = true;
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${customAvailability()?.available ?? 0}`);
+  customMessage.textContent = 'bozza';
+});
+customNumber.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); applyCustomDensity(); } });
+customApply.addEventListener('click', () => applyCustomDensity());
+// D086-CUSTOM END
 // D084-W6-TOOLBAR BEGIN: the Relazioni and Densità groups are laid out from the first paint
 // and hold a disabled state until the distilled graph is ready, so installing their data can
 // no longer change the toolbar height after the first camera fit (with the D-084 short
 // selector names the pre-install toolbar was one row shorter and grew on readiness).
 function enableV2ToolbarControls(): void {
   for (const button of densityButtons) button.disabled = false;
+  const customButton = densityButtons.find(button => button.dataset.density === 'custom');
+  if (customButton) customButton.disabled = !customCapability();
   get<HTMLSelectElement>("v2-relation-detail").disabled = false;
+  syncCustomControls();
 }
 function disableV2ToolbarControls(): void {
   for (const button of densityButtons) button.disabled = true;
   get<HTMLSelectElement>("v2-relation-detail").disabled = true;
+  syncCustomControls();
 }
 // D084-W6-TOOLBAR END
 function syncDensity(): void {
   for (const button of densityButtons)
     button.setAttribute("aria-pressed", String(button.dataset.density === density));
+  syncCustomControls();
   syncToolbarSummary();
 }
 function applyDensity(next: unknown): void {
+  if (next === 'custom') {
+    const topology = lawTopology('mode' in geometry ? 'natural' : geometry.topology);
+    applyCustomDensity(density === 'custom' ? undefined : customNodes ?? defaultCustomAmount(topology,
+      !('mode' in geometry) && geometry.indra === 'on'));
+    return;
+  }
   const value = normalizeDensity(next);
   // D086-F2 BEGIN
   const intent = { value };
@@ -2041,6 +2228,7 @@ function applyDensity(next: unknown): void {
     let densityCommitted = false;
     try {
       if (await v2?.setDensity(value) === 'superseded') return;
+      if (pendingDensityIntent !== intent) return;
       densityCommitted = true;
     } finally {
       if (!densityCommitted && v2) { syncCommittedPageGeometry(); persistView(); }
@@ -2346,7 +2534,8 @@ async function load() {
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
     // V2Page.load(..., { onNodePicked: showNodeDrawer }) keeps the shell's pick callback contract;
     // the same deps object now also carries the measured initial insets for its first fit.
-    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density,
+    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours,
+      density === 'custom' ? 'balanced' : density,
       { onNodePicked: showNodeDrawer, insets: reviewInsets(),
         // D082-B2 BEGIN
         ...(!('mode' in geometry) ? { taxonomy: { topology: lawTopology(geometry.topology), indra: geometry.indra === 'on' } } : {}),
@@ -2372,7 +2561,21 @@ async function load() {
     // D080-A3 BEGIN: the page resolves the brain default and stored choice on first entry.
     axes = { ...axes, brain: v2.brainEnabled };
     syncBrainControls();
-    persistView();
+    // D086-CUSTOM BEGIN: initial Custom URL/storage is published only after the page accepts it.
+    if (geometry.density === 'custom' && !('mode' in geometry)) {
+      const capability = customCapability();
+      if (capability) {
+        const result = await capability.setDensityIntent(makeCustomIntent(geometry.customNodes,
+          lawTopology(geometry.topology), geometry.indra === 'on'));
+        if (result !== 'superseded' && result.committed) {
+          acceptCustomCommit(result);
+          density = 'custom';
+          geometry = { ...geometry, ...(customNodes !== undefined ? { customNodes } : {}) };
+          persistView();
+        }
+      }
+    } else persistView();
+    // D086-CUSTOM END
     // D080-A3 END
     v2.setFlowMotion(flowMotion);
     // A view button exists only when its projection is registered: no dead control.
@@ -2385,6 +2588,7 @@ async function load() {
     // D084-W6-TOOLBAR BEGIN: the Relazioni/Densità groups are already laid out from the first
     // paint; reaching readiness only re-enables their controls — never a toolbar layout change.
     enableV2ToolbarControls();
+    syncDensity();
     // D084-W6-TOOLBAR END
     get<HTMLElement>("gizmo").hidden = axes.projection !== "3d";
     get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";

@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { transform } from 'esbuild';
+import { runInNewContext } from 'node:vm';
 import { canopyDensityMarks } from '../../src/fractal/canopy-reveal.ts';
 import type { CanopyLayout } from '../../src/fractal/canopy-layout.ts';
 // D085-S1 BEGIN: exercise the real page setters and extracted main transition bodies.
 import { load, makePage, makeMain, macro, tick, wit } from './geometry-contract-harness-d085.mjs';
 
 const environment = await load();
+// D086-F2 BEGIN: run the real button writer after the combined-mount sync recorded by the harness.
+const densitySyncStart = environment.mainSource.indexOf('function syncDensity(): void {');
+const densitySyncEnd = environment.mainSource.indexOf('\nfunction applyDensity(', densitySyncStart);
+assert.ok(densitySyncStart >= 0 && densitySyncEnd > densitySyncStart);
+const densitySyncSource = (await transform(environment.mainSource.slice(densitySyncStart, densitySyncEnd),
+  { loader: 'ts', target: 'es2022' })).code;
+// D086-F2 END
 environment.mod.setJuliaIndraLegibility('2d', true);
 environment.mod.setJuliaIndraLegibility('3d', true);
 
@@ -45,6 +54,18 @@ function consistent(page: any, main: any) {
   assert.equal(url.topology, state.geometry.topology);
   assert.equal(url.indra, state.geometry.indra);
   assert.equal(url.density, state.density);
+  // D086-F2 BEGIN: the harness records each real syncDensity call as the pressed-button update.
+  assert.equal(main.log.sync.filter((entry: { tag: string }) => entry.tag === 'density').at(-1)?.density,
+    state.density, 'pressed density button follows the mounted density');
+  const buttons = ['essential', 'balanced', 'complete', 'custom'].map(value => ({
+    dataset: { density: value }, pressed: '',
+    setAttribute(name: string, setting: string) { if (name === 'aria-pressed') this.pressed = setting; },
+  }));
+  runInNewContext(`${densitySyncSource}\nsyncDensity()`, { density: state.density, densityButtons: buttons,
+    syncCustomControls() {}, syncToolbarSummary() {} });
+  assert.deepEqual(buttons.filter(button => button.pressed === 'true').map(button => button.dataset.density),
+    [state.density], 'exactly the mounted density button is pressed');
+  // D086-F2 END
   assert.equal(main.log.sync.at(-1).projection, mounted.projection);
   assert.equal(main.log.sync.at(-1).organization, mounted.organization);
 }
@@ -131,6 +152,23 @@ test('newer topology owns a density carry and older intent cannot revive', async
   main.applyDensity('complete');
   const last = main.chooseTaxonomy('julia');
   await drain(page, main, [first, last]);
+  consistent(page, main);
+  assert.equal(page.committedViewTaxonomy.topology, 'julia');
+  assert.equal(page.density, 'complete');
+});
+
+test('Back supersedes a pending topology and its next density click cannot revive it', async () => {
+  const page = makePage(environment.mod);
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  const first = main.chooseTaxonomy('canopy-ifs');
+  for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+  main.setTarget({ value: { schema: 2, rendering: '2d', topology: 'julia', indra: 'off',
+    morphology: 'stellar', density: 'balanced', reading: 'combined', colour: 'bw', labels: true } });
+  const back = main.restoreGeometryFromLocation();
+  await drain(page, main, [first, back]);
+  main.applyDensity('complete');
+  const densityTask = main.lane.enqueue(async () => {});
+  await drain(page, main, [densityTask]);
   consistent(page, main);
   assert.equal(page.committedViewTaxonomy.topology, 'julia');
   assert.equal(page.density, 'complete');
