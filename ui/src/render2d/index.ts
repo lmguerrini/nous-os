@@ -978,7 +978,9 @@ function mountDistinctCanvas(
   const ladder = new QualityLadder(({ stage, moving }) => {
     if (nativeTier) canvas.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
     if (!moving && stage === FULL_QUALITY_STAGE) draw();
-    else if (!moving) publishPresented();
+    // "D087-SIZE BEGIN": one transition publishes motion; camera frames have no changed census.
+    else publishPresented();
+    // "D087-SIZE END"
   });
   const draw = (): void => {
     if (!context) return;
@@ -987,7 +989,9 @@ function mountDistinctCanvas(
       lastMorphologyCamera = cameraFrame;
       ladder.touch();
     }
-    if (nativeTier && ladder.state.stage !== FULL_QUALITY_STAGE) { publishPresented(); return; }
+    // "D087-SIZE BEGIN": the ladder already published the moving stage once.
+    if (nativeTier && ladder.state.stage !== FULL_QUALITY_STAGE) return;
+    // "D087-SIZE END"
     if (perfMarksEnabled) performance.mark("d082:render2d:canvas:start");
     const box = canvas.getBoundingClientRect();
     const width = Math.max(1, Math.round(box.width * devicePixelRatio));
@@ -1220,8 +1224,11 @@ function mountNodeGlow(
   requiredCanvas(sigma, "aggregate-windows").before(canvas);
   sigma.resize(true);
   const context = canvas.getContext("2d");
+  // "D087-SIZE BEGIN": the settled structural glow is hidden and idle through a camera gesture.
+  let glowVisible = true;
+  // "D087-SIZE END"
   const draw = (): void => {
-    if (context === null) {
+    if (context === null || !glowVisible) {
       return;
     }
     // Sigma reports viewport coordinates and scaled radii in CSS pixels, while
@@ -1275,6 +1282,11 @@ function mountNodeGlow(
       return glowWitnesses(sigma, model, profile, distinct);
     },
     setVisible(visible: boolean): void {
+      // "D087-SIZE BEGIN"
+      const restored = visible && !glowVisible;
+      glowVisible = visible;
+      if (restored) draw();
+      // "D087-SIZE END"
       canvas.style.visibility = visible ? "visible" : "hidden";
     },
     destroy(): void {

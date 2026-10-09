@@ -12,7 +12,8 @@ import { FILAMENT_FRAGMENT_SHADER } from '../src/render3f/filament-material.ts';
 import { buildScene } from '../src/scene/build.ts';
 import { sceneFixtureGraph, sceneVisualState } from './scene/support.ts';
 // D087-SIZE BEGIN
-import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX, fullHierarchyStructuralIds } from '../src/render-common/semantic-node-mark.ts';
+import { calibratedLeafCorePx, coLocatedRepresentatives, DENSE_LEAF_MIN_CORE_PX,
+  NATURAL_NEURAL_FITTED_LEAF_CORE_PX, fullHierarchyStructuralIds } from '../src/render-common/semantic-node-mark.ts';
 import { footprintDisc, placeLabels } from '../src/render-common/labels.ts';
 // D087-SIZE END
 
@@ -131,6 +132,8 @@ test('product policy and witness preserve semantic radius and expose halo and st
   const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   const contract = readFileSync(new URL('../src/review/view-contract.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(product, /radiusPx: denseSize\.radiusPx/);
+  assert.match(product, /: v2Encoded \? \{ radiusPx: v2Encoded\.radiusPx \} : \{\}/,
+    'structural marks supply the full-graph V2 radius in every density');
   assert.doesNotMatch(product, /openContainers\.has\(node\.id\)/);
   assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = false/);
   assert.match(product, /haloRadius: footprint\.haloRadiusPx/);
@@ -149,7 +152,7 @@ test('product policy and witness preserve semantic radius and expose halo and st
 test('thirty co-located leaves produce exactly one mark with structural and id priority', () => {
   const leaves = Array.from({ length: 30 }, (_, index) => ({
     id: `leaf-${String(index).padStart(2, '0')}`, x: (index % 5) * 0.1,
-    y: Math.floor(index / 5) * 0.1, coreRadiusPx: FITTED_LEAF_CORE_PX, structural: false,
+    y: Math.floor(index / 5) * 0.1, coreRadiusPx: DENSE_LEAF_MIN_CORE_PX, structural: false,
   }));
   const domain = { id: 'domain', x: 0, y: 0, coreRadiusPx: 2, structural: true };
   for (const density of Object.keys(totals)) {
@@ -163,20 +166,53 @@ test('thirty co-located leaves produce exactly one mark with structural and id p
     { id: 'a', x: 10.3, y: 0, coreRadiusPx: 1, structural: false },
   ]);
   assert.equal(separate.get('b'), 'a');
+  const overlapped = coLocatedRepresentatives([
+    { id: 'large', x: 0, y: 0, coreRadiusPx: 20, structural: true },
+    { id: 'real-leaf', x: 5, y: 0, coreRadiusPx: 0.5, structural: false },
+  ]);
+  assert.equal(overlapped.get('real-leaf'), 'real-leaf',
+    'a leaf inside a structural disc is still a separate real centre');
 });
 
-test('a fitted leaf has the small D-086 dense mark with matching canvas/native cores', () => {
+test('full-graph dense median calibrates Natural and Julia leaves at their fitted camera', () => {
+  assert.equal(calibratedLeafCorePx([0, 0.5, 0.7, 0.9], 'neural', '2d'),
+    NATURAL_NEURAL_FITTED_LEAF_CORE_PX);
+  assert.equal(calibratedLeafCorePx([0, 0.3, 0.5, 0.5], 'stellar', '2d'),
+    DENSE_LEAF_MIN_CORE_PX);
+  assert.equal(calibratedLeafCorePx([0, 0.6, 0.8, 1], 'stellar', '3d'), 0.8);
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  assert.match(product, /const completeAnchors = fullAnchor\(axes\)/);
+  assert.match(product, /const fullDense = denseScaleById\.size === input\.data\.nodes\.length/);
+  assert.match(product, /const targetPx = calibratedLeafCorePx\(denseLeafRadii/);
+  assert.match(product, /leafCalibration: \{ \.\.\.fullGraphLeafBases\.get\(fullGraphLeafKey\(\)\)!/);
+  assert.match(product, /deferCanopyDense \? new Map\(\) : denseNodeScales\(/);
+  assert.match(product, /mountedLeafSceneKey === leafSceneKey\(\)/);
+  assert.doesNotMatch(product, /FITTED_LEAF_CORE_PX \/ Math\.max/);
+});
+
+test('moving 2D frames leave the glow and census idle, and covered members reserve no label space', () => {
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const twoD = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
+  assert.match(product, /sigma\?\.setGlowVisible\(false\)/);
+  assert.match(product, /sigma\?\.setGlowVisible\(true\)/);
+  assert.match(product, /!\(core > 0\)\) continue/);
+  assert.match(twoD, /if \(context === null \|\| !glowVisible\)/);
+  assert.match(twoD, /if \(nativeTier && ladder\.state\.stage !== FULL_QUALITY_STAGE\) return/);
+});
+
+test('a fitted leaf has matching canvas and native cores after topology calibration', () => {
   for (const morphology of ['stellar', 'neural', 'mycelium'] as const) {
     const scale = 0.827;
     const contract = morphology === 'mycelium' ? 1.3 : 2;
-    const given = FITTED_LEAF_CORE_PX / (scale * MORPHOLOGY_CONTRACT[morphology].node.scale);
+    const target = calibratedLeafCorePx([0.5], morphology, '2d');
+    const given = target / (scale * MORPHOLOGY_CONTRACT[morphology].node.scale);
     const canvas = canvasNodeRadiusPx(morphology, given, scale, 1, contract, true);
     const native = nativeLawSizes({ morphology, projectedScale: scale, floorPx: contract,
       given: new Map([['leaf', given]]), degree: new Map([['leaf', 1]]),
       leafIds: new Set(['leaf']) }).get('leaf')! * scale;
-    assert.ok(Math.abs(canvas - FITTED_LEAF_CORE_PX) < 1e-9);
+    assert.ok(Math.abs(canvas - target) < 1e-9);
     assert.ok(Math.abs(native - canvas) < 1e-9);
-    assert.ok(Math.abs(canvas - FITTED_LEAF_CORE_PX) < 1e-9);
+    assert.ok(Math.abs(canvas - target) < 1e-9);
   }
 });
 
@@ -285,9 +321,9 @@ test('Completa 2D label placement recovers when discs report drawn law radii, no
   const own = candidates.map(candidate => footprintDisc({ id: candidate.id,
     x: candidate.x, y: candidate.y, coreRadiusPx: 4.5 }));
   const lawDiscs = [...own, ...field.map((point, index) => footprintDisc({ id: `l-${index}`,
-    x: point.x, y: point.y, coreRadiusPx: FITTED_LEAF_CORE_PX }))];
+    x: point.x, y: point.y, coreRadiusPx: DENSE_LEAF_MIN_CORE_PX }))];
   const inflatedDiscs = [...own, ...field.map((point, index) => footprintDisc({ id: `l-${index}`,
-    x: point.x, y: point.y, coreRadiusPx: FITTED_LEAF_CORE_PX * 2 }))];
+    x: point.x, y: point.y, coreRadiusPx: DENSE_LEAF_MIN_CORE_PX * 2 }))];
   const lawPlaced = placeLabels(candidates, bounds, measure, [], 60, lawDiscs).length;
   const inflatedPlaced = placeLabels(candidates, bounds, measure, [], 60, inflatedDiscs).length;
   assert.ok(lawPlaced > 0, `law radii place labels (${lawPlaced})`);

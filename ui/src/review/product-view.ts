@@ -85,7 +85,7 @@ import { nonNeuralCompletaScreenDensities } from './non-neural-completa-fit.ts';
 import { labNativeSizeLawApplies, semanticMarkGeometry } from "../render-common/native-node-law.ts";
 // D087-SIZE BEGIN
 import { canvasNodeRadiusPx } from "../render-common/native-node-law.ts";
-import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX } from "../render-common/semantic-node-mark.ts";
+import { calibratedLeafCorePx, coLocatedRepresentatives } from "../render-common/semantic-node-mark.ts";
 // D087-SIZE END
 // D086-F1 END
 import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
@@ -1128,6 +1128,10 @@ export const createProductView: CreateProductView = async (input) => {
   const cameras = new Map<string, VisualStateCamera>();
   const fitRatio = new Map<string, number>();
   const sceneFitRatios = new Map<string, number>();
+  // D087-SIZE BEGIN: a camera-only or density-only revision reuses the full-graph leaf input.
+  const fullGraphLeafBases = new Map<string, { given: number; exactFit: boolean; targetPx: number }>();
+  let mountedLeafSceneKey: string | null = null;
+  // D087-SIZE END
   const fullAnchor = (current: Axes) =>
     current.organization === "indra"
       ? indraAnchors
@@ -1150,6 +1154,11 @@ export const createProductView: CreateProductView = async (input) => {
   // D086-F2 BEGIN: the certified law is part of the mounted camera identity.
   const cameraKeys = () => productCameraKey(axes, input.labTopology, input.labIndra,
     container.hasAttribute('data-fractal-rails-active'));
+  // D087-SIZE BEGIN: the same full-graph calibration key serves density updates and the witness.
+  const fullGraphLeafKey = () => [cameraKeys().key, axes.morphology, axes.projection,
+    localRect().width, localRect().height, appearance.nodeScale].join('|');
+  const leafSceneKey = () => [cameraKeys().key, axes.morphology, axes.projection].join('|');
+  // D087-SIZE END
   // D086-F2 END
   const restoreSavedCamera = () => replayProductCamera(cameras, fitRatio, cameraKeys());
   const semanticFitRatio = (ratio: number, densityBudget = labelBudget) =>
@@ -1302,7 +1311,9 @@ export const createProductView: CreateProductView = async (input) => {
     for (const footprint of footprints) {
       const { x, y } = footprint.viewportCenter;
       const core = footprint.coreRadiusPx;
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(core) || !(core >= 0)) continue;
+      // D087-SIZE BEGIN: a covered member has no ink and must not reserve label space.
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(core) || !(core > 0)) continue;
+      // D087-SIZE END
       const emphasisFactor = morphologyInteraction.hoverId === footprint.id ? contract.hover.radiusMultiplier
         : morphologyInteraction.focusIds?.has(footprint.id) ? contract.focus.radiusMultiplier : 1;
       const disc = footprintDisc({ id: footprint.id, x, y, coreRadiusPx: core }, emphasisFactor);
@@ -1586,6 +1597,9 @@ export const createProductView: CreateProductView = async (input) => {
     clearFlowOverlay();
     // D082-A-PERF END
     morphologyInteraction.quality = "moving";
+    // D087-SIZE BEGIN: a settled structural glow has no camera-frame work.
+    sigma?.setGlowVisible(false);
+    // D087-SIZE END
     scheduleMarks.record("quality-moving", performance.now(), 0);
     cancelSettleLabelPass();
     // X9: no backing-store swap during motion. A rest apply still pending from a previous
@@ -1604,6 +1618,9 @@ export const createProductView: CreateProductView = async (input) => {
     if (flowAnimatesNow() && !document.hidden) startFlowLoop();
     // D082-A-PERF END
     morphologyInteraction.quality = "full";
+    // D087-SIZE BEGIN: restore one glow draw at rest, after the moving canvas is hidden.
+    sigma?.setGlowVisible(true);
+    // D087-SIZE END
     scheduleMarks.record("quality-full", now, 0);
     scheduleResolution(40);
     // labelPass redraws the morphology canvas with the newly placed title discs. Avoid a second
@@ -1986,22 +2003,60 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES END
     // D087-SIZE BEGIN: one fitted leaf law and one screen-space co-location pass for every density.
     const markNodes = input.data.nodes.filter(node => state.visible.has(node.id) && anchors.has(node.id));
-    // D087-SIZE BEGIN: calibrate the leaf from the complete layout, never the admitted subset.
-    let minMarkX = 0, maxMarkX = 1, minMarkY = 0, maxMarkY = 1;
-    for (const point of fullAnchor(axes).values()) {
-      minMarkX = Math.min(minMarkX, point.x);
-      maxMarkX = Math.max(maxMarkX, point.x);
-      minMarkY = Math.min(minMarkY, point.y);
-      maxMarkY = Math.max(maxMarkY, point.y);
-    }
+    // D087-SIZE BEGIN: D-086 Natural Completa fits a robust cloud; extrema of all anchors
+    // understate that camera scale and made each round-five leaf a five-pixel disc.
+    const completeAnchors = fullAnchor(axes);
+    const allMarkPoints = [...completeAnchors.values()];
+    const fitMarkPoints = axes.organization === 'natural' && axes.projection === '2d'
+      && axes.morphology === 'neural' ? naturalCompletaFitPoints(allMarkPoints) : allMarkPoints;
+    const xValues = fitMarkPoints.map(point => point.x), yValues = fitMarkPoints.map(point => point.y);
+    const minMarkX = xValues.length ? Math.min(...xValues) : 0;
+    const maxMarkX = xValues.length ? Math.max(...xValues) : 1;
+    const minMarkY = yValues.length ? Math.min(...yValues) : 0;
+    const maxMarkY = yValues.length ? Math.max(...yValues) : 1;
     const provisionalScale = Math.min(localRect().width * 0.92 / Math.max(1, maxMarkX - minMarkX),
       localRect().height * 0.92 / Math.max(1, maxMarkY - minMarkY));
     const markScale = (point: Coordinates) => axes.projection === '2d'
       ? sigma?.scaleSize(1) ?? provisionalScale
       : three ? perspectiveSizeScale(three.readReviewCameraPose(), point) : 1;
-    const fittedLeafGiven = FITTED_LEAF_CORE_PX / Math.max(0.001,
-      provisionalScale * (axes.projection === '2d' ? MORPHOLOGY_CONTRACT[axes.morphology].node.scale : 1));
-    const leafGiven = (_id: string, _point: Coordinates): number => fittedLeafGiven;
+    const leafKey = fullGraphLeafKey();
+    let leafCalibration = fullGraphLeafBases.get(leafKey);
+    const exactFit = mountedLeafSceneKey === leafSceneKey()
+      && (axes.projection === '2d' ? sigma !== null : three !== null);
+    if (input.v2Prepared && (!leafCalibration || (exactFit && !leafCalibration.exactFit))) {
+      const fitScales = input.data.nodes.flatMap(node => {
+        const point = completeAnchors.get(node.id);
+        return point && !structuralIds.has(node.id) ? [markScale(point)] : [];
+      }).sort((a, b) => a - b);
+      const fitScale = fitScales[Math.floor(fitScales.length / 2)] ?? provisionalScale;
+      // D087-SIZE BEGIN: the staged Canopy mount already owns a deferred dense solve.
+      const fullDense = denseScaleById.size === input.data.nodes.length ? denseScaleById
+        : deferCanopyDense ? new Map() : denseNodeScales(
+        input.data.nodes.flatMap(node => {
+          const point = completeAnchors.get(node.id);
+          if (!point || !node.v2) return [];
+          const screen = axes.projection === '2d' ? point
+            : { x: point.x + point.z * 0.5, y: point.y + point.z * 0.35 };
+          return [{ id: node.id, x: point.x, y: point.y, z: point.z,
+            screenX: (screen.x - minMarkX) * provisionalScale,
+            screenY: (screen.y - minMarkY) * provisionalScale,
+            importance: (node.v2 as import('./v2-core.ts').V2Node).importance.value,
+            baseRadiusPx: v2Encoding(node.v2 as import('./v2-core.ts').V2Node, appearance.nodeScale).radiusPx,
+            projectionScale: markScale(point) }];
+        }), { zoomProgress: 0 });
+      // D087-SIZE END
+      const denseLeafRadii = input.data.nodes.flatMap(node => {
+        if (structuralIds.has(node.id)) return [];
+        const point = completeAnchors.get(node.id), dense = fullDense.get(node.id);
+        return point && dense && dense.radiusPx > 0 ? [dense.radiusPx * markScale(point)] : [];
+      });
+      const targetPx = calibratedLeafCorePx(denseLeafRadii, axes.morphology, axes.projection);
+      const given = targetPx / Math.max(0.001, fitScale
+        * (axes.projection === '2d' ? MORPHOLOGY_CONTRACT[axes.morphology].node.scale : 1));
+      leafCalibration = { given, exactFit, targetPx };
+      fullGraphLeafBases.set(leafKey, leafCalibration);
+    }
+    const leafGiven = (_id: string, _point: Coordinates): number => leafCalibration?.given ?? 0;
     // D087-SIZE END
     const markCoordinates = (point: Coordinates) => handle?.graphToViewport(point)
       ?? { x: (point.x - minMarkX) * provisionalScale, y: (point.y - minMarkY) * provisionalScale };
@@ -2083,8 +2138,11 @@ export const createProductView: CreateProductView = async (input) => {
               // D087-SIZE END
               // D082-A-NODES BEGIN
               // D087-SIZE BEGIN
+              // D087-SIZE BEGIN: every V2 structural input is explicit. Otherwise the
+              // renderer multiplies corePermille by a subset-dependent material size.
               ...(hiddenDenseMember ? { radiusPx: 0, corePermille: 0 } : leafMark
-                ? { radiusPx: leafRadius } : {}),
+                ? { radiusPx: leafRadius } : v2Encoded ? { radiusPx: v2Encoded.radiusPx } : {}),
+              // D087-SIZE END
               // D087-SIZE END
               // D082-A-NODES END
               glyph: v2Encoded ? v2Encoded.glyph : (node.type === "domain" || node.type === "conversation" ? "ring"
@@ -2286,6 +2344,9 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-PERF END
     }
     handle = (sigma ?? three)!;
+    // D087-SIZE BEGIN: a prior topology's mounted camera cannot calibrate this topology.
+    mountedLeafSceneKey = leafSceneKey();
+    // D087-SIZE END
     drawnGeometry = geometry;
     committedScene = { palette, presentation, morphologyInput, geometry };
     // D082-A-NODES BEGIN
@@ -3464,6 +3525,11 @@ export const createProductView: CreateProductView = async (input) => {
       // D087-SIZE END
       return {
         axes,
+        // D087-SIZE BEGIN: the existing view witness exposes the actual full-graph leaf base.
+        ...(fullGraphLeafBases.get(fullGraphLeafKey())
+          ? { leafCalibration: { ...fullGraphLeafBases.get(fullGraphLeafKey())!,
+            fullGraphNodes: input.data.nodes.length } } : {}),
+        // D087-SIZE END
         cameraKind: handle.cameraKind,
         visibleRect: pageRect(),
         nodeViewport,
