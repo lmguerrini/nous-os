@@ -13,7 +13,6 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 // D082-A-NODES BEGIN
 import { denseEdgeVeilFactor } from "#render-common/dense-node-scale.ts";
 // D087-SIZE BEGIN
-import { LEAF_HALO_RATIO } from "#render-common/semantic-node-mark.ts";
 // D087-SIZE END
 // D082-A-NODES END
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
@@ -1120,7 +1119,7 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
     if (given === 0) continue;
     // D087-SIZE END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      style.nodes.get(node.id)?.leafMark ? 0.5 : denseDrawingPolicy(style) ? 0.5 : 2, contract.node.maxRadiusPx);
+      style.nodes.get(node.id)?.leafMark ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
     // D082-A-NODES END
     const axis = node.axis ?? { x: 1, y: 0, z: 0 };
@@ -1463,8 +1462,7 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
     // D087-SIZE END
     // D082-A-NODES END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      visual?.leafMark ? 0.5 : denseDrawingPolicy(style) ? 0.5
-        : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+      visual?.leafMark ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
     const drawn = geometry.morphology === "stellar" && radius > 1
       ? stellarStarCoreRadiusPx(radius, node.degree) : radius;
@@ -2279,7 +2277,7 @@ function sameAnchors(a: readonly number[], b: readonly number[]): boolean {
 export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry: MorphologyGeometry,
   project: (point: Coordinates) => ProjectedPoint, style: MorphologyCanvasStyle,
   appearance: AppearanceOptions = DEFAULT_APPEARANCE, containers: readonly MorphologyContainerPath[] = geometry.containers ?? [],
-  projection: "2d" | "3d" = "2d", structureOnly = false, edgesStayNative = false): void {
+  projection: "2d" | "3d" = "2d", structureOnly = false): void {
   const canvas = context.canvas;
   const bounds = canvas.getBoundingClientRect();
   if (bounds.width === 0 || bounds.height === 0) return;
@@ -2358,9 +2356,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     : geometry.morphology === "neural" && !canopyDenseNeural
       ? neuralSomaFrames(geometry, project, style, contract, appearance, projection, moving) : null;
   // D082-B1c END.
-  // D087-SIZE BEGIN: the native tier keeps the filaments; this painter owns every node mark
-  // in every density, so one id has the same pixels below and above the native threshold.
-  if (!edgesStayNative && !testHook()?.hideEdges) {
+  // D087-SIZE BEGIN: dense native tiers keep filaments and cores on the GPU; this canvas
+  // paints their structure, while sparse tiers paint their visible nodes and edges here.
+  if (!testHook()?.hideEdges) {
     const gradientCapable = typeof context.createLinearGradient === "function";
     // D082-A-PERF BEGIN
     const paints = samePaint ? previous!.paints
@@ -2421,7 +2419,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
   }
   // D087-SIZE BEGIN: junctions belong to the mycelium edge body, which the native tier keeps.
-  if (!edgesStayNative && !simplified && geometry.morphology === "mycelium" && !testHook()?.hideEdges) {
+  if (!simplified && geometry.morphology === "mycelium" && !testHook()?.hideEdges) {
     context.fillStyle = rgba("rgb(245, 245, 245)", appearance.edgeOpacity * 0.65);
     for (const junction of geometry.branchPoints) {
       const p = project(junction);
@@ -2457,8 +2455,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // D082-A-NODES END
     const basis = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       // D087-SIZE BEGIN
-      visual?.leafMark ? 0.5 : denseDrawingPolicy(style) ? 0.5
-        : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+      visual?.leafMark ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
       // D087-SIZE END
     // D086-CUSTOM END
     // D082-B1f END
@@ -2484,7 +2481,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
     // D082-A-NODES END
     // A pearl wholly outside the canvas (with its glow halo) draws nothing a viewer could see.
-    const haloRatio = visual?.leafMark ? Math.min(contract.glow.maximumCoreRatio, LEAF_HALO_RATIO)
+    const haloRatio = visual?.leafMark ? 1
       : geometry.morphology === "neural"
         ? Math.min(contract.glow.maximumCoreRatio, NEURAL_HALO_MAX_RADIUS_RATIO) : contract.glow.maximumCoreRatio;
     const haloExtent = appearance.glow > 0 ? radius * haloRatio : radius;
@@ -2497,7 +2494,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // D087-SIZE BEGIN
     const requestedGlowStrength = contract.glow.strength;
     // D087-SIZE END
-    const glowStrength = visual?.leafMark ? requestedGlowStrength * 0.35 : geometry.morphology === "neural"
+    const glowStrength = geometry.morphology === "neural"
       ? Math.min(requestedGlowStrength, NEURAL_HALO_MAX_ALPHA / Math.max(1, appearance.glow)) : requestedGlowStrength;
     // D082-A-NCOMPLETA BEGIN: local-density halo factor is 1 outside Completa and at z6.
     const denseGlowStrength = glowStrength * (geometry.morphology === "neural"
@@ -2526,7 +2523,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         : clamp(Math.max(0.48, baseOpacity) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
     // D084-W2-NEURAL-R6 END
     // D087-SIZE BEGIN
-    if (!simplifiedNode && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
+    if (!simplifiedNode && !visual?.leafMark && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
     // D087-SIZE END
       const halo = radius * haloRatio;
       if (paint?.glow && canTransform) {

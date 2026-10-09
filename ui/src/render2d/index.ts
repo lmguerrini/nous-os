@@ -78,7 +78,6 @@ import { renderReadinessHost } from "#render-common/render-readiness-producer.ts
 // Size-fix BEGIN
 import { canvasNodeFloorPx, canvasNodeHaloRadiusPx, canvasNodeRadiusPx, createNativeSizeLaw, geometryDegrees } from "#render-common/native-node-law.ts";
 // "D087-SIZE BEGIN"
-import { LEAF_HALO_ALPHA_FACTOR, LEAF_HALO_RATIO } from "#render-common/semantic-node-mark.ts";
 // "D087-SIZE END"
 // Size-fix END
 // "D082-A-NODES BEGIN"
@@ -353,11 +352,7 @@ export function mount(
   // The distinct morphology canvas covers the WebGL tiers. Keep the compatibility picking
   // buffer for renderer witnesses while suppressing the invisible full-DPR screen pass.
   const screenPaint = { enabled: true };
-  // "D087-SIZE BEGIN"
-  // The node discs' screen pass has its own switch: at rest the distinct canvas paints every
-  // node mark, so the GPU program keeps only its picking pass until motion needs it again.
   const nodeScreenPaint = { enabled: true };
-  // "D087-SIZE END"
   const nativeLabelsUsed = activeOptions.presentation?.nativeLabels !== false;
   const edgeProgramClasses = {
     filament: createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings, screenPaint),
@@ -479,6 +474,7 @@ export function mount(
   // "D087-SIZE BEGIN"
   const leafMarkIds = new Set([...baseNodeAttributes].flatMap(([id]) =>
     activeOptions.presentation?.nodes?.get(id)?.leafMark ? [id] : []));
+  const encodedNodeRadii = new Map([...baseNodeAttributes].map(([id, attributes]) => [id, attributes.size] as const));
   // "D087-SIZE END"
   const distinctGlow = distinctLanguage ? {
     morphology: activeOptions.morphology,
@@ -487,14 +483,14 @@ export function mount(
     nativeTier: model.graph.order >= DENSE_SCENE_THRESHOLD,
     // "D087-SIZE BEGIN"
     leafIds: () => leafMarkIds,
+    encodedRadii: () => encodedNodeRadii,
     // "D087-SIZE END"
   } : undefined;
   // "D087-SIZE BEGIN"
-  // The distinct canvas node pass paints halos in every density, so the glow layer answers
-  // footprints only on that path; the legacy page keeps its painted halo layer unchanged.
+  // Dense GPU cores keep the structural glow pass; sparse canvas owns its own halos.
   // "D087-SIZE END"
   const glow = model.material.node.includes("halo")
-    ? mountNodeGlow(sigma, model, options.calibration, !distinctLanguage, distinctGlow)
+    ? mountNodeGlow(sigma, model, options.calibration, !distinctLanguage || !!distinctGlow?.nativeTier, distinctGlow)
     : noGlowLayer();
   const distinct = distinctLanguage
     ? mountDistinctCanvas(sigma, model, activeOptions, screenPaint, nodeScreenPaint)
@@ -578,6 +574,7 @@ export function mount(
       for (const [id, entry] of update.nodeEntries) {
         if (entry.leafMark) leafMarkIds.add(id);
         else leafMarkIds.delete(id);
+        if (entry.radiusPx !== undefined) encodedNodeRadii.set(id, entry.radiusPx);
       }
       // "D087-SIZE END"
       // Size-fix BEGIN
@@ -951,7 +948,7 @@ function mountDistinctCanvas(
     const nativeEdgesCanvas = sigma.getCanvases().edges;
     if (nativeTier && nativeCountDirty) {
       nativeNodeIdsDrawn = graph.nodes().filter(id => { const data = sigma.getNodeDisplayData(id);
-        return data !== undefined && !data.hidden; }).length;
+        return data !== undefined && !data.hidden && data.size > 0; }).length;
       nativeEdgeIdsDrawn = graph.edges().filter(id => { const data = sigma.getEdgeDisplayData(id);
         return data !== undefined && !data.hidden; });
       nativeCountDirty = nativeNodeIdsDrawn === 0 && graph.order > 0;
@@ -959,11 +956,9 @@ function mountDistinctCanvas(
     const nativeNodesDrawn = nativeTier && nativeNodesCanvas?.style.display !== 'none' ? nativeNodeIdsDrawn : 0;
     const nativeDrawnIds = nativeTier && nativeEdgesCanvas?.style.display !== 'none' ? nativeEdgeIdsDrawn : [];
     const nativeEdgesDrawn = nativeDrawnIds.length;
-    // "D087-SIZE BEGIN": the canvas owns the node marks in every density whenever it is on
-    // screen, so the census counts its painted nodes there and the GPU discs only while they
-    // still cover the moving frames.
     const canvasDrawn = canvas.style.visibility !== 'hidden' && context !== null;
-    const nodesDrawn = canvasDrawn ? geometry.nodes.length : nativeTier ? nativeNodesDrawn : 0;
+    const nodesDrawn = nativeTier ? nativeNodesDrawn : canvasDrawn
+      ? geometry.nodes.filter(node => (nodeStyles.get(node.id)?.radiusPx ?? node.radius) > 0).length : 0;
     const edgesDrawn = nativeTier ? nativeEdgesDrawn : canvasDrawn ? geometry.edges.length : 0;
     const mainDrawn = nativeTier ? nativeDrawnIds.filter(id => mainEdgeIds.has(id)).length
       : canvasDrawn ? geometry.edges.filter(edge => mainEdgeIds.has(edge.id)).length : 0;
@@ -980,28 +975,11 @@ function mountDistinctCanvas(
     } as const;
     publisher.publish(snapshot);
   };
-  // "D087-SIZE BEGIN"
-  // One node painter in every density: at rest this canvas owns every node mark, exactly as the
-  // sparse tier already drew it, while Sigma's GPU discs cover only the moving frames (their
-  // historical role) and keep their picking pass. The swap happens in the quality ladder, whose
-  // stage already separates motion from the settled screen the parity rule measures.
-  const applyNodePainterTier = (stage: number): void => {
-    if (!nativeTier) return;
-    const settled = stage === FULL_QUALITY_STAGE;
-    nodeScreenPaint.enabled = !settled;
-    const gpuNodes = sigma.getCanvases().nodes;
-    if (gpuNodes) gpuNodes.style.display = settled ? 'none' : '';
-  };
-  // "D087-SIZE END"
   const ladder = new QualityLadder(({ stage, moving }) => {
     if (nativeTier) canvas.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
-    // "D087-SIZE BEGIN"
-    applyNodePainterTier(stage);
-    // "D087-SIZE END"
     if (!moving && stage === FULL_QUALITY_STAGE) draw();
     else if (!moving) publishPresented();
   });
-  applyNodePainterTier(FULL_QUALITY_STAGE);
   const draw = (): void => {
     if (!context) return;
     const cameraFrame = JSON.stringify(sigma.getCamera().getState());
@@ -1029,10 +1007,8 @@ function mountDistinctCanvas(
       interaction: options.presentation?.morphologyInteraction,
       nodes: nodeStyles,
       edges: edgeStyles,
-    // "D087-SIZE BEGIN": this pass paints every node mark in every density; above the native
-    // threshold the filaments stay on the GPU layer, so the painter owns marks and leaves
-    // edges to Sigma instead of drawing structure only.
-    }, appearance, undefined, "2d", false, nativeTier);
+    // "D087-SIZE BEGIN": dense cores and edges stay on the GPU; canvas draws structure only.
+    }, appearance, undefined, "2d", nativeTier);
     // "D087-SIZE END"
     publishPresented();
     if (perfMarksEnabled) { performance.mark("d082:render2d:canvas:end"); performance.measure("d082:render2d:canvas", "d082:render2d:canvas:start", "d082:render2d:canvas:end"); }
@@ -1102,13 +1078,7 @@ function mountDistinctCanvas(
         if (backing) { item.width = backing[0]; item.height = backing[1]; }
       });
       screenPaint.enabled = true;
-      // "D087-SIZE BEGIN"
       nodeScreenPaint.enabled = true;
-      if (nativeTier) {
-        const gpuNodes = sigma.getCanvases().nodes;
-        if (gpuNodes) gpuNodes.style.display = '';
-      }
-      // "D087-SIZE END"
       detached.forEach((item, index) => { item.style.display = previousDetachedDisplay[index] ?? ""; });
       // Polish-III haze repair BEGIN: invalidate pending settled-glow redraws before unmount.
       delete (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw;
@@ -1267,6 +1237,9 @@ function mountNodeGlow(
     context.setTransform(scaleX, 0, 0, scaleY, 0, 0);
     context.clearRect(0, 0, box.width, box.height);
     for (const id of model.graph.nodes()) {
+      // "D087-SIZE BEGIN": leaves are GPU cores only; no leaf gradient is allocated.
+      if (distinct?.leafIds().has(id)) continue;
+      // "D087-SIZE END"
       const attributes = model.graph.getNodeAttributes(id);
       const center = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
       const coreRadius = sigma.scaleSize(attributes.size);
@@ -1282,11 +1255,9 @@ function mountNodeGlow(
       const baseAlpha = distinct
         ? MORPHOLOGY_CONTRACT[distinct.morphology].glow.strength * distinct.appearance().glow * color.a
         : (boundedPermille(attributes.haloIntensityPermille, profile) / permilleScale(profile)) * color.a;
-      // "D087-SIZE BEGIN"
-      const requestedAlpha = distinct?.leafIds().has(id) ? baseAlpha * LEAF_HALO_ALPHA_FACTOR : baseAlpha;
+      const requestedAlpha = baseAlpha;
       const peakAlpha = model.filamentMaterial.neuralProfile
         ? Math.min(requestedAlpha, NEURAL_HALO_MAX_ALPHA) : requestedAlpha;
-      // "D087-SIZE END"
       for (const stop of haloAlphaStops(profile, peakAlpha)) {
         gradient.addColorStop(stop.offset, `rgba(${color.r}, ${color.g}, ${color.b}, ${stop.alpha})`);
       }
@@ -1321,13 +1292,14 @@ type DistinctGlowMark = {
   readonly nativeTier: boolean;
   // "D087-SIZE BEGIN"
   readonly leafIds: () => ReadonlySet<string>;
+  readonly encodedRadii: () => ReadonlyMap<string, number>;
   // "D087-SIZE END"
 };
 
 function distinctGlowHaloRadius(coreRadiusPx: number, mark: DistinctGlowMark, id: string): number {
   // "D087-SIZE BEGIN"
-  const radius = canvasNodeHaloRadiusPx(mark.morphology, coreRadiusPx, mark.appearance().glow);
-  return mark.leafIds().has(id) ? Math.min(radius, coreRadiusPx * LEAF_HALO_RATIO) : radius;
+  return mark.leafIds().has(id) ? coreRadiusPx
+    : canvasNodeHaloRadiusPx(mark.morphology, coreRadiusPx, mark.appearance().glow);
   // "D087-SIZE END"
 }
 
@@ -1336,18 +1308,21 @@ function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationPro
   const degrees = distinct ? geometryDegrees(distinct.geometry()) : undefined;
   return model.graph.nodes().map((id) => {
     const attributes = model.graph.getNodeAttributes(id);
-    // "D087-SIZE BEGIN": the witness reports the radius the canvas painter actually draws, in
-    // every density, so the footprint discs the label pass collides against stay drawn CSS px.
-    const coreRadiusPx = distinct && attributes.size > 0
-      ? canvasNodeRadiusPx(distinct.morphology, attributes.size, sigma.scaleSize(1),
-        degrees?.get(id) ?? 0, canvasNodeFloorPx(distinct.morphology, false), distinct.leafIds().has(id))
-      : sigma.scaleSize(attributes.size);
+    // "D087-SIZE BEGIN": native attributes are already settled CSS-law radii divided by
+    // scale. Sparse canvas reads the original encoded radius. Never apply the law twice.
+    const encoded = distinct?.encodedRadii().get(id) ?? attributes.size;
+    const coreRadiusPx = encoded <= 0 ? 0 : distinct?.nativeTier
+      ? sigma.scaleSize(attributes.size)
+      : distinct
+        ? canvasNodeRadiusPx(distinct.morphology, encoded, sigma.scaleSize(1),
+          degrees?.get(id) ?? 0, canvasNodeFloorPx(distinct.morphology, false), distinct.leafIds().has(id))
+        : sigma.scaleSize(attributes.size);
     const viewportCenter = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
     return {
       id,
       viewportCenter,
       coreRadiusPx,
-      haloRadiusPx: distinct ? distinctGlowHaloRadius(coreRadiusPx, distinct, id)
+      haloRadiusPx: coreRadiusPx === 0 ? 0 : distinct ? distinctGlowHaloRadius(coreRadiusPx, distinct, id)
         : resolvedGlowHaloRadius(coreRadiusPx, sigma.scaleSize(attributes.haloRadiusPx), profile,
           model.filamentMaterial.neuralProfile ?? false),
     };

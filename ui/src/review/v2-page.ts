@@ -4158,6 +4158,9 @@ export class V2Page {
         }
         // D085-X9b BEGIN
         if (appended) {
+            // D087-SIZE BEGIN: Natural passages mutate the indexed node array in place.
+            this.fullStructuralMemo = null;
+            // D087-SIZE END
             this.d081EligibleEdgeCounts.clear();
             this.eligibleRelationTotals.clear();
         }

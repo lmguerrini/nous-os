@@ -1,9 +1,6 @@
 // D087-SIZE BEGIN
 /** The D-086 dense overview's small leaf output, calibrated at the fitted camera. */
 export const FITTED_LEAF_CORE_PX = 1;
-export const LEAF_HALO_RATIO = 1.45;
-export const LEAF_HALO_INTENSITY_PERMILLE = 80;
-export const LEAF_HALO_ALPHA_FACTOR = 0.35;
 
 /** Structural classification reads the full snapshot hierarchy, never a mounted subset of it:
  * a parent is structural while any child exists in the full graph, even when every density the

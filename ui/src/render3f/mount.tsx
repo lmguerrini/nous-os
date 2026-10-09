@@ -1671,6 +1671,7 @@ export function mount(
           const floor = nodeResources.geometry.getAttribute("a_minimumCoreDeviceRadiusPx") as THREE.InstancedBufferAttribute;
           // D087-SIZE BEGIN
           const intensity = nodeResources.geometry.getAttribute("a_haloIntensityPermille") as THREE.InstancedBufferAttribute | undefined;
+          let radiiChanged = false;
           // D087-SIZE END
           for (const [id, entry] of update.nodeEntries) {
             const nodeIndex = indexById.get(id);
@@ -1687,19 +1688,27 @@ export function mount(
               && (!intensity || intensity.getX(nodeIndex) === nativeIntensity)) continue;
             // D087-SIZE END
             core.setX(nodeIndex, entry.radiusPx);
+            // D087-SIZE BEGIN
+            radiiChanged = true;
+            // D087-SIZE END
             halo.setX(nodeIndex, nativeHalo);
             gap.setX(nodeIndex, nativeGap);
             floor.setX(nodeIndex, nativeFloor);
             intensity?.setX(nodeIndex, nativeIntensity);
             denseNodeRadii.set(id, { radius: entry.radiusPx, halo: nativeHalo });
           }
-          core.needsUpdate = halo.needsUpdate = gap.needsUpdate = floor.needsUpdate = true;
-          if (intensity) intensity.needsUpdate = true;
-          // D085-S3 BEGIN: keep resident real-ID anchors in the current size revision.
-          rebuildNativeProxy();
-          applyNativeLabPolicy(ladder.state.stage);
-          // D085-S3 END
-          renderFrame();
+          // D087-SIZE BEGIN: a style-only or equal-radius revision must not upload the
+          // entire resident instance buffer or rebuild its moving proxy.
+          if (radiiChanged) {
+            core.needsUpdate = halo.needsUpdate = gap.needsUpdate = floor.needsUpdate = true;
+            if (intensity) intensity.needsUpdate = true;
+            // D085-S3 BEGIN: keep resident real-ID anchors in the current size revision.
+            rebuildNativeProxy();
+            applyNativeLabPolicy(ladder.state.stage);
+            // D085-S3 END
+            renderFrame();
+          }
+          // D087-SIZE END
         }
         if (nativeEdgeVeilById.size) {
           for (const [id, entry] of update.edgeEntries) if (entry.presentation)

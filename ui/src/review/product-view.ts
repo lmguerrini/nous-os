@@ -85,8 +85,7 @@ import { nonNeuralCompletaScreenDensities } from './non-neural-completa-fit.ts';
 import { labNativeSizeLawApplies, semanticMarkGeometry } from "../render-common/native-node-law.ts";
 // D087-SIZE BEGIN
 import { canvasNodeRadiusPx } from "../render-common/native-node-law.ts";
-import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX, LEAF_HALO_RATIO,
-  LEAF_HALO_INTENSITY_PERMILLE } from "../render-common/semantic-node-mark.ts";
+import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX } from "../render-common/semantic-node-mark.ts";
 // D087-SIZE END
 // D086-F1 END
 import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
@@ -684,7 +683,6 @@ export const createProductView: CreateProductView = async (input) => {
       const parent = (node.v2 as { parent?: string | null } | undefined)?.parent;
       return parent ? [parent] : [];
     }));
-  const leafFitGivenById = new Map<string, number>();
   // D087-SIZE END
   const edgesById = new Map(input.data.edges.map((edge) => [edge.id, edge]));
   const degree = new Map<string, number>();
@@ -788,8 +786,6 @@ export const createProductView: CreateProductView = async (input) => {
   let denseMembersByRepresentative = new Map<string, string[]>();
   // D087-SIZE BEGIN
   let coLocatedById: ReadonlyMap<string, string> = new Map();
-  let coLocationCameraKey = '';
-  let coLocationRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   // D087-SIZE END
   let lastDensePick: { representativeId: string; index: number } | null = null;
   // Screen-space edge density per drawn edge and the zoom blend the last scene build used; both
@@ -1617,23 +1613,9 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN: decoration is reported before a changed zoom band is derived.
     scheduleDenseZoomRefresh();
     // D082-A-NODES END
-    // D087-SIZE BEGIN: orbit and zoom change screen-centre co-location at settled quality.
-    if (lodMode && input.v2Prepared && handle && committedScene && !coLocationRefreshTimer) {
-      const key = JSON.stringify(handle.readCameraState());
-      if (key !== coLocationCameraKey) {
-        coLocationRefreshTimer = setTimeout(() => {
-          coLocationRefreshTimer = undefined;
-          if (!handle || destroyed || morphologyInteraction.quality !== 'full') return;
-          const settledKey = JSON.stringify(handle.readCameraState());
-          if (settledKey === coLocationCameraKey) return;
-          coLocationCameraKey = settledKey;
-          const lifted = drawnEdges.flatMap(edge => edge.v2
-            ? [edge.v2 as import("./v2-relations.ts").LiftedRelation] : []);
-          if (lifted.length === drawnEdges.length)
-            applyVisibleSubset({ visibleNodeIds: visible, edges: lifted });
-        }, 0);
-      }
-    }
+    // D087-SIZE BEGIN: the admitted set or zoom band changes marks through their existing
+    // subset update. Camera-only orbit and pan retain the deterministic representative set;
+    // rebuilding every node here delayed the full-quality restore after each gesture.
     // D087-SIZE END
   };
   // D082-A-NODES BEGIN
@@ -2004,24 +1986,23 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES END
     // D087-SIZE BEGIN: one fitted leaf law and one screen-space co-location pass for every density.
     const markNodes = input.data.nodes.filter(node => state.visible.has(node.id) && anchors.has(node.id));
-    const rawPoints = markNodes.map(node => anchors.get(node.id)!);
-    const minMarkX = Math.min(0, ...rawPoints.map(point => point.x));
-    const maxMarkX = Math.max(1, ...rawPoints.map(point => point.x));
-    const minMarkY = Math.min(0, ...rawPoints.map(point => point.y));
-    const maxMarkY = Math.max(1, ...rawPoints.map(point => point.y));
+    // D087-SIZE BEGIN: calibrate the leaf from the complete layout, never the admitted subset.
+    let minMarkX = 0, maxMarkX = 1, minMarkY = 0, maxMarkY = 1;
+    for (const point of fullAnchor(axes).values()) {
+      minMarkX = Math.min(minMarkX, point.x);
+      maxMarkX = Math.max(maxMarkX, point.x);
+      minMarkY = Math.min(minMarkY, point.y);
+      maxMarkY = Math.max(maxMarkY, point.y);
+    }
     const provisionalScale = Math.min(localRect().width * 0.92 / Math.max(1, maxMarkX - minMarkX),
       localRect().height * 0.92 / Math.max(1, maxMarkY - minMarkY));
     const markScale = (point: Coordinates) => axes.projection === '2d'
       ? sigma?.scaleSize(1) ?? provisionalScale
       : three ? perspectiveSizeScale(three.readReviewCameraPose(), point) : 1;
-    const leafGiven = (id: string, point: Coordinates): number => {
-      const cached = leafFitGivenById.get(id);
-      if (cached !== undefined) return cached;
-      const given = FITTED_LEAF_CORE_PX / Math.max(0.001,
-        markScale(point) * (axes.projection === '2d' ? MORPHOLOGY_CONTRACT[axes.morphology].node.scale : 1));
-      if (handle) leafFitGivenById.set(id, given);
-      return given;
-    };
+    const fittedLeafGiven = FITTED_LEAF_CORE_PX / Math.max(0.001,
+      provisionalScale * (axes.projection === '2d' ? MORPHOLOGY_CONTRACT[axes.morphology].node.scale : 1));
+    const leafGiven = (_id: string, _point: Coordinates): number => fittedLeafGiven;
+    // D087-SIZE END
     const markCoordinates = (point: Coordinates) => handle?.graphToViewport(point)
       ?? { x: (point.x - minMarkX) * provisionalScale, y: (point.y - minMarkY) * provisionalScale };
     const markCandidates = markNodes.map(node => {
@@ -2112,10 +2093,10 @@ export const createProductView: CreateProductView = async (input) => {
               // D087-SIZE BEGIN
               haloPermille,
               ...(canonicalHalo ? { haloRadiusPx: hiddenDenseMember ? 0 : leafMark
-                ? leafRadius * LEAF_HALO_RATIO
+                ? leafRadius
                 : canonicalHalo.radiusPx * haloPermille / SCENE_PERMILLE_SCALE,
                 haloIntensityPermille: hiddenDenseMember ? 0 : leafMark
-                  ? LEAF_HALO_INTENSITY_PERMILLE : canonicalHalo.intensityPermille } : {}),
+                  ? 0 : canonicalHalo.intensityPermille } : {}),
               // D087-SIZE END
               // D082-A-NODES BEGIN
               // D087-SIZE BEGIN: an id carries the same halo in every density.
@@ -2222,12 +2203,6 @@ export const createProductView: CreateProductView = async (input) => {
   let mountOpeningCamera: VisualStateCamera | null = null;
   let mountOpeningPoints: (() => Coordinates[]) | null = null;
   function mount() {
-    // D087-SIZE BEGIN: a remount has a new fitted camera or morphology scale.
-    leafFitGivenById.clear();
-    coLocationCameraKey = '';
-    if (coLocationRefreshTimer) clearTimeout(coLocationRefreshTimer);
-    coLocationRefreshTimer = undefined;
-    // D087-SIZE END
     const began = performance.now();
     // D082-B-CANOPYN BEGIN
     const markCanopyMount = !!preparedCanopy3d && perfMarksEnabled;
@@ -2422,24 +2397,9 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-B-CANOPYN END
       const lifted = drawnEdges.flatMap(edge => edge.v2
         ? [edge.v2 as import("./v2-relations.ts").LiftedRelation] : []);
-      // D087-SIZE BEGIN: the fitted camera replaces the provisional opening projection.
-      leafFitGivenById.clear();
-      for (const node of input.data.nodes) {
-        if (structuralIds.has(node.id)) continue;
-        const point = anchors.get(node.id);
-        if (!point) continue;
-        const projectedScale = axes.projection === '2d' ? sigma?.scaleSize(1) ?? 1
-          : three ? perspectiveSizeScale(three.readReviewCameraPose(), point) : 1;
-        const morphologyScale = axes.projection === '2d'
-          ? MORPHOLOGY_CONTRACT[axes.morphology].node.scale : 1;
-        leafFitGivenById.set(node.id,
-          FITTED_LEAF_CORE_PX / Math.max(0.001, projectedScale * morphologyScale));
-      }
-      // D087-SIZE END
       if (lifted.length === drawnEdges.length
         && !applyVisibleSubset({ visibleNodeIds: visible, edges: lifted }))
         throw new Error("Completa point sizes could not settle at the mounted fit camera");
-      coLocationCameraKey = JSON.stringify(handle.readCameraState());
     }
     // D082-A-NODES END
     rebuildScreenPickIndex();
@@ -3549,9 +3509,6 @@ export const createProductView: CreateProductView = async (input) => {
       // D086-MOT END
       // D082-A-NODES BEGIN
       if (denseRefreshTimer !== undefined) clearTimeout(denseRefreshTimer);
-      // D087-SIZE BEGIN
-      if (coLocationRefreshTimer !== undefined) clearTimeout(coLocationRefreshTimer);
-      // D087-SIZE END
       denseRefreshRevision++;
       // D082-A-NODES END
       qualityController.destroy();

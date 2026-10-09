@@ -12,8 +12,7 @@ import { FILAMENT_FRAGMENT_SHADER } from '../src/render3f/filament-material.ts';
 import { buildScene } from '../src/scene/build.ts';
 import { sceneFixtureGraph, sceneVisualState } from './scene/support.ts';
 // D087-SIZE BEGIN
-import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX, fullHierarchyStructuralIds, LEAF_HALO_RATIO,
-  LEAF_HALO_INTENSITY_PERMILLE } from '../src/render-common/semantic-node-mark.ts';
+import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX, fullHierarchyStructuralIds } from '../src/render-common/semantic-node-mark.ts';
 import { footprintDisc, placeLabels } from '../src/render-common/labels.ts';
 // D087-SIZE END
 
@@ -177,7 +176,7 @@ test('a fitted leaf has the small D-086 dense mark with matching canvas/native c
       leafIds: new Set(['leaf']) }).get('leaf')! * scale;
     assert.ok(Math.abs(canvas - FITTED_LEAF_CORE_PX) < 1e-9);
     assert.ok(Math.abs(native - canvas) < 1e-9);
-    assert.ok(canvas * LEAF_HALO_RATIO <= 1.5);
+    assert.ok(Math.abs(canvas - FITTED_LEAF_CORE_PX) < 1e-9);
   }
 });
 
@@ -191,7 +190,9 @@ test('a coalesced 3D member has zero core, gap, floor and halo', () => {
     }]]) }).nodes.find(item => item.id === id)!;
   assert.deepEqual([node.radiusPx, node.haloRadiusPx, node.haloCoreGapPx,
     node.minimumCoreDeviceRadiusPx], [0, 0, 0, 0]);
-  assert.equal(LEAF_HALO_INTENSITY_PERMILLE, 80);
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  assert.match(product, /leafMark\s*\?\s*leafRadius\s*:\s*canonicalHalo\.radiusPx/);
+  assert.match(product, /leafMark\s*\?\s*0\s*:\s*canonicalHalo\.intensityPermille/);
 });
 // D087-SIZE BEGIN
 test('distinct 3D sparse and dense nodes submit the same unfloored GPU footprint', () => {
@@ -231,7 +232,7 @@ test('a structural canvas mark keeps its halo profile when many leaves are admit
     drawMorphologyCanvas(context, geometry, p => ({ x: p.x, y: p.y, scale: 1 }), {
       fieldColor: 'rgb(0, 0, 0)', interaction: { hoverId: null, focusIds: null },
       nodes: new Map<string, { color: string; radiusPx: number; leafMark: boolean }>([[hub.id, { color: 'rgb(255, 255, 255)', radiusPx: 6, leafMark: false }],
-        ...leaves.map(leaf => [leaf.id, { color: 'rgb(255, 255, 255)', radiusPx: 0, leafMark: true }] as const)]),
+        ...leaves.map(leaf => [leaf.id, { color: 'rgb(255, 255, 255)', radiusPx: 1, leafMark: true }] as const)]),
       edges: new Map(),
     }, { ...appearance, glow: 1 }, [], '2d');
     return halos;
@@ -239,6 +240,14 @@ test('a structural canvas mark keeps its halo profile when many leaves are admit
   const sparse = sampled(false), dense = sampled(true);
   assert.ok(sparse.length > 0, 'the sparse mark includes a halo');
   assert.deepEqual(dense, sparse);
+});
+
+test('quality restore keeps its admitted marks without a camera-only full subset rebuild', () => {
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const qualityFull = product.slice(product.indexOf('const onQualityFull ='), product.indexOf('function scheduleDenseZoomRefresh'));
+  assert.doesNotMatch(qualityFull, /applyVisibleSubset\(/);
+  const renderer = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
+  assert.match(renderer, /if \(radiiChanged\) \{[\s\S]*?core\.needsUpdate/);
 });
 
 test('a conversation keeps its structural mark when the mounted density dropped every child', () => {
@@ -256,6 +265,7 @@ test('a conversation keeps its structural mark when the mounted density dropped 
   const page = readFileSync(new URL('../src/review/v2-page.ts', import.meta.url), 'utf8');
   const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   assert.match(page, /fullGraphStructuralIds: this\.fullGraphStructuralIds\(\)/);
+  assert.match(page, /if \(appended\) \{[\s\S]*?this\.fullStructuralMemo = null/);
   assert.match(product, /input\.fullGraphStructuralIds\s*\?\s*new Set\(input\.fullGraphStructuralIds\)/);
 });
 
@@ -285,15 +295,16 @@ test('Completa 2D label placement recovers when discs report drawn law radii, no
   // the mounted 2D witness answers the drawn law radius in every density
   const twoD = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(twoD, /!distinct\.nativeTier/);
-  assert.match(twoD, /distinct && attributes\.size > 0\s*\?\s*canvasNodeRadiusPx\(distinct\.morphology/);
+  assert.match(twoD, /distinct\?\.encodedRadii\(\)\.get\(id\)/);
+  assert.match(twoD, /distinct\?\.nativeTier\s*\?\s*sigma\.scaleSize\(attributes\.size\)/);
 });
 
-test('the native tier paints the sparse painter node marks and leaves filaments on the GPU', () => {
+test('the native tier keeps GPU nodes and paints only canvas structure', () => {
   const hub = { id: 'hub', position: { x: 100, y: 100, z: 0 }, radius: 6 };
   const mate = { id: 'mate', position: { x: 300, y: 100, z: 0 }, radius: 4 };
   const relation = [{ id: 'relation', source: 'hub', target: 'mate', width: 1 }];
   const geometry = buildMorphologyGeometry('stellar', [hub, mate], relation);
-  const paint = (structureOnly: boolean, edgesStayNative: boolean) => {
+  const paint = (structureOnly: boolean) => {
     const radii: number[] = [];
     const lines: number[] = [];
     const context = { canvas: { width: 800, height: 600,
@@ -316,18 +327,19 @@ test('the native tier paints the sparse painter node marks and leaves filaments 
         [mate.id, { color: 'rgb(255, 255, 255)', radiusPx: 4, leafMark: false }]]),
       edges: new Map([[relation[0]!.id, { color: 'rgb(255, 255, 255)',
         presentation: { category: 'attested', widthPermille: 1000, opacityPermille: 1000 } }]]),
-    }, { ...appearance, glow: 1 }, [], '2d', structureOnly, edgesStayNative);
+    }, { ...appearance, glow: 1 }, [], '2d', structureOnly);
     return { radii, lines };
   };
-  const native = paint(false, true), sparse = paint(false, false), retired = paint(true, false);
-  assert.ok(native.radii.length > 0, 'the dense pass paints node marks');
-  assert.deepEqual(native.radii, sparse.radii, 'node pixels do not change with density');
-  assert.deepEqual(native.lines, [], 'above the threshold the GPU layer keeps the relations');
+  const sparse = paint(false), native = paint(true);
+  assert.equal(native.radii.length, 0, 'dense canvas skips node marks');
+  assert.ok(sparse.radii.length > 0, 'sparse canvas paints node marks');
+  assert.equal(native.lines.length, 0, 'dense canvas leaves relations on the GPU');
   assert.ok(sparse.lines.length > 0, 'the sparse pass paints its own relation');
-  assert.equal(retired.radii.length, 0, 'the retired structure-only dense call painted no node');
   const twoD = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
-  assert.match(twoD, /undefined, "2d", false, nativeTier\)/);
-  assert.match(twoD, /gpuNodes\.style\.display = settled \? 'none' : ''/);
+  assert.match(twoD, /undefined, "2d", nativeTier\)/);
+  assert.doesNotMatch(twoD, /gpuNodes\.style\.display = settled/);
+  assert.match(twoD, /if \(distinct\?\.leafIds\(\)\.has\(id\)\) continue/);
+  assert.match(twoD, /return mark\.leafIds\(\)\.has\(id\) \? coreRadiusPx/);
 });
 // D087-SIZE END
 // D087-SIZE END
