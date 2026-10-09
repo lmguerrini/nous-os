@@ -37,13 +37,23 @@ export function lullVisibleBundleWeights(pairs: readonly LullOverviewPairFold[])
 // floored. A neutral palette therefore draws a pure grey (R = G = B) and only a
 // coloured palette tints the structure.
 export const LULL_INK_LEVEL = { strong: 213, faint: 189, bundle: 210 } as const;
-export function lullInk(palette: PaletteValues, level: number, alpha: string): string {
-  const [red, green, blue] = hexRgb(palette.aggregate).map(channel => channel * 255) as [number, number, number];
+// The same palette/luma law also serves the other guides and Canopy.
+export function paletteChannels(palette: PaletteValues, role: keyof PaletteValues,
+  level: number | null): readonly [number, number, number] {
+  const [red, green, blue] = hexRgb(palette[role]).map(channel => channel * 255) as [number, number, number];
+  if (level === null) return [red, green, blue].map(Math.round) as [number, number, number];
   const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
   const channels = luma > 0
     ? [red, green, blue].map(channel => Math.min(255, Math.floor(channel * level / luma + 1e-9)))
     : [level, level, level];
-  return `rgba(${channels.join(',')},${alpha})`;
+  return channels as [number, number, number];
+}
+export function paletteInk(palette: PaletteValues, role: keyof PaletteValues,
+  level: number | null, alpha: string): string {
+  return `rgba(${paletteChannels(palette, role, level).join(',')},${alpha})`;
+}
+export function lullInk(palette: PaletteValues, level: number, alpha: string): string {
+  return paletteInk(palette, 'aggregate', level, alpha);
 }
 // D086-F3 END
 const LULL_ZOOM_FADE_BEGIN = 2.15;
@@ -172,7 +182,9 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     // D086-F3 BEGIN
     const palette = activePalette();
     // D086-F3 END
-    context.strokeStyle = 'rgba(180,190,210,.22)';
+    // D086-F3 BEGIN: all non-Llull guides share the approved faint guide luma.
+    context.strokeStyle = paletteInk(palette, 'aggregate', 189, '.22');
+    // D086-F3 END
     context.lineWidth = 0.75;
     // D085-S5 BEGIN: route hints have no eligibility token at this surface; never
     // paint them. Fine guide volume is capped deterministically during interaction.
@@ -256,7 +268,9 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
         }
       // D085-S4 END
       } else {
-        context.strokeStyle = 'rgba(180,190,210,.22)';
+        // D086-F3 BEGIN
+        context.strokeStyle = paletteInk(palette, 'aggregate', 189, '.22');
+        // D086-F3 END
         context.lineWidth = 0.75;
       }
       // D084-LLULL END

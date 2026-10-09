@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { canopyBundlesForReading, computeCanopyLayout } from '../src/fractal/canopy-layout.ts';
 import { canopyMarks } from '../src/fractal/canopy-reveal.ts';
 import { auditCanopyRails, canopyRailInk, canopyRenderPositions, visibleCanopyRails } from '../src/fractal/renderer-adapter.ts';
+// D086-F3 BEGIN
+import { PALETTES } from '../src/review/palette.ts';
+// D086-F3 END
 import { volumeStats } from '../src/review/volume.ts';
 import type { GraphEdge } from '../src/review/graph-v2.ts';
 
@@ -57,16 +60,19 @@ test('C3 reveals real records beyond three screen pixels and keeps smaller ones 
   assert.ok(tiny.some(mark => mark.aggregate && mark.memberCount > 1));
 });
 
-test('C3 spatial forks have meaningful volume and selected gold is exclusive', () => {
+test('C3 spatial forks have meaningful volume and palette selection is exclusive', () => {
   const layout = computeCanopyLayout(nodes);
   const fitIds = nodes.filter(node => node.level <= 3).map(node => node.id);
   const spatial = canopyRenderPositions(layout, fitIds, '3d');
   assert.ok(volumeStats(spatial).ratios.third > 0.15);
   assert.notDeepEqual(spatial.get(fitIds[0]!), canopyRenderPositions(layout, fitIds, '2d').get(fitIds[0]!));
-  assert.match(canopyRailInk(false, 0, 0), /^rgba\(199, 205, 214/);
-  assert.match(canopyRailInk(false, 1, 0), /^rgba\(165, 159, 185/);
-  assert.match(canopyRailInk(true, 0, 0), /^rgba\(235, 180, 96/);
-  assert.ok(!canopyRailInk(false, 1, 0).includes('235, 180, 96'));
+  // D086-F3 BEGIN: each rail resolves the appropriate live palette role.
+  assert.equal(canopyRailInk(false, 0, 0, PALETTES.bw), 'rgba(204,204,204,.63)');
+  assert.equal(canopyRailInk(false, 1, 0, PALETTES.bw), 'rgba(162,162,162,.67)');
+  assert.equal(canopyRailInk(true, 0, 0, PALETTES.bw), 'rgba(255,255,255,.92)');
+  assert.equal(canopyRailInk(true, 0, 0, PALETTES.amber), 'rgba(255,241,207,.92)');
+  assert.notEqual(canopyRailInk(false, 1, 0, PALETTES.amber), canopyRailInk(true, 0, 0, PALETTES.amber));
+  // D086-F3 END
 });
 
 test('C3 keeps structural classification distinct in every reading', () => {
