@@ -1,7 +1,16 @@
 /** A single stack for Escape, button toggles and pressed state across review surfaces. */
 // D087-TOOLBAR BEGIN
+const customAmountFormatter = new Intl.NumberFormat('it-IT', { useGrouping: true });
+export function formatCustomAmount(amount: number): string { return customAmountFormatter.format(amount); }
 export function customDensityLabel(amount: number | undefined): string {
-  return amount === undefined ? 'Custom' : `Custom · ${new Intl.NumberFormat('it-IT', { useGrouping: true }).format(amount)}`;
+  return amount === undefined ? 'Custom' : `Custom · ${formatCustomAmount(amount)}`;
+}
+export function isAnchorVisibleInColumn(
+  anchor: Pick<DOMRect, 'top' | 'right' | 'bottom' | 'left'>,
+  column: Pick<DOMRect, 'top' | 'right' | 'bottom' | 'left'>,
+): boolean {
+  return anchor.bottom > column.top && anchor.top < column.bottom &&
+    anchor.right > column.left && anchor.left < column.right;
 }
 // D087-TOOLBAR END
 export class PopoverStack {
@@ -46,6 +55,7 @@ export type SurfaceBinding = {
   // D087-TOOLBAR BEGIN: opt-in outside dismissal for a transient anchored editor.
   closeOnOutside?: boolean;
   syncPressed?: boolean;
+  closeLabel?: string;
   // D087-TOOLBAR END
 };
 
@@ -82,7 +92,11 @@ export function bindSurfaces(
       stack.toggle(binding.id);
     });
     const close = document.createElement('button'); close.type = 'button'; close.className = 'surface-close';
-    close.textContent = '×'; close.setAttribute('aria-label', `Chiudi ${binding.id}`);
+    // D087-TOOLBAR BEGIN: announce the visible surface name, not its implementation id.
+    close.textContent = '×';
+    if (binding.closeLabel) close.setAttribute('aria-label', `Chiudi ${binding.closeLabel}`);
+    else close.setAttribute('aria-label', `Chiudi ${binding.id}`);
+    // D087-TOOLBAR END
     close.addEventListener('click', event => {
       event.stopPropagation();
       if (binding.canClose && !binding.canClose()) return;

@@ -40,7 +40,9 @@ window.addEventListener('unhandledrejection', event => {
 });
 // D085-S5 END
 // D085-S1 END
-import { bindSurfaces, customDensityLabel } from "./popover.ts";
+// D087-TOOLBAR BEGIN
+import { bindSurfaces, customDensityLabel, formatCustomAmount, isAnchorVisibleInColumn } from "./popover.ts";
+// D087-TOOLBAR END
 // D081-P4 BEGIN
 import { mountPerformanceHud } from "./perf-hud.ts";
 // D081-P4 END
@@ -2087,10 +2089,18 @@ const customMessage = get<HTMLElement>('custom-density-message');
 const customRow = get<HTMLElement>('custom-density-row');
 // D087-TOOLBAR BEGIN: the Custom trigger owns only the editor surface; drafts still commit on Apply.
 const customButton = get<HTMLElement>('density-control').querySelector<HTMLButtonElement>('button[data-density="custom"]')!;
+const toolbar = get<HTMLElement>('review-toolbar');
+const column = get<HTMLElement>('toolbar-controls');
 function placeCustomPopover(): void {
   if (customRow.hidden) return;
   const anchor = customButton.getBoundingClientRect();
-  const side = get<HTMLElement>('review-toolbar').classList.contains('toolbar-left');
+  const side = toolbar.classList.contains('toolbar-left');
+  if (side && !isAnchorVisibleInColumn(anchor, column.getBoundingClientRect())) {
+    // Focus on the hidden trigger would scroll the column back to it.
+    if (customRow.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+    surfaceStack?.set('custom-density', false);
+    return;
+  }
   const width = customRow.offsetWidth, height = customRow.offsetHeight;
   const preferredLeft = side ? anchor.right + 8 : anchor.left;
   customRow.style.left = `${Math.max(8, Math.min(preferredLeft, window.innerWidth - width - 8))}px`;
@@ -2100,6 +2110,9 @@ function placeCustomPopover(): void {
 for (const eventName of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'wheel'] as const)
   customRow.addEventListener(eventName, event => event.stopPropagation());
 window.addEventListener('resize', placeCustomPopover);
+toolbar.addEventListener('scroll', placeCustomPopover);
+column.addEventListener('scroll', placeCustomPopover);
+new ResizeObserver(() => placeCustomPopover()).observe(toolbar);
 // D087-TOOLBAR END
 function customCapability(): CustomDensityCapability | null {
   const page = v2 as (V2Page & Partial<CustomDensityCapability>) | null;
@@ -2119,8 +2132,10 @@ function makeCustomIntent(amount: number | undefined, topology: TopologyId, indr
 function acceptCustomCommit(fact: CustomCommitFact): void {
   customNodes = fact.requestedNodes;
   customDraftDirty = false;
-  customMessage.textContent = fact.clampedFrom === undefined ? `richiesti ${fact.requestedNodes.toLocaleString('it-IT')}`
-    : `richiesti ${fact.requestedNodes.toLocaleString('it-IT')} · adattati da ${fact.clampedFrom.toLocaleString('it-IT')}`;
+  // D087-TOOLBAR BEGIN: all Custom readouts share the trigger's grouping rule.
+  customMessage.textContent = fact.clampedFrom === undefined ? `richiesti ${formatCustomAmount(fact.requestedNodes)}`
+    : `richiesti ${formatCustomAmount(fact.requestedNodes)} · adattati da ${formatCustomAmount(fact.clampedFrom)}`;
+  // D087-TOOLBAR END
   // D087-TOOLBAR BEGIN
   customButton.textContent = customDensityLabel(fact.requestedNodes);
   // D087-TOOLBAR END
@@ -2134,7 +2149,9 @@ function syncCustomControls(): void {
   customButton.textContent = customDensityLabel(customNodes);
   customButton.setAttribute('aria-label', `Densità ${customDensityLabel(customNodes)}`);
   // D087-TOOLBAR END
-  customAvailable.textContent = `disponibili ${(availability?.available ?? 0).toLocaleString('it-IT')}`;
+  // D087-TOOLBAR BEGIN
+  customAvailable.textContent = `disponibili ${formatCustomAmount(availability?.available ?? 0)}`;
+  // D087-TOOLBAR END
   const minimum = availability?.minimum ?? 1, maximum = Math.max(minimum, availability?.available ?? 1);
   customRange.min = customNumber.min = String(minimum);
   customRange.max = customNumber.max = String(maximum);
@@ -2145,7 +2162,9 @@ function syncCustomControls(): void {
     customRange.value = customNumber.value = String(value);
   }
   customRange.disabled = customNumber.disabled = customApply.disabled = !usable;
-  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${availability?.available ?? 0}`);
+  // D087-TOOLBAR BEGIN
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${formatCustomAmount(Number(customRange.value))} · disponibili ${formatCustomAmount(availability?.available ?? 0)}`);
+  // D087-TOOLBAR END
 }
 function applyCustomDensity(initialAmount?: number): void {
   const page = customCapability(), availability = customAvailability();
@@ -2165,7 +2184,9 @@ function applyCustomDensity(initialAmount?: number): void {
   const intent = makeCustomIntent(requested, topology, indra);
   pendingDensityIntent = intent;
   const topologyIntent = pendingTopologyIntent;
-  customMessage.textContent = `in attesa ${requested.toLocaleString('it-IT')}`;
+  // D087-TOOLBAR BEGIN
+  customMessage.textContent = `in attesa ${formatCustomAmount(requested)}`;
+  // D087-TOOLBAR END
   v2?.supersedeGeometry();
   void geometryTransitions.enqueue(async () => {
     if (pendingDensityIntent !== intent) return;
@@ -2174,7 +2195,9 @@ function applyCustomDensity(initialAmount?: number): void {
     if (!currentCustomCommit(intent, pendingDensityIntent && 'density' in pendingDensityIntent ? pendingDensityIntent : null, result)) return;
     acceptCustomCommit(result);
     if (clampedDraft !== undefined && result.clampedFrom === undefined)
-      customMessage.textContent = `richiesti ${result.requestedNodes.toLocaleString('it-IT')} · adattati da ${clampedDraft.toLocaleString('it-IT')}`;
+      // D087-TOOLBAR BEGIN
+      customMessage.textContent = `richiesti ${formatCustomAmount(result.requestedNodes)} · adattati da ${formatCustomAmount(clampedDraft)}`;
+      // D087-TOOLBAR END
     syncCommittedPageGeometry();
     density = 'custom';
     if (!('mode' in geometry))
@@ -2191,14 +2214,18 @@ function applyCustomDensity(initialAmount?: number): void {
 customRange.addEventListener('input', () => {
   customNumber.value = customRange.value;
   customDraftDirty = true;
-  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${customAvailability()?.available ?? 0}`);
-  customMessage.textContent = `bozza ${Number(customRange.value).toLocaleString('it-IT')}`;
+  // D087-TOOLBAR BEGIN
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${formatCustomAmount(Number(customRange.value))} · disponibili ${formatCustomAmount(customAvailability()?.available ?? 0)}`);
+  customMessage.textContent = `bozza ${formatCustomAmount(Number(customRange.value))}`;
+  // D087-TOOLBAR END
 });
 customNumber.addEventListener('input', () => {
   const value = Number(customNumber.value);
   if (Number.isFinite(value)) customRange.value = String(value);
   customDraftDirty = true;
-  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${customAvailability()?.available ?? 0}`);
+  // D087-TOOLBAR BEGIN
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${formatCustomAmount(Number(customRange.value))} · disponibili ${formatCustomAmount(customAvailability()?.available ?? 0)}`);
+  // D087-TOOLBAR END
   customMessage.textContent = 'bozza';
 });
 customNumber.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); applyCustomDensity(); } });
@@ -2323,7 +2350,7 @@ get<HTMLInputElement>("debug").addEventListener("change", (event) => {
 });
 const surfaceBindings: SurfaceBinding[] = [
   // D087-TOOLBAR BEGIN: Custom is transient, above focus and the side panel for Escape.
-  { id: 'custom-density', surface: customRow, openers: [customButton], closeOnOutside: true, syncPressed: false,
+  { id: 'custom-density', surface: customRow, openers: [customButton], closeOnOutside: true, syncPressed: false, closeLabel: 'Densità Custom',
     readOpen: () => !customRow.hidden,
     writeOpen: open => {
       customRow.hidden = !open;
@@ -2333,15 +2360,16 @@ const surfaceBindings: SurfaceBinding[] = [
       else if (customRow.contains(document.activeElement)) customButton.focus();
     } },
   // D087-TOOLBAR END
-  { id: "graph-status", surface: get("graph-status-panel"), openers: [get("graph-status-toggle")],
+  // D087-TOOLBAR BEGIN: human names for every injected surface close button.
+  { id: "graph-status", surface: get("graph-status-panel"), closeLabel: 'Stato del grafo', openers: [get("graph-status-toggle")],
     readOpen: () => !get<HTMLElement>("graph-status-panel").hidden,
     writeOpen: open => { get<HTMLElement>("graph-status-panel").hidden = !open;
       get<HTMLButtonElement>("graph-status-toggle").setAttribute("aria-expanded", String(open)); } },
-  { id: "panel", surface: details,
+  { id: "panel", surface: details, closeLabel: 'Pannello',
     openers: [get("panel-toggle"), get("panel-edge-toggle"), get("fullscreen-panel")],
     readOpen: () => fullscreen() ? fullscreenDrawer : !panelCollapsed,
     writeOpen: open => { if (fullscreen()) fullscreenDrawer = open; else panelCollapsed = !open; syncPanel(); } },
-  { id: "appearance", surface: get("appearance-panel"),
+  { id: "appearance", closeLabel: 'Aspetto', surface: get("appearance-panel"),
     openers: [get("appearance-toggle"), get("fullscreen-appearance")],
     readOpen: () => !get<HTMLElement>("appearance-panel").hidden,
     writeOpen: open => { get<HTMLElement>("appearance-panel").hidden = !open; updateInsets();
@@ -2349,15 +2377,17 @@ const surfaceBindings: SurfaceBinding[] = [
     canClose: canCloseColours },
   ...(["filter-menu", "more-menu", "view-preset-menu"] as const).map(id => {
     const menu = get<HTMLDetailsElement>(id);
-    return { id, surface: menu.querySelector<HTMLElement>(".menu-content")!, openers: [menu.querySelector<HTMLElement>("summary")!],
+    const closeLabel = { 'filter-menu': 'Filtri', 'more-menu': 'Altro', 'view-preset-menu': 'Orientamento' }[id];
+    return { id, closeLabel, surface: menu.querySelector<HTMLElement>(".menu-content")!, openers: [menu.querySelector<HTMLElement>("summary")!],
       readOpen: () => menu.open, writeOpen: (open: boolean) => { menu.open = open;
         if (id === "more-menu" && !open && surfaceStack?.isOpen("advanced")) surfaceStack.set("advanced", false); } };
   }),
-  { id: "advanced", surface: get("advanced-controls"), openers: [get("advanced-button")],
+  { id: "advanced", closeLabel: 'Avanzate', surface: get("advanced-controls"), openers: [get("advanced-button")],
     readOpen: () => !get<HTMLElement>("advanced-controls").hidden,
     writeOpen: open => { get<HTMLElement>("advanced-controls").hidden = !open;
       get<HTMLButtonElement>("advanced-button").setAttribute("aria-expanded", String(open)); } },
 ];
+// D087-TOOLBAR END
 // D081-P4 BEGIN
 const performanceSurface = document.getElementById("performance-overlay");
 const performanceOpener = document.getElementById("performance-toggle");
@@ -2369,9 +2399,11 @@ diagnostics.__d072 = { ...(diagnostics.__d072 ?? {}), flowActive: () =>
   flowMotion && axes.reading !== "attested" && appearance.flowIntensity > 0 && appearance.flowSpeed > 0 &&
   !document.hidden && !window.matchMedia("(prefers-reduced-motion: reduce)").matches };
 // D081-P4 BEGIN
-if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "performance", surface: performanceSurface,
+// D087-TOOLBAR BEGIN
+if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "performance", closeLabel: 'Prestazioni', surface: performanceSurface,
   openers: [performanceOpener], readOpen: () => !performanceSurface.hidden,
   writeOpen: open => { performanceSurface.hidden = !open; performanceHud?.setOpen(open); } });
+// D087-TOOLBAR END
 // D081-P4 END
 // D085-S5 BEGIN
 surfaceStack = bindSurfaces(surfaceBindings, () => Boolean(v2?.selectedId), () => { ownDisplayedRemount(v2?.exitFocus()); });
