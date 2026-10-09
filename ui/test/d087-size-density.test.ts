@@ -12,8 +12,9 @@ import { FILAMENT_FRAGMENT_SHADER } from '../src/render3f/filament-material.ts';
 import { buildScene } from '../src/scene/build.ts';
 import { sceneFixtureGraph, sceneVisualState } from './scene/support.ts';
 // D087-SIZE BEGIN
-import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX, LEAF_HALO_RATIO,
+import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX, fullHierarchyStructuralIds, LEAF_HALO_RATIO,
   LEAF_HALO_INTENSITY_PERMILLE } from '../src/render-common/semantic-node-mark.ts';
+import { footprintDisc, placeLabels } from '../src/render-common/labels.ts';
 // D087-SIZE END
 
 const totals = { essential: 80, balanced: 2_420, complete: 11_199, custom: 2_000 } as const;
@@ -238,6 +239,95 @@ test('a structural canvas mark keeps its halo profile when many leaves are admit
   const sparse = sampled(false), dense = sampled(true);
   assert.ok(sparse.length > 0, 'the sparse mark includes a halo');
   assert.deepEqual(dense, sparse);
+});
+
+test('a conversation keeps its structural mark when the mounted density dropped every child', () => {
+  const full = [
+    { id: 'root', parent: null },
+    { id: 'conversation', parent: 'root' },
+    { id: 'message', parent: 'conversation' },
+    { id: 'note', parent: 'conversation' },
+  ];
+  const mounted = full.filter(node => node.id !== 'message' && node.id !== 'note');
+  const fullIds = fullHierarchyStructuralIds(full);
+  const mountedIds = fullHierarchyStructuralIds(mounted);
+  assert.equal(fullIds.has('conversation'), true, 'the full hierarchy keeps the conversation structural');
+  assert.equal(mountedIds.has('conversation'), false, 'the mounted subset alone would demote it to a leaf');
+  const page = readFileSync(new URL('../src/review/v2-page.ts', import.meta.url), 'utf8');
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  assert.match(page, /fullGraphStructuralIds: this\.fullGraphStructuralIds\(\)/);
+  assert.match(product, /input\.fullGraphStructuralIds\s*\?\s*new Set\(input\.fullGraphStructuralIds\)/);
+});
+
+test('Completa 2D label placement recovers when discs report drawn law radii, not GPU sizes', () => {
+  const bounds = { left: 0, top: 0, width: 720, height: 520 };
+  const measure = (text: string) => ({ width: text.length * 6, height: 12 });
+  let seed = 20260807;
+  const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const field = Array.from({ length: 420 }, () => ({ x: random() * 690 + 15, y: random() * 490 + 15 }));
+  const candidates = Array.from({ length: 60 }, (_, index) => ({
+    id: `c-${index}`, text: 'conversation', reason: 'zoom' as const,
+    x: 40 + (index % 5) * 140, y: 30 + Math.floor(index / 5) * 44,
+    priority: 60 - index, radius: 4.5,
+  }));
+  // The leaf core the D-086 calibration draws at the fitted camera, against the dense GPU
+  // witness that reported up to twice the drawn radius for the same node.
+  const own = candidates.map(candidate => footprintDisc({ id: candidate.id,
+    x: candidate.x, y: candidate.y, coreRadiusPx: 4.5 }));
+  const lawDiscs = [...own, ...field.map((point, index) => footprintDisc({ id: `l-${index}`,
+    x: point.x, y: point.y, coreRadiusPx: FITTED_LEAF_CORE_PX }))];
+  const inflatedDiscs = [...own, ...field.map((point, index) => footprintDisc({ id: `l-${index}`,
+    x: point.x, y: point.y, coreRadiusPx: FITTED_LEAF_CORE_PX * 2 }))];
+  const lawPlaced = placeLabels(candidates, bounds, measure, [], 60, lawDiscs).length;
+  const inflatedPlaced = placeLabels(candidates, bounds, measure, [], 60, inflatedDiscs).length;
+  assert.ok(lawPlaced > 0, `law radii place labels (${lawPlaced})`);
+  assert.ok(lawPlaced > inflatedPlaced, `law radii place more than inflated ones (${lawPlaced} > ${inflatedPlaced})`);
+  // the mounted 2D witness answers the drawn law radius in every density
+  const twoD = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(twoD, /!distinct\.nativeTier/);
+  assert.match(twoD, /distinct && attributes\.size > 0\s*\?\s*canvasNodeRadiusPx\(distinct\.morphology/);
+});
+
+test('the native tier paints the sparse painter node marks and leaves filaments on the GPU', () => {
+  const hub = { id: 'hub', position: { x: 100, y: 100, z: 0 }, radius: 6 };
+  const mate = { id: 'mate', position: { x: 300, y: 100, z: 0 }, radius: 4 };
+  const relation = [{ id: 'relation', source: 'hub', target: 'mate', width: 1 }];
+  const geometry = buildMorphologyGeometry('stellar', [hub, mate], relation);
+  const paint = (structureOnly: boolean, edgesStayNative: boolean) => {
+    const radii: number[] = [];
+    const lines: number[] = [];
+    const context = { canvas: { width: 800, height: 600,
+        getBoundingClientRect: () => ({ width: 800, height: 600 }) },
+      fillStyle: '', strokeStyle: '', globalAlpha: 1, globalCompositeOperation: 'source-over',
+      lineWidth: 1, font: '', setTransform() {}, clearRect() {}, beginPath() {}, closePath() {},
+      moveTo: () => { lines.push(1); }, lineTo: () => { lines.push(1); },
+      arc: (_x: number, _y: number, radius: number) => { radii.push(radius); },
+      ellipse: (_x: number, _y: number, radiusX: number) => { radii.push(radiusX); }, fill() {},
+      stroke() {}, setLineDash() {}, save() {}, restore() {},
+      measureText: () => ({ width: 0 }), fillText() {},
+      createRadialGradient: (_x: number, _y: number, _inner: number, _x2: number, _y2: number, outer: number) => {
+        radii.push(outer); return { addColorStop() {} };
+      },
+      createLinearGradient: () => ({ addColorStop() {} }),
+    } as unknown as CanvasRenderingContext2D;
+    drawMorphologyCanvas(context, geometry, p => ({ x: p.x, y: p.y, scale: 1 }), {
+      fieldColor: 'rgb(0, 0, 0)', interaction: { hoverId: null, focusIds: null },
+      nodes: new Map([[hub.id, { color: 'rgb(255, 255, 255)', radiusPx: 6, leafMark: false }],
+        [mate.id, { color: 'rgb(255, 255, 255)', radiusPx: 4, leafMark: false }]]),
+      edges: new Map([[relation[0]!.id, { color: 'rgb(255, 255, 255)',
+        presentation: { category: 'attested', widthPermille: 1000, opacityPermille: 1000 } }]]),
+    }, { ...appearance, glow: 1 }, [], '2d', structureOnly, edgesStayNative);
+    return { radii, lines };
+  };
+  const native = paint(false, true), sparse = paint(false, false), retired = paint(true, false);
+  assert.ok(native.radii.length > 0, 'the dense pass paints node marks');
+  assert.deepEqual(native.radii, sparse.radii, 'node pixels do not change with density');
+  assert.deepEqual(native.lines, [], 'above the threshold the GPU layer keeps the relations');
+  assert.ok(sparse.lines.length > 0, 'the sparse pass paints its own relation');
+  assert.equal(retired.radii.length, 0, 'the retired structure-only dense call painted no node');
+  const twoD = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
+  assert.match(twoD, /undefined, "2d", false, nativeTier\)/);
+  assert.match(twoD, /gpuNodes\.style\.display = settled \? 'none' : ''/);
 });
 // D087-SIZE END
 // D087-SIZE END

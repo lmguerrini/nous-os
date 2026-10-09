@@ -353,6 +353,11 @@ export function mount(
   // The distinct morphology canvas covers the WebGL tiers. Keep the compatibility picking
   // buffer for renderer witnesses while suppressing the invisible full-DPR screen pass.
   const screenPaint = { enabled: true };
+  // "D087-SIZE BEGIN"
+  // The node discs' screen pass has its own switch: at rest the distinct canvas paints every
+  // node mark, so the GPU program keeps only its picking pass until motion needs it again.
+  const nodeScreenPaint = { enabled: true };
+  // "D087-SIZE END"
   const nativeLabelsUsed = activeOptions.presentation?.nativeLabels !== false;
   const edgeProgramClasses = {
     filament: createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings, screenPaint),
@@ -360,7 +365,7 @@ export function mount(
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
     edgeProgramClasses,
-    nodeProgramClasses: { circle: createPickingCapableNodeProgram(screenPaint) },
+    nodeProgramClasses: { circle: createPickingCapableNodeProgram(nodeScreenPaint) },
     renderLabels: nativeLabelsUsed && model.material.node.includes("label"),
     renderEdgeLabels: false,
     labelSize: calibration.labels.nodeLabelSizePx,
@@ -484,12 +489,15 @@ export function mount(
     leafIds: () => leafMarkIds,
     // "D087-SIZE END"
   } : undefined;
+  // "D087-SIZE BEGIN"
+  // The distinct canvas node pass paints halos in every density, so the glow layer answers
+  // footprints only on that path; the legacy page keeps its painted halo layer unchanged.
+  // "D087-SIZE END"
   const glow = model.material.node.includes("halo")
-    ? mountNodeGlow(sigma, model, options.calibration,
-      !distinctLanguage || model.graph.order >= DENSE_SCENE_THRESHOLD, distinctGlow)
+    ? mountNodeGlow(sigma, model, options.calibration, !distinctLanguage, distinctGlow)
     : noGlowLayer();
   const distinct = distinctLanguage
-    ? mountDistinctCanvas(sigma, model, activeOptions, screenPaint)
+    ? mountDistinctCanvas(sigma, model, activeOptions, screenPaint, nodeScreenPaint)
     : null;
   sigma.refresh();
   let handlePickIndex: ScreenPickIndex;
@@ -817,6 +825,9 @@ function mountDistinctCanvas(
   model: RenderModel,
   options: RenderOptions,
   screenPaint: ScreenPaintControl,
+  // "D087-SIZE BEGIN"
+  nodeScreenPaint: ScreenPaintControl,
+  // "D087-SIZE END"
 ): {
   setAppearance(options: AppearanceOptions): void;
   updateVisibleSubset(update: DistinctSubsetUpdate): void;
@@ -882,6 +893,9 @@ function mountDistinctCanvas(
   sigma.on("resize", collapseLayer);
   if (!nativeTier) {
     screenPaint.enabled = false;
+    // "D087-SIZE BEGIN": below the threshold the canvas owns edges and nodes alike.
+    nodeScreenPaint.enabled = false;
+    // "D087-SIZE END"
     for (const item of detached) item.style.display = "none";
   }
   let appearance = options.presentation?.appearance ?? DEFAULT_APPEARANCE;
@@ -945,8 +959,11 @@ function mountDistinctCanvas(
     const nativeNodesDrawn = nativeTier && nativeNodesCanvas?.style.display !== 'none' ? nativeNodeIdsDrawn : 0;
     const nativeDrawnIds = nativeTier && nativeEdgesCanvas?.style.display !== 'none' ? nativeEdgeIdsDrawn : [];
     const nativeEdgesDrawn = nativeDrawnIds.length;
-    const canvasDrawn = !nativeTier && canvas.style.visibility !== 'hidden' && context !== null;
-    const nodesDrawn = nativeTier ? nativeNodesDrawn : canvasDrawn ? geometry.nodes.length : 0;
+    // "D087-SIZE BEGIN": the canvas owns the node marks in every density whenever it is on
+    // screen, so the census counts its painted nodes there and the GPU discs only while they
+    // still cover the moving frames.
+    const canvasDrawn = canvas.style.visibility !== 'hidden' && context !== null;
+    const nodesDrawn = canvasDrawn ? geometry.nodes.length : nativeTier ? nativeNodesDrawn : 0;
     const edgesDrawn = nativeTier ? nativeEdgesDrawn : canvasDrawn ? geometry.edges.length : 0;
     const mainDrawn = nativeTier ? nativeDrawnIds.filter(id => mainEdgeIds.has(id)).length
       : canvasDrawn ? geometry.edges.filter(edge => mainEdgeIds.has(edge.id)).length : 0;
@@ -963,11 +980,28 @@ function mountDistinctCanvas(
     } as const;
     publisher.publish(snapshot);
   };
+  // "D087-SIZE BEGIN"
+  // One node painter in every density: at rest this canvas owns every node mark, exactly as the
+  // sparse tier already drew it, while Sigma's GPU discs cover only the moving frames (their
+  // historical role) and keep their picking pass. The swap happens in the quality ladder, whose
+  // stage already separates motion from the settled screen the parity rule measures.
+  const applyNodePainterTier = (stage: number): void => {
+    if (!nativeTier) return;
+    const settled = stage === FULL_QUALITY_STAGE;
+    nodeScreenPaint.enabled = !settled;
+    const gpuNodes = sigma.getCanvases().nodes;
+    if (gpuNodes) gpuNodes.style.display = settled ? 'none' : '';
+  };
+  // "D087-SIZE END"
   const ladder = new QualityLadder(({ stage, moving }) => {
     if (nativeTier) canvas.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
+    // "D087-SIZE BEGIN"
+    applyNodePainterTier(stage);
+    // "D087-SIZE END"
     if (!moving && stage === FULL_QUALITY_STAGE) draw();
     else if (!moving) publishPresented();
   });
+  applyNodePainterTier(FULL_QUALITY_STAGE);
   const draw = (): void => {
     if (!context) return;
     const cameraFrame = JSON.stringify(sigma.getCamera().getState());
@@ -995,7 +1029,11 @@ function mountDistinctCanvas(
       interaction: options.presentation?.morphologyInteraction,
       nodes: nodeStyles,
       edges: edgeStyles,
-    }, appearance, undefined, "2d", nativeTier);
+    // "D087-SIZE BEGIN": this pass paints every node mark in every density; above the native
+    // threshold the filaments stay on the GPU layer, so the painter owns marks and leaves
+    // edges to Sigma instead of drawing structure only.
+    }, appearance, undefined, "2d", false, nativeTier);
+    // "D087-SIZE END"
     publishPresented();
     if (perfMarksEnabled) { performance.mark("d082:render2d:canvas:end"); performance.measure("d082:render2d:canvas", "d082:render2d:canvas:start", "d082:render2d:canvas:end"); }
   };
@@ -1064,6 +1102,13 @@ function mountDistinctCanvas(
         if (backing) { item.width = backing[0]; item.height = backing[1]; }
       });
       screenPaint.enabled = true;
+      // "D087-SIZE BEGIN"
+      nodeScreenPaint.enabled = true;
+      if (nativeTier) {
+        const gpuNodes = sigma.getCanvases().nodes;
+        if (gpuNodes) gpuNodes.style.display = '';
+      }
+      // "D087-SIZE END"
       detached.forEach((item, index) => { item.style.display = previousDetachedDisplay[index] ?? ""; });
       // Polish-III haze repair BEGIN: invalidate pending settled-glow redraws before unmount.
       delete (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw;
@@ -1291,7 +1336,9 @@ function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationPro
   const degrees = distinct ? geometryDegrees(distinct.geometry()) : undefined;
   return model.graph.nodes().map((id) => {
     const attributes = model.graph.getNodeAttributes(id);
-    const coreRadiusPx = distinct && !distinct.nativeTier && attributes.size > 0
+    // "D087-SIZE BEGIN": the witness reports the radius the canvas painter actually draws, in
+    // every density, so the footprint discs the label pass collides against stay drawn CSS px.
+    const coreRadiusPx = distinct && attributes.size > 0
       ? canvasNodeRadiusPx(distinct.morphology, attributes.size, sigma.scaleSize(1),
         degrees?.get(id) ?? 0, canvasNodeFloorPx(distinct.morphology, false), distinct.leafIds().has(id))
       : sigma.scaleSize(attributes.size);

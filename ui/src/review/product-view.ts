@@ -678,10 +678,12 @@ export const createProductView: CreateProductView = async (input) => {
   const fullDepth = input.v2Prepared ? base.flat : placeDynamic(base.depth, input.data);
   const nodesById = new Map(input.data.nodes.map((node) => [node.id, node]));
   // D087-SIZE BEGIN: classification always reads the full hierarchy.
-  const structuralIds = new Set(input.data.nodes.flatMap(node => {
-    const parent = (node.v2 as { parent?: string | null } | undefined)?.parent;
-    return parent ? [parent] : [];
-  }));
+  const structuralIds = input.fullGraphStructuralIds
+    ? new Set(input.fullGraphStructuralIds)
+    : new Set(input.data.nodes.flatMap(node => {
+      const parent = (node.v2 as { parent?: string | null } | undefined)?.parent;
+      return parent ? [parent] : [];
+    }));
   const leafFitGivenById = new Map<string, number>();
   // D087-SIZE END
   const edgesById = new Map(input.data.edges.map((edge) => [edge.id, edge]));

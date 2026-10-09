@@ -5,6 +5,17 @@ export const LEAF_HALO_RATIO = 1.45;
 export const LEAF_HALO_INTENSITY_PERMILLE = 80;
 export const LEAF_HALO_ALPHA_FACTOR = 0.35;
 
+/** Structural classification reads the full snapshot hierarchy, never a mounted subset of it:
+ * a parent is structural while any child exists in the full graph, even when every density the
+ * page can mount dropped that child from its admitted set. */
+export function fullHierarchyStructuralIds(
+  nodes: readonly { readonly id: string; readonly parent: string | null }[],
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const node of nodes) if (node.parent !== null) ids.add(node.parent);
+  return ids;
+}
+
 export type CoLocatedMark = Readonly<{
   id: string;
   x: number;

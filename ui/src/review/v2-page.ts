@@ -1,4 +1,7 @@
 import { styleProjection } from '../render-common/projection-style.ts';
+// D087-SIZE BEGIN
+import { fullHierarchyStructuralIds } from '../render-common/semantic-node-mark.ts';
+// D087-SIZE END
 import { cameraRevealZoom, emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
 import type { RevealDecision, RevealState } from './reveal-controller.ts';
 // D085-S7 BEGIN
@@ -777,6 +780,16 @@ export class V2Page {
         return this.lawActive() ? this.lawIndex ?? this.index : this.index;
     }
     // D085-X9b END
+    // D087-SIZE BEGIN: structural classification owns the full law hierarchy, so a
+    // conversation whose children the density budget dropped still draws its structural mark.
+    private fullGraphStructuralIds(): ReadonlySet<string> {
+        const source = this.sourceIndex().nodes;
+        if (this.fullStructuralMemo?.source !== source) {
+            this.fullStructuralMemo = { source, ids: fullHierarchyStructuralIds(source) };
+        }
+        return this.fullStructuralMemo.ids;
+    }
+    // D087-SIZE END
     // D085-S2 BEGIN: the density budget is a property of the topology being
     // drawn, not one global step. Every density-driven path in this page resolves through
     // here so the status line, the LOD selection, the routing budget and the witness record
@@ -879,6 +892,9 @@ export class V2Page {
     readonly history = new DisclosureHistory();
     readonly index: V2Index;
     readonly manifest: GraphManifest;
+    // D087-SIZE BEGIN: full-hierarchy structural ids, memoized on the fixed law source.
+    private fullStructuralMemo: { source: readonly V2Node[]; ids: ReadonlySet<string> } | null = null;
+    // D087-SIZE END
     // D081-P6c BEGIN: lazy passage rows never change the dataset node total.
     private readonly datasetNodeCount: number;
     private readonly datasetNodeIds: ReadonlySet<string>;
@@ -5308,7 +5324,11 @@ export class V2Page {
                 // D085-S3 BEGIN: this topology is the one prepared for the mount and committed on success.
                 const labTopology = this.topology;
                 const labIndra = this.topologyIndra;
-                const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, labTopology, labIndra, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, ...({ density: this.density } as object), text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, labTopology, labIndra, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels,
+                    // D087-SIZE BEGIN
+                    fullGraphStructuralIds: this.fullGraphStructuralIds(),
+                    // D087-SIZE END
+                    ...({ density: this.density } as object), text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }

@@ -2279,7 +2279,7 @@ function sameAnchors(a: readonly number[], b: readonly number[]): boolean {
 export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry: MorphologyGeometry,
   project: (point: Coordinates) => ProjectedPoint, style: MorphologyCanvasStyle,
   appearance: AppearanceOptions = DEFAULT_APPEARANCE, containers: readonly MorphologyContainerPath[] = geometry.containers ?? [],
-  projection: "2d" | "3d" = "2d", structureOnly = false): void {
+  projection: "2d" | "3d" = "2d", structureOnly = false, edgesStayNative = false): void {
   const canvas = context.canvas;
   const bounds = canvas.getBoundingClientRect();
   if (bounds.width === 0 || bounds.height === 0) return;
@@ -2358,7 +2358,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     : geometry.morphology === "neural" && !canopyDenseNeural
       ? neuralSomaFrames(geometry, project, style, contract, appearance, projection, moving) : null;
   // D082-B1c END.
-  if (!testHook()?.hideEdges) {
+  // D087-SIZE BEGIN: the native tier keeps the filaments; this painter owns every node mark
+  // in every density, so one id has the same pixels below and above the native threshold.
+  if (!edgesStayNative && !testHook()?.hideEdges) {
     const gradientCapable = typeof context.createLinearGradient === "function";
     // D082-A-PERF BEGIN
     const paints = samePaint ? previous!.paints
@@ -2418,7 +2420,8 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       context.globalCompositeOperation = previousComposite;
     }
   }
-  if (!simplified && geometry.morphology === "mycelium" && !testHook()?.hideEdges) {
+  // D087-SIZE BEGIN: junctions belong to the mycelium edge body, which the native tier keeps.
+  if (!edgesStayNative && !simplified && geometry.morphology === "mycelium" && !testHook()?.hideEdges) {
     context.fillStyle = rgba("rgb(245, 245, 245)", appearance.edgeOpacity * 0.65);
     for (const junction of geometry.branchPoints) {
       const p = project(junction);
