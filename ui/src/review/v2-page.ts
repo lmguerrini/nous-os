@@ -4728,11 +4728,16 @@ export class V2Page {
             const priorAxes = this.committedAxes ?? this.axes;
             const priorSpace = productCameraKey({ ...priorAxes,
                 organization: priorAxes.organization === 'indra' ? 'indra' : 'natural' },
-                this.committedTaxonomy.topology, this.committedTaxonomy.indra).key;
+                this.committedTaxonomy.topology, this.committedTaxonomy.indra,
+                priorAxes.organization === 'fractal').key;
             const nextSpace = productCameraKey({ ...this.axes, organization },
-                this.topology, this.topologyIndra).key;
+                this.topology, this.topologyIndra, this.axes.organization === 'fractal').key;
             const topologySpaceChanged = priorSpace !== nextSpace
-                && (this.committedTaxonomy.topology !== 'natural' || this.topology !== 'natural');
+                // D086-F2 BEGIN: Canopy is a separate organization camera space
+                // while its taxonomy is Natural. Its mount fit must win on entry.
+                && (this.committedTaxonomy.topology !== 'natural' || this.topology !== 'natural'
+                    || priorAxes.organization === 'fractal' || this.axes.organization === 'fractal');
+                // D086-F2 END
             const returningCamera = topologySpaceChanged ? this.topologyCameras.get(nextSpace) : null;
             // D086-F2 END
             const disclosureChanged = this.disclosureKey() !== this.lastDisclosureKey
@@ -5135,7 +5140,8 @@ export class V2Page {
             // D086-F2 BEGIN: a prior view makes the `!old` opening-fit branch below
             // unreachable on a topology switch. Record the new law's actual mount fit
             // for the same scene key that a fresh page records. A later refit uses it too.
-            if (openingFitCamera && (topologySpaceChanged || this.topology !== 'natural'))
+            if (openingFitCamera && (topologySpaceChanged || this.topology !== 'natural'
+                || canopy))
                 this.canonicalFitCameras.set(this.canonicalFitKey(), openingFitCamera);
             // D086-F2 END
             this.lastArrangement = arrangement;
@@ -5200,7 +5206,7 @@ export class V2Page {
                 // D086-F2 BEGIN: the replacement already solved the current bounds
                 // with the fresh-page mount contract. Keep the classic Natural path.
                 this.programmaticCamera();
-                if (this.topology !== 'natural' && openingFitCamera)
+                if ((this.topology !== 'natural' || canopy) && openingFitCamera)
                     this.view.restoreCamera(openingFitCamera);
                 else await this.view.fit();
                 // D086-F2 END

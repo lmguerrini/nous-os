@@ -508,11 +508,19 @@ export type ProductCameraKey = Readonly<{
  * selected morphology. The unqualified key stays as the replay source, so a camera recorded before
  * the arrangement axis existed still replays instead of being silently dropped.
  */
-export function productCameraKey(axes: Axes, topology: TopologyId = 'natural', labIndra = false): ProductCameraKey {
+export function productCameraKey(axes: Axes, topology: TopologyId = 'natural', labIndra = false,
+  canopy = false): ProductCameraKey {
   // D086-F2 BEGIN: only classic Natural and Indra use the D-073 replay contract.
   // A law's positions have different bounds even though its product organization is Natural.
   if (topology !== 'natural') {
     const key = `${axes.projection}/law/${topology}/${labIndra ? 'indra' : 'natural'}`;
+    return { key, legacyKey: key, replaysLegacy: false };
+  }
+  // D086-F2 END
+  // D086-F2 BEGIN: Canopy's coordinates have their own normalization space even
+  // though its taxonomy remains Natural. Never replay a Natural arrangement here.
+  if (canopy) {
+    const key = `${axes.projection}/fractal`;
     return { key, legacyKey: key, replaysLegacy: false };
   }
   // D086-F2 END
@@ -767,6 +775,11 @@ export const createProductView: CreateProductView = async (input) => {
     radiusPx: number | undefined; haloRadiusPx: number | undefined }>();
   // D082-A-NODES END
   let handle: GraphRendererHandle | null = null;
+  // D086-F2 BEGIN: Canopy's explicit fit must solve from the same renderer
+  // baseline and subject cloud as a fresh mount when panel insets change.
+  let canopyOpeningCamera: VisualStateCamera | null = null;
+  let canopyOpeningPoints: (() => Coordinates[]) | null = null;
+  // D086-F2 END
   let sigma: RenderHandle | null = null;
   let three: Render3fRendererHandle | null = null;
   let selected: string | null = null;
@@ -1082,7 +1095,8 @@ export const createProductView: CreateProductView = async (input) => {
   // through the legacy replay, writes mirror back so an explicit fit becomes the replay source, and
   // the two maps above are the only state any of this touches.
   // D086-F2 BEGIN: the certified law is part of the mounted camera identity.
-  const cameraKeys = () => productCameraKey(axes, input.labTopology, input.labIndra);
+  const cameraKeys = () => productCameraKey(axes, input.labTopology, input.labIndra,
+    container.hasAttribute('data-fractal-rails-active'));
   // D086-F2 END
   const restoreSavedCamera = () => replayProductCamera(cameras, fitRatio, cameraKeys());
   const semanticFitRatio = (ratio: number, densityBudget = labelBudget) =>
@@ -2175,26 +2189,33 @@ export const createProductView: CreateProductView = async (input) => {
     }
     if (selected && (visible.has(selected) || drawnEdgeIds.has(selected)))
       handle.setSelection(selected);
+    // D086-F2 BEGIN: save the mount's pre-fit camera and exact subjects. A later
+    // Adatta with different insets can then reproduce the fresh-mount solve.
+    const openingCamera = three && input.v2Prepared
+      ? { ...handle.readCameraState(), orbit: defaultObliqueOrbit() } as ReviewCameraState
+      : handle.readCameraState();
+    const openingPoints = (): Coordinates[] => {
+      let points = input.data.nodes.filter((n) => visible.has(n.id)).map((n) => anchors.get(n.id)!).filter(Boolean);
+      if (axes.projection === '3d' && axes.organization === 'natural')
+        points.push(...framingVolumePoints(points));
+      if (axes.organization === 'indra' && layoutContainers)
+        points = indraFullHierarchyFitPoints(layoutContainers, axes.projection);
+      if (input.v2Prepared && axes.organization === 'natural' && axes.projection === '2d'
+        && isReferenceCompleta(input.data.nodes.length, visible.size))
+        points = naturalCompletaFitPoints(points);
+      const brainSphere = three?.readBrainEnvelopeFramingSphere();
+      if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
+      return points;
+    };
+    if (container.hasAttribute('data-fractal-rails-active')) {
+      canopyOpeningCamera = openingCamera;
+      canopyOpeningPoints = openingPoints;
+    } else { canopyOpeningCamera = null; canopyOpeningPoints = null; }
     const saved = restoreSavedCamera();
     if (saved && validCamera(saved)) handle.restoreCameraState(saved);
     else {
-      if (three && input.v2Prepared) handle.restoreCameraState({ ...handle.readCameraState(), orbit: defaultObliqueOrbit() } as ReviewCameraState);
-      let initialPoints = input.data.nodes.filter((n) => visible.has(n.id)).map((n) => anchors.get(n.id)!).filter(Boolean);
-      if (axes.projection === '3d' && axes.organization === 'natural')
-        initialPoints.push(...framingVolumePoints(initialPoints));
-      if (axes.organization === 'indra' && layoutContainers) {
-        // D082-A-DENSITY: visible node positions are a density slice; the complete shell is the fit bound.
-        initialPoints = indraFullHierarchyFitPoints(layoutContainers, axes.projection);
-      }
-      // D082-A-DENSITY BEGIN: Natural Completa's few stable lower-density witnesses can lie
-      // far beyond its dense disc. Fit the robust full node cloud without changing coordinates.
-      if (input.v2Prepared && axes.organization === 'natural' && axes.projection === '2d'
-        && isReferenceCompleta(input.data.nodes.length, visible.size))
-        initialPoints = naturalCompletaFitPoints(initialPoints);
-      // D082-A-DENSITY END
-      // D-078 W6: only a mounted envelope contributes its actual bounding sphere to the first fit.
-      const brainSphere = three?.readBrainEnvelopeFramingSphere();
-      if (brainSphere) initialPoints.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
+      handle.restoreCameraState(openingCamera);
+      const initialPoints = openingPoints();
       solveFraming(handle, {
         points: initialPoints,
         rect: localRect(),
@@ -2207,6 +2228,7 @@ export const createProductView: CreateProductView = async (input) => {
       const settled = handle.readCameraState();
       commitCamera(settled, settled.ratio);
     }
+    // D086-F2 END
     // The mounted camera (any restored or solved framing included) is the watch loop's baseline:
     // only changes from here on are motion.
     lastCamera = handle.readCameraState();
@@ -2805,7 +2827,8 @@ export const createProductView: CreateProductView = async (input) => {
   };
   // D081-P6c BEGIN: superseded frame animations must never commit after a newer fit.
   let frameEpoch = 0;
-  async function frameIds(ids: readonly string[], anchorFirst: boolean, marginPx = 32, fill = 0.9) {
+  async function frameIds(ids: readonly string[], anchorFirst: boolean, marginPx = 32, fill = 0.9,
+    openingFit = false) {
     const thisFrame = ++frameEpoch;
     // D081-P6c END.
     // The framing belongs to the renderer mounted now; a remount during the animation must not receive a camera
@@ -2840,18 +2863,27 @@ export const createProductView: CreateProductView = async (input) => {
       points.push(...(lodMode
         ? three.readRelationGeometryWitnesses().filter((relation) => drawnEdgeIds.has(relation.id))
         : three.readRelationGeometryWitnesses()).map((relation) => relation.controlPoint).filter(finitePoint));
+    // D086-F2 BEGIN: the opening fit includes the renderer's original bounds,
+    // orbit and exact mount subjects. Reuse them for Canopy only; focus keeps
+    // its current-camera contract and no rail or evidence geometry changes.
+    const canopySubjects = openingFit && container.hasAttribute('data-fractal-rails-active')
+      ? canopyOpeningPoints?.() : null;
+    const canopyOpeningFit = !!(canopyOpeningCamera && canopySubjects?.length);
+    if (canopySubjects?.length) points = canopySubjects;
     if (!points.length) return;
     const start = current.readCameraState();
     const startZ = three?.readReviewCameraPose().target[2] ?? 0;
     const finalZ = mean(points.map((point) => point.z));
-    if (three) current.restoreCameraState({ ...start, targetZ: finalZ } as ReviewCameraState);
+    if (canopyOpeningFit && canopyOpeningCamera) current.restoreCameraState(canopyOpeningCamera);
+    else if (three) current.restoreCameraState({ ...start, targetZ: finalZ } as ReviewCameraState);
     const solved = solveFraming(current, {
       points,
       rect: localRect(),
-      marginPx,
+      marginPx: canopyOpeningFit ? 24 : marginPx,
       anchorFirst: anchorFirst && points.length > 1,
-      fill,
+      fill: canopyOpeningFit ? 0.92 : fill,
     });
+    // D086-F2 END
     const final = solved.camera;
     if (!validCamera(final)) {
       if (validCamera(start)) current.restoreCameraState(start);
@@ -3059,7 +3091,7 @@ export const createProductView: CreateProductView = async (input) => {
     },
     frame: (ids) => frameIds(ids, true),
     frameFocus: (ids) => frameIds(ids, false, 60, 0.78),
-    fit: () => frameIds([...visible], false),
+    fit: () => frameIds([...visible], false, 32, 0.9, true),
     projectPoint: (point) => project(point),
     // D082-A-PERF BEGIN
     gestureWitness() {

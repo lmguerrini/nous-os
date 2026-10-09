@@ -101,6 +101,26 @@ test("the camera key is arrangement-qualified for Natural and unchanged in form 
     { key: "3d/indra", legacyKey: "3d/indra", replaysLegacy: false });
 });
 
+// D086-F2 BEGIN: Canopy retains a camera independent of every Natural arrangement.
+test("Canopy camera space does not replay Natural or Indra", () => {
+  const cameras = new Map<string, VisualStateCamera>();
+  const fits = new Map<string, number>();
+  for (const projection of ['2d', '3d'] as const) {
+    const natural = productCameraKey(axes({ projection, arrangement: 'network' }));
+    const canopy = productCameraKey(axes({ projection }), 'natural', false, true);
+    const indra = productCameraKey(axes({ projection, organization: 'indra' }));
+    assert.notEqual(canopy.key, natural.key);
+    assert.notEqual(canopy.key, indra.key);
+    assert.equal(canopy.replaysLegacy, false);
+    commitProductCamera(cameras, fits, natural, camera(0.35), 2);
+    assert.equal(replayProductCamera(cameras, fits, canopy), undefined);
+    commitProductCamera(cameras, fits, canopy, camera(0.7), 1.45);
+    assert.equal(replayProductCamera(cameras, fits, canopy)?.x, 0.7);
+    assert.equal(replayProductCamera(cameras, fits, natural)?.x, 0.35);
+  }
+});
+// D086-F2 END
+
 // D086-F2 BEGIN: a law mount must never replay Natural's normalization bounds.
 test("a law camera uses its own coordinate-space record and leaves Natural replay intact", () => {
   const natural = productCameraKey(axes({ arrangement: 'constellation' }));
