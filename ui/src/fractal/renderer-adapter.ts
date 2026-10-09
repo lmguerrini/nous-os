@@ -191,10 +191,12 @@ export function canopyJunctionOutline(radius: number, morphology: Morphology, di
 function paintJunction(context: CanvasRenderingContext2D, x: number, y: number,
   radius: number, morphology: Morphology, ink: string, direction = 0, moving = false): void {
   // D082-B1c BEGIN: no outline work in a moving Canopy frame.
-  if (moving && morphology === 'neural') {
+  // D086-MOT BEGIN: every moving morphology keeps the same junction radius.
+  if (moving) {
     context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2);
     context.fillStyle = ink; context.fill(); return;
   }
+  // D086-MOT END
   // D082-B1c END.
   const outline = canopyJunctionOutline(radius, morphology, direction);
   context.beginPath();
@@ -387,6 +389,28 @@ export function visibleCanopyRails(layout: CanopyLayout, ids: ReadonlySet<string
       || a.address.length - b.address.length || a.address.localeCompare(b.address)).slice(0, cap);
 }
 
+// D086-MOT BEGIN: compute real prefix rails once at gesture start, preserving ancestors under the cap.
+export function canopyMotionDrawOrder(layout: CanopyLayout, ids: ReadonlySet<string>,
+  selectedId: string | null = null, cap = 600): readonly CanopyRail[] {
+  const byAddress = new Map(layout.rails.map(rail => [rail.address, rail]));
+  const addresses = new Set<string>(['root']);
+  const priority = [...ids].sort((a, b) =>
+    (layout.positions.get(a)?.level ?? Infinity) - (layout.positions.get(b)?.level ?? Infinity)
+      || a.localeCompare(b));
+  if (selectedId && ids.has(selectedId)) priority.unshift(selectedId);
+  for (const id of priority) {
+    const address = layout.positions.get(id)?.address;
+    if (!address) continue;
+    for (let length = 1; length <= address.length && addresses.size < cap; length++)
+      if (byAddress.has(address.slice(0, length))) addresses.add(address.slice(0, length));
+    if (addresses.size >= cap) break;
+  }
+  return [...addresses].map(address => byAddress.get(address)).filter((rail): rail is CanopyRail => !!rail)
+    .sort((a, b) => Number(b.address === 'root') - Number(a.address === 'root')
+      || a.address.length - b.address.length || a.address.localeCompare(b.address));
+}
+// D086-MOT END
+
 export type CanopyRailLayer = Readonly<{
   update(ids: ReadonlySet<string>, selectedId?: string | null, cap?: number,
     marks?: readonly CanopyMark[], evidence?: readonly CanopyEvidenceStroke[]): void;
@@ -492,6 +516,11 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   // D086-F2 BEGIN: the native buffer keeps its real IDs when a dense subset is
   // declined. The structural overlay can still use its bounded motion pass.
   let overlayMotionIds: ReadonlySet<string> | null = null;
+  // D086-MOT BEGIN
+  let motionDrawOrder: readonly CanopyRail[] = [];
+  let motionLabelOffsets: ReadonlyMap<string, Readonly<{ dx: number; dy: number }>> | null = null;
+  let motionLabelIds: ReadonlySet<string> | null = null;
+  // D086-MOT END
   // D086-F2 END
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
   const motionSubset = new Set([...layout.lineageIds,
@@ -512,11 +541,16 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       durationMs: performance.now() - restoreBegan, nodes: currentIds.size, projection, morphology } });
     // D086-F2 END
     // D082-B1c END.
-    if (restored === false) return;
+    if (restored === false) { restoreTimer = setTimeout(restoreFull, 60); return; }
     motionIds = null;
     overlayMotionIds = null;
+    // D086-MOT BEGIN
+    motionDrawOrder = [];
+    motionLabelOffsets = null;
+    motionLabelIds = null;
+    // D086-MOT END
     activeUntil = performance.now();
-    schedule(0, 'restore'); onDraw?.();
+    schedule(0, 'restore');
   };
   // D082-B1 END.
   const railByAddress = new Map(layout.rails.map(rail => [rail.address, rail]));
@@ -568,7 +602,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     queuedDrawTriggers.clear();
     // D082-B-CANOPYN2 END
     const width = Math.max(1, host.clientWidth), height = Math.max(1, host.clientHeight);
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    // D086-MOT BEGIN: the backing store changes only on entry and exit, not per camera event.
+    const dpr = overlayMotionIds ? 1 : Math.min(2, window.devicePixelRatio || 1);
+    // D086-MOT END
     if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
       canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
     }
@@ -618,7 +654,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     // D082-B1 BEGIN: full evidence is drawn once at rest; ordinary camera motion
     // keeps source IDs intact but paints a bounded sample until restoration.
     const evidenceForFrame = overlayMotionIds ? currentEvidence.slice(0, 300) : currentEvidence;
-    const batchCompleteEvidence = completeScene && !overlayMotionIds;
+    // D086-MOT BEGIN
+    const batchCompleteEvidence = completeScene;
+    // D086-MOT END
     // D086-F3 BEGIN: structural evidence keeps its aggregate role even in batched scenes.
     const structuralPath = batchCompleteEvidence ? new Path2D() : null;
     // D086-F3 END
@@ -659,7 +697,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       context.strokeStyle = auditInk(exploratoryEvidenceInk); context.stroke(exploratoryPath!);
       // D086-F3 END
     }
-    for (const rail of overlayMotionIds ? drawOrder.filter(rail => rail.address.length <= 10) : drawOrder) {
+    // D086-MOT BEGIN
+    for (const rail of overlayMotionIds ? motionDrawOrder : drawOrder) {
+    // D086-MOT END
       if (rail.address === 'root') continue; // D081-P7d: no unlabeled terminal stem.
       if (!drawablePrefixes.has(rail.address)) continue;
       // Clipping a long 3D segment with either junction outside the clear canvas
@@ -705,7 +745,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       if (morphology === 'neural' && smooth && !overlayMotionIds)
         paintNeuralRail(context, controls.map(segment => ({ ...segment,
           c1: inside(segment.c1), c2: inside(segment.c2) })), context.lineWidth, ink);
-      else if (morphology === 'mycelium' && smooth)
+      // D086-MOT BEGIN: one existing centre stroke is the temporary mycelium skeleton.
+      else if (morphology === 'mycelium' && smooth && !overlayMotionIds)
+      // D086-MOT END
         paintMyceliumRail(context, controls.map(segment => ({ ...segment,
           c1: inside(segment.c1), c2: inside(segment.c2) })), context.lineWidth, ink);
       else context.stroke();
@@ -782,8 +824,12 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
         bottom: measuredExplanation.bottom - hostBounds.top }
       : { left: safe.left + 8, top: safe.top + 8,
         right: safe.left + 280, bottom: safe.top + 140 };
-    const labelIds = completeScene ? new Set([...layout.positions.values()]
+    // D086-MOT BEGIN: only semantic tiers one and two participate in motion labels.
+    const labelIds = overlayMotionIds ? new Set([...overlayMotionIds]
+      .filter(id => (layout.positions.get(id)?.level ?? Infinity) <= 2))
+      : completeScene ? new Set([...layout.positions.values()]
       .filter(row => row.level <= 3).map(row => row.id)) : currentIds;
+    // D086-MOT END
     const candidates = [...canopySemanticCandidates(layout, labelIds, point => view.projectPoint!(point),
       projection, reading, label => context.measureText(label).width)];
     if (root) {
@@ -791,7 +837,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       candidates.push({ id: 'root', x: p.x, y: p.y, width: 58, height: 21,
         text: 'NousOS', priority: 2000 });
     }
-    const badgeCandidates = currentMarks.filter(mark => mark.aggregate && mark.memberCount > 1)
+    // D086-MOT BEGIN
+    const badgeCandidates = (overlayMotionIds ? [] : currentMarks).filter(mark => mark.aggregate && mark.memberCount > 1)
+    // D086-MOT END
       .sort((a, b) => b.memberCount - a.memberCount)
       .map(mark => {
         const row = layout.positions.get(mark.id)!;
@@ -819,8 +867,20 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
         bottom: rect.bottom - hostRect.top }] : [];
     });
     const recordCount = candidates.filter(row => (layout.positions.get(row.id)?.level ?? 0) >= 4).length;
-    const placed = showLabels ? placeCanopyLabels(candidates, safe,
-      [explanationBox, ...reservedOverlay, ...reservedBadges], recordCount > 12 ? 72 : 44) : [];
+    // D086-MOT BEGIN: retain the chosen label IDs and offsets across camera frames.
+    const placed = !showLabels ? [] : overlayMotionIds && motionLabelOffsets
+      ? candidates.filter(candidate => motionLabelIds!.has(candidate.id)).map(candidate => {
+        const offset = motionLabelOffsets!.get(candidate.id)!;
+        return { ...candidate, left: candidate.x + offset.dx, top: candidate.y + offset.dy };
+      })
+      : placeCanopyLabels(candidates, safe,
+        [explanationBox, ...reservedOverlay, ...reservedBadges], overlayMotionIds ? 24 : recordCount > 12 ? 72 : 44);
+    if (overlayMotionIds && !motionLabelOffsets) {
+      motionLabelOffsets = new Map(placed.map(item => [item.id,
+        { dx: item.left - item.x, dy: item.top - item.y }]));
+      motionLabelIds = new Set(placed.map(item => item.id));
+    }
+    // D086-MOT END
     if (labels !== placed.length) { labels = placed.length; onLabelCount?.(labels); }
     for (const label of placed) {
       const edgeX = label.left > label.x ? label.left : label.left + label.width;
@@ -837,7 +897,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     }
     // Collapsed real IDs are shown by one counted representative per exposed
     // branch; badges are skipped where they would collide with labels or peers.
-    const counted = currentMarks.filter(mark => mark.aggregate && mark.memberCount > 1)
+    // D086-MOT BEGIN
+    const counted = (overlayMotionIds ? [] : currentMarks).filter(mark => mark.aggregate && mark.memberCount > 1)
+    // D086-MOT END
       .sort((a, b) => (layout.positions.get(a.id)?.level ?? 3) - (layout.positions.get(b.id)?.level ?? 3)
         || b.memberCount - a.memberCount);
     const badges: CanopyRect[] = [];
@@ -904,6 +966,15 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   host.addEventListener('d082:canopy-soma-ready', onSomataReady);
   // D082-B1c END.
   const onMotion = (event: Event) => {
+    // D086-MOT BEGIN: interrupted gestures close the motion state immediately.
+    if (event.type === 'pointercancel'
+      || event.type === 'keydown' && (event as KeyboardEvent).key === 'Escape') {
+      if (restoreTimer) clearTimeout(restoreTimer);
+      restoreFull();
+      badge.style.display = 'none';
+      return;
+    }
+    // D086-MOT END
     const interacting = event.type === 'wheel' || event.type === 'pointerdown'
       || event.type === 'pointerup' || event.type === 'keydown'
       || event instanceof PointerEvent && event.buttons !== 0;
@@ -919,6 +990,11 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
         // only the separately counted structural overlay enters motion quality.
         if (applied !== false) motionIds = motionSubset;
         overlayMotionIds = motionSubset;
+        // D086-MOT BEGIN
+        motionDrawOrder = canopyMotionDrawOrder(layout, overlayMotionIds, selected);
+        motionLabelOffsets = null;
+        motionLabelIds = null;
+        // D086-MOT END
         paintedFull = false;
         // D086-F2 END
       }
@@ -931,7 +1007,10 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     // D082-B-CANOPYN2 BEGIN: passive hover reads the last painted rail grid.
     if (interacting || cameraMoving) schedule(460, cameraMoving ? 'camera' : 'input');
     // D082-B-CANOPYN2 END
+    // D086-MOT BEGIN: no rail or evidence proximity scan during a pressed drag.
     if (!(event instanceof PointerEvent)) return;
+    if (event.buttons !== 0) { badge.style.display = 'none'; onEvidenceHover?.(null); return; }
+    // D086-MOT END
     const bounds = host.getBoundingClientRect();
     const x = event.clientX - bounds.left, y = event.clientY - bounds.top;
     if (event.type === 'pointermove' && onEvidenceHover) {
@@ -971,10 +1050,22 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   };
   for (const type of ['wheel', 'pointermove', 'pointerdown', 'pointerup', 'keydown', 'd080-fractal-camera-motion'])
     host.addEventListener(type, onMotion, { passive: true });
+  // D086-MOT BEGIN: pointer release may land outside the canvas.
+  const onGlobalRelease = (event: PointerEvent) => { if (overlayMotionIds
+    && (event.type === 'pointercancel' || !event.target || !host.contains(event.target as Node))) {
+    if (restoreTimer) clearTimeout(restoreTimer);
+    restoreFull();
+  } };
+  document.addEventListener('pointerup', onGlobalRelease);
+  document.addEventListener('pointercancel', onGlobalRelease);
+  host.addEventListener('pointercancel', onMotion, { passive: true });
+  // D086-MOT END
   // D082-B-CANOPYN2 BEGIN: the initial observer notification must not repaint
   // an unchanged canvas after the mount's first draw.
   const observer = new ResizeObserver(() => {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    // D086-MOT BEGIN
+    const dpr = overlayMotionIds ? 1 : Math.min(2, window.devicePixelRatio || 1);
+    // D086-MOT END
     if (canvas.width !== Math.round(Math.max(1, host.clientWidth) * dpr)
       || canvas.height !== Math.round(Math.max(1, host.clientHeight) * dpr))
       schedule(completeScene ? 0 : 220, 'resize');
@@ -1023,6 +1114,11 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       host.removeAttribute('data-fractal-rails-active');
       for (const type of ['wheel', 'pointermove', 'pointerdown', 'pointerup', 'keydown', 'd080-fractal-camera-motion'])
         host.removeEventListener(type, onMotion);
+      // D086-MOT BEGIN
+      host.removeEventListener('pointercancel', onMotion);
+      document.removeEventListener('pointerup', onGlobalRelease);
+      document.removeEventListener('pointercancel', onGlobalRelease);
+      // D086-MOT END
       canvas.remove(); badge.remove(); titleRule.remove();
     },
   };

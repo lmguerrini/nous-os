@@ -20,7 +20,7 @@ test('a declined dense native subset still uses a truthful structural motion pas
     addEventListener(type: string, listener: (event: Event) => void) { listeners.set(type, listener); },
     removeEventListener(type: string) { listeners.delete(type); },
   } as unknown as HTMLElement;
-  globalThis.document = { createElement(tag: string) {
+  globalThis.document = { addEventListener() {}, removeEventListener() {}, createElement(tag: string) {
     return { style: {}, dataset: {}, textContent: '', getContext: tag === 'canvas' ? () => ({}) : undefined,
       remove() {} };
   } } as unknown as Document;
