@@ -2033,7 +2033,14 @@ export const createProductView: CreateProductView = async (input) => {
       const coreRadiusPx = axes.projection === '2d'
         ? canvasNodeRadiusPx(axes.morphology, given, scale, degree.get(node.id) ?? 0,
           axes.morphology === 'mycelium' ? 1.3 : 2, !structural)
-        : given * scale;
+        // D087-SIZE BEGIN: co-location uses the final 3D core, after morphology policy.
+        : (structural && axes.morphology === 'stellar' && axes.organization === 'indra'
+          ? stellarIndra3dNodeRadiusPx(given, axes.morphology, axes.organization, axes.projection)
+          : structural && axes.morphology === 'neural' && input.v2Prepared
+            ? given * ((node.v2 as import('./v2-core.ts').V2Node).level >= 3 ? 0.62
+              : (node.v2 as import('./v2-core.ts').V2Node).level === 2 ? 0.8 : 1)
+            : given) * scale;
+      // D087-SIZE END
       return { id: node.id, ...markCoordinates(point), coreRadiusPx, structural };
     });
     coLocatedById = coLocatedRepresentatives(markCandidates);
@@ -3269,9 +3276,7 @@ export const createProductView: CreateProductView = async (input) => {
       // D087-SIZE BEGIN
       const representative = coLocatedById.get(id);
       return [id, { x: r.left + p.x, y: r.top + p.y,
-        ...(footprint ?? {}), ...(representative && representative !== id ? {
-          radius: 0, haloRadius: 0, representative,
-        } : {}) }];
+        ...(footprint ?? {}), ...(representative && representative !== id ? { representative } : {}) }];
       // D087-SIZE END
     }));
     const positions = Object.fromEntries(mounted.map(({ id, position }) =>

@@ -2438,6 +2438,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   for (const node of (testHook()?.hideNodes ? [] : geometry.nodes)) {
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
     const visual = style.nodes.get(node.id);
+    // D087-SIZE BEGIN: a real node keeps its full or small profile across admissions.
+    const simplifiedNode = visual?.leafMark === undefined ? simplified : visual.leafMark;
+    // D087-SIZE END
     const p = project(node.position);
     const emphasis = style.interaction?.hoverId === node.id ? contract.hover
       : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
@@ -2519,7 +2522,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         ? clamp(Math.max(coreFloor, baseOpacity * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha), 0, 1)
         : clamp(Math.max(0.48, baseOpacity) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
     // D084-W2-NEURAL-R6 END
-    if (!simplified && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
+    // D087-SIZE BEGIN
+    if (!simplifiedNode && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
+    // D087-SIZE END
       const halo = radius * haloRatio;
       if (paint?.glow && canTransform) {
         fillUnitGradient(context, paint.glow, p.x, p.y, halo);
@@ -2605,7 +2610,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       const major = radius * eccentricity, minor = radius;
       // D082-A-PERF BEGIN: only the declared moving tier simplifies the
       // silhouette; full-quality dense scenes retain their approved outline.
-      const steps = moving ? 12 : simplified ? 24 : NEURAL_SOMA_MAX_VERTICES;
+      // D087-SIZE BEGIN
+      const steps = moving ? 12 : simplifiedNode ? 24 : NEURAL_SOMA_MAX_VERTICES;
+      // D087-SIZE END
       // D082-A-PERF END
       const cosA = Math.cos(angle), sinA = Math.sin(angle);
       const irregularityScale = somaIrregularityScale(radius);
@@ -2655,7 +2662,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       // Brighter small nucleus inside the body, oriented with the soma; its gradient is cached per
       // context in unit space (colour + quantised opacity key) and composed under translate + scale.
       // The moving frame skips it: the soma stays one solid body.
-      if (!simplified && !moving) {
+      // D087-SIZE BEGIN
+      if (!simplifiedNode && !moving) {
+      // D087-SIZE END
         const nucleusAlpha = quantisedAlpha(opacity);
         const nucleus = canTransform
           ? cachedUnitRadial(context, `nucleus\u0000${lit}\u0000${nucleusAlpha}`, -0.12, -0.12, 0, 0.5, [

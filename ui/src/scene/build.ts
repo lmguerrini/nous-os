@@ -1558,7 +1558,7 @@ function sceneNode(
     haloRadiusPx,
     // D082-A-NODES BEGIN
     // D087-SIZE BEGIN: a leaf's short halo and a coalesced member cannot regain a scene floor.
-    haloCoreGapPx: radiusPx === 0 || appearance?.leafMark ? 0
+    haloCoreGapPx: radiusPx === 0 || appearance?.leafMark || presentation?.morphologyLanguage === "distinct" ? 0
       : completaPoint || fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
     // D082-A-NODES END
     haloIntensityPermille,
@@ -1566,6 +1566,7 @@ function sceneNode(
     coreSharpnessPermille: calibration.morphology[morphology.id].coreSharpnessPermille,
     // D082-A-NODES BEGIN
     minimumCoreDeviceRadiusPx: radiusPx === 0 || appearance?.leafMark || completaPoint
+      || presentation?.morphologyLanguage === "distinct"
       ? 0 : calibration.salience.minimumCoreDeviceRadiusPx,
     // D087-SIZE END
     // D082-A-NODES END

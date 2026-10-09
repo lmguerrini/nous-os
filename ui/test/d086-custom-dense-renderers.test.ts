@@ -90,7 +90,9 @@ test('Custom native cap has no Neural GPU floor; reference maximum retains its e
 test('in-place native proxy update uses both the resident and requested scene policies', () => {
   const source = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
   assert.match(source, /let liveUsesDenseDrawingPolicy = initialDenseDrawingPolicy/);
-  assert.match(source, /updatesNativeNodeAttributes = \(liveUsesDenseDrawingPolicy \|\| update\.usesDenseDrawingPolicy === true\)\s*&& update\.nodeEntries\.size > 0/);
+  // D087-SIZE BEGIN: sparse-to-sparse revisions also rewrite resident GPU marks.
+  assert.match(source, /updatesNativeNodeAttributes = update\.nodeEntries\.size > 0/);
+  // D087-SIZE END
   assert.match(source, /if \(updatesNativeNodeAttributes\) \{[\s\S]*?core\.setX\(nodeIndex, entry\.radiusPx\);[\s\S]*?rebuildNativeProxy\(\)/);
   assert.match(source, /liveUsesDenseDrawingPolicy = update\.usesDenseDrawingPolicy === true/);
   const page = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
@@ -147,11 +149,21 @@ test('resident native radii, proxy, and drawn count refresh across dense and spa
     const core = geometry.getAttribute('a_coreRadiusPx') as THREE.InstancedBufferAttribute;
     assert.equal(core.getX(afterCount - 1), 1);
     if (afterCount < residentCount) assert.equal(core.getX(afterCount), 0);
+    // D087-SIZE BEGIN: unchanged core/halo cannot leave a drawable floor or halo gap.
+    const floor = geometry.getAttribute('a_minimumCoreDeviceRadiusPx') as THREE.InstancedBufferAttribute;
+    const gap = geometry.getAttribute('a_haloCoreGapPx') as THREE.InstancedBufferAttribute;
+    assert.equal(floor.getX(afterCount - 1), 0, `${name}: represented floor reset`);
+    assert.equal(gap.getX(afterCount - 1), 0, `${name}: represented gap reset`);
+    if (afterCount < residentCount) assert.equal(floor.getX(afterCount), 0, `${name}: hidden floor reset`);
+    // D087-SIZE END
     geometry.dispose();
   };
   run('Completa to Bilanciata', true, false, residentCount, balancedCount);
   run('Bilanciata to Completa', false, true, balancedCount, residentCount);
   run('Custom dense to Bilanciata', true, false, 5_000, balancedCount);
+  // D087-SIZE BEGIN
+  run('Essenziale to Bilanciata', false, false, 80, balancedCount);
+  // D087-SIZE END
 });
 
 test('the Neural point and ribbon floors follow each accepted policy revision', () => {

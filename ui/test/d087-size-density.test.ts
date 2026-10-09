@@ -7,7 +7,7 @@ import { MORPHOLOGY_CONTRACT } from '../src/engine/morphology-contract.ts';
 import { DEFAULT_APPEARANCE } from '../src/engine/presentation-options.ts';
 import { canvasNodeHaloRadiusPx, canvasNodeRadiusPx, geometryDegrees, labNativeSizeLawApplies, nativeLawSizes,
   semanticMarkGeometry } from '../src/render-common/native-node-law.ts';
-import { morphologyEdgeStrokeWidths, stellarStarCoreRadiusPx, type MorphologyCanvasStyle } from '../src/render-common/morphology-canvas.ts';
+import { drawMorphologyCanvas, morphologyEdgeStrokeWidths, stellarStarCoreRadiusPx, type MorphologyCanvasStyle } from '../src/render-common/morphology-canvas.ts';
 import { FILAMENT_FRAGMENT_SHADER } from '../src/render3f/filament-material.ts';
 import { buildScene } from '../src/scene/build.ts';
 import { sceneFixtureGraph, sceneVisualState } from './scene/support.ts';
@@ -134,6 +134,10 @@ test('product policy and witness preserve semantic radius and expose halo and st
   assert.doesNotMatch(product, /openContainers\.has\(node\.id\)/);
   assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = false/);
   assert.match(product, /haloRadius: footprint\.haloRadiusPx/);
+  // D087-SIZE BEGIN: annotation cannot conceal the actual GPU member footprint.
+  assert.doesNotMatch(product, /radius: 0, haloRadius: 0, representative/);
+  assert.match(product, /stellarIndra3dNodeRadiusPx\(given/);
+  // D087-SIZE END
   assert.match(product, /morphologyEdgeStrokeWidths\(/);
   const twoD = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
   assert.match(twoD, /distinctGlowHaloRadius\(coreRadius, distinct, id\)/);
@@ -188,5 +192,53 @@ test('a coalesced 3D member has zero core, gap, floor and halo', () => {
     node.minimumCoreDeviceRadiusPx], [0, 0, 0, 0]);
   assert.equal(LEAF_HALO_INTENSITY_PERMILLE, 80);
 });
+// D087-SIZE BEGIN
+test('distinct 3D sparse and dense nodes submit the same unfloored GPU footprint', () => {
+  const graph = sceneFixtureGraph();
+  const id = graph.nodes[0]!.id;
+  const footprints = [false, true].map(dense => {
+    const presentation = { morphologyLanguage: 'distinct' as const,
+      morphologyInteraction: { hoverId: null, focusIds: null, usesDenseDrawingPolicy: dense },
+      nodes: new Map([[id, { radiusPx: 4, haloRadiusPx: 5, corePermille: 1000,
+        haloPermille: 1000, opacityPermille: 1000 }]]) };
+    const scene = buildScene(graph, sceneVisualState(graph), undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, presentation);
+    const node = scene.nodes.find(item => item.id === id)!;
+    return [node.radiusPx, node.haloRadiusPx, node.haloCoreGapPx,
+      node.minimumCoreDeviceRadiusPx];
+  });
+  assert.deepEqual(footprints, [[4, 5, 0, 0], [4, 5, 0, 0]]);
+});
+test('a structural canvas mark keeps its halo profile when many leaves are admitted', () => {
+  const hub = { id: 'hub', position: { x: 100, y: 100, z: 0 }, radius: 6 };
+  const leaves = Array.from({ length: 1_200 }, (_, index) => ({ id: `leaf-${index}`,
+    position: { x: 200 + index, y: 200, z: 0 }, radius: 1 }));
+  const sampled = (admitLeaves: boolean): number[] => {
+    const geometry = buildMorphologyGeometry('stellar', admitLeaves ? [hub, ...leaves] : [hub], []);
+    const halos: number[] = [];
+    const context = { canvas: { width: 800, height: 600,
+      getBoundingClientRect: () => ({ width: 800, height: 600 }) },
+      fillStyle: '', strokeStyle: '', globalAlpha: 1, globalCompositeOperation: 'source-over',
+      setTransform() {}, clearRect() {}, beginPath() {}, closePath() {}, moveTo() {}, lineTo() {},
+      arc() {}, ellipse() {}, fill() {}, stroke() {}, setLineDash() {},
+      measureText: () => ({ width: 0 }), fillText() {},
+      createRadialGradient(x: number, y: number, _inner: number, _x2: number, _y2: number, outer: number) {
+        halos.push(outer);
+        return { addColorStop() {} };
+      },
+    } as unknown as CanvasRenderingContext2D;
+    drawMorphologyCanvas(context, geometry, p => ({ x: p.x, y: p.y, scale: 1 }), {
+      fieldColor: 'rgb(0, 0, 0)', interaction: { hoverId: null, focusIds: null },
+      nodes: new Map<string, { color: string; radiusPx: number; leafMark: boolean }>([[hub.id, { color: 'rgb(255, 255, 255)', radiusPx: 6, leafMark: false }],
+        ...leaves.map(leaf => [leaf.id, { color: 'rgb(255, 255, 255)', radiusPx: 0, leafMark: true }] as const)]),
+      edges: new Map(),
+    }, { ...appearance, glow: 1 }, [], '2d');
+    return halos;
+  };
+  const sparse = sampled(false), dense = sampled(true);
+  assert.ok(sparse.length > 0, 'the sparse mark includes a halo');
+  assert.deepEqual(dense, sparse);
+});
+// D087-SIZE END
 // D087-SIZE END
 // D087-SIZE END
