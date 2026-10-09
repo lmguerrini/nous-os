@@ -146,7 +146,7 @@ export async function animateNaturalDensity(
             dot(end, 1 - eased, start.x + (end.x - start.x) * eased,
                 start.y + (end.y - start.y) * eased);
         for (const point of removed) dot(point, 1 - eased);
-        const admitted = Math.floor(added.length * eased);
+        const admitted = Math.min(added.length, Math.max(0, Math.floor(added.length * eased)));
         for (let index = 0; index < admitted; index++)
             dot(added[index]!, (1 - eased) * Math.min(1, (admitted - index) / Math.max(1, added.length * 0.08)));
         // D086-NAT BEGIN: the temporary glyphs travel independently of the
@@ -154,30 +154,42 @@ export async function animateNaturalDensity(
         // until the glyphs arrive, then reveal the complete final scene.
         // D086-NAT END
     };
+    // D086-NAT BEGIN: every animation exit reveals the mounted scene.
     targetHost.style.opacity = '0';
-    root.append(canvas);
-    draw(0);
-    await new Promise<void>(resolve => {
-        let ended = false;
-        const finish = () => {
-            if (ended) return;
-            ended = true;
-            signal?.removeEventListener('abort', finish);
-            resolve();
-        };
-        signal?.addEventListener('abort', finish, { once: true });
-        const begun = performance.now();
-        const tick = (now: number) => {
-            if (ended) return;
-            if (!current()) { finish(); return; }
-            const t = Math.min(1, (now - begun) / 450);
-            draw(t);
-            if (t < 1) requestAnimationFrame(tick);
-            else finish();
-        };
-        requestAnimationFrame(tick);
-    });
-    targetHost.style.opacity = '1';
-    canvas.remove();
+    try {
+        root.append(canvas);
+        try { draw(0); }
+        catch { return; }
+        await new Promise<void>(resolve => {
+            let ended = false;
+            let fallback: ReturnType<typeof setTimeout> | undefined;
+            const finish = () => {
+                if (ended) return;
+                ended = true;
+                if (fallback !== undefined) clearTimeout(fallback);
+                signal?.removeEventListener('abort', finish);
+                resolve();
+            };
+            signal?.addEventListener('abort', finish, { once: true });
+            fallback = setTimeout(finish, 600);
+            const begun = performance.now();
+            const tick = (now: number) => {
+                if (ended) return;
+                try {
+                    if (!current()) { finish(); return; }
+                    const t = Math.max(0, Math.min(1, (now - begun) / 450));
+                    draw(t);
+                    if (t < 1) requestAnimationFrame(tick);
+                    else finish();
+                } catch { finish(); }
+            };
+            try { requestAnimationFrame(tick); }
+            catch { finish(); }
+        });
+    } finally {
+        targetHost.style.opacity = '1';
+        canvas.remove();
+    }
+    // D086-NAT END
 }
 // D086-NAT END

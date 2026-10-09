@@ -449,6 +449,9 @@ export type V2PageDeps = {
     // D082-B2 BEGIN
     readonly taxonomy?: { readonly topology: TopologyId; readonly indra: boolean };
     // D082-B2 END
+    // D086-CUSTOM BEGIN: the first mount uses the requested Custom amount.
+    readonly initialCustomNodes?: number;
+    // D086-CUSTOM END
     readonly createView?: CreateProductView;
     readonly safeSelect?: typeof safeSelectNodes;
     /** Notifies the review shell after a camera-neutral canvas pick updates page selection. */
@@ -1687,6 +1690,13 @@ export class V2Page {
         this.palette = palette;
         this.v2Colours = colours;
         this.density = normalizeDensity(density);
+        // D086-CUSTOM BEGIN: refresh clamps this request against the loaded topology.
+        if (this.density === 'custom' && deps.initialCustomNodes !== undefined) {
+            if (!Number.isSafeInteger(deps.initialCustomNodes) || deps.initialCustomNodes < 0)
+                throw new Error('Invalid initial Custom node request');
+            this.customNodes = deps.initialCustomNodes;
+        }
+        // D086-CUSTOM END
         // D082-A-ANCHORB BEGIN
         this.naturalCompletaAnchor = typeof location === 'object' && location !== null &&
             naturalCompletaAnchorEnabled(location.hash);
@@ -5850,11 +5860,29 @@ export class V2Page {
         if (intent.serial < this.customSerial) return 'superseded';
         if (!Number.isSafeInteger(intent.requestedNodes) || intent.requestedNodes < 0)
             throw new Error('Invalid Custom node request');
+        // D086-CUSTOM BEGIN: a pending law owns the availability and the commit fact.
+        const pendingTaxonomy = this.pendingTaxonomyIntent;
+        if (pendingTaxonomy) {
+            const result = await this.setTaxonomy(pendingTaxonomy.topology, pendingTaxonomy.indra,
+                false, pendingTaxonomy.targetAxes, 'custom', intent);
+            return result && result !== 'superseded' ? result : 'superseded';
+        }
+        // D086-CUSTOM END
         this.customSerial = intent.serial;
         const availability = this.customAvailability();
-        this.customClampedFrom = intent.requestedNodes < availability.minimum || intent.requestedNodes > availability.available
+        const clampedFrom = intent.requestedNodes < availability.minimum || intent.requestedNodes > availability.available
             ? intent.requestedNodes : undefined;
-        this.customNodes = Math.min(availability.available, Math.max(availability.minimum, intent.requestedNodes));
+        const bounded = Math.min(availability.available, Math.max(availability.minimum, intent.requestedNodes));
+        // D086-CUSTOM BEGIN: accepting the initial URL/storage commit cannot remount it.
+        if (this.density === 'custom' && this.committedDensity === 'custom'
+            && this.customNodes === bounded && !this.customDirty) {
+            this.customClampedFrom = clampedFrom;
+            return { committed: true, requestedNodes: bounded, available: availability.available,
+                ...(clampedFrom === undefined ? {} : { clampedFrom }) };
+        }
+        // D086-CUSTOM END
+        this.customClampedFrom = clampedFrom;
+        this.customNodes = bounded;
         this.customDirty = true;
         const result = await this.setDensity('custom');
         if (result === 'superseded' || intent.serial !== this.customSerial) return 'superseded';

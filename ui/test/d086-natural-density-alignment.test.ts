@@ -119,4 +119,48 @@ test('the mounted scene stays hidden until moving glyphs reach the final endpoin
     globalThis.requestAnimationFrame = original.frame;
   }
 });
+// D086-NAT BEGIN: delayed, broken and absent frames must all settle visibly.
+for (const mode of ['early', 'throwing', 'absent'] as const) test(`${mode} frame settles the density overlay`, async () => {
+  const original = { document: globalThis.document, window: globalThis.window,
+    frame: globalThis.requestAnimationFrame };
+  let frame: FrameRequestCallback = () => { throw new Error('animation frame was not scheduled'); };
+  let removed = false;
+  let throwDraw = false;
+  const context = { setTransform() {}, clearRect() {}, beginPath() {},
+    arc() { if (throwDraw) throw new Error('draw failed'); }, fill() {},
+    set fillStyle(_value: string) {}, set globalAlpha(_value: number) {} };
+  const canvas = { style: {} as Record<string, string>, width: 0, height: 0,
+    getContext: () => context, remove() { removed = true; } };
+  const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    append() {} } as unknown as HTMLElement;
+  const host = { style: { opacity: '1' } } as unknown as HTMLElement;
+  globalThis.document = { createElement: () => canvas } as unknown as Document;
+  globalThis.window = { devicePixelRatio: 1 } as Window & typeof globalThis;
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    if (mode !== 'absent') frame = callback;
+    return 1;
+  }) as typeof requestAnimationFrame;
+  try {
+    const after = Object.fromEntries(Array.from({ length: 120 }, (_, index) =>
+      [`added-${index}`, { x: index + 1, y: index + 1 }]));
+    const motion = animateNaturalDensity(root, host, { shared: { x: 0, y: 0 } },
+      { ...after, shared: { x: 1, y: 1 } }, () => true, false);
+    if (mode === 'early') {
+      frame(performance.now() - 600);
+      assert.equal(host.style.opacity, '0');
+      frame(performance.now() + 500);
+    } else if (mode === 'throwing') {
+      throwDraw = true;
+      frame(performance.now() + 100);
+    }
+    await motion;
+    assert.equal(host.style.opacity, '1');
+    assert.equal(removed, true);
+  } finally {
+    globalThis.document = original.document;
+    globalThis.window = original.window;
+    globalThis.requestAnimationFrame = original.frame;
+  }
+});
+// D086-NAT END
 // D086-NAT END
