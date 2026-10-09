@@ -394,21 +394,21 @@ const PEARL_TITLE_GAP_PX = 12;
 const juliaCount = (container: MorphologyContainerPath, interaction?: ContainerInteraction) =>
   interaction?.forceJuliaAtlasRims && container.open === false
     ? / · (\+\d+)$/.exec(container.title ?? '')?.[1] ?? null : null;
-/** The fitted 2D overview can land the composed rims a few percent under the
- * badge threshold — the atlas frames the pearls at exactly 8 px only at its
- * reference projection, and two ×1.05 framing widenings plus the window size
- * decide where the fitted view lands. A closed atlas pearl therefore never
- * draws below this screen-space minimum, the same value in the ring ink, in
- * the badge predicate and in the counted ink, so an admitted pearl keeps its
- * «+N» in any window. 3D is untouched: its fitted pose reads above 8 px. */
-export const JULIA_ATLAS_2D_MIN_DRAWN_RIM_PX = 8;
-/** The rim a closed atlas pearl actually draws in 2D: the projected rim, floored
- * at the badge threshold. Anywhere else (3D, open pearls, non-atlas views) the
- * caller's rim is returned unchanged. */
-export function juliaAtlas2dDrawnRimPx(container: { readonly open?: boolean }, rimPx: number,
+/** The fitted overview can land the composed rims a few percent under the badge
+ * threshold — the atlas frames the pearls at exactly 8 px only at its reference
+ * projection, and the ×1.05 framing widenings plus the window size decide where
+ * the fitted view lands, in 3D as in 2D. A closed atlas pearl therefore never
+ * draws below this screen-space minimum, the same value in the ring ink, in the
+ * badge predicate and in the counted ink, so an admitted pearl keeps its «+N»
+ * in any window and in both dimensions. */
+export const JULIA_ATLAS_MIN_DRAWN_RIM_PX = 8;
+/** The rim a closed atlas pearl actually draws, in 2D and in 3D: the projected
+ * rim, floored at the badge threshold. Anywhere else (open pearls, non-atlas
+ * views) the caller's rim is returned unchanged. */
+export function juliaAtlasDrawnRimPx(container: { readonly open?: boolean }, rimPx: number,
   projection: "2d" | "3d", interaction?: ContainerInteraction): number {
-  return projection === "2d" && interaction?.forceJuliaAtlasRims === true && container.open === false
-    ? Math.max(rimPx, JULIA_ATLAS_2D_MIN_DRAWN_RIM_PX)
+  return interaction?.forceJuliaAtlasRims === true && container.open === false
+    ? Math.max(rimPx, JULIA_ATLAS_MIN_DRAWN_RIM_PX)
     : rimPx;
 }
 // D087-JULIA END
@@ -665,10 +665,10 @@ export function containerTitleRect(
   if (badgeCount) {
     const center = project(container.center);
     // D087-JULIA BEGIN: the badge predicate reads the rim the ring really draws
-    // — floored at the badge threshold for a closed 2D atlas pearl — so a
-    // fitted window that lands the composed rim just under 8 px cannot strip
-    // the pearl of its «+N». The threshold and the placement are unchanged.
-    const rim = juliaAtlas2dDrawnRimPx(container,
+    // — floored at the badge threshold for a closed atlas pearl in 2D and 3D —
+    // so a fitted window that lands the composed rim just under 8 px cannot
+    // strip the pearl of its «+N». The threshold and the placement are unchanged.
+    const rim = juliaAtlasDrawnRimPx(container,
       Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project)), projection, interaction);
     // D087-JULIA END
     const width = Math.min(30, badgeCount.length * 4.7);
@@ -774,13 +774,14 @@ export function drawContainers(
       // D087-JULIA BEGIN: a closed atlas pearl's ring is pinned to the same
       // screen-space minimum its badge predicate and counted ink read, by
       // scaling the projected circle about its own centre. Only the ring's ink
-      // changes — no node, guide or Julia address moves, 3D and non-atlas
-      // views are untouched, and a window whose fitted rims already reach the
-      // threshold draws exactly the circle the geometry built (grow stays 1).
+      // changes — no node, guide or Julia address moves, non-atlas views are
+      // untouched (the 3D limb applies the same floor in drawSphere), and a
+      // window whose fitted rims already reach the threshold draws exactly the
+      // circle the geometry built (grow stays 1).
       let grow = 1, originX = 0, originY = 0;
       if (interaction?.forceJuliaAtlasRims === true && container.open === false) {
         const trueRim = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
-        const pinnedRim = juliaAtlas2dDrawnRimPx(container, trueRim, projection, interaction);
+        const pinnedRim = juliaAtlasDrawnRimPx(container, trueRim, projection, interaction);
         if (pinnedRim > trueRim) {
           const centre = project(container.center);
           originX = centre.x; originY = centre.y;
@@ -850,15 +851,19 @@ export function drawContainers(
     const open = container.open !== false;
     const selected = containerSelected(container, interaction);
     // True projected radius, measured on the projection itself (world radius × px per world unit).
-    const limbRadius = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
-    // D087-JULIA BEGIN
-    if (!interaction?.forceJuliaAtlasRims && !containerSphereLOD(container.level, open, selected, limbRadius)) return;
+    const trueLimbRadius = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
     // A closed atlas pearl is an overview pearl: it draws like its own 2D ring —
     // one legible stroke at the 2D width and alpha with the same faint fill —
     // instead of the distance-simplified thin faint limb the bright Julia bands
     // swallow, and it stays drawn through the moving pass so approaching or
     // wheeling over the overview never blanks the rims.
     const atlasPearl = interaction?.forceJuliaAtlasRims === true && !open && container.level > 0;
+    // D087-JULIA BEGIN
+    if (!interaction?.forceJuliaAtlasRims && !containerSphereLOD(container.level, open, selected, trueLimbRadius)) return;
+    // One rule with the 2D ring: the limb the pearl actually draws is the true
+    // projected limb floored at the badge threshold, so its «+N» predicate and
+    // the counted ink read the same rim in 3D as in 2D at any fitted window.
+    const limbRadius = atlasPearl ? juliaAtlasDrawnRimPx(container, trueLimbRadius, "3d", interaction) : trueLimbRadius;
     // D087-JULIA END
     context.globalAlpha *= deepZoomShellOpacity(limbRadius, bounds);
     if (context.globalAlpha <= 0) return;
@@ -1019,7 +1024,7 @@ export function placeContainerTitles(
     const center = badge ? project(container.center) : null;
     // D087-JULIA BEGIN: the fallback slots sit around the rim the ring draws —
     // the same pinned value the badge predicate and the ink use.
-    const rim = badge ? juliaAtlas2dDrawnRimPx(container,
+    const rim = badge ? juliaAtlasDrawnRimPx(container,
       Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project)), projection, interaction) : 0;
     // D087-JULIA END
     const offset = rim + 5;

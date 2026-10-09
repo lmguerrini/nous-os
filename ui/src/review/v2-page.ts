@@ -747,6 +747,15 @@ export class V2Page {
     private juliaAtlasOverviewCamera: unknown = null;
     private juliaAtlasAdmitted = new Set<string>();
     private juliaAtlasAdmittedDimension: '2d' | '3d' | null = null;
+    // D087-JULIA9 BEGIN: admission is composed at the mounted viewport's fitted
+    // scale, floored to a ~3% bucket so a solved fit never lands looser than
+    // the composition. The scene tag resets the recomposition budget whenever
+    // the topology, projection or density changes.
+    private juliaAtlasAdmissionPx: number | null = null;
+    private juliaAtlasAdmissionScene: string | null = null;
+    private juliaAtlasAdmissionRecomposes = 0;
+    private juliaAtlasResizeTimer: number | null = null;
+    // D087-JULIA9 END
     // D087-JULIA END
     private guideLayer: { destroy(): void; invalidate(): void } | null = null;
     // D085-S4 BEGIN: the state of the Llull overview fold.
@@ -798,17 +807,17 @@ export class V2Page {
         if (this.topology !== 'julia' || !this.topologyIndra || !isJuliaAtlasLayout(this.lawLayout) || !this.view?.projectPoint)
             return null;
         const ink = (this.view as ProductView & { readJuliaAtlasInk?: () => {
-            shells: readonly { id: string; radiusPx: number; overlapRadiusPx?: number }[];
+            shells: readonly { id: string; radiusPx: number }[];
             countedShellIds: readonly string[]; paintedNodeIds: readonly string[] } }).readJuliaAtlasInk?.();
         if (!ink) return null;
         const canvases = document.querySelectorAll<HTMLCanvasElement>('#render-root canvas[data-topology-guides]');
         const canvas = canvases.item(canvases.length - 1);
         let guideIds: string[] = [];
         try { guideIds = JSON.parse(canvas?.dataset.atlasDrawnIds ?? '[]') as string[]; } catch { /* no drawn guides */ }
+        // D087-JULIA BEGIN: one radius for both gates — the drawn rim the ring
+        // ink, the badge predicate and the counted ink all share, floored at
+        // the badge threshold in 2D and in 3D.
         const radii = new Map(ink.shells.map(shell => [shell.id, shell.radiusPx]));
-        // D087-JULIA BEGIN: the overlap inequality measures the true projected
-        // rim; a closed 2D atlas pearl's `radiusPx` is its pinned drawn rim.
-        const overlapRadii = new Map(ink.shells.map(shell => [shell.id, shell.overlapRadiusPx ?? shell.radiusPx]));
         // D087-JULIA END
         const host = document.getElementById('render-root');
         return certifyJuliaAtlasDrawing(this.lawLayout, this.lawSnapshot, {
@@ -817,12 +826,39 @@ export class V2Page {
                 this.containers.some(shell => shell.id === id && / · \+\d+$/.test(shell.title ?? '')))),
             guideIds: new Set(guideIds), project: point => this.view!.projectPoint!(point),
             shellRadiusPx: shell => radii.get(shell.id) ?? 0,
-            // D087-JULIA BEGIN
-            overlapShellRadiusPx: shell => overlapRadii.get(shell.id) ?? 0,
-            // D087-JULIA END
             ...(host ? { viewport: { width: host.clientWidth, height: host.clientHeight } } : {}),
         });
     }
+    // D087-JULIA9 BEGIN
+    /** The mounted overview's real fitted scale (screen px per source unit,
+     * measured by the view at its solved mount pose), floored to a ~3%
+     * admission bucket so the composition is never looser than the fit. */
+    private juliaAtlasMeasuredAdmissionPx(): number | null {
+        if (this.topology !== 'julia' || !this.topologyIndra || !isJuliaAtlasLayout(this.lawLayout)
+            || this.lawLayout.atlas.phase !== 'overview') return null;
+        const measured = (this.view as ProductView & { readJuliaAtlasMountedPx?: () => number | null })
+            .readJuliaAtlasMountedPx?.();
+        if (measured === null || measured === undefined || !Number.isFinite(measured) || measured <= 0) return null;
+        return Math.floor(measured * 32) / 32;
+    }
+    /** Recompose the atlas when the fitted scale's admission bucket moved —
+     * the first mount at a new window size, or a resize. Each recomposition
+     * admits pearls for a scale at or under the solved fit, so the buckets
+     * move monotonically down and settle; three per scene is the backstop. */
+    private async settleJuliaAtlasAdmission(): Promise<void> {
+        const scene = `${this.topology}|${this.topologyIndra}|${this.axes.projection}|${this.density}`;
+        if (scene !== this.juliaAtlasAdmissionScene) {
+            this.juliaAtlasAdmissionScene = scene;
+            this.juliaAtlasAdmissionRecomposes = 0;
+        }
+        if (this.refreshPending > 0 || this.juliaAtlasAdmissionRecomposes >= 3) return;
+        const bucket = this.juliaAtlasMeasuredAdmissionPx();
+        if (bucket === null || bucket === this.juliaAtlasAdmissionPx) return;
+        this.juliaAtlasAdmissionPx = bucket;
+        this.juliaAtlasAdmissionRecomposes++;
+        await this.refresh().catch(() => { /* the resident view stays; the next refresh re-settles */ });
+    }
+    // D087-JULIA9 END
     // D087-JULIA END
     // D085-X9b BEGIN: every law presentation path reads one fixed source.
     private sourceIndex(): V2Index {
@@ -1826,6 +1862,21 @@ export class V2Page {
         // D081-P6 BEGIN: root capture runs before the canvas resolves the dolly anchor.
         root?.addEventListener('wheel', event => this.setGestureWheelAnchor(event), { passive: true, capture: true });
         // D081-P6 END.
+        // D087-JULIA9 BEGIN: a resized canvas moves the Julia atlas overview's
+        // fitted scale. Re-measure (debounced) and recompose the admission when
+        // its bucket changed, so pearls never start touching after a resize.
+        if (typeof ResizeObserver === 'function' && root) {
+            const juliaAtlasResize = new ResizeObserver(() => {
+                if (this.topology !== 'julia' || !this.topologyIndra) return;
+                if (this.juliaAtlasResizeTimer !== null) window.clearTimeout(this.juliaAtlasResizeTimer);
+                this.juliaAtlasResizeTimer = window.setTimeout(() => {
+                    this.juliaAtlasResizeTimer = null;
+                    void this.settleJuliaAtlasAdmission();
+                }, 250);
+            });
+            juliaAtlasResize.observe(root);
+        }
+        // D087-JULIA9 END
         root?.addEventListener('pointerdown', () => {
             // D081-P6 BEGIN.
             this.wheelGesture = null;
@@ -4501,8 +4552,16 @@ export class V2Page {
             // D082-B2 BEGIN: a law sees the full source snapshot independent of density.
             const law = this.lawActive() ? TOPOLOGY_LAWS[this.topology]! : null;
             // D087-JULIA BEGIN
+            // D087-JULIA9 BEGIN: the overview composes admission at the mounted
+            // viewport's fitted scale — the bucket measured at the last real
+            // mount fit — so the layout cache never serves an atlas spaced for
+            // a different window.
+            const juliaAdmissionPx = this.topology === 'julia' && this.topologyIndra && !juliaFocus
+                ? this.juliaAtlasAdmissionPx : null;
+            const juliaAdmissionTag = juliaAdmissionPx === null ? '' : `|px:${juliaAdmissionPx}`;
+            // D087-JULIA9 END
             const lawKey = law ? `${this.lawSnapshot.digest}|${law.id}|${law.version}|${projection}|${this.topologyIndra}`
-                + (this.topology === 'julia' && this.topologyIndra ? `|atlas:${juliaFocus ?? 'overview'}` : '') : null;
+                + (this.topology === 'julia' && this.topologyIndra ? `|atlas:${juliaFocus ?? 'overview'}${juliaAdmissionTag}` : '') : null;
             // D087-JULIA END
             const layoutKey = lawKey ? `topology:${lawKey}` : canopy ? `fractal-canopy:${projection}:${this.manifest.digest}:${canopy.digest}:${[...ids].sort().join('|')}`
                 : pageLayoutKey(this.manifest.digest, layoutInput);
@@ -4528,15 +4587,17 @@ export class V2Page {
             try {
                 // D087-JULIA BEGIN: focus reuses the already resident global
                 // Julia positions and guide field; only its active chart is composed.
+                // D087-JULIA9 BEGIN: the focus chart is composed from the same
+                // admission bucket its overview was.
                 const overviewKey = this.topology === 'julia' && this.topologyIndra
-                    ? `${this.lawSnapshot.digest}|${law!.id}|${law!.version}|${projection}|true|atlas:overview` : null;
+                    ? `${this.lawSnapshot.digest}|${law!.id}|${law!.version}|${projection}|true|atlas:overview${juliaAdmissionTag}` : null;
                 const overview = overviewKey ? this.lawCache.get(overviewKey) : null;
                 lawResult = lawKey && juliaFocus && overview
                     ? this.lawCache.get(lawKey) ?? composeJuliaIndraAtlas(this.lawSnapshot,
                         projection, juliaFocus, undefined, overview)
                     : lawKey ? this.lawCache.get(lawKey) ?? await computeTopologyLayoutAsync(
                     this.topology as Exclude<TopologyId, 'natural'>, this.lawSnapshot, projection, this.topologyIndra,
-                    juliaFocus) : null;
+                    juliaFocus, juliaAdmissionPx ?? undefined) : null;
                 // D087-JULIA END
             } catch (error) {
                 if (projectionEpoch !== this.projectionEpoch && error instanceof Error && error.name === 'AbortError') return;
@@ -5864,7 +5925,14 @@ export class V2Page {
                 }
             }
             // D086-BURST END
-        });
+        })
+            // D087-JULIA9 BEGIN: with the view mounted and its fit solved,
+            // measure the overview's real scale and recompose the atlas when
+            // its admission bucket moved (a new window size, a resize, or the
+            // first mount after the reference-scale preflight). The settle
+            // recomposes through a guarded refresh, so the buckets converge
+            // instead of looping.
+            .then(() => (presentationOnly ? undefined : this.settleJuliaAtlasAdmission()));
     }
     async expand(id: string) {
         this.suppressZoomUntil = performance.now() + 900;
