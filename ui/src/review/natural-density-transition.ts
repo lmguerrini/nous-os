@@ -3,42 +3,71 @@ import type { Point3 } from './layout-v2.ts';
 // D086-NAT BEGIN: a density change uses the fresh layout, aligned to the current view.
 export type DensityAlignment = Readonly<{ scale: number; x: number; y: number; z: number; shared: number }>;
 
-/** Positive uniform least-squares fit; no rotation or reflection. */
+// D086-NAT BEGIN: measure 3D spread in the active camera's view plane.
+type PointVector = Readonly<{ x: number; y: number; z: number }>;
+function viewPlane(camera?: Pick<DensityCamera, 'angle' | 'orbit'> | null):
+    readonly [PointVector, PointVector] {
+    const angle = camera?.angle ?? 0;
+    const raw = camera?.orbit ?? [0, 0, 0, 1];
+    const length = Math.hypot(...raw);
+    const [qx, qy, qz, qw] = length > 0 ? raw.map(value => value / length) : [0, 0, 0, 1];
+    const rotate = (vector: PointVector): PointVector => {
+        const uv = { x: qy! * vector.z - qz! * vector.y,
+            y: qz! * vector.x - qx! * vector.z, z: qx! * vector.y - qy! * vector.x };
+        const uuv = { x: qy! * uv.z - qz! * uv.y,
+            y: qz! * uv.x - qx! * uv.z, z: qx! * uv.y - qy! * uv.x };
+        return { x: vector.x + 2 * (qw! * uv.x + uuv.x),
+            y: vector.y + 2 * (qw! * uv.y + uuv.y),
+            z: vector.z + 2 * (qw! * uv.z + uuv.z) };
+    };
+    const direction = rotate({ x: Math.cos(angle) / Math.SQRT2,
+        y: Math.sin(angle) / Math.SQRT2, z: 1 / Math.SQRT2 });
+    const up = rotate({ x: 0, y: 0, z: 1 });
+    const cross = (a: PointVector, b: PointVector): PointVector => ({
+        x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z,
+        z: a.x * b.y - a.y * b.x });
+    const side = cross(up, direction);
+    const sideLength = Math.hypot(side.x, side.y, side.z);
+    const right = { x: side.x / sideLength, y: side.y / sideLength, z: side.z / sideLength };
+    return [right, cross(direction, right)];
+}
+// D086-NAT END
+
+/** Positive uniform RMS-spread fit; no rotation or reflection. */
 export function alignNaturalDensity(
     previous: ReadonlyMap<string, Point3>, target: ReadonlyMap<string, Point3>,
-    dimension: '2d' | '3d',
+    dimension: '2d' | '3d', camera?: Pick<DensityCamera, 'angle' | 'orbit'> | null,
 ): DensityAlignment {
     const pairs = [...previous].flatMap(([id, point]) => {
         const next = target.get(id);
         return next ? [[point, next] as const] : [];
     });
-    if (pairs.length < 3) return { scale: 1, x: 0, y: 0, z: 0, shared: pairs.length };
+    if (pairs.length < 3) return { scale: 0, x: 0, y: 0, z: 0, shared: pairs.length };
     const means = pairs.reduce((sum, [old, next]) => ({
         ox: sum.ox + old.x, oy: sum.oy + old.y, oz: sum.oz + old.z,
         nx: sum.nx + next.x, ny: sum.ny + next.y, nz: sum.nz + next.z,
     }), { ox: 0, oy: 0, oz: 0, nx: 0, ny: 0, nz: 0 });
     for (const key of Object.keys(means) as (keyof typeof means)[]) means[key] /= pairs.length;
-    let numerator = 0;
     let denominator = 0;
-    // D086-NAT BEGIN: an opposing or orthogonal shared cloud still has a real
-    // spatial extent. An epsilon scale collapses the entire mounted scene and
-    // its world-space ink; preserve extent without rotating or reflecting it.
+    // D086-NAT BEGIN: a low correlation between canonical layouts must not
+    // contract the new scene. Their centered spatial spreads set the scale.
     let previousVariance = 0;
     // D086-NAT END
+    const plane = dimension === '3d' ? viewPlane(camera) : null;
+    const squaredSpread = (x: number, y: number, z: number): number => {
+        if (!plane) return x * x + y * y;
+        const [right, up] = plane;
+        const horizontal = x * right.x + y * right.y + z * right.z;
+        const vertical = x * up.x + y * up.y + z * up.z;
+        return horizontal * horizontal + vertical * vertical;
+    };
     for (const [old, next] of pairs) {
-        const tx = next.x - means.nx, ty = next.y - means.ny;
-        numerator += tx * (old.x - means.ox) + ty * (old.y - means.oy);
-        denominator += tx * tx + ty * ty;
-        previousVariance += (old.x - means.ox) ** 2 + (old.y - means.oy) ** 2;
-        if (dimension === '3d') {
-            const tz = next.z - means.nz;
-            numerator += tz * (old.z - means.oz);
-            denominator += tz * tz;
-            previousVariance += (old.z - means.oz) ** 2;
-        }
+        denominator += squaredSpread(next.x - means.nx, next.y - means.ny, next.z - means.nz);
+        previousVariance += squaredSpread(old.x - means.ox, old.y - means.oy, old.z - means.oz);
     }
-    const scale = denominator > 0 && numerator > 0 ? numerator / denominator
-        : denominator > 0 && previousVariance > 0 ? Math.sqrt(previousVariance / denominator) : 1;
+    if (!(denominator > 1e-12 && previousVariance > 1e-12))
+        return { scale: 0, x: 0, y: 0, z: 0, shared: pairs.length };
+    const scale = Math.sqrt(previousVariance / denominator);
     return { scale, x: means.ox - scale * means.nx, y: means.oy - scale * means.ny,
         z: dimension === '3d' ? means.oz - scale * means.nz : 0, shared: pairs.length };
 }
@@ -54,7 +83,8 @@ export function placeNaturalDensity(target: ReadonlyMap<string, Point3>, fit: De
 // leaving the target's world coordinates and its own normalization bounds intact.
 type CameraBounds = Readonly<{ x: readonly [number, number]; y: readonly [number, number] }>;
 export type DensityCamera = Readonly<{ x: number; y: number; ratio: number; bounds: CameraBounds;
-    targetZ?: number; closeSizeAnchor?: Point3; closeSizeStartRatio?: number }>;
+    angle?: number; orbit?: readonly [number, number, number, number]; targetZ?: number;
+    closeSizeAnchor?: Point3; closeSizeStartRatio?: number }>;
 
 export function composeNaturalDensityCamera<T extends DensityCamera>(
     previous: T, mounted: T, alignment: DensityAlignment, dimension: '2d' | '3d',

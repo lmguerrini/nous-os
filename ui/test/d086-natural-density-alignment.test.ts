@@ -39,8 +39,57 @@ for (const dimension of ['2d', '3d'] as const) test(`${dimension} uses a positiv
   }
   assert.equal(placed.size, canonical.size);
   assert.deepEqual(alignNaturalDensity(new Map([...prior].slice(0, 2)), canonical, dimension),
-    { scale: 1, x: 0, y: 0, z: 0, shared: 2 });
+    { scale: 0, x: 0, y: 0, z: 0, shared: 2 });
 });
+
+// D086-NAT BEGIN: canonical layouts can have full spread and little covariance.
+for (const dimension of ['2d', '3d'] as const) test(`${dimension} composes RMS extent across a nearly orthogonal layout`, () => {
+  const target = new Map([['a', { x: -1, y: -1, z: -1 }], ['b', { x: 1, y: -1, z: 1 }],
+    ['c', { x: -1, y: 1, z: 1 }], ['d', { x: 1, y: 1, z: -1 }]]);
+  const prior = new Map([...target].map(([id, point]) => [id,
+    { x: -point.y + point.x * 0.01, y: point.x + point.y * 0.01,
+      z: dimension === '3d' ? point.z : 0 }] as const));
+  const alignment = alignNaturalDensity(prior, target, dimension);
+  assert.ok(alignment.scale > 0.99 && alignment.scale < 1.01, `scale ${alignment.scale}`);
+  const camera = { x: 0.5, y: 0.5, ratio: 1,
+    bounds: { x: [-10, 10] as const, y: [-10, 10] as const } };
+  const composed = composeNaturalDensityCamera(camera, camera, alignment, dimension);
+  assert.ok(composed && composed.ratio > 0.99 && composed.ratio < 1.01);
+});
+
+test('degenerate shared clouds ask the caller for a fresh fit', () => {
+  const camera = { x: 0.5, y: 0.5, ratio: 1,
+    bounds: { x: [-10, 10] as const, y: [-10, 10] as const } };
+  const target = new Map([['a', { x: 1, y: 1, z: 1 }], ['b', { x: 1, y: 1, z: 1 }],
+    ['c', { x: 1, y: 1, z: 1 }]]);
+  const prior = new Map([['a', { x: 0, y: 0, z: 0 }], ['b', { x: 2, y: 0, z: 0 }],
+    ['c', { x: 0, y: 2, z: 0 }]]);
+  const alignment = alignNaturalDensity(prior, target, '2d');
+  assert.equal(alignment.scale, 0);
+  assert.equal(composeNaturalDensityCamera(camera, camera, alignment, '2d'), null);
+});
+
+test('identical canonical shared coordinates keep the composed camera unchanged', () => {
+  const points = new Map([['a', { x: -3, y: -2, z: 1 }], ['b', { x: 4, y: -1, z: 2 }],
+    ['c', { x: 0, y: 5, z: -3 }]]);
+  const alignment = alignNaturalDensity(points, points, '3d');
+  assert.deepEqual(alignment, { scale: 1, x: 0, y: 0, z: 0, shared: 3 });
+  const camera = { x: 0.57, y: 0.42, ratio: 1.7, targetZ: 3,
+    bounds: { x: [-10, 10] as const, y: [-10, 10] as const } };
+  assert.deepEqual(composeNaturalDensityCamera(camera, camera, alignment, '3d'), camera);
+});
+
+test('3D measures visible spread after the camera orbit, excluding view-depth only spread', () => {
+  const target = new Map([-1, 0, 1].map((value, index) =>
+    [String(index), { x: value, y: 0, z: value }] as const));
+  const prior = new Map([-1, 0, 1].map((value, index) =>
+    [String(index), { x: value, y: 0, z: -value }] as const));
+  const camera = { angle: 0, orbit: [0, 0, 0, 1] as const };
+  assert.equal(alignNaturalDensity(prior, target, '3d', camera).scale, 0);
+  const turned = { angle: 0, orbit: [0, Math.SQRT1_2, 0, Math.SQRT1_2] as const };
+  assert.equal(alignNaturalDensity(prior, target, '3d', turned).scale, 0);
+});
+// D086-NAT END
 
 test('an opposing cloud never reflects the target', () => {
   const target = new Map([['a', { x: 0, y: 0, z: 0 }], ['b', { x: 1, y: 0, z: 0 }],

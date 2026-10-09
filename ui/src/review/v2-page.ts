@@ -4472,7 +4472,10 @@ export class V2Page {
             const budget = this.densityBudgetFor();
             // D086-CUSTOM BEGIN
             const custom = this.density === 'custom' ? this.selectCustomNow(lawResult?.positions) : null;
-            if (custom) { this.customSelection = custom; this.customNodes = custom.requested; }
+            if (custom && projectionEpoch === this.projectionEpoch) {
+                this.customSelection = custom;
+                this.customNodes = custom.requested;
+            }
             // D086-CUSTOM END
             // D085-S2 END
             const routingBegan = performance.now();
@@ -5004,8 +5007,9 @@ export class V2Page {
                 const before = this.positions.get(id), after = expanded.get(id);
                 if (before && after) { previousShared.set(id, before); targetShared.set(id, after); }
             }
+            const old = this.view?.readCamera();
             const densityAlignment = naturalDensityTransition
-                ? alignNaturalDensity(previousShared, targetShared, projection) : null;
+                ? alignNaturalDensity(previousShared, targetShared, projection, old as DensityCamera | null) : null;
             const next = new Map<string, Point3>();
             for (const n of sceneNodes)
                 next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
@@ -5018,7 +5022,6 @@ export class V2Page {
             this.recordProjectionPhase('resultAdaptation', performance.now() - adaptationBegan);
             this.recordProjectionPhase('preView', performance.now() - preViewBegan);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
-            const old = this.view?.readCamera();
             // D086-F2 BEGIN: a prior law's pose and bounds cannot normalize this layout.
             // Classic Natural/Indra transitions keep their established camera policy.
             const priorAxes = this.committedAxes ?? this.axes;
@@ -5501,7 +5504,7 @@ export class V2Page {
                     const camera = naturalDensityTransition && densityAlignment && old && openingFitCamera
                         ? composeNaturalDensityCamera(old as DensityCamera,
                             openingFitCamera as DensityCamera, densityAlignment, projection) : null;
-                    this.view.restoreCamera(camera ?? old);
+                    this.view.restoreCamera(camera ?? (naturalDensityTransition ? openingFitCamera : old));
                     // D086-NAT END
                     if (anchor) {
                         // D081-P6 BEGIN: re-check the live projection after Indra's 3D re-pack.
@@ -5875,6 +5878,7 @@ export class V2Page {
         const bounded = Math.min(availability.available, Math.max(availability.minimum, intent.requestedNodes));
         // D086-CUSTOM BEGIN: accepting the initial URL/storage commit cannot remount it.
         if (this.density === 'custom' && this.committedDensity === 'custom'
+            && this.presentedCustomSelection?.requested === bounded
             && this.customNodes === bounded && !this.customDirty) {
             this.customClampedFrom = clampedFrom;
             return { committed: true, requestedNodes: bounded, available: availability.available,
@@ -5886,9 +5890,13 @@ export class V2Page {
         this.customDirty = true;
         const result = await this.setDensity('custom');
         if (result === 'superseded' || intent.serial !== this.customSerial) return 'superseded';
+        // D086-CUSTOM BEGIN: only the mounted selection can discharge this request.
+        if (this.committedDensity !== 'custom' || this.presentedCustomSelection?.requested !== bounded)
+            return 'superseded';
         this.customDirty = false;
-        return { committed: true, requestedNodes: this.customNodes, available: availability.available,
+        return { committed: true, requestedNodes: bounded, available: availability.available,
             ...(this.customClampedFrom === undefined ? {} : { clampedFrom: this.customClampedFrom }) };
+        // D086-CUSTOM END
     }
     // D086-CUSTOM END
     // D085-S1 BEGIN: density participates in the same page transition lane.
@@ -5959,9 +5967,6 @@ export class V2Page {
         this.densitySwitchPending = true;
         // D082-A-DENSITY END
         this.density = next;
-        // D086-CUSTOM BEGIN
-        this.customDirty = false;
-        // D086-CUSTOM END
         // D081-P3b BEGIN: the resident lower-density view remains visible while
         // the worker prepares the full Indra domain; disclose that recovery state.
         if (next === 'complete' && !this.canopyActive()) {
@@ -6220,7 +6225,14 @@ export class V2Page {
                 if (customIntent) {
                     if (intent !== this.geometryIntent || customIntent.serial !== this.customSerial)
                         return 'superseded' as const;
-                    const selection = this.presentedCustomSelection ?? this.selectCustomNow();
+                    // D086-CUSTOM BEGIN: a fact cannot describe an unmounted law.
+                    const selection = this.presentedCustomSelection;
+                    if (this.committedDensity !== 'custom' || !selection
+                        || this.committedTaxonomy.topology !== topology
+                        || this.committedTaxonomy.indra !== indra)
+                        return 'superseded' as const;
+                    this.customDirty = false;
+                    // D086-CUSTOM END
                     return { committed: true as const, requestedNodes: selection.requested,
                         available: selection.available,
                         ...(this.customClampedFrom === undefined ? {} : { clampedFrom: this.customClampedFrom }) };
