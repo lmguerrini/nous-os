@@ -40,7 +40,7 @@ window.addEventListener('unhandledrejection', event => {
 });
 // D085-S5 END
 // D085-S1 END
-import { bindSurfaces } from "./popover.ts";
+import { bindSurfaces, customDensityLabel } from "./popover.ts";
 // D081-P4 BEGIN
 import { mountPerformanceHud } from "./perf-hud.ts";
 // D081-P4 END
@@ -812,6 +812,9 @@ function applyToolbarPosition(position: string): void {
 applyToolbarPosition(readLocal(storage, TOOLBAR_POSITION_KEY, 'top'));
 syncToolbarToggle();
 toolbarPosition.addEventListener('change', () => {
+  // D087-TOOLBAR BEGIN
+  surfaceStack?.set('custom-density', false);
+  // D087-TOOLBAR END
   const position = toolbarPosition.value === 'left' ? 'left' : 'top';
   writeLocal(storage, TOOLBAR_POSITION_KEY, position);
   applyToolbarPosition(position);
@@ -832,6 +835,9 @@ function syncToolbarToggle(): void {
     : '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7.25 10 13l6-5.75" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 }
 get<HTMLButtonElement>("toolbar-toggle").addEventListener("click", () => {
+  // D087-TOOLBAR BEGIN
+  surfaceStack?.set('custom-density', false);
+  // D087-TOOLBAR END
   const header = get<HTMLElement>("review-toolbar");
   const collapsed = header.classList.toggle("toolbar-collapsed");
   writeLocal(storage, 'd081.toolbarCollapsed', collapsed);
@@ -1679,6 +1685,9 @@ async function toggleFullscreen(): Promise<void> {
   else await viewport.requestFullscreen();
 }
 document.addEventListener("fullscreenchange", () => {
+  // D087-TOOLBAR BEGIN
+  surfaceStack?.set('custom-density', false);
+  // D087-TOOLBAR END
   fullscreenDrawer = false;
   get<HTMLElement>("fullscreen-bar").classList.remove("collapsed", "immersive");
   if (fullscreen()) viewport.append(details);
@@ -2076,6 +2085,22 @@ const customApply = get<HTMLButtonElement>('custom-density-apply');
 const customAvailable = get<HTMLElement>('custom-density-available');
 const customMessage = get<HTMLElement>('custom-density-message');
 const customRow = get<HTMLElement>('custom-density-row');
+// D087-TOOLBAR BEGIN: the Custom trigger owns only the editor surface; drafts still commit on Apply.
+const customButton = get<HTMLElement>('density-control').querySelector<HTMLButtonElement>('button[data-density="custom"]')!;
+function placeCustomPopover(): void {
+  if (customRow.hidden) return;
+  const anchor = customButton.getBoundingClientRect();
+  const side = get<HTMLElement>('review-toolbar').classList.contains('toolbar-left');
+  const width = customRow.offsetWidth, height = customRow.offsetHeight;
+  const preferredLeft = side ? anchor.right + 8 : anchor.left;
+  customRow.style.left = `${Math.max(8, Math.min(preferredLeft, window.innerWidth - width - 8))}px`;
+  const preferredTop = side ? anchor.top : anchor.bottom + 8;
+  customRow.style.top = `${Math.max(8, Math.min(preferredTop, window.innerHeight - height - 8))}px`;
+}
+for (const eventName of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'wheel'] as const)
+  customRow.addEventListener(eventName, event => event.stopPropagation());
+window.addEventListener('resize', placeCustomPopover);
+// D087-TOOLBAR END
 function customCapability(): CustomDensityCapability | null {
   const page = v2 as (V2Page & Partial<CustomDensityCapability>) | null;
   return page && typeof page.customAvailability === 'function' && typeof page.setDensityIntent === 'function'
@@ -2096,14 +2121,19 @@ function acceptCustomCommit(fact: CustomCommitFact): void {
   customDraftDirty = false;
   customMessage.textContent = fact.clampedFrom === undefined ? `richiesti ${fact.requestedNodes.toLocaleString('it-IT')}`
     : `richiesti ${fact.requestedNodes.toLocaleString('it-IT')} · adattati da ${fact.clampedFrom.toLocaleString('it-IT')}`;
+  // D087-TOOLBAR BEGIN
+  customButton.textContent = customDensityLabel(fact.requestedNodes);
+  // D087-TOOLBAR END
 }
 function syncCustomControls(): void {
   const availability = customAvailability();
   const availabilityKey = availability ? `${availability.sourceDigest}:${availability.minimum}:${availability.available}` : '';
   if (availabilityKey !== customAvailabilityKey) { customDraftDirty = false; customAvailabilityKey = availabilityKey; }
-  const active = density === 'custom';
-  const usable = active && !!availability && availability.available > 0;
-  customRow.setAttribute('aria-hidden', String(!active));
+  // D087-TOOLBAR BEGIN: the editor may be used to choose Custom from any density.
+  const usable = !!availability && availability.available > 0;
+  customButton.textContent = customDensityLabel(customNodes);
+  customButton.setAttribute('aria-label', `Densità ${customDensityLabel(customNodes)}`);
+  // D087-TOOLBAR END
   customAvailable.textContent = `disponibili ${(availability?.available ?? 0).toLocaleString('it-IT')}`;
   const minimum = availability?.minimum ?? 1, maximum = Math.max(minimum, availability?.available ?? 1);
   customRange.min = customNumber.min = String(minimum);
@@ -2152,6 +2182,9 @@ function applyCustomDensity(initialAmount?: number): void {
     view2WriteAllowed = true;
     persistView();
     syncDensity();
+    // D087-TOOLBAR BEGIN
+    surfaceStack?.set('custom-density', false);
+    // D087-TOOLBAR END
     if (pendingDensityIntent === intent) pendingDensityIntent = null;
   }).catch(reportTaxonomyTransitionError);
 }
@@ -2250,7 +2283,7 @@ function applyDensity(next: unknown): void {
   // D085-S1 END
 }
 for (const button of densityButtons)
-  button.addEventListener("click", () => { applyDensity(button.dataset.density); });
+  button.addEventListener("click", () => { if (button.dataset.density !== 'custom') applyDensity(button.dataset.density); });
 syncDensity();
 get<HTMLSelectElement>("v2-relation-detail").addEventListener("change", event => {
   syncToolbarSummary();
@@ -2289,6 +2322,17 @@ get<HTMLInputElement>("debug").addEventListener("change", (event) => {
   void setDebug((event.target as HTMLInputElement).checked);
 });
 const surfaceBindings: SurfaceBinding[] = [
+  // D087-TOOLBAR BEGIN: Custom is transient, above focus and the side panel for Escape.
+  { id: 'custom-density', surface: customRow, openers: [customButton], closeOnOutside: true, syncPressed: false,
+    readOpen: () => !customRow.hidden,
+    writeOpen: open => {
+      customRow.hidden = !open;
+      customRow.setAttribute('aria-hidden', String(!open));
+      customButton.setAttribute('aria-expanded', String(open));
+      if (open) { syncCustomControls(); placeCustomPopover(); customNumber.focus(); }
+      else if (customRow.contains(document.activeElement)) customButton.focus();
+    } },
+  // D087-TOOLBAR END
   { id: "graph-status", surface: get("graph-status-panel"), openers: [get("graph-status-toggle")],
     readOpen: () => !get<HTMLElement>("graph-status-panel").hidden,
     writeOpen: open => { get<HTMLElement>("graph-status-panel").hidden = !open;
@@ -2332,7 +2376,15 @@ if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "perform
 // D085-S5 BEGIN
 surfaceStack = bindSurfaces(surfaceBindings, () => Boolean(v2?.selectedId), () => { ownDisplayedRemount(v2?.exitFocus()); });
 // D085-S5 END
-surfaceStack.subscribe(() => requestAnimationFrame(updateInsets));
+// D087-TOOLBAR BEGIN: the fixed Custom surface does not change camera insets.
+let insetSurfaceState = surfaceStack.order().filter(id => id !== 'custom-density').join('|');
+surfaceStack.subscribe(() => {
+  const next = surfaceStack?.order().filter(id => id !== 'custom-density').join('|') ?? '';
+  if (next === insetSurfaceState) return;
+  insetSurfaceState = next;
+  requestAnimationFrame(updateInsets);
+});
+// D087-TOOLBAR END
 document.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "p" && !(event.target instanceof HTMLInputElement)) togglePanel();
   if (event.key.toLowerCase() === "t" && fullscreen() && !(event.target instanceof HTMLInputElement)) get<HTMLButtonElement>("fullscreen-collapse").click();
