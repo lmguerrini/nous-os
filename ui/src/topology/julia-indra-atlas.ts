@@ -21,7 +21,12 @@ const CHILD_GAP_3D_PX = 16;
 
 /** Density reveals more real closed parents without changing any Julia address. */
 export function juliaOverviewPearlQuota(density: 'essential' | 'balanced' | 'complete' | 'custom',
-  customNodes: number | undefined, available: number): number {
+  customNodes: number | undefined, available: number, customAvailableNodes?: number): number {
+  // D087-JULIA BEGIN: the Custom endpoint is the same atlas phase as Completa.
+  // The available node count is distinct from the admitted pearl count.
+  if (density === 'custom' && customAvailableNodes !== undefined
+    && customNodes !== undefined && customNodes >= customAvailableNodes) return available;
+  // D087-JULIA END
   // D087-JULIA BEGIN: the oblique 3D admission has forty available pearls.
   // Give its density steps distinct deterministic prefixes as in 2D.
   if (available >= 20 && available <= 40) {
@@ -34,6 +39,14 @@ export function juliaOverviewPearlQuota(density: 'essential' | 'balanced' | 'com
     : density === 'complete' ? available : 43 + Math.floor(Math.max(0, customNodes ?? 0) / 2000);
   return Math.min(available, Math.max(0, target));
 }
+
+// D087-JULIA BEGIN: the atlas census names strokes in the active phase. The
+// full snapshot remains available in the source and density-budget witnesses.
+export function juliaAtlasEdgeCensus(drawn: number, eligible: number, total: number,
+  atlasActive: boolean): { drawn: number; eligible: number; total: number } {
+  return atlasActive ? { drawn, eligible: drawn, total: drawn } : { drawn, eligible, total };
+}
+// D087-JULIA END
 
 export type JuliaAtlasCertificate = Readonly<{
   snapshotDigest: string; dimension: TopologyDimension; phase: 'overview' | 'opened';
@@ -315,15 +328,25 @@ export function certifyJuliaAtlasDrawing(layout: JuliaAtlasLayout, snapshot: Top
   nodeIds: ReadonlySet<string>; shellIds: ReadonlySet<string>; countedShellIds: ReadonlySet<string>;
   guideIds: ReadonlySet<string>; project(point: Point3): Readonly<{ x: number; y: number }>;
   shellRadiusPx(shell: LayoutContainer): number;
+  // D087-JULIA BEGIN: the radius the rim-overlap inequality measures. Absent —
+  // every historical caller — it is `shellRadiusPx` itself: the drawn rim is
+  // the layout rim. A caller that pins a screen-space minimum drawn rim in
+  // `shellRadiusPx` (the 2D atlas legibility floor) passes the true projected
+  // rim here, so a legibility pin can never read as a layout overlap.
+  overlapShellRadiusPx?(shell: LayoutContainer): number;
   viewport?: Readonly<{ width: number; height: number }>;
 }>): JuliaAtlasCertificate {
   const shells = layout.containers.filter(c => c.id !== ABSOLUTE_CONTAINER_ID && drawn.shellIds.has(c.id));
   const projected = (p: Point3) => drawn.project(p);
+  // D087-JULIA BEGIN: see the field above; the default keeps one radius for
+  // both gates exactly as before.
+  const overlapRadiusPx = drawn.overlapShellRadiusPx ?? drawn.shellRadiusPx;
+  // D087-JULIA END
   let overlap = 0;
   for (let i = 0; i < shells.length; i++) for (let j = i + 1; j < shells.length; j++) {
     const a = shells[i]!, b = shells[j]!;
     const pa = projected(a.center), pb = projected(b.center);
-    if (Math.hypot(pa.x - pb.x, pa.y - pb.y) < drawn.shellRadiusPx(a) + drawn.shellRadiusPx(b) + GAP_PX) overlap++;
+    if (Math.hypot(pa.x - pb.x, pa.y - pb.y) < overlapRadiusPx(a) + overlapRadiusPx(b) + GAP_PX) overlap++;
   }
   const closed = shells.filter(shell => !shell.open && drawn.nodeIds.has(shell.id)
     && drawn.countedShellIds.has(shell.id) && drawn.shellRadiusPx(shell) >= RIM_PX

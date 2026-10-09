@@ -110,7 +110,7 @@ import { TOPOLOGY_LAWS, topologySupport } from '../topology/registry.ts';
 // D082-LAB-FIX2 BEGIN
 import { cancelPendingTopologyLayouts, computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
 // D087-JULIA BEGIN
-import { certifyJuliaAtlasDrawing, composeJuliaIndraAtlas, isJuliaAtlasLayout, juliaOverviewPearlQuota, type JuliaAtlasLayout } from '../topology/julia-indra-atlas.ts';
+import { certifyJuliaAtlasDrawing, composeJuliaIndraAtlas, isJuliaAtlasLayout, juliaAtlasEdgeCensus, juliaOverviewPearlQuota, type JuliaAtlasLayout } from '../topology/julia-indra-atlas.ts';
 // D087-JULIA END
 // D085-S1 BEGIN: serialize page axes before any asynchronous renderer refresh reads them.
 import { createGeometryTransitionQueue } from './geometry-view2.ts';
@@ -801,14 +801,18 @@ export class V2Page {
         if (this.topology !== 'julia' || !this.topologyIndra || !isJuliaAtlasLayout(this.lawLayout) || !this.view?.projectPoint)
             return null;
         const ink = (this.view as ProductView & { readJuliaAtlasInk?: () => {
-            shells: readonly { id: string; radiusPx: number }[]; countedShellIds: readonly string[];
-            paintedNodeIds: readonly string[] } }).readJuliaAtlasInk?.();
+            shells: readonly { id: string; radiusPx: number; overlapRadiusPx?: number }[];
+            countedShellIds: readonly string[]; paintedNodeIds: readonly string[] } }).readJuliaAtlasInk?.();
         if (!ink) return null;
         const canvases = document.querySelectorAll<HTMLCanvasElement>('#render-root canvas[data-topology-guides]');
         const canvas = canvases.item(canvases.length - 1);
         let guideIds: string[] = [];
         try { guideIds = JSON.parse(canvas?.dataset.atlasDrawnIds ?? '[]') as string[]; } catch { /* no drawn guides */ }
         const radii = new Map(ink.shells.map(shell => [shell.id, shell.radiusPx]));
+        // D087-JULIA BEGIN: the overlap inequality measures the true projected
+        // rim; a closed 2D atlas pearl's `radiusPx` is its pinned drawn rim.
+        const overlapRadii = new Map(ink.shells.map(shell => [shell.id, shell.overlapRadiusPx ?? shell.radiusPx]));
+        // D087-JULIA END
         const host = document.getElementById('render-root');
         return certifyJuliaAtlasDrawing(this.lawLayout, this.lawSnapshot, {
             nodeIds: new Set(ink.paintedNodeIds), shellIds: new Set(ink.shells.map(shell => shell.id)),
@@ -816,6 +820,9 @@ export class V2Page {
                 this.containers.some(shell => shell.id === id && / · \+\d+$/.test(shell.title ?? '')))),
             guideIds: new Set(guideIds), project: point => this.view!.projectPoint!(point),
             shellRadiusPx: shell => radii.get(shell.id) ?? 0,
+            // D087-JULIA BEGIN
+            overlapShellRadiusPx: shell => overlapRadii.get(shell.id) ?? 0,
+            // D087-JULIA END
             ...(host ? { viewport: { width: host.clientWidth, height: host.clientHeight } } : {}),
         });
     }
@@ -1239,7 +1246,7 @@ export class V2Page {
         // D085-X9b END
         // D081-P6c BEGIN: level-5 passage rows are detail, not dataset nodes.
         const visible = [...this.rendered].filter(id => this.datasetNodeIds.has(id)).length;
-        // Disclosure and LOD decide what is visible; they must not shrink the denominator and
+        // Disclosure and LOD decide what is visible; they must not shrink the node denominator and
         // make a partial overview look complete. Reading controls relations, not node eligibility.
         eligibleNodes = this.datasetNodeCount;
         const reading = this.axes?.reading ?? 'combined';
@@ -1257,6 +1264,13 @@ export class V2Page {
         }
         // D085-X9b END
         eligibleEdges = fullEligibleEdges;
+        // D087-JULIA BEGIN: the atlas only offers the relations routed through
+        // the current real pearl glyphs; source totals remain in the budget witness.
+        const atlasCensus = juliaAtlasEdgeCensus(route.drawn.length, eligibleEdges,
+            source.edges.length + source.nodes.filter(node => node.parent !== null).length,
+            this.topology === 'julia' && this.topologyIndra && isJuliaAtlasLayout(this.lawLayout));
+        eligibleEdges = atlasCensus.eligible;
+        // D087-JULIA END
         // D081-P6c END.
         // Route lifting alone is not a node aggregate. Count hidden members only when the
         // mounted container title explicitly declares them with the visible +N marker.
@@ -1268,9 +1282,11 @@ export class V2Page {
                 aggregated, aggregates: aggregated === 0 ? 0 : declaredAggregateGroups },
             // D085-S7 BEGIN / D085-S4 BEGIN: relation detail counts, and the Llull overview's
             // aggregated share of the drawn edges — the counter's «archi» and these fields partition exactly.
-            edges: { drawn: route.drawn.length, ...bundleCounts, eligible: eligibleEdges,
-                // D085-X9 BEGIN: the law status keeps the fixed source denominator.
-                total: source.edges.length + source.nodes.filter(node => node.parent !== null).length,
+            edges: { drawn: atlasCensus.drawn, ...bundleCounts, eligible: eligibleEdges,
+                // D085-X9 BEGIN: other law views keep the fixed source denominator.
+                // D087-JULIA BEGIN: only the atlas reports its phase census.
+                total: atlasCensus.total,
+                // D087-JULIA END
                 // D085-X9 END
                 ...(route.detail ? { detail: route.detail } : {}),
                 aggregatedIntoBundles: this.lullOverviewFold ? this.lullOverviewFold.foldedEdges : 0,
@@ -4824,7 +4840,9 @@ export class V2Page {
                 renderedIds = juliaFocusIds
                     ? new Set([...juliaFocusIds].filter(id => visibleById.has(id)))
                     : new Set([...atlas.phaseNodeIds]
-                        .slice(0, juliaOverviewPearlQuota(this.density, this.customNodes, atlas.phaseNodeIds.size))
+                        .slice(0, juliaOverviewPearlQuota(this.density, this.customNodes,
+                            atlas.phaseNodeIds.size,
+                            this.density === 'custom' ? this.customAvailability().available : undefined))
                         .filter(id => visibleById.has(id)));
             }
             // D087-JULIA END
@@ -5111,11 +5129,19 @@ export class V2Page {
             const pinnedArcsRendered = shown.map(edge => edge.id).filter(id => this.pinnedArcIds(tiers).has(id)).sort();
             const nextLodCounts = {
                 nodes: { rendered: renderedIds.size, available: ids.size, pinned: pinnedRendered.length, pinnedIds: pinnedRendered },
-                arcs: { rendered: shown.length, available: availableArcs.total, pinned: pinnedArcsRendered.length, pinnedIds: pinnedArcsRendered },
+                // D087-JULIA BEGIN: the atlas LOD offers only phase-visible strokes.
+                arcs: { rendered: shown.length,
+                    available: this.topology === 'julia' && this.topologyIndra && isJuliaAtlasLayout(lawResult)
+                        ? shown.length : availableArcs.total,
+                    pinned: pinnedArcsRendered.length, pinnedIds: pinnedArcsRendered },
+                // D087-JULIA END
             };
             const nextRenderedRelations = new Map(shown.map(edge => [edge.id, edge]));
             // D081-P7 BEGIN
-            const nextArcTotal = availableArcs.total;
+            // D087-JULIA BEGIN: witness arcs.total follows the mounted atlas phase.
+            const nextArcTotal = this.topology === 'julia' && this.topologyIndra && isJuliaAtlasLayout(lawResult)
+                ? shown.length : availableArcs.total;
+            // D087-JULIA END
             // D081-P7 END
             // D082-A-PLUSN BEGIN: suffixes describe every indexed descendant omitted
             // from this exact visible set, including nodes omitted by the density budget.
