@@ -4020,6 +4020,9 @@ export class V2Page {
             edgeWidth: this.appearance.edgeWidth,
             curvature: this.appearance.curvature,
             reading: this.axes.reading,
+            // D087-LABELS BEGIN: the typed renderers read the labels axis from the style scope.
+            labels: this.axes.labels,
+            // D087-LABELS END
         });
     }
     /** The default pipeline's legacy-Indra bridge: one typed result assembled from the verified

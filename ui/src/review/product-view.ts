@@ -804,7 +804,12 @@ export const createProductView: CreateProductView = async (input) => {
     usesDenseDrawingPolicy?: boolean | undefined;
     denseNativeRadiusOnly?: boolean | undefined;
     // D086-CUSTOM END
-  } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate" };
+    // D087-LABELS BEGIN: the labels axis reaches the shared canvas pass here, so the Indra
+    // container titles stop being placed and drawn the moment the axis is off.
+    hideContainerTitles?: boolean;
+    // D087-LABELS END
+  } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate",
+    hideContainerTitles: !input.axes.labels };
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
   // D085-X8 BEGIN: this view owns the measured shell LOD counters. They change
@@ -1183,6 +1188,55 @@ export const createProductView: CreateProductView = async (input) => {
     // depth-occlusion build, no trailing morphology repaint (the renderer repaints every camera
     // frame already). The full pass returns on the frame after quality is restored.
     const moving = morphologyInteraction.quality === "moving";
+    // D087-LABELS BEGIN: the layer's non-label marks, shared by the full pass and the labels-off
+    // pass, so hiding the text never hides the selection or the dynamic-origin rings.
+    const appendDynamicRings = (denseMotion: boolean) => {
+      for (const { id, position } of denseMotion ? [] : handle!.readWorldAnchorWitnesses()) {
+        if (nodesById.get(id)?.origin !== "dynamic") continue;
+        const point = project(position);
+        if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+        const ring = document.createElement("span");
+        ring.dataset.dynamicRingId = id;
+        Object.assign(ring.style, { position: "absolute", left: `${point.x - 8}px`, top: `${point.y - 8}px`,
+          width: "16px", height: "16px", border: "1px solid #b9b9b9", borderRadius: "50%", opacity: "0.68" });
+        layer.append(ring);
+      }
+    };
+    const appendSelectionMarkers = (anchorWitnesses: readonly { id: string; position: Coordinates }[]) => {
+      if (axes.colour !== "custom") return;
+      const anchors = new Map(anchorWitnesses.map((item) => [item.id, item.position]));
+      for (const [id, colour] of [[selected, customPalette.selection], [hover?.kind === "node" ? hover.id : null, customPalette.hover]] as const) {
+        const position = id ? anchors.get(id) : null;
+        if (!position) continue;
+        const point = project(position);
+        if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+        const marker = document.createElement("span");
+        marker.dataset.reviewMarkerId = id!;
+        Object.assign(marker.style, { position: "absolute", left: `${point.x - 12}px`, top: `${point.y - 12}px`,
+          width: "24px", height: "24px", border: `2px solid ${colour}`, borderRadius: "50%" });
+        layer.append(marker);
+      }
+    };
+    // D087-LABELS END
+    // D087-LABELS BEGIN: labels off — this pass has zero output by definition. No candidate,
+    // anchor projection, measurement, disc, rim or container-title placement runs and no label
+    // element is rebuilt: only the layer's non-label marks (dynamic-origin rings and, under a
+    // custom palette, the selection and hover markers) are redrawn so a selection stays visible.
+    // The selected node's own label is hidden with the rest: the drawn selection mark, the panel
+    // and the drawer still identify it, and re-enabling runs the untouched pass from scratch.
+    if (!axes.labels) {
+      placed = [];
+      visibleTitleCount = 0;
+      layer.replaceChildren();
+      appendDynamicRings(moving && three !== null && visible.size >= DENSE_SCENE_THRESHOLD);
+      appendSelectionMarkers(visibleWitnesses(handle.readWorldAnchorWitnesses()));
+      // The container titles live on the morphology canvas; one repaint drops their ink.
+      if (!moving && drawnGeometry?.containers.length) redrawMorphology();
+      scheduleMarks.record("label-pass-off", performance.now(), 0);
+      if (!moving) window.dispatchEvent(new CustomEvent("d081:labels-settled"));
+      return;
+    }
+    // D087-LABELS END
     const movingIndra3d = moving && three !== null && axes.organization === "indra";
     // D081-P3e BEGIN: dense Natural 3D projects only nodes that can actually earn a moving label.
     const movingDense3d = moving && three !== null && visible.size >= 1200;
@@ -1453,31 +1507,11 @@ export const createProductView: CreateProductView = async (input) => {
       }),
     );
     // D081-P3e BEGIN: decorative dynamic rings return with the full pass after a dense drag.
-    for (const { id, position } of movingDense3d ? [] : handle.readWorldAnchorWitnesses()) {
-      if (nodesById.get(id)?.origin !== "dynamic") continue;
-      const point = project(position);
-      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
-      const ring = document.createElement("span");
-      ring.dataset.dynamicRingId = id;
-      Object.assign(ring.style, { position: "absolute", left: `${point.x - 8}px`, top: `${point.y - 8}px`,
-        width: "16px", height: "16px", border: "1px solid #b9b9b9", borderRadius: "50%", opacity: "0.68" });
-      layer.append(ring);
-    }
-    if (axes.colour === "custom") {
-      const anchors = new Map(visibleWitnesses(movingIds ? three!.readWorldAnchorWitnesses(movingIds) : handle.readWorldAnchorWitnesses()).map((item) => [item.id, item.position]));
+    // D087-LABELS BEGIN: the rings and the custom-palette markers are the shared mark helpers.
+    appendDynamicRings(movingDense3d);
+    appendSelectionMarkers(visibleWitnesses(movingIds ? three!.readWorldAnchorWitnesses(movingIds) : handle.readWorldAnchorWitnesses()));
+    // D087-LABELS END
     // D081-P3e END
-      for (const [id, colour] of [[selected, palette.selection], [hover?.kind === "node" ? hover.id : null, palette.hover]] as const) {
-        const position = id ? anchors.get(id) : null;
-        if (!position) continue;
-        const point = project(position);
-        if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
-        const marker = document.createElement("span");
-        marker.dataset.reviewMarkerId = id!;
-        Object.assign(marker.style, { position: "absolute", left: `${point.x - 12}px`, top: `${point.y - 12}px`,
-          width: "24px", height: "24px", border: `2px solid ${colour}`, borderRadius: "50%" });
-        layer.append(marker);
-      }
-    }
     // The shared discs this pass just published feed the canvas title placement: repaint the
     // morphology layer even when no animation loop is running (reduced motion), so the ink and
     // the reserved rectangles can never sit at two different placements. While the camera moves
@@ -3112,6 +3146,10 @@ export const createProductView: CreateProductView = async (input) => {
       assertNaturalArrangementAxis(merged);
       saveCamera();
       axes = merged;
+      // D087-LABELS BEGIN: the shared canvas pass reads the labels axis live, so an in-place
+      // toggle drops or restores the container titles without a remount.
+      morphologyInteraction.hideContainerTitles = !axes.labels;
+      // D087-LABELS END
       if (!productViewRemountsAxes(old, axes)) labelPass();
       else mount();
       // D-078 W6: the newly mounted glass needs one initial full-envelope fit.

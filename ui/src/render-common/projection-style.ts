@@ -52,6 +52,10 @@ export type ProjectionStyleOptions = {
   readonly curvature?: number;
   /** The reading (combined default): attested relations read stronger inside an attested reading. */
   readonly reading?: ProjectionReading;
+  // D087-LABELS BEGIN: the page's labels axis, carried so both typed renderers can skip
+  // every label pass while it is off. Absent keeps today's behaviour (labels on).
+  readonly labels?: boolean;
+  // D087-LABELS END
 };
 
 /** The reserved `visualStyle` key carrying the whole-scene options the renderers need. */
@@ -289,6 +293,9 @@ export function styleProjection(
     star: palette.text,
     edgeWidth: options.edgeWidth ?? 1,
     curvature: options.curvature ?? 1,
+    // D087-LABELS BEGIN: the style record is number|string, so the axis rides as one flag.
+    labels: options.labels === false ? 0 : 1,
+    // D087-LABELS END
   };
   return { projection: result, nodeStyle, edgeStyle, visualStyle };
 }
@@ -307,6 +314,9 @@ export type ProjectionStyleScope = {
   readonly star: string;
   readonly edgeWidth: number;
   readonly curvature: number;
+  // D087-LABELS BEGIN: the page's labels axis; false means the renderer draws no label at all.
+  readonly labels: boolean;
+  // D087-LABELS END
 };
 
 /** Reads the reserved scope record; null when the styled projection carries none (the basic
@@ -331,6 +341,9 @@ export function readProjectionStyle(styled: StyledProjection): ProjectionStyleSc
     star: typeof scope.star === "string" ? scope.star : PALETTES.bw.text,
     edgeWidth: typeof scope.edgeWidth === "number" ? scope.edgeWidth : 1,
     curvature: typeof scope.curvature === "number" ? scope.curvature : 1,
+    // D087-LABELS BEGIN
+    labels: scope.labels !== 0,
+    // D087-LABELS END
   };
 }
 

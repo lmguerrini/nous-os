@@ -634,10 +634,20 @@ export function mount(
   // D-073 W4f: the typed path reads its whole-scene options (morphology, label budget) from the
   // style bridge's reserved scope record, falling back to the engine defaults for the basic bridge.
   let currentStyled: StyledProjection | null = typedInput?.styled ?? null;
+  // D087-LABELS BEGIN: the page's labels axis, read from the styled scope. While it is off the
+  // typed pass builds no candidate and no bundle label text at all. Declared above its first
+  // call so the initial mount input is gated too.
+  const typedLabelsSuppressed = (): boolean =>
+    currentStyled !== null && readProjectionStyle(currentStyled)?.labels === false;
+  // D087-LABELS END
   // D081-P3b BEGIN: counted dense relations keep their own small visible labels.
   let typedBundleLabels: { source: Coordinates; target: Coordinates; count: number }[] = [];
   let typedMoving = false;
   const updateBundleLabels = (input: Render3fTypedInput): void => {
+    // D087-LABELS BEGIN: labels off empties the bundle list here, at every write (the axis can
+    // only change together with a styled revision), so the frame pass stays a plain list read.
+    if (typedLabelsSuppressed()) { typedBundleLabels = []; return; }
+    // D087-LABELS END
     const positions = input.styled.projection.positions3;
     typedBundleLabels = input.styled.projection.visualRelations.flatMap(relation => {
       if (!relation.visualId.startsWith('visual:d081:') || relation.count <= 1
@@ -1018,6 +1028,14 @@ export function mount(
         finishLabels();
         return;
       }
+      // D087-LABELS BEGIN: labels off — one empty repaint clears the layer; no candidate, disc,
+      // rim or measurement work runs and no bundle count text is produced for this frame.
+      if (typedLabelsSuppressed()) {
+        typedLabelOverlay.update({ candidates: [], bounds: { left: 0, top: 0, width: box.width, height: box.height } });
+        finishLabels();
+        return;
+      }
+      // D087-LABELS END
       const distance = rig.camera.position.length();
       if (typedFittedCameraDistance === null) typedFittedCameraDistance = distance;
       const overview = distance >= typedFittedCameraDistance * TYPED_LABEL_CAMERA.overviewRatio;
