@@ -72,6 +72,9 @@ import { createProjectionVisualsLayer } from "#render-common/projection-visuals-
 import type { ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
 import { ALL_EDGES_QUALITY_STAGE, FULL_QUALITY_STAGE, QualityLadder, mainRelation, presentRenderReadiness } from "#render-common/quality-ladder.ts";
 import { createPresentedPublisher } from "#render-common/presented-publisher.ts";
+// "D086-BURST BEGIN"
+import { renderReadinessHost } from "#render-common/render-readiness-producer.ts";
+// "D086-BURST END"
 // Size-fix BEGIN
 import { canvasNodeFloorPx, createNativeSizeLaw, geometryDegrees } from "#render-common/native-node-law.ts";
 // Size-fix END
@@ -889,7 +892,11 @@ function mountDistinctCanvas(
   };
   recountPresented();
   let lastMorphologyCamera = JSON.stringify(sigma.getCamera().getState());
+  // "D086-BURST BEGIN"
+  const readinessHost = renderReadinessHost(sigma.getContainer());
   const publisher = createPresentedPublisher(presentRenderReadiness);
+  publisher.setHost(readinessHost);
+  // "D086-BURST END"
   const publishPresented = (): void => {
     const stage = ladder.state.stage;
     const nativeNodesCanvas = sigma.getCanvases().nodes;
@@ -1918,7 +1925,11 @@ export function mountProjection2d(
       decorApplicable: { animation: false },
     } as const;
   };
+  // "D086-BURST BEGIN"
+  const readinessHost = renderReadinessHost(container);
   const publisher = createPresentedPublisher(presentRenderReadiness);
+  publisher.setHost(readinessHost);
+  // "D086-BURST END"
   const publishPresented = (): void => {
     publisher.publish(readinessSnapshot());
   };
@@ -2085,8 +2096,10 @@ export function mountProjection2d(
       // "D082-A-STALE BEGIN"
       publisher.invalidate();
       const snapshot = readinessSnapshot();
+      // "D086-BURST BEGIN"
       presentRenderReadiness({ ...snapshot, quality: 'recupero', ladder: snapshot.ladder === FULL_QUALITY_STAGE ? ALL_EDGES_QUALITY_STAGE : snapshot.ladder,
-        decor: { ...snapshot.decor, background: false } });
+        decor: { ...snapshot.decor, background: false } }, readinessHost);
+      // "D086-BURST END"
       sigma.refresh();
       // "D082-A-STALE END"
     },

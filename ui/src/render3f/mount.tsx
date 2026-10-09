@@ -83,6 +83,9 @@ import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
 // D085-S3 BEGIN
 import { QualityLadder, labAnchorInstanceIndices, labDenseInteraction, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, mainRelation, nativeLabSkeleton, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+// D086-BURST BEGIN
+import { renderReadinessHost } from "#render-common/render-readiness-producer.ts";
+// D086-BURST END
 import type { NativeAnchorRules, NativeRelationRank } from "#render-common/quality-ladder.ts";
 // D085-S3 END
 
@@ -338,6 +341,9 @@ export function mount(
   preparedCanopy?: PreparedCanopyNeural3dMount,
   // D082-B-CANOPYN END
 ): Render3fRendererHandle {
+  // D086-BURST BEGIN
+  const readinessHost = renderReadinessHost(container);
+  // D086-BURST END
   const dimensions = containerDimensions(container);
   const devicePixelRatio = requiredDevicePixelRatio();
   const previousPositionStyle = container.style.position;
@@ -1169,7 +1175,10 @@ export function mount(
     // both completed before this callback. One presentation tick avoids an
     // extra GPU-bound frame on the path to the complete witness.
     const publish = () => {
-      if (!destroyed && revision === presentationRevision) presentRenderReadiness(snapshot);
+      // D086-BURST BEGIN
+      if (!destroyed && revision === presentationRevision)
+        presentRenderReadiness(snapshot, typeof readinessHost === 'undefined' ? undefined : readinessHost);
+      // D086-BURST END
     };
     if (snapshot.ladder === 4 && snapshot.quality === 'completa') requestAnimationFrame(publish);
     else requestAnimationFrame(() => requestAnimationFrame(publish));
@@ -1553,8 +1562,10 @@ export function mount(
       // A morphology mutation invalidates the previously complete visual state immediately.
       // This remains a renderer-side estimate, not compositor presentation evidence.
       const snapshot = readinessSnapshot();
+      // D086-BURST BEGIN
       presentRenderReadiness({ ...snapshot, quality: 'recupero', ladder: snapshot.ladder === 4 ? 3 : snapshot.ladder,
-        decor: { ...snapshot.decor, background: false } });
+        decor: { ...snapshot.decor, background: false } }, readinessHost);
+      // D086-BURST END
       renderFrame();
       // D082-A-STALE END
     },

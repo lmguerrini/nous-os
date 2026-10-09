@@ -13,7 +13,9 @@ import { buildScreenPickIndex } from "../render2d/model.ts";
 // D082-A-PERF BEGIN
 import { prepareRenderModelInSlices } from "../render2d/model.ts";
 import type { RenderModel } from "../render2d/model.ts";
-import { reportPreparationReadiness } from "../render-common/render-readiness-producer.ts";
+// D086-BURST BEGIN
+import { reportPreparationReadiness, renderReadinessHost } from "../render-common/render-readiness-producer.ts";
+// D086-BURST END
 // D082-A-PERF END
 import type { ScreenPickIndex, ScreenPickSegment } from "../render2d/model.ts";
 import type { RenderHandle } from "../render2d/index.ts";
@@ -2844,6 +2846,7 @@ export const createProductView: CreateProductView = async (input) => {
             // D086-F2 BEGIN
             if (!preparationHostLive(container)) return;
             // D086-F2 END
+            // D086-BURST BEGIN
             reportPreparationReadiness({
               view: `${axes.organization}/2d/${axes.morphology}/complete/${axes.reading}`,
               quality: 'recupero', ladder: 0,
@@ -2852,7 +2855,8 @@ export const createProductView: CreateProductView = async (input) => {
                 loaded: progress.mainEdgesLoaded, drawn: 0 },
               allEdges: { required: subset.edges.length, loaded: progress.edgesLoaded, drawn: 0 },
               decor: { labels: false, background: false, glow: false, animation: false },
-            });
+            }, renderReadinessHost(container));
+            // D086-BURST END
           });
         // D082-A-PERF BEGIN: keep the final Sigma mount out of the last
         // Graphology insertion task, including a cache-warm model path.

@@ -131,6 +131,9 @@ import { showLabNotice } from './lab-notice.ts';
 // D082-B-NOTICE END
 // D082-A-HUD BEGIN: page-owned readiness until renderers publish presented-frame counts.
 import { currentRenderReadiness, reportRenderReadiness, renderPercent } from './render-readiness.ts';
+// D086-BURST BEGIN
+import { activateRenderReadinessHost } from '../render-common/render-readiness-producer.ts';
+// D086-BURST END
 import type { RenderReadiness, StageCounts } from './render-readiness.ts';
 import { withRenderProgress } from './toolbar-status.ts';
 // D082-A-HUD END
@@ -1124,12 +1127,16 @@ export class V2Page {
         this.d082ReadinessKey = key;
         this.d082Frame++;
         reportRenderReadiness(next);
-        const percent = renderPercent(next);
+        // D086-BURST BEGIN: a rejected page estimate cannot repaint the HUD's
+        // progress after the resident renderer's replay restored its real frame.
+        const accepted = currentRenderReadiness();
+        const percent = renderPercent(accepted ?? next);
+        // D086-BURST END
         if (percent !== this.d082StatusPercent) {
             this.d082StatusPercent = percent;
             const statusLine = typeof document !== 'undefined' ? document.getElementById('human-status') : null;
             if (!statusLine) return;
-            statusLine.textContent = withRenderProgress(statusLine.textContent ?? '', renderPercent(next));
+            statusLine.textContent = withRenderProgress(statusLine.textContent ?? '', percent);
             // D085-S3 BEGIN: follow the header's live custom-tooltip contract.
             statusLine.dataset.tooltip = statusLine.textContent ?? '';
             statusLine.removeAttribute('title');
@@ -2572,6 +2579,9 @@ export class V2Page {
             this.projectionHost?.remove();
             this.projectionRenderer = renderer;
             this.projectionHost = host;
+            // D086-BURST BEGIN
+            activateRenderReadinessHost(host);
+            // D086-BURST END
             this.mountedCameraKey = cameraKey;
             this.overviewRatio = null;
             this.programmaticCamera();
@@ -4143,10 +4153,13 @@ export class V2Page {
             // renderer's hovered ID still belongs to the new law. The next
             // pointer event can establish a new focus. Natural/Indra keep their
             // established pin path.
-            if (this.lawActive()) {
+            // D086-BURST BEGIN: classic canvas hover is transient emphasis.
+            // Typed views also use hover as an explicit pinned projection focus.
+            if (!this.typedActive()) {
                 this.hovered = null;
                 this.hoveredEdge = null;
             }
+            // D086-BURST END
             // D086-F2 END
             this.lastRefreshSettingKey = settingKey;
         }
@@ -5406,6 +5419,9 @@ export class V2Page {
             // D085-S5 END
             // D085-S1 END
             this.viewHost = nextHost;
+            // D086-BURST BEGIN: replay the committed mount's own submitted frame.
+            activateRenderReadinessHost(nextHost);
+            // D086-BURST END
             this.canopyRailLayer = nextRailLayer;
             // D082-B2 BEGIN
             this.guideLayer = nextGuideLayer;
@@ -5617,12 +5633,13 @@ export class V2Page {
                 } finally {
                     if (this.densityAnimationAbort === animationAbort) this.densityAnimationAbort = null;
                 }
-                this.densityTransitionDisplacement = { ...this.densityTransitionDisplacement,
-                    phase: projectionEpoch === this.projectionEpoch && densityTransitionIntent === this.geometryIntent
-                        ? 'complete' : 'superseded' };
-                if (this.densityTransitionDisplacement.phase === 'complete' && !this.d081LastInteraction)
-                    this.d081Quality = 'completa';
-                this.d081Emit();
+                // D086-BURST BEGIN: a cancelled transition has no publication lease.
+                if (projectionEpoch === this.projectionEpoch && densityTransitionIntent === this.geometryIntent) {
+                    this.densityTransitionDisplacement = { ...this.densityTransitionDisplacement, phase: 'complete' };
+                    if (!this.d081LastInteraction) this.d081Quality = 'completa';
+                    this.d081Emit();
+                }
+                // D086-BURST END
             }
             // D086-NAT END
         }).finally(() => {
@@ -5961,8 +5978,21 @@ export class V2Page {
     private async applyDensity(value: Density, inheritedOrganization: PageAxes['organization'] | null = null,
         intent = this.geometryIntent) {
         const next = normalizeDensity(value);
-        if (next === this.density && !inheritedOrganization && !this.customDirty)
+        // D086-BURST BEGIN: a return to the resident density still ends the recovery lease.
+        if (next === this.density && next === this.committedDensity
+            && !inheritedOrganization && !this.customDirty) {
+            const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
+            if (liveHost) {
+                const presented = activateRenderReadinessHost(liveHost);
+                if (presented?.quality === 'completa' && this.refreshPending === 0
+                    && this.d081Quality === 'recupero') {
+                    this.d081Quality = 'completa';
+                    this.d081Emit();
+                }
+            }
             return;
+        }
+        // D086-BURST END
         // D082-A-DENSITY BEGIN: a density switch is a filter change, never a fit intent.
         this.densitySwitchPending = true;
         // D082-A-DENSITY END
