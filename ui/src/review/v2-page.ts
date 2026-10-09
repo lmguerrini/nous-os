@@ -4144,10 +4144,13 @@ export class V2Page {
         }
         // D085-X9b END
     }
-    refresh(ownedByGeometry = false, detailSwitch = false): Promise<void> {
+    refresh(ownedByGeometry = false, detailSwitch = false,
+        // D086-BURST BEGIN: a resident-frame request does not lease preparation.
+        presentationOnly = false): Promise<void> {
+        // D086-BURST END
         // D085-S1 BEGIN: appearance, relation detail and zoom cannot invalidate an accepted mount.
         if (this.geometryTransitionActive && !ownedByGeometry)
-            return this.transitions.enqueue(() => this.refresh(false, detailSwitch));
+            return this.transitions.enqueue(() => this.refresh(false, detailSwitch, presentationOnly));
         // D085-S1 END
         // D086-F2 BEGIN: route selection may use hover as a temporary focus.
         // Changing any drawn-set or style axis invalidates that focus, including
@@ -4174,10 +4177,15 @@ export class V2Page {
         }
         // D086-F2 END
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
-        this.refreshPending++;
-        // D082-A-HUD BEGIN: publish the requested scene as in recovery while its new view is pending.
-        this.d081Emit();
-        // D082-A-HUD END
+        // D086-BURST BEGIN: an unchanged resident view needs a renderer frame,
+        // without reopening the page's provisional density or HUD preparation.
+        if (!presentationOnly) {
+            this.refreshPending++;
+            // D082-A-HUD BEGIN: publish the requested scene as in recovery while its new view is pending.
+            this.d081Emit();
+            // D082-A-HUD END
+        }
+        // D086-BURST END
         // D085-S1 BEGIN: every replacement refresh releases a renderer still preparing.
         this.interruptMount();
         const projectionEpoch = ++this.projectionEpoch;
@@ -5668,7 +5676,9 @@ export class V2Page {
                 this.relationDetailSwitchEpoch = null;
             }
             // D085-S7 END
-            this.refreshPending--;
+            // D086-BURST BEGIN
+            if (!presentationOnly) this.refreshPending--;
+            // D086-BURST END
             // D086-BURST BEGIN: a superseded job may release the last pending
             // count after the current commit. In that case reconcile only the
             // committed drawing, never its superseded preparation.
@@ -5933,8 +5943,8 @@ export class V2Page {
         const expectedView = `${owner}/${axes.projection}/${axes.morphology}/${density}/${axes.reading}`;
         const host = this.typedActive() ? this.projectionHost : this.viewHost;
         if (host && activateRenderReadinessHost(host, expectedView)) return;
-        // A host with no certificate must produce a real frame. Join the tail
-        // of the lane so a newer queued commit can present first.
+        // D086-BURST BEGIN: an uncertified host requests a renderer presentation
+        // after the queued transition, without another page preparation lease.
         void this.transitions.enqueue(async () => {
             if (this.committedAxes !== axes || this.committedDensity !== density
                 || this.committedTaxonomy.topology !== topology.topology
@@ -5942,8 +5952,9 @@ export class V2Page {
                 || !(this.view || this.projectionRenderer)) return;
             const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
             if (liveHost && activateRenderReadinessHost(liveHost, expectedView)) return;
-            this.ownDisplayedFailure(this.refresh());
+            this.ownDisplayedFailure(this.refresh(false, false, true));
         });
+        // D086-BURST END
     }
     // D086-BURST END
     /** Change density; Natural aligns a fresh canonical layout while zoom keeps its coordinates. */
@@ -6054,8 +6065,12 @@ export class V2Page {
         intent = this.geometryIntent) {
         const next = normalizeDensity(value);
         // D086-BURST BEGIN: a return to the resident density still ends the recovery lease.
-        if (next === this.density && next === this.committedDensity
+        // D086-BURST BEGIN: an existing mounted view is the resident density even
+        // before its explicit commit field is populated by a first page refresh.
+        if (next === this.density && next === (this.committedDensity ??
+            (this.view || this.projectionRenderer ? this.density : null))
             && !inheritedOrganization && !this.customDirty) {
+            // D086-BURST END
             const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
             if (liveHost) {
                 const presented = activateRenderReadinessHost(liveHost);
