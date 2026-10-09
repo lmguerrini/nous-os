@@ -489,6 +489,9 @@ export type ViewInput = {
   // This is every id with at least one child in that full hierarchy, so structural/leaf
   // classification never depends on which children the mounted subset happens to admit.
   readonly fullGraphStructuralIds?: ReadonlySet<string>;
+  // D087-SIZE10 BEGIN: the page supplies one full canonical 3D layout for leaf calibration.
+  readonly fullGraphLeafSource?: import('./full-graph-leaf.ts').FullGraphLeafSource;
+  // D087-SIZE10 END
   // D087-SIZE END
 };
 
@@ -502,6 +505,9 @@ export const VIEW_INPUT_FIELD_REGISTER = {
     // D085-S3 END
     // D087-SIZE BEGIN
     "fullGraphStructuralIds",
+    // D087-SIZE10 BEGIN
+    "fullGraphLeafSource",
+    // D087-SIZE10 END
     // D087-SIZE END
   ],
   optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "brain", "flowMotion", "appearance", "customPalette", "labelBudget",
@@ -510,6 +516,9 @@ export const VIEW_INPUT_FIELD_REGISTER = {
     // D085-S3 END
     // D087-SIZE BEGIN
     "fullGraphStructuralIds",
+    // D087-SIZE10 BEGIN
+    "fullGraphLeafSource",
+    // D087-SIZE10 END
     // D087-SIZE END
   ],
   axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],

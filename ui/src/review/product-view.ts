@@ -65,6 +65,9 @@ import { cachedStarfieldStars } from '../render-common/starfield.ts';
 import type { ReviewEdge } from "./model.ts";
 import { indraArcPresentation } from "./v2-relations.ts";
 import { v2Encoding } from "./v2-adapter.ts";
+// D087-SIZE10 BEGIN
+import { fullGraphLeafBase } from './full-graph-leaf.ts';
+// D087-SIZE10 END
 import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
@@ -2343,7 +2346,18 @@ export const createProductView: CreateProductView = async (input) => {
     let leafCalibration = fullGraphLeafBases.get(leafKey);
     const exactFit = mountedLeafSceneKey === leafSceneKey()
       && (axes.projection === '2d' ? sigma !== null : three !== null);
-    if (input.v2Prepared && (!leafCalibration || (exactFit && !leafCalibration.exactFit))) {
+    // D087-SIZE10 BEGIN: 3D uses the page's complete canonical source before its first frame.
+    // The fixed result is shared by every density and never reads a live camera or dense map.
+    if (axes.projection === '3d' && input.v2Prepared && !input.fullGraphLeafSource)
+      throw new Error('The complete canonical 3D leaf source is required before mount');
+    if (axes.projection === '3d' && input.v2Prepared && input.fullGraphLeafSource) {
+      const base = fullGraphLeafBase(input.fullGraphLeafSource, structuralIds,
+        axes.morphology, appearance.nodeScale);
+      leafCalibration = { given: base.given, targetPx: base.targetPx, exactFit: true };
+      fullGraphLeafBases.set(leafKey, leafCalibration);
+    } else if (axes.projection === '2d' && input.v2Prepared
+      && (!leafCalibration || (exactFit && !leafCalibration.exactFit))) {
+    // D087-SIZE10 END
       const fitScales = input.data.nodes.flatMap(node => {
         const point = completeAnchors.get(node.id);
         return point && !structuralIds.has(node.id) ? [markScale(point)] : [];
@@ -3903,7 +3917,9 @@ export const createProductView: CreateProductView = async (input) => {
         // D087-SIZE BEGIN: the existing view witness exposes the actual full-graph leaf base.
         ...(axes.projection === "3d" && fullGraphLeafBases.get(fullGraphLeafKey())
           ? { leafCalibration: { ...fullGraphLeafBases.get(fullGraphLeafKey())!,
-            fullGraphNodes: input.data.nodes.length } } : {}),
+            // D087-SIZE10 BEGIN: witness the source index, never the admitted subset.
+            fullGraphNodes: input.fullGraphLeafSource?.nodes.length ?? input.data.nodes.length } } : {}),
+            // D087-SIZE10 END
         // D087-SIZE END
         // D087-SIZE BEGIN: a sparse 3D mounted settle that kept its mounted sizes is visible here.
         ...(axes.projection === "3d" ? { sparse3dMountSettleFailed } : {}),

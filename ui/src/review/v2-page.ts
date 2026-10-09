@@ -4506,6 +4506,60 @@ export class V2Page {
                     for (const [id, point] of this.densityStablePositions) if (expanded.has(id)) expanded.set(id, point);
                 // D086-NAT END
             }
+            // D087-SIZE10 BEGIN: acquire the complete canonical cloud before mounting 3D.
+            // Natural's density layouts differ, so its leaf law always samples the
+            // Completa worker input. The existing worker and result cache keep this
+            // off the main thread and prevent a first-frame size correction.
+            let fullLeafPositions: ReadonlyMap<string, Point3> | null = null;
+            let fullLeafLayoutKey = layoutKey;
+            if (projection === '3d') {
+                const fullLeafBegan = performance.now();
+                if (canopy) {
+                    fullLeafPositions = canopyRenderPositions(canopy, source.nodes.map(node => node.id), projection);
+                    fullLeafLayoutKey = `canopy:${canopy.digest}:${projection}`;
+                } else if (lawResult) {
+                    fullLeafPositions = lawResult.positions;
+                    fullLeafLayoutKey = `law:${lawKey}`;
+                } else if (completaAnchor) {
+                    // The opted-in D-081 anchor already solved the full cloud from
+                    // its overview seed. Reuse that exact canonical layout.
+                    fullLeafPositions = applyExpansion(canonicalize(result.positions), {
+                        expandX: this.appearance.expandX, expandY: this.appearance.expandY,
+                        expandZ: this.appearance.expandZ });
+                    fullLeafLayoutKey = `${layoutKey}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}`;
+                } else if (organization === 'natural' && source.nodes.length > V2_CAP) {
+                    const completeIds = new Set(source.nodes.map(node => node.id));
+                    // Sparse Natural may use a combined layout input; its leaf base
+                    // must use the reading-qualified Completa input instead.
+                    const completeEdges = projectLayoutRelations(source.nodes, source.edges,
+                        completeIds, this.axes.reading, 'natural', 'essential').edges;
+                    const completeInput: LayoutInput = { ...layoutInput,
+                        nodes: source.nodes.map(node => ({ id: node.id, level: node.level,
+                            parent: node.parent, size: node.size, domains: node.domains, hiddenDescendants: 0 })),
+                        edges: completeEdges.map(edge => ({ id: edge.id, source: edge.source,
+                            target: edge.target, class: edge.class === 'exploratory' ? 'exploratory' as const
+                                : 'attested' as const })),
+                    };
+                    delete (completeInput as { previous?: ReadonlyMap<string, Point3> }).previous;
+                    const completeKey = pageLayoutKey(this.manifest.digest, completeInput);
+                    let completeResult: LayoutResult | undefined = layoutKey === completeKey ? result
+                        : this.naturalCompletaLayoutResults.get(completeKey)
+                            ?? this.pageResults.get(completeKey) as LayoutResult | undefined;
+                    if (!completeResult) {
+                        completeResult = await computeClassicLayout(completeInput);
+                        if (projectionEpoch !== this.projectionEpoch) return;
+                        this.naturalCompletaLayoutResults.set(completeKey, completeResult);
+                    }
+                    fullLeafPositions = applyExpansion(canonicalize(completeResult.positions), {
+                        expandX: this.appearance.expandX, expandY: this.appearance.expandY,
+                        expandZ: this.appearance.expandZ });
+                    fullLeafLayoutKey = `${completeKey}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}`;
+                } else {
+                    fullLeafPositions = organization === 'natural' ? expanded : result.positions;
+                }
+                this.recordProjectionPhase('leafFullLayout', performance.now() - fullLeafBegan);
+            }
+            // D087-SIZE10 END
             // Preserve only disclosed shells in the view; their centres and radii
             // are taken from the same complete packing as the member positions.
             const positionedContainers = organization === 'indra' && densityLayout
@@ -5330,7 +5384,16 @@ export class V2Page {
                 const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, labTopology, labIndra, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels,
                     // D087-SIZE BEGIN
                     ...(this.axes.projection === '3d'
-                        ? { fullGraphStructuralIds: this.fullGraphStructuralIds() } : {}),
+                        ? { fullGraphStructuralIds: this.fullGraphStructuralIds(),
+                            // D087-SIZE10 BEGIN
+                            fullGraphLeafSource: { digest: this.manifest.digest,
+                                layoutKey: fullLeafLayoutKey, nodes: source.nodes,
+                                anchors: fullLeafPositions!,
+                                ...(canopy ? { fitShare: 0.5 }
+                                    : this.topology === 'canopy-ifs' ? { fitShare: 0.6 } : {}),
+                            },
+                            // D087-SIZE10 END
+                        } : {}),
                     // D087-SIZE END
                     ...({ density: this.density } as object), text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {

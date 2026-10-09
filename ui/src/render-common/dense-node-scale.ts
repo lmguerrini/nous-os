@@ -46,22 +46,30 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 export function denseNodeScales(
   samples: readonly DenseNodeSample[],
   options: { readonly zoomProgress?: number; readonly screenDistanceNorm?: ReadonlyMap<string, number>;
-    readonly nativeRadiusOnly?: boolean } = {},
+    readonly nativeRadiusOnly?: boolean;
+    // D087-SIZE10 BEGIN: an exact spatial index can supply fixed full-graph nearest distances.
+    readonly closestScreen?: (samples: readonly DenseNodeSample[], representatives: ReadonlyMap<string, string>)
+      => ReadonlyMap<string, number>;
+    readonly nearestWorld?: (samples: readonly DenseNodeSample[]) => ReadonlyMap<string, number>;
+    // D087-SIZE10 END
+  } = {},
 ): ReadonlyMap<string, DenseNodeScale> {
   if (!samples.length) return new Map();
   const xs = samples.map(sample => sample.x), ys = samples.map(sample => sample.y);
   const span = Math.max(1, Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)));
   const cellSize = Math.max(1, span / Math.sqrt(samples.length));
   const cell = (x: number, y: number) => `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
+  // D087-SIZE10 BEGIN: only the fixed full-graph calibration supplies this index.
+  const indexedNearestWorld = options.nearestWorld?.(samples);
   const buckets = new Map<string, DenseNodeSample[]>();
-  for (const sample of samples) {
+  for (const sample of samples) if (!indexedNearestWorld) {
     const key = cell(sample.x, sample.y);
     const bucket = buckets.get(key) ?? [];
     bucket.push(sample);
     buckets.set(key, bucket);
   }
-  const nearest = new Map<string, number>();
-  for (const sample of samples) {
+  const nearest = new Map<string, number>(indexedNearestWorld);
+  for (const sample of samples) if (!indexedNearestWorld) {
     const cx = Math.floor(sample.x / cellSize), cy = Math.floor(sample.y / cellSize);
     let distance = span;
     for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
@@ -73,6 +81,7 @@ export function denseNodeScales(
     }
     nearest.set(sample.id, distance);
   }
+  // D087-SIZE10 END
   const sortedDistances = [...nearest.values()].sort((a, b) => a - b);
   const reference = sortedDistances[Math.floor(sortedDistances.length * 0.72)] ?? cellSize;
   const screenCellSize = 16;
@@ -104,8 +113,12 @@ export function denseNodeScales(
       const bucket = kept.get(key) ?? []; bucket.push(sample); kept.set(key, bucket);
     }
   }
+  // D087-SIZE10 BEGIN: the calibration's exact spatial index avoids quadratic
+  // scans when thousands of law points occupy one reference-frame cell.
+  const indexedClosestScreen = options.closestScreen?.(samples, representatives);
+  // D087-SIZE10 END
   const screenBuckets = new Map<string, DenseNodeSample[]>();
-  for (const sample of samples) if (sample.screenX !== undefined && sample.screenY !== undefined
+  for (const sample of samples) if (!indexedClosestScreen && sample.screenX !== undefined && sample.screenY !== undefined
     && representatives.get(sample.id) === sample.id) {
     const key = `${Math.floor(sample.screenX / screenCellSize)},${Math.floor(sample.screenY / screenCellSize)}`;
     const bucket = screenBuckets.get(key) ?? [];
@@ -113,7 +126,7 @@ export function denseNodeScales(
     screenBuckets.set(key, bucket);
   }
   const closestScreen = new Map<string, number>();
-  for (const sample of samples) if (sample.screenX !== undefined && sample.screenY !== undefined
+  for (const sample of samples) if (!indexedClosestScreen && sample.screenX !== undefined && sample.screenY !== undefined
     && representatives.get(sample.id) === sample.id) {
     const cx = Math.floor(sample.screenX / screenCellSize), cy = Math.floor(sample.screenY / screenCellSize);
     let distance = Number.POSITIVE_INFINITY;
@@ -134,7 +147,10 @@ export function denseNodeScales(
     const scale = options.nativeRadiusOnly ? 1
       : clamp((densityScale * (1 - zoom) + zoom) * peripheralScale + hub, MIN_SCALE, 1);
     // D086-CUSTOM END
-    const closestScreenPx = closestScreen.get(sample.id) ?? Number.POSITIVE_INFINITY;
+    // D087-SIZE10 BEGIN
+    const closestScreenPx = indexedClosestScreen?.get(sample.id)
+      ?? closestScreen.get(sample.id) ?? Number.POSITIVE_INFINITY;
+    // D087-SIZE10 END
     // At fit, stop the fill short of the nearest represented screen-space centre.
     const overviewCap = Number.isFinite(closestScreenPx) ? Math.max(MIN_SCREEN_RADIUS_PX, closestScreenPx * 0.46)
       : Number.POSITIVE_INFINITY;
