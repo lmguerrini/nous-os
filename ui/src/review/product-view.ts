@@ -782,11 +782,6 @@ export const createProductView: CreateProductView = async (input) => {
     radiusPx: number | undefined; haloRadiusPx: number | undefined }>();
   // D082-A-NODES END
   let handle: GraphRendererHandle | null = null;
-  // D086-F2 BEGIN: Canopy's explicit fit must solve from the same renderer
-  // baseline and subject cloud as a fresh mount when panel insets change.
-  let canopyOpeningCamera: VisualStateCamera | null = null;
-  let canopyOpeningPoints: (() => Coordinates[]) | null = null;
-  // D086-F2 END
   let sigma: RenderHandle | null = null;
   let three: Render3fRendererHandle | null = null;
   let selected: string | null = null;
@@ -2219,10 +2214,6 @@ export const createProductView: CreateProductView = async (input) => {
     };
     mountOpeningCamera = openingCamera;
     mountOpeningPoints = openingPoints;
-    if (container.hasAttribute('data-fractal-rails-active')) {
-      canopyOpeningCamera = openingCamera;
-      canopyOpeningPoints = openingPoints;
-    } else { canopyOpeningCamera = null; canopyOpeningPoints = null; }
     const saved = restoreSavedCamera();
     if (saved && validCamera(saved)) handle.restoreCameraState(saved);
     else {
@@ -2899,25 +2890,24 @@ export const createProductView: CreateProductView = async (input) => {
       points.push(...(lodMode
         ? three.readRelationGeometryWitnesses().filter((relation) => drawnEdgeIds.has(relation.id))
         : three.readRelationGeometryWitnesses()).map((relation) => relation.controlPoint).filter(finitePoint));
-    // D086-F2 BEGIN: the opening fit includes the renderer's original bounds,
-    // orbit and exact mount subjects. Reuse them for Canopy only; focus keeps
-    // its current-camera contract and no rail or evidence geometry changes.
-    const canopySubjects = openingFit && container.hasAttribute('data-fractal-rails-active')
-      ? canopyOpeningPoints?.() : null;
-    const canopyOpeningFit = !!(canopyOpeningCamera && canopySubjects?.length);
-    if (canopySubjects?.length) points = canopySubjects;
+    // D086-NAT BEGIN: Adatta replays this scene's fresh mount subjects and
+    // initial orbit for every topology. Focus keeps its current-camera solve.
+    const openingSubjects = openingFit ? mountOpeningPoints?.() : null;
+    const hasOpeningFit = !!(mountOpeningCamera && openingSubjects?.length);
+    if (hasOpeningFit) points = openingSubjects!;
+    // D086-NAT END
     if (!points.length) return;
     const start = current.readCameraState();
     const startZ = three?.readReviewCameraPose().target[2] ?? 0;
     const finalZ = mean(points.map((point) => point.z));
-    if (canopyOpeningFit && canopyOpeningCamera) current.restoreCameraState(canopyOpeningCamera);
+    if (hasOpeningFit && mountOpeningCamera) current.restoreCameraState(mountOpeningCamera);
     else if (three) current.restoreCameraState({ ...start, targetZ: finalZ } as ReviewCameraState);
     const solved = solveFraming(current, {
       points,
       rect: localRect(),
-      marginPx: canopyOpeningFit ? 24 : marginPx,
+      marginPx: hasOpeningFit ? 24 : marginPx,
       anchorFirst: anchorFirst && points.length > 1,
-      fill: canopyOpeningFit ? 0.92 : fill,
+      fill: hasOpeningFit ? 0.92 : fill,
     });
     // D086-F2 END
     const final = solved.camera;
@@ -3145,7 +3135,9 @@ export const createProductView: CreateProductView = async (input) => {
     },
     frame: (ids) => frameIds(ids, true),
     frameFocus: (ids) => frameIds(ids, false, 60, 0.78),
-    fit: () => frameIds([...visible], false, 32, 0.9, true),
+    // D086-NAT BEGIN: public Adatta uses the opening-fit contract.
+    fit: () => frameIds([...visible], false, 24, 0.92, true),
+    // D086-NAT END
     solveMountFit() {
       if (!handle || !mountOpeningCamera || !mountOpeningPoints) return null;
       const before = handle.readCameraState();
