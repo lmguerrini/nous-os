@@ -20,17 +20,25 @@ export function alignNaturalDensity(
     for (const key of Object.keys(means) as (keyof typeof means)[]) means[key] /= pairs.length;
     let numerator = 0;
     let denominator = 0;
+    // D086-NAT BEGIN: an opposing or orthogonal shared cloud still has a real
+    // spatial extent. An epsilon scale collapses the entire mounted scene and
+    // its world-space ink; preserve extent without rotating or reflecting it.
+    let previousVariance = 0;
+    // D086-NAT END
     for (const [old, next] of pairs) {
         const tx = next.x - means.nx, ty = next.y - means.ny;
         numerator += tx * (old.x - means.ox) + ty * (old.y - means.oy);
         denominator += tx * tx + ty * ty;
+        previousVariance += (old.x - means.ox) ** 2 + (old.y - means.oy) ** 2;
         if (dimension === '3d') {
             const tz = next.z - means.nz;
             numerator += tz * (old.z - means.oz);
             denominator += tz * tz;
+            previousVariance += (old.z - means.oz) ** 2;
         }
     }
-    const scale = denominator > 0 ? Math.max(Number.EPSILON, numerator / denominator) : 1;
+    const scale = denominator > 0 && numerator > 0 ? numerator / denominator
+        : denominator > 0 && previousVariance > 0 ? Math.sqrt(previousVariance / denominator) : 1;
     return { scale, x: means.ox - scale * means.nx, y: means.oy - scale * means.ny,
         z: dimension === '3d' ? means.oz - scale * means.nz : 0, shared: pairs.length };
 }
@@ -103,7 +111,10 @@ export async function animateNaturalDensity(
         const admitted = Math.floor(added.length * eased);
         for (let index = 0; index < admitted; index++)
             dot(added[index]!, (1 - eased) * Math.min(1, (admitted - index) / Math.max(1, added.length * 0.08)));
-        targetHost.style.opacity = String(eased);
+        // D086-NAT BEGIN: the temporary glyphs travel independently of the
+        // mounted renderer. Keep its edges, halos, labels and beams hidden
+        // until the glyphs arrive, then reveal the complete final scene.
+        // D086-NAT END
     };
     targetHost.style.opacity = '0';
     root.append(canvas);

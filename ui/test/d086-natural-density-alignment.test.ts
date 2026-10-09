@@ -30,7 +30,9 @@ test('an opposing cloud never reflects the target', () => {
   const target = new Map([['a', { x: 0, y: 0, z: 0 }], ['b', { x: 1, y: 0, z: 0 }],
     ['c', { x: 0, y: 1, z: 0 }]]);
   const prior = new Map([...target].map(([id, point]) => [id, { x: -point.x, y: -point.y, z: 0 }] as const));
-  assert.ok(alignNaturalDensity(prior, target, '2d').scale > 0);
+  assert.equal(alignNaturalDensity(prior, target, '2d').scale, 1,
+    'an opposing cloud retains its extent instead of collapsing to machine epsilon');
+  assert.equal(alignNaturalDensity(prior, target, '3d').scale, 1);
 });
 
 test('transition witness measures only persisting marks in screen pixels', () => {
@@ -58,6 +60,40 @@ test('a superseded animation releases its host even when frames pause', async ()
     const motion = animateNaturalDensity(root, host, { a: { x: 0, y: 0 } },
       { a: { x: 10, y: 10 } }, () => true, false, controller.signal);
     controller.abort();
+    await motion;
+    assert.equal(host.style.opacity, '1');
+    assert.equal(removed, true);
+  } finally {
+    globalThis.document = original.document;
+    globalThis.window = original.window;
+    globalThis.requestAnimationFrame = original.frame;
+  }
+});
+test('the mounted scene stays hidden until moving glyphs reach the final endpoints', async () => {
+  const original = { document: globalThis.document, window: globalThis.window,
+    frame: globalThis.requestAnimationFrame };
+  let frame: FrameRequestCallback = () => { throw new Error('animation frame was not scheduled'); };
+  let removed = false;
+  const canvas = { style: {} as Record<string, string>, width: 0, height: 0,
+    getContext: () => ({ setTransform() {}, clearRect() {}, beginPath() {}, arc() {}, fill() {},
+      set fillStyle(_value: string) {}, set globalAlpha(_value: number) {} }),
+    remove() { removed = true; } };
+  const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    append() {} } as unknown as HTMLElement;
+  const host = { style: { opacity: '1' } } as unknown as HTMLElement;
+  globalThis.document = { createElement: () => canvas } as unknown as Document;
+  globalThis.window = { devicePixelRatio: 1 } as Window & typeof globalThis;
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    frame = callback; return 1;
+  }) as typeof requestAnimationFrame;
+  try {
+    const motion = animateNaturalDensity(root, host, { a: { x: 0, y: 0 } },
+      { a: { x: 10, y: 10 } }, () => true, false);
+    assert.equal(host.style.opacity, '0');
+    const begun = performance.now();
+    frame(begun + 225);
+    assert.equal(host.style.opacity, '0', 'real relations stay hidden while glyphs move');
+    frame(begun + 500);
     await motion;
     assert.equal(host.style.opacity, '1');
     assert.equal(removed, true);
