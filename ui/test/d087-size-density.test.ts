@@ -7,6 +7,7 @@ import { DEFAULT_APPEARANCE } from '../src/engine/presentation-options.ts';
 import { canvasNodeRadiusPx, geometryDegrees, labNativeSizeLawApplies, nativeLawSizes } from '../src/render-common/native-node-law.ts';
 import { morphologyEdgeStrokeWidths, stellarStarCoreRadiusPx, type MorphologyCanvasStyle } from '../src/render-common/morphology-canvas.ts';
 import { FILAMENT_FRAGMENT_SHADER } from '../src/render3f/filament-material.ts';
+import { buildSceneBuffers } from '../src/render3f/buffers.ts';
 import { buildScene } from '../src/scene/build.ts';
 import { sceneFixtureGraph, sceneVisualState } from './scene/support.ts';
 // D087-SIZE BEGIN
@@ -224,6 +225,34 @@ test('distinct 3D sparse and dense nodes submit the same unfloored GPU footprint
   });
   assert.deepEqual(footprints, [[4, 5, 0, 0], [4, 5, 0, 0]]);
 });
+// D087-SIZE BEGIN: the fitted full-graph projection must not follow the admitted subset.
+test('the same camera and id submit the same GPU core across admitted 3D subsets', () => {
+  const graph = sceneFixtureGraph();
+  const state = sceneVisualState(graph);
+  const id = graph.nodes[0]!.id;
+  const fullScene = buildScene(graph, state, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, { nodes: new Map([[id, {
+      radiusPx: 3.25, corePermille: 1000, haloPermille: 1000,
+      opacityPermille: 1000,
+    }]]) });
+  const sparseScene = { ...fullScene, nodes: fullScene.nodes.filter(node => node.id === id),
+    edges: fullScene.edges.filter(edge => edge.source === id && edge.target === id) };
+  const radius = (scene: typeof fullScene) => {
+    const buffers = buildSceneBuffers(scene).nodes;
+    return buffers.coreRadiiPx[buffers.ids.indexOf(id)];
+  };
+  assert.equal(radius(sparseScene), radius(fullScene));
+  assert.equal(radius(fullScene), 3.25);
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const calibration = product.slice(product.indexOf('const completeAnchors = fullAnchor(axes);',
+    product.indexOf('function buildDrawnScene(anchors')), product.indexOf('const leafGiven =',
+    product.indexOf('function buildDrawnScene(anchors')));
+  assert.match(calibration, /const screen = handle \? handle\.graphToViewport\(point\)/);
+  assert.match(calibration, /const fullDistanceNorm = new Map\(fullScreenPoints/);
+  assert.match(calibration, /screenDistanceNorm: fullCalibration!\.fullDistanceNorm/);
+  assert.doesNotMatch(calibration, /screenX: \(screen\.x - minMarkX\) \* provisionalScale/);
+});
+// D087-SIZE END
 test('3D structural halo profile stays stable when leaves are admitted', () => {
   const source = readFileSync(new URL('../src/render-common/morphology-canvas.ts', import.meta.url), 'utf8');
   assert.match(source, /projection === "3d" && visual\?\.leafMark/);

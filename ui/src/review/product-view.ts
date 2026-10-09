@@ -2348,21 +2348,48 @@ export const createProductView: CreateProductView = async (input) => {
         return point && !structuralIds.has(node.id) ? [markScale(point)] : [];
       }).sort((a, b) => a - b);
       const fitScale = fitScales[Math.floor(fitScales.length / 2)] ?? provisionalScale;
-      // D087-SIZE BEGIN: the staged Canopy mount already owns a deferred dense solve.
-      const fullDense = denseScaleById.size === input.data.nodes.length ? denseScaleById
-        : deferCanopyDense ? new Map() : denseNodeScales(
-        input.data.nodes.flatMap(node => {
+      // D087-SIZE BEGIN: calibrate a sparse admission with the same full-graph screen
+      // coordinates as Completa. The provisional projection is only for a pre-mount scene;
+      // once the camera exists, using it here is essential to keep the leaf base identical.
+      const fullScreenCalibration = () => {
+        const fullScreenPoints = input.data.nodes.flatMap(node => {
           const point = completeAnchors.get(node.id);
-          if (!point || !node.v2) return [];
-          const screen = axes.projection === '2d' ? point
-            : { x: point.x + point.z * 0.5, y: point.y + point.z * 0.35 };
-          return [{ id: node.id, x: point.x, y: point.y, z: point.z,
-            screenX: (screen.x - minMarkX) * provisionalScale,
-            screenY: (screen.y - minMarkY) * provisionalScale,
+          if (!point) return [];
+          const screen = handle ? handle.graphToViewport(point)
+            : axes.projection === '2d' ? point
+              : { x: point.x + point.z * 0.5, y: point.y + point.z * 0.35 };
+          return [{ id: node.id, point, screen }];
+        });
+        const screenXs = fullScreenPoints.map(item => item.screen.x);
+        const screenYs = fullScreenPoints.map(item => item.screen.y);
+        const screenMinX = screenXs.length ? Math.min(...screenXs) : 0;
+        const screenMaxX = screenXs.length ? Math.max(...screenXs) : 1;
+        const screenMinY = screenYs.length ? Math.min(...screenYs) : 0;
+        const screenMaxY = screenYs.length ? Math.max(...screenYs) : 1;
+        const fullScreenScale = handle ? 1 : Math.min(1120 / Math.max(1, screenMaxX - screenMinX),
+          720 / Math.max(1, screenMaxY - screenMinY));
+        const screenSpan = Math.max(1, Math.hypot(screenMaxX - screenMinX, screenMaxY - screenMinY));
+        const fullDistanceNorm = new Map(fullScreenPoints.map(item => [item.id,
+          Math.min(1, Math.hypot(item.screen.x - (screenMinX + screenMaxX) / 2,
+            item.screen.y - (screenMinY + screenMaxY) / 2) / (screenSpan / 2))] as const));
+        const samples = fullScreenPoints.flatMap(({ id, point, screen }) => {
+          const node = nodesById.get(id);
+          if (!node?.v2) return [];
+          return [{ id, x: point.x, y: point.y, z: point.z,
+            screenX: (screen.x - screenMinX) * fullScreenScale,
+            screenY: (screen.y - screenMinY) * fullScreenScale,
             importance: (node.v2 as import('./v2-core.ts').V2Node).importance.value,
             baseRadiusPx: v2Encoding(node.v2 as import('./v2-core.ts').V2Node, appearance.nodeScale).radiusPx,
             projectionScale: markScale(point) }];
-        }), { zoomProgress: 0 });
+        });
+        return { samples, fullDistanceNorm };
+      };
+      // The staged Canopy mount already owns a deferred dense solve.
+      const fullCalibration = denseScaleById.size === input.data.nodes.length || deferCanopyDense
+        ? null : fullScreenCalibration();
+      const fullDense = denseScaleById.size === input.data.nodes.length ? denseScaleById
+        : deferCanopyDense ? new Map() : denseNodeScales(fullCalibration!.samples,
+          { zoomProgress: 0, screenDistanceNorm: fullCalibration!.fullDistanceNorm });
       // D087-SIZE END
       const denseLeafRadii = input.data.nodes.flatMap(node => {
         if (structuralIds.has(node.id)) return [];
