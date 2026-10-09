@@ -26,6 +26,12 @@ export function isReferenceCompleta(nodeCount: number, visibleCount: number): bo
   return nodeCount === 11_199 && visibleCount === 11_199;
 }
 
+// D086-CUSTOM BEGIN: Custom shares the drawing safeguards; the reference maximum keeps its exact policy.
+export function usesDenseDrawingPolicy(nodeCount: number, visibleCount: number, density: string): boolean {
+  return isReferenceCompleta(nodeCount, visibleCount) || density === 'custom';
+}
+// D086-CUSTOM END
+
 export const MIN_SCREEN_RADIUS_PX = 0.5;
 const MIN_SCALE = 0.32;
 const MAX_SCALE = 0.78;
@@ -39,7 +45,8 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
  */
 export function denseNodeScales(
   samples: readonly DenseNodeSample[],
-  options: { readonly zoomProgress?: number; readonly screenDistanceNorm?: ReadonlyMap<string, number> } = {},
+  options: { readonly zoomProgress?: number; readonly screenDistanceNorm?: ReadonlyMap<string, number>;
+    readonly nativeRadiusOnly?: boolean } = {},
 ): ReadonlyMap<string, DenseNodeScale> {
   if (!samples.length) return new Map();
   const xs = samples.map(sample => sample.x), ys = samples.map(sample => sample.y);
@@ -122,7 +129,11 @@ export function denseNodeScales(
     const distance = clamp(options.screenDistanceNorm?.get(sample.id) ?? 0, 0, 1);
     const peripheralScale = 1 - distance * 0.12;
     const hub = clamp(sample.importance / importanceMax, 0, 1) * MAX_HUB_BONUS;
-    const scale = clamp((densityScale * (1 - zoom) + zoom) * peripheralScale + hub, MIN_SCALE, 1);
+    // D086-CUSTOM BEGIN: below the maximum, Custom keeps the encoded native size wherever
+    // the overlap cap does not bind. Completa's arithmetic remains unchanged.
+    const scale = options.nativeRadiusOnly ? 1
+      : clamp((densityScale * (1 - zoom) + zoom) * peripheralScale + hub, MIN_SCALE, 1);
+    // D086-CUSTOM END
     const closestScreenPx = closestScreen.get(sample.id) ?? Number.POSITIVE_INFINITY;
     // At fit, stop the fill short of the nearest represented screen-space centre.
     const overviewCap = Number.isFinite(closestScreenPx) ? Math.max(MIN_SCREEN_RADIUS_PX, closestScreenPx * 0.46)
@@ -262,6 +273,7 @@ export function denseZoomNeedsRefresh(currentRatio: number | undefined, fittedRa
 /** The full nearest-neighbour pass runs after quality restoration in a short-lived worker. */
 export function denseNodeScalesDeferred(samples: readonly DenseNodeSample[], options: {
   readonly zoomProgress: number; readonly screenDistanceNorm: ReadonlyMap<string, number>;
+  readonly nativeRadiusOnly?: boolean;
 }): Promise<ReadonlyMap<string, DenseNodeScale>> {
   if (typeof Worker === 'undefined') return Promise.resolve(denseNodeScales(samples, options));
   const source = `const MIN_SCREEN_RADIUS_PX=${MIN_SCREEN_RADIUS_PX};
