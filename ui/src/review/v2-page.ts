@@ -4946,7 +4946,10 @@ export class V2Page {
                             this.canopyStatusAt = performance.now(); this.canopyQualityRecorded = false;
                         } },
                         edge => { if (this.canopyRailLayer === nextRailLayer)
-                            this.edgeTooltip(edge ? { kind: 'edge', ...edge } : null); });
+                            this.edgeTooltip(edge ? { kind: 'edge', ...edge } : null); },
+                        // D086-F3 BEGIN: Canopy reads the live preset or custom palette at draw time.
+                        () => this.activePalette());
+                        // D086-F3 END
                     // D081-P7d END.
                     // D081-P7b END.
                 }

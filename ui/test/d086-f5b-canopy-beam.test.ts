@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { drawCanopyEvidenceFlow, type CanopyFlowStroke } from '../src/fractal/renderer-adapter.ts';
 import { FLOW_ANIMATED_EDGE_BUDGET, FLOW_BEAM_WHITE_MIX } from '#render-common/flow.ts';
+// D086-F3 BEGIN
+import { PALETTES } from '../src/review/palette.ts';
+// D086-F3 END
 
 // D086-F5 BEGIN: the D-079 approved beam belongs to real exploratory evidence,
 // never to Canopy's generated structural rails or attested relations.
@@ -50,12 +53,18 @@ test('Canopy beam is paced by its caller, moves slowly, and never exceeds the sh
   assert.equal(stopped.strokes.length, 0);
 });
 // D086-F5 BEGIN: Canopy's core follows the same edge-to-white mix as the Natural beam.
-test('Canopy beam tone is mixed from the exploratory evidence ink by the shared white law', () => {
-  const drawn = recordingContext();
-  drawCanopyEvidenceFlow(drawn.context, [stroke('exp', 'exploratory', 20)], 'exploratory', 4000, 1, 0.6);
-  const expected = [165, 159, 185].map(channel => Math.round(channel + (255 - channel) * FLOW_BEAM_WHITE_MIX));
-  const channels = drawn.strokes[0]!.stops[0]!.ink.match(/[\d.]+/g)!.slice(0, 3).map(Number);
-  assert.deepEqual(channels, expected);
+test('Canopy beam core follows the exploratory palette and the shared white law', () => {
+  // D086-F3 BEGIN
+  for (const [palette, base] of [[PALETTES.bw, [162, 162, 162]],
+    [PALETTES.amber, [195, 158, 101]]] as const) {
+    const drawn = recordingContext();
+    drawCanopyEvidenceFlow(drawn.context, [stroke('exp', 'exploratory', 20)], 'exploratory', 4000, 1, 0.6, palette);
+    const expected = base.map(channel => Math.round(channel + (255 - channel) * FLOW_BEAM_WHITE_MIX));
+    const channels = drawn.strokes[0]!.stops[0]!.ink.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+    assert.deepEqual(channels, expected);
+    assert.equal(channels[0] === channels[1] && channels[1] === channels[2], palette === PALETTES.bw);
+  }
+  // D086-F3 END
 });
 // D086-F5 END
 // D086-F5 END

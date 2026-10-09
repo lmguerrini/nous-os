@@ -7,12 +7,18 @@ import type { Morphology } from '../review/view-contract.ts';
 import { neuralRibbonProfile, readNeuralShapeCacheStats, somaLobeAreaScale,
   somaLobeFactor } from '../render-common/morphology-canvas.ts';
 import { canopySemanticCandidates, placeCanopyLabels, type CanopyRect } from './canopy-overlay.ts';
+// D086-F3 BEGIN: Canopy shares the Llull palette/luma law.
+import { paletteChannels, paletteInk } from '../topology/guide-layer.ts';
+import { PALETTES, type PaletteValues } from '../review/palette.ts';
+// D086-F3 END
 // D086-F5 BEGIN: the real evidence strokes, rather than the generated tree rails, carry flow.
 import { FLOW_BEAM_CORE_MIN_PX, FLOW_WAVE_MAX_ALPHA, flowBeamCoreChannels, flowHeadAlpha, flowWaveAlpha,
   selectFlowEdges } from '../render-common/flow.ts';
-const CANOPY_EVIDENCE_EXPLORATORY_CHANNELS = [165, 159, 185] as const;
-const CANOPY_EVIDENCE_EXPLORATORY_INK = `rgba(${CANOPY_EVIDENCE_EXPLORATORY_CHANNELS.join(', ')}, .45)`;
-const CANOPY_BEAM_CORE_CHANNELS = flowBeamCoreChannels(CANOPY_EVIDENCE_EXPLORATORY_CHANNELS);
+// D086-F3 BEGIN: levels are floors of the former fixed RGB lumas.
+const CANOPY_INK_LEVEL = { structural: 204, exploratory: 162, halo: 225, text: 218 } as const;
+const canopyBeamCoreChannels = (palette: PaletteValues) =>
+  flowBeamCoreChannels(paletteChannels(palette, 'exploratory', CANOPY_INK_LEVEL.exploratory));
+// D086-F3 END
 
 export type CanopyFlowStroke = Readonly<{ edge: CanopyEvidenceStroke;
   from: Readonly<{ x: number; y: number }>; to: Readonly<{ x: number; y: number }> }>;
@@ -25,12 +31,18 @@ export function canopyFlowLayer(host: HTMLElement): CanopyFlowLayer | undefined 
 /** Draw at most the shared flow budget of real, visible exploratory evidence strokes. */
 export function drawCanopyEvidenceFlow(context: CanvasRenderingContext2D,
   strokes: readonly CanopyFlowStroke[], reading: Reading, now: number,
-  speed: number, intensity: number): number {
+  speed: number, intensity: number,
+  // D086-F3 BEGIN: the live layer passes its current palette on every frame.
+  palette: PaletteValues = PALETTES.bw): number {
+  // D086-F3 END
   if (reading === 'attested' || !(speed > 0) || !(intensity > 0)) return 0;
   const eligible = strokes.filter(row => row.edge.class === 'exploratory'
     && Math.hypot(row.to.x - row.from.x, row.to.y - row.from.y) > 0);
   const chosen = selectFlowEdges(eligible.map(row => ({ edgeId: row.edge.id,
     visible: true, priority: 0 })));
+  // D086-F3 BEGIN
+  const beamChannels = canopyBeamCoreChannels(palette);
+  // D086-F3 END
   for (const row of eligible) {
     if (!chosen.has(row.edge.id)) continue;
     const length = Math.hypot(row.to.x - row.from.x, row.to.y - row.from.y);
@@ -40,7 +52,7 @@ export function drawCanopyEvidenceFlow(context: CanvasRenderingContext2D,
       const fraction = index / samples;
       const alpha = flowHeadAlpha(intensity)
         * flowWaveAlpha(length * fraction, length, now, speed, intensity) / FLOW_WAVE_MAX_ALPHA;
-      gradient.addColorStop(fraction, `rgba(${CANOPY_BEAM_CORE_CHANNELS.join(', ')}, ${alpha})`);
+      gradient.addColorStop(fraction, `rgba(${beamChannels.join(', ')}, ${alpha})`);
     }
     context.beginPath();
     context.moveTo(row.from.x, row.from.y);
@@ -54,16 +66,19 @@ export function drawCanopyEvidenceFlow(context: CanvasRenderingContext2D,
 }
 // D086-F5 END
 
-const STRUCTURAL_INK = 'rgba(199, 205, 214, .63)';
-const EXPLORATORY_INK = 'rgba(165, 159, 185, .67)';
-const SELECTED_INK = 'rgba(235, 180, 96, .92)';
 /** Product titles and their SVG leaders share one layer per renderer. Only the
  * Fractal host gets this rule; Natural and Indra keep their original labels. */
 export const FRACTAL_PRODUCT_LABEL_RULE =
   '[data-fractal-rails-active] [data-review-labels], [data-fractal-rails-active] [data-render3f-labels] { display: none !important; }';
-export function canopyRailInk(highlighted: boolean, exploratory: number, attested: number): string {
-  return highlighted ? SELECTED_INK : exploratory > 0 && attested === 0 ? EXPLORATORY_INK : STRUCTURAL_INK;
+// D086-F3 BEGIN: selected ink uses the palette's selection token without luma scaling.
+export function canopyRailInk(highlighted: boolean, exploratory: number, attested: number,
+  palette: PaletteValues = PALETTES.bw): string {
+  return highlighted ? paletteInk(palette, 'selection', null, '.92')
+    : exploratory > 0 && attested === 0
+      ? paletteInk(palette, 'exploratory', CANOPY_INK_LEVEL.exploratory, '.67')
+      : paletteInk(palette, 'aggregate', CANOPY_INK_LEVEL.structural, '.63');
 }
+// D086-F3 END
 
 export function canopyRailWidth(rail: CanopyRail, reading: Reading): number {
   if (rail.address === 'root') return 1.5;
@@ -201,10 +216,15 @@ const NEURAL_LEAF_OUTLINE = Array.from({ length: 16 }, (_, i) => {
 });
 // D082-B1c END.
 function paintLeaf(context: CanvasRenderingContext2D, x: number, y: number,
-  morphology: Morphology, direction: number, moving = false): void {
+  morphology: Morphology, direction: number, moving = false,
+  // D086-F3 BEGIN
+  haloInk = paletteInk(PALETTES.bw, 'aggregate', CANOPY_INK_LEVEL.halo, '.11')): void {
+  // D086-F3 END
   if (morphology === 'stellar') {
     context.beginPath(); context.arc(x, y, 4.1, 0, Math.PI * 2);
-    context.fillStyle = 'rgba(220, 226, 236, .11)'; context.fill();
+    // D086-F3 BEGIN
+    context.fillStyle = haloInk; context.fill();
+    // D086-F3 END
     context.beginPath(); context.arc(x, y, 1.55, 0, Math.PI * 2);
   } else if (morphology === 'neural') {
     if (moving) {
@@ -371,6 +391,9 @@ export type CanopyRailLayer = Readonly<{
   update(ids: ReadonlySet<string>, selectedId?: string | null, cap?: number,
     marks?: readonly CanopyMark[], evidence?: readonly CanopyEvidenceStroke[]): void;
   setInsets(insets: Insets): void;
+  // D086-F3 BEGIN: repaint a mounted layer when its palette getter changes.
+  invalidate(): void;
+  // D086-F3 END
   stats(): Readonly<{ drawn: number; evidenceDrawn: number; evidenceBundles: number;
     evidenceBundled: number; labels: number; badges: number;
     submittedEdges: number; motionNodes: number | null; paintedFull: boolean;
@@ -426,7 +449,10 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   onLabelCount?: (count: number) => void,
   evidence: readonly CanopyEvidenceStroke[] = [], onDraw?: () => void,
   onInteraction?: () => void,
-  onEvidenceHover?: (edge: Readonly<{ id: string; x: number; y: number }> | null) => void): CanopyRailLayer {
+  onEvidenceHover?: (edge: Readonly<{ id: string; x: number; y: number }> | null) => void,
+  // D086-F3 BEGIN
+  activePalette: () => PaletteValues = () => PALETTES.bw): CanopyRailLayer {
+  // D086-F3 END
   // Fractal owns the sole title pass. The product policy otherwise lets tier-one
   // names through a zero budget, in both the 2D and 3D DOM layers.
   const titleRule = document.createElement('style');
@@ -439,7 +465,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   host.append(canvas);
   host.setAttribute('data-fractal-rails-active', '');
   const context = canvas.getContext('2d');
-  if (!context || !view.projectPoint) return { update() {}, setInsets() {},
+  if (!context || !view.projectPoint) return { update() {}, setInsets() {}, invalidate() {},
     stats: () => ({ drawn: 0, evidenceDrawn: 0, evidenceBundles: 0, evidenceBundled: 0,
       submittedEdges: 0, motionNodes: null, paintedFull: false,
       labels: 0, badges: 0, treeOnly: true, cycleFree: true, paletteValid: true }), destroy() {
@@ -452,7 +478,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     to: { x: number; y: number } }[] = [];
   // D086-F5 BEGIN
   canopyFlowLayers.set(host, { draw: (target, now, speed, intensity) =>
-    drawCanopyEvidenceFlow(target, drawnEvidence, reading, now, speed, intensity),
+    drawCanopyEvidenceFlow(target, drawnEvidence, reading, now, speed, intensity, activePalette()),
   eligible: () => reading === 'attested' ? 0
     : drawnEvidence.filter(row => row.edge.class === 'exploratory').length });
   // D086-F5 END
@@ -539,6 +565,15 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     }
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, width, height);
+    // D086-F3 BEGIN: a repaint reads the current palette, including after a live switch.
+    const palette = activePalette();
+    const structuralEvidenceInk = paletteInk(palette, 'aggregate', CANOPY_INK_LEVEL.structural, '.34');
+    const attestedInk = paletteInk(palette, 'attested', CANOPY_INK_LEVEL.structural, '.34');
+    const exploratoryEvidenceInk = paletteInk(palette, 'exploratory', CANOPY_INK_LEVEL.exploratory, '.45');
+    const haloInk = paletteInk(palette, 'aggregate', CANOPY_INK_LEVEL.halo, '.11');
+    const labelStrokeInk = paletteInk(palette, 'aggregate', CANOPY_INK_LEVEL.structural, '.67');
+    const labelTextInk = paletteInk(palette, 'text', CANOPY_INK_LEVEL.text, '1');
+    // D086-F3 END
     const safe = actualSafeRect(host, currentInsets);
     if (safe.right <= safe.left || safe.bottom <= safe.top) return;
     context.save();
@@ -557,6 +592,15 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     evidenceBundled = 0;
     badgeCount = 0;
     paletteValid = true;
+    // D086-F3 BEGIN: the witness audits only inks derived from this draw's palette.
+    const approvedInks = new Set([
+      structuralEvidenceInk, attestedInk, exploratoryEvidenceInk, haloInk, labelStrokeInk, labelTextInk,
+      canopyRailInk(false, 0, 0, palette), canopyRailInk(false, 1, 0, palette),
+      canopyRailInk(true, 0, 0, palette),
+      paletteInk(palette, 'aggregate', CANOPY_INK_LEVEL.structural, '.88'),
+    ]);
+    const auditInk = (value: string) => { paletteValid &&= approvedInks.has(value); return value; };
+    // D086-F3 END
     drawnRails = [];
     drawnEvidence = [];
     context.setLineDash([]);
@@ -566,6 +610,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     // keeps source IDs intact but paints a bounded sample until restoration.
     const evidenceForFrame = motionIds ? currentEvidence.slice(0, 300) : currentEvidence;
     const batchCompleteEvidence = completeScene && !motionIds;
+    // D086-F3 BEGIN: structural evidence keeps its aggregate role even in batched scenes.
+    const structuralPath = batchCompleteEvidence ? new Path2D() : null;
+    // D086-F3 END
     const attestedPath = batchCompleteEvidence ? new Path2D() : null;
     const exploratoryPath = batchCompleteEvidence ? new Path2D() : null;
     for (const edge of evidenceForFrame) {
@@ -574,12 +621,18 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       const from = view.projectPoint!(projection === '3d' ? a.point3d : a.point);
       const to = view.projectPoint!(projection === '3d' ? b.point3d : b.point);
       if (!canopyEndpointVisible(from, safe) || !canopyEndpointVisible(to, safe)) continue;
-      const path = edge.class === 'exploratory' ? exploratoryPath : attestedPath;
+      // D086-F3 BEGIN
+      const path = edge.class === 'exploratory' ? exploratoryPath
+        : edge.class === 'structural' ? structuralPath : attestedPath;
+      // D086-F3 END
       if (path) { path.moveTo(from.x, from.y); path.lineTo(to.x, to.y); }
       else {
         context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y);
         context.lineWidth = Math.min(1.5, 0.55 + Math.log1p(edge.count) * 0.14);
-        context.strokeStyle = edge.class === 'exploratory' ? CANOPY_EVIDENCE_EXPLORATORY_INK : 'rgba(199, 205, 214, .34)';
+        // D086-F3 BEGIN
+        context.strokeStyle = auditInk(edge.class === 'exploratory' ? exploratoryEvidenceInk
+          : edge.class === 'structural' ? structuralEvidenceInk : attestedInk);
+        // D086-F3 END
         context.stroke();
         context.fillStyle = context.strokeStyle;
         for (const endpoint of [from, to]) {
@@ -591,8 +644,11 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       if (edge.count > 1) { evidenceBundles++; evidenceBundled += edge.count; }
     }
     if (attestedPath) {
-      context.lineWidth = 0.65; context.strokeStyle = 'rgba(199, 205, 214, .34)'; context.stroke(attestedPath);
-      context.strokeStyle = CANOPY_EVIDENCE_EXPLORATORY_INK; context.stroke(exploratoryPath!);
+      // D086-F3 BEGIN
+      context.lineWidth = 0.65; context.strokeStyle = auditInk(structuralEvidenceInk); context.stroke(structuralPath!);
+      context.strokeStyle = auditInk(attestedInk); context.stroke(attestedPath);
+      context.strokeStyle = auditInk(exploratoryEvidenceInk); context.stroke(exploratoryPath!);
+      // D086-F3 END
     }
     for (const rail of motionIds ? drawOrder.filter(rail => rail.address.length <= 10) : drawOrder) {
       if (rail.address === 'root') continue; // D081-P7d: no unlabeled terminal stem.
@@ -627,11 +683,14 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       else context.lineTo(to.x, to.y);
       context.lineWidth = Math.min(10, canopyMorphologyWidth(canopyRailWidth(rail, reading), morphology)
         * (highlighted ? 1.18 : 1));
-      // Neutral structure, purple-grey exploratory evidence, one selected gold path.
+      // D086-F3 BEGIN: the palette distinguishes structure, exploration and selection.
       // In 3D the position projector and depth order are the same as Natural's nodes.
-      const ink = canopyRailInk(highlighted, exploratoryOnly ? exploratory : 0, attested);
-      paletteValid &&= [STRUCTURAL_INK, EXPLORATORY_INK, SELECTED_INK].includes(ink)
-        && (ink !== SELECTED_INK || highlighted);
+      const ink = auditInk(canopyRailInk(highlighted, exploratoryOnly ? exploratory : 0, attested, palette));
+      const expectedInk = highlighted ? paletteInk(palette, 'selection', null, '.92')
+        : exploratoryOnly ? paletteInk(palette, 'exploratory', CANOPY_INK_LEVEL.exploratory, '.67')
+          : paletteInk(palette, 'aggregate', CANOPY_INK_LEVEL.structural, '.63');
+      paletteValid &&= ink === expectedInk;
+      // D086-F3 END
       context.strokeStyle = ink;
       context.lineCap = morphology === 'stellar' ? 'butt' : 'round';
       if (morphology === 'neural' && smooth && !motionIds)
@@ -668,7 +727,10 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
           ? row.level === 1 ? 5 : row.level === 2 ? 4.3 : 3.5
           : row.level === 1 ? 2.8 : row.level === 2 ? 2.3 : 1.7;
       paintJunction(context, p.x, p.y, radius,
-        morphology, row.level === 3 ? 'rgba(199, 205, 214, .88)' : '#e8e8e8', 0, motionIds !== null);
+        // D086-F3 BEGIN
+        morphology, row.level === 3 ? auditInk(paletteInk(palette, 'aggregate', CANOPY_INK_LEVEL.structural, '.88')) : '#e8e8e8',
+        0, motionIds !== null);
+        // D086-F3 END
     }
     // Completa's product layer already draws one pickable glyph per real ID.
     // A second 10k-leaf canvas pass only overpaints those glyphs.
@@ -681,7 +743,10 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       if (!canopyEndpointVisible(p, safe)) continue;
       const rail = railByAddress.get(row.address);
       const parent = rail ? view.projectPoint!(projection === '3d' ? rail.from3d : rail.from) : p;
-      paintLeaf(context, p.x, p.y, morphology, Math.atan2(p.y - parent.y, p.x - parent.x), motionIds !== null);
+      // D086-F3 BEGIN
+      paintLeaf(context, p.x, p.y, morphology, Math.atan2(p.y - parent.y, p.x - parent.x), motionIds !== null,
+        auditInk(haloInk));
+      // D086-F3 END
     }
     projectedNodeGrid = new Map();
     for (const id of motionIds ?? currentIds) {
@@ -752,7 +817,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       const edgeX = label.left > label.x ? label.left : label.left + label.width;
       const edgeY = Math.max(label.top, Math.min(label.top + label.height, label.y));
       context.beginPath(); context.moveTo(label.x, label.y); context.lineTo(edgeX, edgeY);
-      context.strokeStyle = 'rgba(199, 205, 214, .67)'; context.lineWidth = 0.8; context.stroke();
+      // D086-F3 BEGIN
+      context.strokeStyle = auditInk(labelStrokeInk); context.lineWidth = 0.8; context.stroke();
+      // D086-F3 END
       context.fillStyle = 'rgba(6, 7, 11, .85)';
       context.fillRect(label.left, label.top, label.width, label.height);
       context.fillStyle = '#e8e8e8';
@@ -783,7 +850,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       badges.push(box);
       badgeCount++;
       context.fillStyle = 'rgba(23, 25, 30, .93)'; context.fillRect(x, y, labelWidth, 15);
-      context.fillStyle = '#d7dbe2'; context.fillText(label, x + 4, y + 11);
+      // D086-F3 BEGIN
+      context.fillStyle = auditInk(labelTextInk); context.fillText(label, x + 4, y + 11);
+      // D086-F3 END
     }
     context.restore();
     if (!motionIds) paintedFull = true;
@@ -900,6 +969,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   observer.observe(host);
   schedule(completeScene ? 0 : 900, 'mount');
   return {
+    // D086-F3 BEGIN
+    invalidate() { schedule(0, 'palette'); },
+    // D086-F3 END
     update(nextIds, nextSelected = selected, cap = initialCap, nextMarks = currentMarks,
       nextEvidence = currentEvidence) {
       if (nextIds === currentIds && nextSelected === selected && nextMarks === currentMarks
