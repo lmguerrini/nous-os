@@ -1,7 +1,7 @@
 // D086-BURST BEGIN
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -98,4 +98,47 @@ test('a missing committed certificate requests a presentation from the live view
   await Promise.resolve();
   assert.equal(requested, 1);
 });
+
+// D086-BURST BEGIN: a resident host may retain a certificate for another view.
+test('no-op density does not replay or complete a mismatched resident certificate', async () => {
+  const host = {} as Element;
+  const axes = { organization: 'natural', projection: '3d', morphology: 'stellar', reading: 'attested' };
+  const expected = 'natural/3d/stellar/balanced/attested';
+  const stale = 'natural/3d/stellar/essential/attested';
+  const page = Object.create(module.V2Page.prototype) as Page & Record<string, any>;
+  const pending: Promise<unknown>[] = [];
+  const refreshes: boolean[] = [];
+  let qualityEmits = 0;
+  Object.assign(page, { axes, committedAxes: axes, density: 'balanced', committedDensity: 'balanced',
+    topology: 'natural', topologyIndra: false, committedTaxonomy: { topology: 'natural', indra: false },
+    view: {}, viewHost: host, typedActive: () => false, refreshPending: 0, d081Quality: 'recupero',
+    geometryIntent: 0, customDirty: false, d081Emit: () => { qualityEmits++; },
+    transitions: { enqueue(task: () => Promise<unknown>) {
+      const result = task(); pending.push(result); return result;
+    } },
+    refresh: async (_owned: boolean, _detail: boolean, presentationOnly: boolean) => {
+      refreshes.push(presentationOnly);
+    } });
+  const seen: string[] = [];
+  const detach = module.installRenderReadinessSink(value => seen.push(value.view));
+  try {
+    module.activateRenderReadinessHost(host, expected);
+    module.presentRenderReadiness(frame(stale, 1000), host);
+    const before = seen.length;
+    await (page as Record<string, any>).applyDensity('balanced');
+    await Promise.all(pending);
+    assert.equal(seen.length, before);
+    assert.equal((page as Record<string, any>).d081Quality, 'recupero');
+    assert.equal(qualityEmits, 0);
+    assert.deepEqual(refreshes, [true]);
+  } finally { detach(); }
+});
+
+test('every page host activation supplies a view key', async () => {
+  const source = await readFile(pagePath, 'utf8');
+  const calls = [...source.matchAll(/activateRenderReadinessHost\(([^)]*)\)/g)];
+  assert.ok(calls.length > 0);
+  for (const call of calls) assert.match(call[1]!, /,\s*expectedView\b/);
+});
+// D086-BURST END
 // D086-BURST END

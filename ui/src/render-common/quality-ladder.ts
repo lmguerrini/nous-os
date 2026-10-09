@@ -7,7 +7,9 @@ export const ALL_EDGES_QUALITY_STAGE: QualityStage = 3;
 /** Leave headroom under a 50 ms main-thread preparation task. */
 export const MODEL_PREP_SLICE_MS = 24;
 // D082-A-PERF END
-export { presentRenderReadiness } from './render-readiness-producer.ts';
+// D086-BURST BEGIN: renderer readiness helpers cross the existing governed boundary together.
+export { presentRenderReadiness, renderReadinessHost } from './render-readiness-producer.ts';
+// D086-BURST END
 
 // D086-BURST BEGIN: a retained native scene can present a different real subset.
 export function nativeSubsetCounts(

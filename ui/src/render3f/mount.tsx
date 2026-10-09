@@ -82,9 +82,8 @@ import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts
 // D082-B-GPUFLOOR END
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
 // D085-S3 BEGIN
-import { QualityLadder, labAnchorInstanceIndices, labDenseInteraction, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, mainRelation, nativeLabSkeleton, nativeSubsetCounts, presentRenderReadiness } from "#render-common/quality-ladder.ts";
-// D086-BURST BEGIN
-import { renderReadinessHost } from "#render-common/render-readiness-producer.ts";
+// D086-BURST BEGIN: keep the readiness host in the governed quality-ladder import.
+import { QualityLadder, labAnchorInstanceIndices, labDenseInteraction, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, mainRelation, nativeLabSkeleton, nativeSubsetCounts, presentRenderReadiness, renderReadinessHost } from "#render-common/quality-ladder.ts";
 // D086-BURST END
 import type { NativeAnchorRules, NativeRelationRank } from "#render-common/quality-ladder.ts";
 // D085-S3 END
