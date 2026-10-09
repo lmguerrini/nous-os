@@ -74,16 +74,19 @@ const legacy = (organization: string, extra: Record<string, unknown> = {}) =>
 const hashView = (raw: string, flags = '') => `#${flags}${flags ? '&' : ''}view=${encodeURIComponent(raw)}`;
 
 // D087-JULIA BEGIN
-test('a linked Julia Indra request keeps its ON URL during preflight', () => {
-  const view = { schema: 2 as const, rendering: '2d' as const, topology: 'julia' as const,
-    indra: 'on' as const, morphology: 'stellar' as const, density: 'balanced' as const,
-    reading: 'combined' as const, colour: 'bw' as const, labels: true };
-  const hash = `#experimental=fractal&view2=${encodeURIComponent(serializeGeometryView2(view))}`;
-  const result = boot({ hash });
-  assert.equal(result.location.hash, hash);
-  assert.equal(result.writable, false);
-  assert.equal(result.geometry.indra, 'off');
-  assert.equal(result.notice, null);
+test('every linked Julia Indra density keeps ON through pending admission', () => {
+  for (const rendering of ['2d', '3d'] as const) for (const density of ['essential', 'balanced', 'complete', 'custom'] as const) {
+    const view = { schema: 2 as const, rendering, topology: 'julia' as const,
+      indra: 'on' as const, morphology: 'stellar' as const, density,
+      ...(density === 'custom' ? { customNodes: 2000 } : {}),
+      reading: 'combined' as const, colour: 'bw' as const, labels: true };
+    const hash = `#experimental=fractal&view2=${encodeURIComponent(serializeGeometryView2(view))}`;
+    const result = boot({ hash });
+    assert.equal(result.location.hash, hash);
+    assert.equal(result.writable, false);
+    assert.equal(result.geometry.indra, 'on');
+    assert.equal(result.notice, null);
+  }
 });
 // D087-JULIA END
 

@@ -454,6 +454,9 @@ function afterPaint(): Promise<void> {
 export type V2PageDeps = {
     // D082-B2 BEGIN
     readonly taxonomy?: { readonly topology: TopologyId; readonly indra: boolean };
+    // D087-JULIA BEGIN: a linked ON view may mount while source preflight runs.
+    readonly pendingJuliaIndraAdmission?: boolean;
+    // D087-JULIA END
     // D082-B2 END
     // D086-CUSTOM BEGIN: the first mount uses the requested Custom amount.
     readonly initialCustomNodes?: number;
@@ -1720,7 +1723,11 @@ export class V2Page {
         this.topologyIndra = deps.taxonomy?.indra ?? false;
         this.taxonomyExplicit = deps.taxonomy !== undefined;
         const initialTopologySupport = topologySupport(this.topology, axes.projection, this.topologyIndra);
-        if (!initialTopologySupport.ok) throw new Error(initialTopologySupport.reason);
+        // D087-JULIA BEGIN
+        if (!initialTopologySupport.ok && !(deps.pendingJuliaIndraAdmission
+            && this.topology === 'julia' && this.topologyIndra))
+            throw new Error(initialTopologySupport.reason);
+        // D087-JULIA END
         // D082-B2 END
         // D081-P6c BEGIN.
         this.datasetNodeIds = new Set(index.nodes.filter(node => node.level !== 5).map(node => node.id));

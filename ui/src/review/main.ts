@@ -272,7 +272,11 @@ const initialJuliaIndraIntent = !('mode' in geometry) && geometry.topology === '
 let pendingJuliaIndraOn = initialJuliaIndraIntent;
 // D087-JULIA END
 // D082-LAB-FIX4 BEGIN: an unsupported linked combination resolves before V2Page construction.
-const initialSupportResolution = resolveSupportedGeometryView2(geometry, topologySupport);
+// D087-JULIA BEGIN: the pending linked ON view is the first scene, not an
+// intermediate plain Julia mount that later has to be replaced.
+const initialSupportResolution = initialJuliaIndraIntent
+  ? { value: geometry } : resolveSupportedGeometryView2(geometry, topologySupport);
+// D087-JULIA END
 geometry = initialSupportResolution.value;
 if (initialSupportResolution.notice && !initialJuliaIndraIntent)
   experimentalSuspensionNotice = initialSupportResolution.notice;
@@ -2587,6 +2591,9 @@ async function load() {
         ...(initialCustomIntent ? { initialCustomNodes: initialCustomIntent.requestedNodes } : {}),
         // D082-B2 BEGIN
         ...(!('mode' in geometry) ? { taxonomy: { topology: lawTopology(geometry.topology), indra: geometry.indra === 'on' } } : {}),
+        // D087-JULIA BEGIN
+        ...(initialJuliaIndraIntent ? { pendingJuliaIndraAdmission: true } : {}),
+        // D087-JULIA END
         ...(!('mode' in geometry) && geometry.topology === 'natural' && geometry.indra === 'on'
           ? { legacyIndra: geometry.compatibility !== 'indras-pearls-v1' } : {}),
         ...(!('mode' in geometry) && geometry.compatibility === 'typed-natural-v1'
@@ -2677,9 +2684,13 @@ async function load() {
     if (pendingJuliaIndraOn && !('mode' in geometry) && geometry.topology === 'julia') {
       pendingJuliaIndraOn = false;
       view2WriteAllowed = geometryRead.error === undefined;
-      if (juliaIndraGateStatus(axes.projection).ok)
-        await chooseTaxonomy('julia', true);
+      if (juliaIndraGateStatus(axes.projection).ok) {
+        if (!initialJuliaIndraIntent)
+          await chooseTaxonomy('julia', true);
+        else persistView();
+      }
       else {
+        if (initialJuliaIndraIntent) await chooseTaxonomy('julia', false);
         persistView();
         showLabNotice(juliaIndraGateStatus(axes.projection).reason ?? 'Julia con Indra rifiutata.');
       }

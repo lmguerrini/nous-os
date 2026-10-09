@@ -1318,7 +1318,11 @@ export const createProductView: CreateProductView = async (input) => {
       if (occluded.has(id) && !chosen && !hovered
         && node.type !== "domain") continue;
       // A container whose canvas title is drawn carries no second name (its own node label waits).
-      if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id))
+      // D087-JULIA BEGIN: a compact atlas +N badge does not replace the
+      // important domain name when the normal node label can fit nearby.
+      if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id)
+        && !(juliaAtlas && (pathById.get(id)?.level ?? 9) <= 2))
+      // D087-JULIA END
         continue;
       const kind = labelCandidateKind({ id, node, selected: chosen, hovered, labels: axes.labels,
         neighbour: neighbours.has(id), overview, close, organization: axes.organization,
