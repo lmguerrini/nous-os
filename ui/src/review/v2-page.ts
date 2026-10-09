@@ -19,8 +19,8 @@ import { computeClassicLayout } from './classic-layout-worker.ts';
 import type { LayoutInput, LayoutResult } from './layout-v2.ts';
 import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
 // D086-NAT BEGIN
-import { alignNaturalDensity, animateNaturalDensity, naturalDensityDisplacement, placeNaturalDensity,
-    type DensityAlignment } from './natural-density-transition.ts';
+import { alignNaturalDensity, animateNaturalDensity, composeNaturalDensityCamera,
+    naturalDensityDisplacement, type DensityCamera } from './natural-density-transition.ts';
 // D086-NAT END
 import { typedNodeViewport } from './typed-node-viewport.ts';
 import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, volumeStats, VOLUME_READOUT_HELP } from './volume.ts';
@@ -1906,6 +1906,17 @@ export class V2Page {
                 return { nodes, edges: source.edges.filter(edge => selected.has(edge.source) && selected.has(edge.target)),
                     hidden: new Map<string, number>(), capped: source.nodes.length > nodes.length, counts };
             }
+            // D086-CUSTOM BEGIN: the Natural layout and renderer receive exactly
+            // the selected ancestor-closed node set.
+            if (!this.canopyActive() && !this.lawActive() && this.axes.organization === 'natural') {
+                const selected = this.selectCustomNow().selectedIds;
+                const nodes = source.nodes.filter(node => selected.has(node.id));
+                const counts: Record<number, number> = {};
+                for (const node of nodes) counts[node.level] = (counts[node.level] ?? 0) + 1;
+                return { nodes, edges: source.edges.filter(edge => selected.has(edge.source) && selected.has(edge.target)),
+                    hidden: new Map<string, number>(), capped: nodes.length < source.nodes.length, counts };
+            }
+            // D086-CUSTOM END
             return completeVisible(source);
         }
         // D086-CUSTOM END
@@ -1990,10 +2001,6 @@ export class V2Page {
     private densitySwitchPending = false;
     private densityStableKey = '';
     private densityStablePositions = new Map<string, Point3>();
-    // D086-NAT BEGIN: newly admitted marks share the same world transform as
-    // the marks already mounted after a density transition.
-    private densityWorldAlignment: DensityAlignment | null = null;
-    // D086-NAT END
     // D086-NAT BEGIN: the last accepted transition is visible through the page witness.
     private densityTransitionDisplacement: (ReturnType<typeof naturalDensityDisplacement> & {
         from: Density; to: Density; phase: 'animating' | 'complete' | 'superseded';
@@ -4155,6 +4162,12 @@ export class V2Page {
             const preViewBegan = performance.now();
             const canopy = this.canopyActive() ? await this.prepareCanopy() : null;
             const organization = this.legacyOrganization();
+            // D086-NAT BEGIN: anchors describe one Natural topology camera space.
+            // Returning from a Lab law must solve its canonical input again.
+            if (this.committedTaxonomy.topology !== this.topology
+                || this.committedAxes && this.committedAxes.organization !== this.axes.organization)
+                this.densityStablePositions.clear();
+            // D086-NAT END
             this.suppressZoomUntil = performance.now() + 900;
             // D085-X9b BEGIN: all classic scene, route and status reads share the fixed law source.
             const source = this.sourceIndex();
@@ -4238,7 +4251,8 @@ export class V2Page {
                 && this.committedTaxonomy.topology === 'natural';
             const densityTransitionIntent = this.geometryIntent;
             const densityFrom = this.committedDensity ?? this.density;
-            const usePrevious = !naturalDensityTransition && !canopy && this.layoutSource === 'flat-community' && organization === 'natural'
+            const usePrevious = !naturalDensityTransition && !canopy && !this.densitySwitchPending
+                && this.layoutSource === 'flat-community' && organization === 'natural'
                 && this.layoutProjection === projection && this.axes.morphology === this.lastMorphology;
             // D086-NAT END
             // D-080 A5b projection/result-adaptation region. Serialize the actual layout
@@ -4303,7 +4317,8 @@ export class V2Page {
             // D082-A-ANCHORB2 BEGIN: option (b) needs this D-081 overview even
             // when Completa is the requested density.
             if (densityLayout && organization === 'natural' && (completaAnchor ||
-                (this.density !== 'complete' && (naturalDensityTransition || !this.densityStablePositions.size)))) {
+                (this.density !== 'complete' && !this.customAtMaximum()
+                    && (naturalDensityTransition || !this.densityStablePositions.size)))) {
                 const overview = this.densityOverview();
                 const overviewIds = new Set(overview.nodes.map(node => node.id));
                 const overviewParents = new Set(overview.nodes.map(node => node.parent).filter((id): id is string => id !== null));
@@ -4348,7 +4363,7 @@ export class V2Page {
             // without keeping a second GPU scene or rerunning the worker lane.
             // D082-A-ANCHORB BEGIN
             const resultCache = completaAnchor ? this.naturalCompletaLayoutResults
-                : this.density === 'complete' ? this.pageResults : this.switchLayoutResults;
+                : this.density === 'complete' || this.customAtMaximum() ? this.pageResults : this.switchLayoutResults;
             // D082-A-ANCHORB END
             const reused = resultCache.get(layoutKey) as LayoutResult | undefined;
             // D082-A-SWITCH END
@@ -4409,7 +4424,7 @@ export class V2Page {
                         expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ }) : overviewPositions;
                     for (const [id, point] of original) expanded.set(id, point);
                 }
-                if (!naturalDensityTransition && !this.densityWorldAlignment)
+                if (!naturalDensityTransition)
                     for (const [id, point] of this.densityStablePositions) if (expanded.has(id)) expanded.set(id, point);
             }
             // Preserve only disclosed shells in the view; their centres and radii
@@ -4529,7 +4544,7 @@ export class V2Page {
             if (custom) {
                 renderedIds = custom.requested === custom.available
                     ? new Set(disclosed.nodes.map(node => node.id)) : new Set(custom.selectedIds);
-                if (!this.lawActive() && !canopy) {
+                if (!this.lawActive() && !canopy && organization !== 'natural') {
                     const byId = new Map(source.nodes.map(node => [node.id, node]));
                     for (const node of source.nodes) {
                         if (this.customDatasetIds.has(node.id) || !node.parent ||
@@ -4964,17 +4979,9 @@ export class V2Page {
             }
             const densityAlignment = naturalDensityTransition
                 ? alignNaturalDensity(previousShared, targetShared, projection) : null;
-            const retainedAlignment = !naturalDensityTransition && densityLayout
-                && organization === 'natural' && this.densityStablePositions.size
-                ? this.densityWorldAlignment : null;
-            const worldAlignment = densityAlignment ?? retainedAlignment;
-            const densityInkScale = worldAlignment?.scale ?? 1;
-            const aligned = worldAlignment ? placeNaturalDensity(expanded, worldAlignment) : expanded;
-            if (retainedAlignment) for (const [id, point] of this.densityStablePositions)
-                if (aligned.has(id)) aligned.set(id, point);
             const next = new Map<string, Point3>();
             for (const n of sceneNodes)
-                next.set(n.id, aligned.get(n.id) ?? { x: 0, y: 0, z: 0 });
+                next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
             // D086-NAT END
             // D081-P7b BEGIN: Fractal evidence uses one endpoint-clipped canvas pass.
             // D081-P7d BEGIN.
@@ -5181,6 +5188,7 @@ export class V2Page {
             // D082-A-DENSITY BEGIN
             // D086-F2 BEGIN: a fresh law mounts at its own fit; a return uses its own record.
             const cameraAction = topologySpaceChanged ? 'none'
+                : this.densitySwitchPending && old && organization === 'natural' ? 'restore'
                 : this.densitySwitchPending && old && keep ? 'restore'
                 : refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
             // D086-F2 END
@@ -5193,10 +5201,6 @@ export class V2Page {
             const nextHost = document.createElement('div');
             nextHost.className = 'view-host';
             Object.assign(nextHost.style, { position: 'absolute', inset: '0' });
-            // D086-NAT BEGIN: the alignment changes world units; carry that unit to
-            // both product renderers before either prepares geometry or materials.
-            if (densityInkScale !== 1) nextHost.dataset.naturalDensityInkScale = String(densityInkScale);
-            // D086-NAT END
             // D082-B1c BEGIN: the product's first Neural paint needs the Canopy
             // fast path before the rail layer is mounted after createView.
             if (canopy) nextHost.setAttribute('data-fractal-rails-active', '');
@@ -5399,9 +5403,6 @@ export class V2Page {
             this.layoutProjection = projection;
             this.canonicalPositions = nextCanonicalPositions;
             this.positions = next;
-            // D086-NAT BEGIN
-            this.densityWorldAlignment = worldAlignment;
-            // D086-NAT END
             // D082-A-DENSITY BEGIN
             // D082-A-ANCHORB BEGIN: option (b) has no incremental anchor state.
             if (naturalDensityTransition) this.densityStablePositions.clear();
@@ -5466,7 +5467,13 @@ export class V2Page {
             // D086-F2 END
                 try {
                     this.noteCameraIntent();
-                    this.view.restoreCamera(old);
+                    // D086-NAT BEGIN: compose the prior view with the canonical
+                    // target layout while retaining the new mount's own bounds.
+                    const camera = naturalDensityTransition && densityAlignment && old && openingFitCamera
+                        ? composeNaturalDensityCamera(old as DensityCamera,
+                            openingFitCamera as DensityCamera, densityAlignment, projection) : null;
+                    this.view.restoreCamera(camera ?? old);
+                    // D086-NAT END
                     if (anchor) {
                         // D081-P6 BEGIN: re-check the live projection after Indra's 3D re-pack.
                         const keepNodeAt = (this.view as ProductView & { keepNodeAt?:

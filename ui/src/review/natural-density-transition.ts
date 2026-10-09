@@ -50,6 +50,44 @@ export function placeNaturalDensity(target: ReadonlyMap<string, Point3>, fit: De
     }]));
 }
 
+// D086-NAT BEGIN: compose the old view with the shared-node similarity while
+// leaving the target's world coordinates and its own normalization bounds intact.
+type CameraBounds = Readonly<{ x: readonly [number, number]; y: readonly [number, number] }>;
+export type DensityCamera = Readonly<{ x: number; y: number; ratio: number; bounds: CameraBounds;
+    targetZ?: number; closeSizeAnchor?: Point3; closeSizeStartRatio?: number }>;
+
+export function composeNaturalDensityCamera<T extends DensityCamera>(
+    previous: T, mounted: T, alignment: DensityAlignment, dimension: '2d' | '3d',
+): T | null {
+    if (!previous.bounds || !mounted.bounds) return null;
+    const span = (bounds: CameraBounds) => Math.max(bounds.x[1] - bounds.x[0], bounds.y[1] - bounds.y[0]);
+    const oldSpan = span(previous.bounds), newSpan = span(mounted.bounds);
+    if (!(oldSpan > 0 && newSpan > 0 && alignment.scale > 0 && previous.ratio > 0)
+        || ![previous.x, previous.y, alignment.x, alignment.y, alignment.z, alignment.scale]
+            .every(Number.isFinite)) return null;
+    const oldCenterX = (previous.bounds.x[0] + previous.bounds.x[1]) / 2;
+    const oldCenterY = (previous.bounds.y[0] + previous.bounds.y[1]) / 2;
+    const newCenterX = (mounted.bounds.x[0] + mounted.bounds.x[1]) / 2;
+    const newCenterY = (mounted.bounds.y[0] + mounted.bounds.y[1]) / 2;
+    const targetX = (oldCenterX + (previous.x - 0.5) * oldSpan - alignment.x) / alignment.scale;
+    const targetY = (oldCenterY + (previous.y - 0.5) * oldSpan - alignment.y) / alignment.scale;
+    const ratio = previous.ratio * oldSpan / (alignment.scale * newSpan);
+    if (!Number.isFinite(ratio) || ratio <= 0) return null;
+    const next = { ...previous, bounds: mounted.bounds,
+        x: 0.5 + (targetX - newCenterX) / newSpan,
+        y: 0.5 + (targetY - newCenterY) / newSpan,
+        ratio,
+        ...(dimension === '3d' && previous.targetZ !== undefined
+            ? { targetZ: (previous.targetZ - alignment.z) / alignment.scale } : {}),
+    };
+    // A close-dolly anchor belongs to the old coordinate frame. The next rig
+    // derives ordinary node sizes from the composed dolly instead.
+    delete (next as { closeSizeAnchor?: Point3 }).closeSizeAnchor;
+    delete (next as { closeSizeStartRatio?: number }).closeSizeStartRatio;
+    return Number.isFinite(next.x) && Number.isFinite(next.y) ? next as T : null;
+}
+// D086-NAT END
+
 type ScreenPoint = Readonly<{ x: number; y: number; radius?: number }>;
 
 export function naturalDensityDisplacement(

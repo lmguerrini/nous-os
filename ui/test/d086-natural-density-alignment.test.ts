@@ -1,9 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { alignNaturalDensity, animateNaturalDensity, naturalDensityDisplacement,
-  placeNaturalDensity } from '../src/review/natural-density-transition.ts';
+import { alignNaturalDensity, animateNaturalDensity, composeNaturalDensityCamera, naturalDensityDisplacement,
+  placeNaturalDensity, type DensityCamera } from '../src/review/natural-density-transition.ts';
 
 // D086-NAT BEGIN
+test('camera composition preserves old view-plane target and 3D dolly over fresh bounds', () => {
+  const old = { x: 0.6, y: 0.4, ratio: 1.5, angle: 0,
+    bounds: { x: [-10, 10] as const, y: [-5, 5] as const }, targetZ: 8,
+    closeSizeAnchor: { x: 2, y: 3, z: 4 } };
+  const fresh = { ...old, bounds: { x: [-100, 100] as const, y: [-50, 50] as const } };
+  const result = composeNaturalDensityCamera<DensityCamera>(old, fresh,
+    { x: 4, y: -2, z: 6, scale: 2, shared: 3 }, '3d');
+  assert.ok(result);
+  assert.deepEqual(result.bounds, fresh.bounds);
+  assert.equal(result.x, 0.495);
+  assert.equal(result.y, 0.5);
+  assert.equal(result.ratio, 0.075);
+  assert.equal(result.targetZ, 1);
+  assert.equal(result.closeSizeAnchor, undefined);
+});
+
 for (const dimension of ['2d', '3d'] as const) test(`${dimension} uses a positive uniform fit over shared IDs`, () => {
   const canonical = new Map([
     ['a', { x: 0, y: 0, z: 0 }], ['b', { x: 2, y: 0, z: 1 }],
