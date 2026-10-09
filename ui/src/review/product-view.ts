@@ -4,10 +4,13 @@ import './render-readiness.ts';
 // D082-A-PERF END
 import type { VisualStateCamera } from "../engine/visual-state.ts";
 import type { Coordinates } from "../engine/contract.ts";
+import { createEngineGraphView } from "../engine/contract.ts";
 import type { GraphRendererHandle } from "../engine/renderer-handle.ts";
 import type { RendererCameraState } from "../engine/renderer-handle.ts";
 import { DEFAULT_CALIBRATION } from "../engine/calibration.ts";
+import { applyMorphology, MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR } from "../engine/morphology.ts";
 import { SCENE_PERMILLE_SCALE } from "../scene/contract.ts";
+import { REVIEW_HALO_TO_CORE_MAX } from "../scene/build.ts";
 import { mount as mount2d } from "../render2d/index.ts";
 import { buildScreenPickIndex } from "../render2d/model.ts";
 // D082-A-PERF BEGIN
@@ -70,7 +73,7 @@ import { containerSphereLOD, containerTitleFont, placeContainerTitles, projected
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
-import { DENSE_SCENE_THRESHOLD, drawFlowLayer, neuralCompletaHaloFactor, neuralCompletaPointRadius, neuralCompletaVeilFactor, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
+import { DENSE_SCENE_THRESHOLD, drawFlowLayer, morphologyEdgeStrokeWidths, neuralCompletaHaloFactor, neuralCompletaPointRadius, neuralCompletaVeilFactor, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
 // D082-A-NCOMPLETA3 BEGIN
 import { clipNeuralCompletaScreenSegment, neuralCompletaFirstSceneScreen } from './neural-completa-first-scene.ts';
 // D082-A-NCOMPLETA3 END
@@ -80,6 +83,9 @@ import { nonNeuralCompletaScreenDensities } from './non-neural-completa-fit.ts';
 // D082-A-NODES BEGIN
 // D086-F1 BEGIN
 import { labNativeSizeLawApplies } from "../render-common/native-node-law.ts";
+// D087-SIZE BEGIN
+import { calibratedLeafCorePx, coLocatedRepresentatives, semanticMarkGeometry } from "../render-common/semantic-node-mark.ts";
+// D087-SIZE END
 // D086-F1 END
 import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
 import type { DenseEdgeScreenSegment } from '../render-common/dense-node-scale.ts';
@@ -365,7 +371,8 @@ export function preparationHostLive(host: Pick<HTMLElement, 'isConnected'>): boo
 }
 // D086-F2 END
 
-/** On-screen radius of an Indra container's own marker; the container ring carries the node. */
+
+/** D-086 2D Indra container marker radius. */
 const INDRA_CONTAINER_MARKER_PX = 2.5;
 
 /** One offscreen measuring canvas owned by this module (never a per-renderer context, which would
@@ -674,6 +681,14 @@ export const createProductView: CreateProductView = async (input) => {
   const indraAnchors = input.v2Prepared ? base.indra : placeDynamic(base.indra, input.data);
   const fullDepth = input.v2Prepared ? base.flat : placeDynamic(base.depth, input.data);
   const nodesById = new Map(input.data.nodes.map((node) => [node.id, node]));
+  // D087-SIZE BEGIN: classification always reads the full hierarchy.
+  const structuralIds = input.fullGraphStructuralIds
+    ? new Set(input.fullGraphStructuralIds)
+    : new Set(input.data.nodes.flatMap(node => {
+      const parent = (node.v2 as { parent?: string | null } | undefined)?.parent;
+      return parent ? [parent] : [];
+    }));
+  // D087-SIZE END
   const edgesById = new Map(input.data.edges.map((edge) => [edge.id, edge]));
   const degree = new Map<string, number>();
   for (const edge of input.data.edges) {
@@ -692,6 +707,26 @@ export const createProductView: CreateProductView = async (input) => {
     overflow: "hidden",
   });
   let axes: Axes = { ...input.axes };
+  // D087-SIZE BEGIN: all densities read one real-graph halo material per morphology and renderer.
+  const canonicalHaloCache = new Map<string, ReadonlyMap<string, {
+    readonly radiusPx: number; readonly intensityPermille: number }>>();
+  const canonicalHalos = (): ReadonlyMap<string, { readonly radiusPx: number; readonly intensityPermille: number }> => {
+    if (!input.v2Prepared) return new Map();
+    const key = `${axes.morphology}/${axes.projection}`;
+    const cached = canonicalHaloCache.get(key);
+    if (cached) return cached;
+    const profile = axes.morphology === "stellar" ? STELLAR
+      : axes.morphology === "neural" ? NEURAL : MYCELIUM;
+    const graph = createEngineGraphView(prepared.flatGraph, { fast: true }).graph;
+    const material = applyMorphology(graph, profile, DEFAULT_CALIBRATION,
+      axes.projection === "3d" ? SHARED_SCENE_MATERIAL_TARGET : "legacy-renderer");
+    const halos = new Map(material.nodes.map(node => [node.id, {
+      radiusPx: node.haloRadiusPx, intensityPermille: node.haloIntensityPermille,
+    }] as const));
+    canonicalHaloCache.set(key, halos);
+    return halos;
+  };
+  // D087-SIZE END
   let appearance: AppearanceOptions = input.appearance ?? DEFAULT_APPEARANCE;
   let customPalette: PaletteValues = input.customPalette ?? PALETTES.bw;
   let visible = new Set(input.visibleNodeIds);
@@ -754,6 +789,9 @@ export const createProductView: CreateProductView = async (input) => {
   let canopyPendingEdgeSegments: readonly DenseEdgeScreenSegment[] = [];
   // D082-B1f END
   let denseMembersByRepresentative = new Map<string, string[]>();
+  // D087-SIZE BEGIN
+  let coLocatedById: ReadonlyMap<string, string> = new Map();
+  // D087-SIZE END
   let lastDensePick: { representativeId: string; index: number } | null = null;
   // Screen-space edge density per drawn edge and the zoom blend the last scene build used; both
   // live only inside the reference Completa gate, exactly like denseScaleById.
@@ -768,10 +806,10 @@ export const createProductView: CreateProductView = async (input) => {
   let denseRefreshInFlight = false;
   // Retain the fit-state projection: pan and orbit leave point grouping and radii alone.
   let denseFitSamples: readonly import("../render-common/dense-node-scale.ts").DenseNodeSample[] = [];
-  // D082-A-NCOMPLETA BEGIN: use the same fit projection that sized the representative points.
-  let denseFitProjectionScaleById: ReadonlyMap<string, number> = new Map();
-  // D082-A-NCOMPLETA END
   let denseFitDistanceNorm: ReadonlyMap<string, number> = new Map();
+  // D087-SIZE BEGIN: retained by the D-086 2D scene branch.
+  let denseFitProjectionScaleById: ReadonlyMap<string, number> = new Map();
+  // D087-SIZE END
   // The alpha/width bits of the edge styles the renderers last saw, so an in-place subset change
   // can re-ship a mounted edge whose dense presentation actually flipped.
   let lastEdgeMarks = new Map<string, { opacityPermille: number; widthPermille: number;
@@ -784,7 +822,11 @@ export const createProductView: CreateProductView = async (input) => {
   // in-place subset change can ship only the entries that actually flipped.
   // D082-A-NODES BEGIN
   let lastNodeMarks = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined;
+    // D087-SIZE BEGIN
+    leafMark: boolean | undefined;
+    // D087-SIZE END
     radiusPx: number | undefined; haloRadiusPx: number | undefined;
+    haloIntensityPermille: number | undefined;
     tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
   // D082-A-NODES END
   let handle: GraphRendererHandle | null = null;
@@ -934,6 +976,13 @@ export const createProductView: CreateProductView = async (input) => {
     readonly project: Parameters<typeof drawFlowLayer>[2];
     readonly style: MorphologyCanvasStyle;
   } | null = null;
+  // D087-SIZE BEGIN: a status read reuses the same stroke sample until the scene or camera changes.
+  let strokeWitnessCache: { readonly geometry: Parameters<typeof drawFlowLayer>[1];
+    readonly style: MorphologyCanvasStyle; readonly camera: string; readonly appearanceWidth: number;
+    readonly appearanceNodeScale: number;
+    readonly hoverId: string | null; readonly focusIds: ReadonlySet<string> | null;
+    readonly widths: ReadonlyMap<string, number> } | null = null;
+  // D087-SIZE END
   let flowWidth = 0, flowHeight = 0;
   // D082-A-PERF BEGIN: an animated overlay needs one frame per due cadence, never a polling rAF.
   const flowLoop = { running: false, raf: 0, timer: undefined as ReturnType<typeof setTimeout> | undefined,
@@ -1123,6 +1172,13 @@ export const createProductView: CreateProductView = async (input) => {
   const cameras = new Map<string, VisualStateCamera>();
   const fitRatio = new Map<string, number>();
   const sceneFitRatios = new Map<string, number>();
+  // D087-SIZE BEGIN: a camera-only or density-only revision reuses the full-graph leaf input.
+  const fullGraphLeafBases = new Map<string, { given: number; exactFit: boolean; targetPx: number }>();
+  let mountedLeafSceneKey: string | null = null;
+  // D087-SIZE END
+  // D087-SIZE BEGIN: a sparse 3D mounted settle that cannot land in place is witnessed, not thrown.
+  let sparse3dMountSettleFailed = false;
+  // D087-SIZE END
   const fullAnchor = (current: Axes) =>
     current.organization === "indra"
       ? indraAnchors
@@ -1145,6 +1201,11 @@ export const createProductView: CreateProductView = async (input) => {
   // D086-F2 BEGIN: the certified law is part of the mounted camera identity.
   const cameraKeys = () => productCameraKey(axes, input.labTopology, input.labIndra,
     container.hasAttribute('data-fractal-rails-active'));
+  // D087-SIZE BEGIN: the same full-graph calibration key serves density updates and the witness.
+  const fullGraphLeafKey = () => [cameraKeys().key, axes.morphology, axes.projection,
+    localRect().width, localRect().height, appearance.nodeScale].join('|');
+  const leafSceneKey = () => [cameraKeys().key, axes.morphology, axes.projection].join('|');
+  // D087-SIZE END
   // D086-F2 END
   const restoreSavedCamera = () => replayProductCamera(cameras, fitRatio, cameraKeys());
   const semanticFitRatio = (ratio: number, densityBudget = labelBudget) =>
@@ -1180,10 +1241,14 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-NODES BEGIN
       // Only the representative has ink at this position. Keep the normal generous pick target
       // around that one point, then the click handler cycles through its real member IDs.
+      // D087-SIZE BEGIN: this index is rebuilt only under the mounted 2D renderer, so the
+      // earlier 3D branches were dead here and their floor cost D-086 its pick target: a click
+      // in a 3 px gap between two dense marks must select nothing. Both lines are D-086 again.
       if (denseScaleById.size && given === 0) return [];
       const basis = Math.min(contract.node.maxRadiusPx, Math.max(denseScaleById.size ? 0.5
         : axes.morphology === "mycelium" ? 1.3 : 2,
         given * scale * contract.node.scale));
+      // D087-SIZE END
       const radius = axes.morphology === "stellar" && basis > 1 ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
       // D082-A-NODES END
       return [{ id: node.id, x: p.x, y: p.y, radius: radius + 2 }];
@@ -1370,7 +1435,10 @@ export const createProductView: CreateProductView = async (input) => {
     for (const footprint of footprints) {
       const { x, y } = footprint.viewportCenter;
       const core = footprint.coreRadiusPx;
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(core) || !(core >= 0)) continue;
+      // D087-SIZE BEGIN: a covered member has no ink and must not reserve label space.
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(core)
+        || !(axes.projection === "2d" ? core >= 0 : core > 0)) continue;
+      // D087-SIZE END
       const emphasisFactor = morphologyInteraction.hoverId === footprint.id ? contract.hover.radiusMultiplier
         : morphologyInteraction.focusIds?.has(footprint.id) ? contract.focus.radiusMultiplier : 1;
       const disc = footprintDisc({ id: footprint.id, x, y, coreRadiusPx: core }, emphasisFactor);
@@ -1668,6 +1736,10 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN: decoration is reported before a changed zoom band is derived.
     scheduleDenseZoomRefresh();
     // D082-A-NODES END
+    // D087-SIZE BEGIN: the admitted set or zoom band changes marks through their existing
+    // subset update. Camera-only orbit and pan retain the deterministic representative set;
+    // rebuilding every node here delayed the full-quality restore after each gesture.
+    // D087-SIZE END
   };
   // D082-A-NODES BEGIN
   function scheduleDenseZoomRefresh() {
@@ -1849,7 +1921,7 @@ export const createProductView: CreateProductView = async (input) => {
    * input and geometry — derived from view state only. mount() and updateVisibleSubset() both
    * build through this one path, so an in-place LOD swap and a remount of the same subset derive
    * identical pixels. `anchors` is the mounted anchor map; only drawn ids are ever read. */
-  function buildDrawnScene(anchors: ReadonlyMap<string, Coordinates>, state: {
+  function buildDrawnSceneD0862d(anchors: ReadonlyMap<string, Coordinates>, state: {
     visible: ReadonlySet<string>; containers: typeof layoutContainers; edges: readonly ReviewEdge[];
     density?: string;
   } = { visible, containers: layoutContainers, edges: drawnEdges, density: witnessDensity }, deferGeometry = false,
@@ -2155,6 +2227,444 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-PERF END
     return { palette, presentation, morphologyInput, geometry };
   }
+
+  function buildDrawnScene(anchors: ReadonlyMap<string, Coordinates>, state: {
+    visible: ReadonlySet<string>; containers: typeof layoutContainers; edges: readonly ReviewEdge[];
+    density?: string;
+  } = { visible, containers: layoutContainers, edges: drawnEdges, density: witnessDensity }, deferGeometry = false,
+  // D082-A-PERF BEGIN: a subset revision can reuse the committed geometry.
+  previous?: { readonly morphologyInput: MorphologyInput;
+    readonly geometry: import("../engine/morphology-geometry.ts").MorphologyGeometry },
+  // D082-A-PERF END
+  // D082-A-NODES BEGIN
+  reuseDenseFit = false,
+  preparedDenseScales?: ReadonlyMap<string, import("../render-common/dense-node-scale.ts").DenseNodeScale>,
+  sceneBudget = labelBudget,
+  // D082-B-CANOPYN BEGIN: the first full Canopy 3D scene defers its costly dense solve.
+  deferCanopyDense = false,
+  preparedCanopyEdgeDensities?: ReadonlyMap<string, number>,
+  // D082-B-CANOPYN END
+  // D082-A-NODES END
+  ) {
+    // D087-SIZE BEGIN: preserve the complete D-086 presentation path in 2D.
+    const useD0862dScene = () => axes.projection === '2d';
+    if (useD0862dScene()) return buildDrawnSceneD0862d(anchors, state, deferGeometry,
+      previous, reuseDenseFit, preparedDenseScales, sceneBudget, deferCanopyDense,
+      preparedCanopyEdgeDensities);
+    // D087-SIZE END
+    const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
+    // D085-S5 BEGIN: Lab containers use the same approved Indra shell path.
+    const containers = state.containers && axes.organization === "indra" ? state.containers : undefined;
+    // D085-S5 END
+    // D082-A-NODES BEGIN
+    // D086-CUSTOM BEGIN: Custom uses the drawing safeguards at every amount. At the
+    // reference maximum it takes the original Completa arithmetic and cache path exactly.
+    const referenceCompleta = isReferenceCompleta(input.data.nodes.length, state.visible.size);
+    const customDense = state.density === 'custom' && !referenceCompleta;
+    const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
+      state.visible.size, state.density ?? witnessDensity);
+    // D087-SIZE BEGIN: density controls admission and opacity; drawing keeps the sparse mark law.
+    morphologyInteraction.usesDenseDrawingPolicy = false;
+    morphologyInteraction.denseNativeRadiusOnly = true;
+    // D087-SIZE END
+    // D086-CUSTOM END
+    denseScaleById = new Map();
+    denseMembersByRepresentative = new Map();
+    // D082-A-VEIL2 BEGIN: A-INT12 recomputes the shared screen veil for every new
+    // Stellar/Mycelium fit. Only Neural retains a fitted field across camera updates.
+    if (!reuseDenseFit && axes.morphology !== 'neural') denseEdgeScreenDensityById = new Map();
+    // D082-A-VEIL2 END
+    denseZoomProgress = 0;
+    if (!reuseDenseFit) { denseFitSamples = []; denseFitDistanceNorm = new Map(); }
+    // D082-A-NCOMPLETA BEGIN
+    morphologyInteraction.denseNeuralHaloById = undefined;
+    // D082-A-NCOMPLETA END
+    // D082-A-NCOMPLETA BEGIN
+    // D082-A-NCOMPLETA END
+    if (input.v2Prepared && denseDrawingPolicy) {
+      const canopyComplete = container.hasAttribute('data-fractal-rails-active');
+      const current = handle?.readCameraState().ratio;
+      const fit = canopyComplete ? fitRatio.get(cameraKeys().key)
+        : current === undefined ? undefined : semanticFitRatio(current, sceneBudget);
+      const band = denseZoomBand(current, fit);
+      const zoomProgress = canopyComplete ? denseZoomProgressForCamera(current, fit) : band / 6;
+      denseZoomProgress = zoomProgress;
+      denseRenderedZoomBand = band;
+      // D082-B1f BEGIN: apply the core policy once to this stationary Canopy snapshot.
+      if (canopyComplete && referenceCompleta && !deferCanopyDense && !preparedDenseScales
+        && !preparedCanopyEdgeDensities && canopyCompleteScales
+        && canopyCompleteScaleNodeSize === appearance.nodeScale
+        && canopyCompleteEdgeDensities.has(axes.reading)) {
+        denseScaleById = canopyCompleteScales;
+        denseEdgeScreenDensityById = canopyCompleteEdgeDensities.get(axes.reading)!;
+      } else {
+      // D082-B1f END
+      // D082-A-NCOMPLETA3 BEGIN: the first scene must use fitted screen cells before
+      // the 2D renderer exists. The same edge factors reach its first prepared model.
+      const firstNeuralScreen = !handle && axes.organization === 'natural'
+        && axes.projection === '2d' && axes.morphology === 'neural'
+        ? neuralCompletaFirstSceneScreen(anchors, state.edges,
+          localRect().width * 0.92, localRect().height * 0.92) : null;
+      // D082-A-NCOMPLETA3 END
+      const visibleNodes = reuseDenseFit && !canopyComplete ? []
+        : input.data.nodes.filter(node => state.visible.has(node.id));
+      const projectForSize = (point: Coordinates) => axes.projection === '3d'
+        ? { x: point.x + point.z * 0.5, y: point.y + point.z * 0.35 } : point;
+      // D082-A-NCOMPLETA3 BEGIN
+      const projectedAnchors = visibleNodes.map(node => firstNeuralScreen?.screen.get(node.id)
+        ?? (handle ? handle.graphToViewport(anchors.get(node.id)!) : projectForSize(anchors.get(node.id)!)));
+      const minX = reuseDenseFit ? 0 : Math.min(...projectedAnchors.map(point => point.x));
+      const maxX = reuseDenseFit ? 0 : Math.max(...projectedAnchors.map(point => point.x));
+      const minY = reuseDenseFit ? 0 : Math.min(...projectedAnchors.map(point => point.y));
+      const maxY = reuseDenseFit ? 0 : Math.max(...projectedAnchors.map(point => point.y));
+      const span = Math.max(1, Math.hypot(maxX - minX, maxY - minY));
+      const screenScale = handle || firstNeuralScreen ? 1 : Math.min(1120 / Math.max(1, maxX - minX), 720 / Math.max(1, maxY - minY));
+      if (!reuseDenseFit) denseFitDistanceNorm = new Map(visibleNodes.map(node => {
+        const point = firstNeuralScreen?.screen.get(node.id)
+          ?? (handle ? handle.graphToViewport(anchors.get(node.id)!) : projectForSize(anchors.get(node.id)!));
+        return [node.id, Math.min(1, Math.hypot(point.x - (minX + maxX) / 2, point.y - (minY + maxY) / 2) / (span / 2))] as const;
+      }));
+      if (!reuseDenseFit) denseFitSamples = visibleNodes.map(node => {
+        const point = anchors.get(node.id)!;
+        const radius = v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale).radiusPx;
+        const screen = firstNeuralScreen?.screen.get(node.id)
+          ?? (handle ? handle.graphToViewport(point) : projectForSize(point));
+        return { id: node.id, x: point.x, y: point.y, z: point.z,
+          screenX: (screen.x - minX) * screenScale, screenY: (screen.y - minY) * screenScale,
+          importance: (node.v2 as import("./v2-core.ts").V2Node).importance.value, baseRadiusPx: radius,
+          projectionScale: three ? perspectiveSizeScale(three.readReviewCameraPose(), point)
+            : sigma ? sigma.scaleSize(1) : firstNeuralScreen?.scale ?? 1 };
+      });
+      // D082-A-NCOMPLETA3 END
+      // D082-B-CANOPYN BEGIN
+      denseScaleById = deferCanopyDense ? new Map() : new Map(preparedDenseScales ?? denseNodeScales(denseFitSamples,
+        { zoomProgress, screenDistanceNorm: denseFitDistanceNorm, nativeRadiusOnly: customDense }));
+      // D082-B-CANOPYN END
+      // D082-B1f BEGIN: Canopy represents every real mark at its own overlap-safe point;
+      // the core's covered-member zero radius belongs to Natural and Indra.
+      if (canopyComplete) denseScaleById = canopyCompleteNodeScales(denseScaleById);
+      // D082-B1f END
+      // Local screen-space density of the drawn edges themselves, on the same normalized overview
+      // canvas the node policy uses: straight source→target segments of exactly the drawn set.
+      if (canopyComplete) {
+      // D082-B-CANOPYN BEGIN
+      if (!reuseDenseFit) canopyPendingEdgeSegments = state.edges.flatMap(edge => {
+        const source = anchors.get(edge.source), target = anchors.get(edge.target);
+        if (!source || !target) return [];
+        const from = projectForSize(source), to = projectForSize(target);
+        return [{
+          id: edge.id,
+          sourceScreenX: (from.x - minX) * screenScale, sourceScreenY: (from.y - minY) * screenScale,
+          targetScreenX: (to.x - minX) * screenScale, targetScreenY: (to.y - minY) * screenScale,
+        }];
+      });
+      if (!reuseDenseFit && !deferCanopyDense) denseEdgeScreenDensityById = preparedCanopyEdgeDensities
+        ?? denseEdgeScreenDensities(canopyPendingEdgeSegments);
+      // D082-B-CANOPYN END
+      // D082-B1f BEGIN: the full Canopy drawing and its screen-space overlaps are stationary.
+      if (canopyComplete && referenceCompleta && !deferCanopyDense) {
+        canopyCompleteScales = denseScaleById;
+        canopyCompleteScaleNodeSize = appearance.nodeScale;
+        canopyCompleteEdgeDensities.set(axes.reading, denseEdgeScreenDensityById);
+      }
+      // D082-B1f END
+      } else {
+      // D082-A-NCOMPLETA3 BEGIN
+      // D082-A-VEIL BEGIN: the edge set, not camera translation, invalidates fit density.
+      if (!reuseDenseFit && axes.morphology !== 'neural') {
+        // D082-A-VEIL2 BEGIN: exact A-INT12 projection and screen-cell input for
+        // both non-Neural morphologies, at every density and zoom band.
+        denseEdgeScreenDensityById = nonNeuralCompletaScreenDensities(
+          state.edges, anchors, axes.projection, minX, minY, screenScale);
+        denseEdgeScreenMeasuredIds = new Set();
+        // D082-A-VEIL2 END
+      } else if (!reuseDenseFit) {
+        const measuredIds = state.edges.map(edge => edge.id);
+        denseEdgeScreenDensityById = fittedDenseEdgeScreenDensities(measuredIds, () =>
+          firstNeuralScreen?.edgeDensities ?? denseEdgeScreenDensities(state.edges.flatMap(edge => {
+            const source = anchors.get(edge.source), target = anchors.get(edge.target);
+            if (!source || !target) return [];
+            // One coordinate system for nodes and edges.
+            const from = handle ? handle.graphToViewport(source) : projectForSize(source);
+            const to = handle ? handle.graphToViewport(target) : projectForSize(target);
+            const neuralViewportSegment = handle && axes.organization === 'natural'
+              && axes.projection === '2d' && axes.morphology === 'neural'
+              ? clipNeuralCompletaScreenSegment(from, to, container.clientWidth, container.clientHeight) : null;
+            if (handle && axes.organization === 'natural' && axes.projection === '2d'
+              && axes.morphology === 'neural' && !neuralViewportSegment) return [];
+            return [{
+              id: edge.id,
+              sourceScreenX: neuralViewportSegment?.source.x ?? (from.x - minX) * screenScale,
+              sourceScreenY: neuralViewportSegment?.source.y ?? (from.y - minY) * screenScale,
+              targetScreenX: neuralViewportSegment?.target.x ?? (to.x - minX) * screenScale,
+              targetScreenY: neuralViewportSegment?.target.y ?? (to.y - minY) * screenScale,
+            }];
+          })), denseEdgeScreenMeasuredIds.size
+            ? { edgeIds: denseEdgeScreenMeasuredIds, densities: denseEdgeScreenDensityById } : undefined);
+        denseEdgeScreenMeasuredIds = new Set(measuredIds);
+      }
+      // D082-A-VEIL END
+      // D082-A-NCOMPLETA3 END
+      }
+      }
+      for (const value of denseScaleById.values()) {
+        const members = denseMembersByRepresentative.get(value.representativeId) ?? [];
+        members.push(value.id);
+        denseMembersByRepresentative.set(value.representativeId, members);
+      }
+      for (const members of denseMembersByRepresentative.values()) members.sort();
+      // D082-A-NCOMPLETA BEGIN: 2D canvas glow and native 3D halo share these local factors.
+      // D087-SIZE BEGIN: local crowding never changes a node's glow.
+      morphologyInteraction.denseNeuralHaloById = undefined;
+      // D087-SIZE END
+      // D082-A-NCOMPLETA END
+    }
+    // D082-A-NODES END
+    // D087-SIZE BEGIN: one fitted leaf law and one screen-space co-location pass for every density.
+    const markNodes = input.data.nodes.filter(node => state.visible.has(node.id) && anchors.has(node.id));
+    // D087-SIZE BEGIN: D-086 Natural Completa fits a robust cloud; extrema of all anchors
+    // understate that camera scale and made each round-five leaf a five-pixel disc.
+    const completeAnchors = fullAnchor(axes);
+    const allMarkPoints = [...completeAnchors.values()];
+    const fitMarkPoints = axes.organization === 'natural' && axes.projection === '2d'
+      && axes.morphology === 'neural' ? naturalCompletaFitPoints(allMarkPoints) : allMarkPoints;
+    const xValues = fitMarkPoints.map(point => point.x), yValues = fitMarkPoints.map(point => point.y);
+    const minMarkX = xValues.length ? Math.min(...xValues) : 0;
+    const maxMarkX = xValues.length ? Math.max(...xValues) : 1;
+    const minMarkY = yValues.length ? Math.min(...yValues) : 0;
+    const maxMarkY = yValues.length ? Math.max(...yValues) : 1;
+    const provisionalScale = Math.min(localRect().width * 0.92 / Math.max(1, maxMarkX - minMarkX),
+      localRect().height * 0.92 / Math.max(1, maxMarkY - minMarkY));
+    const markScale = (point: Coordinates) => axes.projection === '2d'
+      ? sigma?.scaleSize(1) ?? provisionalScale
+      : three ? perspectiveSizeScale(three.readReviewCameraPose(), point) : 1;
+    const leafKey = fullGraphLeafKey();
+    let leafCalibration = fullGraphLeafBases.get(leafKey);
+    const exactFit = mountedLeafSceneKey === leafSceneKey()
+      && (axes.projection === '2d' ? sigma !== null : three !== null);
+    if (input.v2Prepared && (!leafCalibration || (exactFit && !leafCalibration.exactFit))) {
+      const fitScales = input.data.nodes.flatMap(node => {
+        const point = completeAnchors.get(node.id);
+        return point && !structuralIds.has(node.id) ? [markScale(point)] : [];
+      }).sort((a, b) => a - b);
+      const fitScale = fitScales[Math.floor(fitScales.length / 2)] ?? provisionalScale;
+      // D087-SIZE BEGIN: calibrate a sparse admission with the same full-graph screen
+      // coordinates as Completa. The provisional projection is only for a pre-mount scene;
+      // once the camera exists, using it here is essential to keep the leaf base identical.
+      const fullScreenCalibration = () => {
+        const fullScreenPoints = input.data.nodes.flatMap(node => {
+          const point = completeAnchors.get(node.id);
+          if (!point) return [];
+          const screen = handle ? handle.graphToViewport(point)
+            : axes.projection === '2d' ? point
+              : { x: point.x + point.z * 0.5, y: point.y + point.z * 0.35 };
+          return [{ id: node.id, point, screen }];
+        });
+        const screenXs = fullScreenPoints.map(item => item.screen.x);
+        const screenYs = fullScreenPoints.map(item => item.screen.y);
+        const screenMinX = screenXs.length ? Math.min(...screenXs) : 0;
+        const screenMaxX = screenXs.length ? Math.max(...screenXs) : 1;
+        const screenMinY = screenYs.length ? Math.min(...screenYs) : 0;
+        const screenMaxY = screenYs.length ? Math.max(...screenYs) : 1;
+        const fullScreenScale = handle ? 1 : Math.min(1120 / Math.max(1, screenMaxX - screenMinX),
+          720 / Math.max(1, screenMaxY - screenMinY));
+        const screenSpan = Math.max(1, Math.hypot(screenMaxX - screenMinX, screenMaxY - screenMinY));
+        const fullDistanceNorm = new Map(fullScreenPoints.map(item => [item.id,
+          Math.min(1, Math.hypot(item.screen.x - (screenMinX + screenMaxX) / 2,
+            item.screen.y - (screenMinY + screenMaxY) / 2) / (screenSpan / 2))] as const));
+        const samples = fullScreenPoints.flatMap(({ id, point, screen }) => {
+          const node = nodesById.get(id);
+          if (!node?.v2) return [];
+          return [{ id, x: point.x, y: point.y, z: point.z,
+            screenX: (screen.x - screenMinX) * fullScreenScale,
+            screenY: (screen.y - screenMinY) * fullScreenScale,
+            importance: (node.v2 as import('./v2-core.ts').V2Node).importance.value,
+            baseRadiusPx: v2Encoding(node.v2 as import('./v2-core.ts').V2Node, appearance.nodeScale).radiusPx,
+            projectionScale: markScale(point) }];
+        });
+        return { samples, fullDistanceNorm };
+      };
+      // The staged Canopy mount already owns a deferred dense solve.
+      const fullCalibration = denseScaleById.size === input.data.nodes.length || deferCanopyDense
+        ? null : fullScreenCalibration();
+      const fullDense = denseScaleById.size === input.data.nodes.length ? denseScaleById
+        : deferCanopyDense ? new Map() : denseNodeScales(fullCalibration!.samples,
+          { zoomProgress: 0, screenDistanceNorm: fullCalibration!.fullDistanceNorm });
+      // D087-SIZE END
+      const denseLeafRadii = input.data.nodes.flatMap(node => {
+        if (structuralIds.has(node.id)) return [];
+        const point = completeAnchors.get(node.id), dense = fullDense.get(node.id);
+        return point && dense && dense.radiusPx > 0 ? [dense.radiusPx * markScale(point)] : [];
+      });
+      const targetPx = calibratedLeafCorePx(denseLeafRadii, axes.morphology, axes.projection);
+      const given = targetPx / Math.max(0.001, fitScale
+        * (axes.projection === '2d' ? MORPHOLOGY_CONTRACT[axes.morphology].node.scale : 1));
+      leafCalibration = { given, exactFit, targetPx };
+      fullGraphLeafBases.set(leafKey, leafCalibration);
+    }
+    // D087-SIZE BEGIN: the calibration is one full-graph value; the per-node arguments were unused.
+    const leafGiven = leafCalibration?.given ?? 0;
+    // D087-SIZE END
+    // D087-SIZE END
+    const markCoordinates = (point: Coordinates) => handle?.graphToViewport(point)
+      ?? { x: (point.x - minMarkX) * provisionalScale, y: (point.y - minMarkY) * provisionalScale };
+    const markCandidates = markNodes.map(node => {
+      const point = anchors.get(node.id)!;
+      const structural = !input.v2Prepared || structuralIds.has(node.id);
+      const given = structural ? input.v2Prepared
+        ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale).radiusPx
+        : encodingOf(node, input.data).corePermille * 8 / SCENE_PERMILLE_SCALE
+        : leafGiven;
+      const scale = markScale(point);
+      // D087-SIZE BEGIN: co-location uses the final 3D core, after morphology policy.
+      const coreRadiusPx = (structural && axes.morphology === 'stellar' && axes.organization === 'indra'
+          ? stellarIndra3dNodeRadiusPx(given, axes.morphology, axes.organization, axes.projection)
+          : structural && axes.morphology === 'neural' && input.v2Prepared
+            ? given * ((node.v2 as import('./v2-core.ts').V2Node).level >= 3 ? 0.62
+              : (node.v2 as import('./v2-core.ts').V2Node).level === 2 ? 0.8 : 1)
+            : given) * scale;
+      // D087-SIZE END
+      return { id: node.id, ...markCoordinates(point), coreRadiusPx, structural };
+    });
+    coLocatedById = coLocatedRepresentatives(markCandidates);
+    denseMembersByRepresentative = new Map();
+    for (const [id, representative] of coLocatedById) {
+      const members = denseMembersByRepresentative.get(representative) ?? [];
+      members.push(id);
+      denseMembersByRepresentative.set(representative, members);
+    }
+    for (const members of denseMembersByRepresentative.values()) members.sort();
+    const canonicalHaloById = canonicalHalos();
+    // D087-SIZE END
+    const presentation = {
+      morphologyLanguage: "distinct" as const,
+      // D086-CUSTOM BEGIN: the same scene policy reaches scene construction and native rendering.
+      usesDenseDrawingPolicy: denseDrawingPolicy,
+      // D087-SIZE BEGIN
+      denseNativeRadiusOnly: true,
+      // D087-SIZE END
+      // D086-CUSTOM END
+      nativeLabels: false,
+      windowGeometryFromAnchors: true,
+      // D086-F1 BEGIN
+      // D086-CUSTOM BEGIN: the native Lab tier must receive the capped radius directly;
+      // its sparse-scene floor would otherwise grow a capped Custom point again.
+      // D087-SIZE BEGIN
+      ...(labNativeSizeLawApplies(input.labTopology, input.data.nodes.length, state.visible.size)
+        ? { nativeNodeSizeLaw: true } : {}),
+      // D087-SIZE END
+      // D086-CUSTOM END
+      // D086-F1 END
+      ...(containers ? { containers } : {}),
+      emphasisIds: emphasis,
+      appearance,
+      edges: new Map(state.edges.map((edge) => [edge.id, presentationEdge(edge, palette, customDense)] as const)),
+      nodes: new Map(
+        input.data.nodes
+          .filter((node) => state.visible.has(node.id))
+          .map((node) => {
+            const v2Encoded = input.v2Prepared ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale) : null;
+            const encoding = v2Encoded ?? encodingOf(node, input.data);
+            // D082-A-NODES BEGIN
+            // The dense map remains an edge-opacity source; co-location owns node ink.
+            // D087-SIZE BEGIN: only covered members lose ink; a represented id keeps its native size.
+            const hiddenDenseMember = coLocatedById.get(node.id) !== node.id;
+            const leafMark = !!input.v2Prepared && !structuralIds.has(node.id);
+            const leafRadius = leafMark ? leafGiven : 0;
+            const canonicalHalo = canonicalHaloById.get(node.id);
+            const haloPermille = hiddenDenseMember ? 0 : node.origin === "dynamic"
+              ? Math.round(encoding.haloPermille * 0.55) : encoding.haloPermille;
+            // D087-SIZE END
+            // D082-A-NODES END
+            return [node.id, {
+              ...encoding,
+              // D087-SIZE BEGIN
+              leafMark,
+              // D087-SIZE END
+              // D082-A-NODES BEGIN
+              // D087-SIZE BEGIN
+              // D087-SIZE BEGIN: every V2 structural input is explicit. Otherwise the
+              // renderer multiplies corePermille by a subset-dependent material size.
+              ...(hiddenDenseMember ? { radiusPx: 0, corePermille: 0 } : leafMark
+                ? { radiusPx: leafRadius } : v2Encoded ? { radiusPx: v2Encoded.radiusPx } : {}),
+              // D087-SIZE END
+              // D087-SIZE END
+              // D082-A-NODES END
+              glyph: v2Encoded ? v2Encoded.glyph : (node.type === "domain" || node.type === "conversation" ? "ring"
+                : node.type === "canon" ? "double-ring"
+                : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
+              // D087-SIZE BEGIN
+              haloPermille,
+              ...(canonicalHalo ? { haloRadiusPx: hiddenDenseMember ? 0 : leafMark
+                ? leafRadius
+                : canonicalHalo.radiusPx * haloPermille / SCENE_PERMILLE_SCALE,
+                haloIntensityPermille: hiddenDenseMember ? 0 : leafMark
+                  ? 0 : canonicalHalo.intensityPermille } : {}),
+              // D087-SIZE END
+              // D082-A-NODES BEGIN
+              // D087-SIZE BEGIN: an id carries the same halo in every density.
+              // D082-A-NCOMPLETA BEGIN
+              // The canonical halo above includes the hidden-member suppression.
+              // D087-SIZE END
+              // D082-A-NCOMPLETA END
+              // D087-SIZE BEGIN
+              ...(v2Encoded && !leafMark && axes.morphology === "neural" ? { radiusPx: hiddenDenseMember ? 0
+                : v2Encoded.radiusPx * ((node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
+                  : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1) } : {}),
+              // D087-SIZE END
+              // D082-A-NODES END
+              // D087-SIZE BEGIN: an Indra pearl keeps its semantic glyph and radius whether
+              // its children are currently admitted or folded into the same real container.
+              ...(axes.morphology === "stellar" && axes.organization === "indra" && axes.projection === "3d" && !leafMark
+                ? { radiusPx: hiddenDenseMember ? 0 : stellarIndra3dNodeRadiusPx(v2Encoded?.radiusPx
+                  ?? encoding.corePermille * 8 / SCENE_PERMILLE_SCALE,
+                  axes.morphology, axes.organization, axes.projection) } : {}),
+              // D087-SIZE END
+              ...(input.v2Prepared && axes.colour === "bw" ? { tintSrgb: (() => { const level = (node.v2 as import("./v2-core.ts").V2Node).level; const gray = level <= 2 ? 0.88 : level <= 4 ? 0.7 : 0.56; return [gray, gray, gray] as const; })() }
+                : input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
+                : axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
+                : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(palette[input.text(node.id).family === "aggregate" ? "aggregate" : "concept"]) }),
+            }] as const;
+          }),
+      ),
+    };
+    const colonyMembers = new Map<string, string[]>();
+    for (const node of input.data.nodes) if (state.visible.has(node.id) && anchors.has(node.id)) {
+      const parent = (node.v2 as { parent?: string | null } | undefined)?.parent;
+      const community = parent && state.visible.has(parent) ? parent : node.id;
+      const members = colonyMembers.get(community) ?? [];
+      members.push(node.id);
+      colonyMembers.set(community, members);
+    }
+    const morphologyInput: MorphologyInput = {
+      nodes: [...presentation.nodes].flatMap(([id, value]) => {
+        const position = anchors.get(id);
+        return position ? [{ id, position, radius: value.radiusPx ?? value.corePermille * 8 / SCENE_PERMILLE_SCALE }] : [];
+      }),
+      edges: state.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+        // The drawer applies the presentation width factor; the geometry carries the unit body width.
+        width: 1 })),
+      colonies: [...colonyMembers].map(([id, members]) => {
+        const positions = members.map(member => anchors.get(member)!).filter(Boolean);
+        const center = { x: positions.reduce((s, p) => s + p.x, 0) / positions.length,
+          y: positions.reduce((s, p) => s + p.y, 0) / positions.length,
+          z: positions.reduce((s, p) => s + p.z, 0) / positions.length };
+        return { id, members, center };
+      }),
+      containers: containers ?? [],
+    };
+    // D082-A-PERF BEGIN: the cold complete path is prepared by the worker below; warm
+    // revisions reuse exact positioned geometry and do not rebuild soma/ribbon samples.
+    const rawGeometry = deferGeometry ? null : previous && axes.morphology === "neural"
+      ? preparedIncrementalGeometryNow(previous.geometry, previous.morphologyInput, morphologyInput, appearance.curvature)
+      : preparedGeometryNow([axes.morphology, morphologyInput.nodes, morphologyInput.edges,
+        morphologyInput.colonies, appearance.curvature, morphologyInput.containers]);
+    // D087-SIZE BEGIN
+    const geometry = rawGeometry ? semanticMarkGeometry(rawGeometry, degree) : null;
+    // D087-SIZE END
+    // D082-A-PERF END
+    return { palette, presentation, morphologyInput, geometry };
+  }
   const requireGeometry = (scene: ReturnType<typeof buildDrawnScene>): FullScene => {
     if (!scene.geometry) throw new Error('Missing morphology geometry');
     return scene as FullScene;
@@ -2279,13 +2789,26 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-PERF END
     }
     handle = (sigma ?? three)!;
+    // D087-SIZE BEGIN: a prior topology's mounted camera cannot calibrate this topology.
+    if (axes.projection === "3d") mountedLeafSceneKey = leafSceneKey();
+    // D087-SIZE END
     drawnGeometry = geometry;
     committedScene = { palette, presentation, morphologyInput, geometry };
     // D082-A-NODES BEGIN
     lastNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
-        radiusPx: value.radiusPx, haloRadiusPx: value.radiusPx === undefined ? undefined
-          : value.radiusPx * (1 + denseZoomProgress * 0.28),
+        // D087-SIZE BEGIN
+        leafMark: (value as import("../engine/presentation-options.ts").NodePresentation).leafMark,
+        // D087-SIZE END
+        // D087-SIZE BEGIN
+        radiusPx: value.radiusPx, haloRadiusPx: axes.projection === '2d'
+          ? value.radiusPx === undefined ? undefined : value.radiusPx * (1 + denseZoomProgress * 0.28)
+          : (value as import("../engine/presentation-options.ts").NodePresentation).haloRadiusPx === undefined ? undefined
+            : value.radiusPx !== undefined
+              ? Math.min((value as import("../engine/presentation-options.ts").NodePresentation).haloRadiusPx!, value.radiusPx * REVIEW_HALO_TO_CORE_MAX)
+              : (value as import("../engine/presentation-options.ts").NodePresentation).haloRadiusPx,
+        haloIntensityPermille: (value as import("../engine/presentation-options.ts").NodePresentation).haloIntensityPermille,
+        // D087-SIZE END
         tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille }]));
     // D082-A-NCOMPLETA3 BEGIN
     lastEdgeMarks = new Map([...presentation.edges].map(([id, value]) =>
@@ -2380,15 +2903,25 @@ export const createProductView: CreateProductView = async (input) => {
     // and a zoom-band change solves from this fit snapshot off the main thread.
     // D082-B-CANOPYN BEGIN: the stationary Canopy full snapshot already owns its fit radii.
     // Sending the same 11,199 IDs through a subset update rebuilds every Neural shape at rest.
-    if (lodMode && denseScaleById.size && canopyInitialFitNeedsSubsetRefresh(axes.projection,
-      axes.morphology, container.hasAttribute('data-fractal-rails-active'))) {
+    // D087-SIZE BEGIN: an earlier revision let this settle's throw reject a whole sparse 3D mount whose
+    // in-place update cannot land. Dense mounts keep D-086's throw exactly; a sparse 3D mount
+    // keeps its mounted sizes and the failure is witnessed beside the leaf calibration.
+    sparse3dMountSettleFailed = false;
+    if (lodMode && (axes.projection === "3d" ? input.v2Prepared
+      : denseScaleById.size > 0 && canopyInitialFitNeedsSubsetRefresh(axes.projection,
+        axes.morphology, container.hasAttribute('data-fractal-rails-active')))) {
     // D082-B-CANOPYN END
       const lifted = drawnEdges.flatMap(edge => edge.v2
         ? [edge.v2 as import("./v2-relations.ts").LiftedRelation] : []);
       if (lifted.length === drawnEdges.length
-        && !applyVisibleSubset({ visibleNodeIds: visible, edges: lifted }))
-        throw new Error("Completa point sizes could not settle at the mounted fit camera");
+        && !applyVisibleSubset({ visibleNodeIds: visible, edges: lifted })) {
+        if (denseScaleById.size === 0) {
+          sparse3dMountSettleFailed = true;
+        } else
+          throw new Error("Completa point sizes could not settle at the mounted fit camera");
+      }
     }
+    // D087-SIZE END
     // D082-A-NODES END
     rebuildScreenPickIndex();
     // D085-X8 BEGIN
@@ -2417,6 +2950,9 @@ export const createProductView: CreateProductView = async (input) => {
   // This cache exists only on the Fractal host and only for one camera gesture.
   // D086-CUSTOM BEGIN: a gesture restores the density metadata of its own full scene.
   let canopyFullScene: { ids: ReadonlySet<string>; scene: FullScene;
+    // D087-SIZE BEGIN
+    representatives: ReadonlyMap<string, string>;
+    // D087-SIZE END
     scales: ReadonlyMap<string, import("../render-common/dense-node-scale.ts").DenseNodeScale>;
     edgeDensities: ReadonlyMap<string, number>; zoomProgress: number } | null = null;
   // D086-CUSTOM END
@@ -2469,6 +3005,9 @@ export const createProductView: CreateProductView = async (input) => {
     const canopyHost = container.hasAttribute('data-fractal-rails-active');
     if (canopyHost && visible.size > 1000 && nextVisible.size < 1000)
       canopyFullScene = { ids: new Set(visible), scene: oldScene,
+        // D087-SIZE BEGIN
+        representatives: coLocatedById,
+        // D087-SIZE END
         scales: denseScaleById, edgeDensities: denseEdgeScreenDensityById,
         zoomProgress: denseZoomProgress };
     const restoreCanopy = canopyHost && canopyFullScene &&
@@ -2509,14 +3048,27 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-B1f BEGIN: the restored Canopy scene also restores the density metadata used
     // by picking and any following subset update; the cached geometry needs no solve.
     if (restoreCanopy && canopyFullScene) {
+      // D087-SIZE BEGIN
+      if (axes.projection === "3d") coLocatedById = canopyFullScene.representatives;
+      // D087-SIZE END
       denseScaleById = new Map(canopyFullScene.scales);
       denseEdgeScreenDensityById = canopyFullScene.edgeDensities;
       denseMembersByRepresentative = new Map();
-      for (const value of denseScaleById.values()) {
-        const members = denseMembersByRepresentative.get(value.representativeId) ?? [];
-        members.push(value.id);
-        denseMembersByRepresentative.set(value.representativeId, members);
+      // D087-SIZE BEGIN
+      if (axes.projection === "3d") {
+        for (const [id, representative] of coLocatedById) {
+          const members = denseMembersByRepresentative.get(representative) ?? [];
+          members.push(id);
+          denseMembersByRepresentative.set(representative, members);
+        }
+      } else {
+        for (const value of denseScaleById.values()) {
+          const members = denseMembersByRepresentative.get(value.representativeId) ?? [];
+          members.push(value.id);
+          denseMembersByRepresentative.set(value.representativeId, members);
+        }
       }
+      // D087-SIZE END
       for (const members of denseMembersByRepresentative.values()) members.sort();
       denseZoomProgress = isReferenceCompleta(input.data.nodes.length, nextVisible.size)
         ? denseZoomProgressForCamera(handle.readCameraState().ratio, fitRatio.get(cameraKeys().key))
@@ -2527,16 +3079,32 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN
     const nextNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
-        radiusPx: value.radiusPx, haloRadiusPx: value.radiusPx === undefined ? undefined
-          : value.radiusPx * (1 + denseZoomProgress * 0.28),
+        // D087-SIZE BEGIN
+        leafMark: (value as import("../engine/presentation-options.ts").NodePresentation).leafMark,
+        // D087-SIZE END
+        // D087-SIZE BEGIN
+        radiusPx: value.radiusPx, haloRadiusPx: axes.projection === '2d'
+          ? value.radiusPx === undefined ? undefined : value.radiusPx * (1 + denseZoomProgress * 0.28)
+          : (value as import("../engine/presentation-options.ts").NodePresentation).haloRadiusPx === undefined ? undefined
+            : value.radiusPx !== undefined
+              ? Math.min((value as import("../engine/presentation-options.ts").NodePresentation).haloRadiusPx!, value.radiusPx * REVIEW_HALO_TO_CORE_MAX)
+              : (value as import("../engine/presentation-options.ts").NodePresentation).haloRadiusPx,
+        haloIntensityPermille: (value as import("../engine/presentation-options.ts").NodePresentation).haloIntensityPermille,
+        // D087-SIZE END
         tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille }] as const));
     const nodeEntries = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined;
+      // D087-SIZE BEGIN
+      leafMark: boolean | undefined;
+      // D087-SIZE END
       radiusPx: number | undefined; haloRadiusPx: number | undefined;
+      haloIntensityPermille: number | undefined;
       tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
     for (const [id, mark] of nextNodeMarks) {
       const before = lastNodeMarks.get(id);
-      if (nextDensity !== witnessDensity || !before || before.glyph !== mark.glyph || before.radiusPx !== mark.radiusPx
+      if (nextDensity !== witnessDensity || !before || before.glyph !== mark.glyph
+        || before.leafMark !== mark.leafMark || before.radiusPx !== mark.radiusPx
         || before.haloRadiusPx !== mark.haloRadiusPx
+        || before.haloIntensityPermille !== mark.haloIntensityPermille
         // D086-BURST BEGIN: tint and opacity are part of a density revision.
         || before.opacityPermille !== mark.opacityPermille
         || before.tintSrgb?.some((value, index) => value !== mark.tintSrgb?.[index])) nodeEntries.set(id, mark);
@@ -2603,12 +3171,16 @@ export const createProductView: CreateProductView = async (input) => {
       // D085-S3 END
       nodeEntries: new Map([...oldScene.presentation.nodes].map(([id, value]) => [id, {
         glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
+        // D087-SIZE BEGIN
+        leafMark: (value as import("../engine/presentation-options.ts").NodePresentation).leafMark,
+        // D087-SIZE END
         radiusPx: value.radiusPx,
         // D086-BURST BEGIN
         tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille,
         // D086-BURST END
         // D082-A-NODES BEGIN
         haloRadiusPx: lastNodeMarks.get(id)?.haloRadiusPx,
+        haloIntensityPermille: lastNodeMarks.get(id)?.haloIntensityPermille,
         // D082-A-NODES END
       }])),
       edgeEntries: new Map([...oldScene.presentation.edges].map(([id, value]) => [id, {
@@ -2842,7 +3414,10 @@ export const createProductView: CreateProductView = async (input) => {
     // that sub-pixel set. All IDs remain selectable without moving or inventing graph data.
     let target = pick({ x: event.clientX - r.left, y: event.clientY - r.top });
     if (target?.kind === "node") {
-      const representativeId = denseScaleById.get(target.id)?.representativeId ?? target.id;
+      // D087-SIZE BEGIN
+      const representativeId = (axes.projection === "3d" ? coLocatedById.get(target.id)
+        : denseScaleById.get(target.id)?.representativeId) ?? target.id;
+      // D087-SIZE END
       const members = denseMembersByRepresentative.get(representativeId);
       if (members && members.length > 1) {
         const index = lastDensePick?.representativeId === representativeId
@@ -2941,7 +3516,9 @@ export const createProductView: CreateProductView = async (input) => {
         draft.morphologyInput.colonies, appearance.curvature, draft.morphologyInput.containers,
       ]);
       // D082-A-PERF END
-      initialScene = { ...draft, geometry };
+      // D087-SIZE BEGIN
+      initialScene = { ...draft, geometry: axes.projection === "3d" ? semanticMarkGeometry(geometry, degree) : geometry };
+      // D087-SIZE END
       // D082-B-CANOPYN BEGIN: the initial 3D GPU geometry receives the same scene-specific
       // radii and edge widths that the synchronous buffer builder would have used.
       if (axes.projection === '3d' && axes.morphology === 'neural'
@@ -3175,18 +3752,31 @@ export const createProductView: CreateProductView = async (input) => {
     if (!handle) throw new Error("view destroyed");
     const r = container.getBoundingClientRect();
     const mounted = throughVisible(handle.readWorldAnchorWitnesses());
-    const radii = new Map(handle.readNodeFootprintWitnesses().map(footprint => [footprint.id, footprint.coreRadiusPx]));
+    // D087-SIZE BEGIN
+    const footprints = new Map(handle.readNodeFootprintWitnesses().map(footprint =>
+      [footprint.id, { radius: footprint.coreRadiusPx, haloRadius: footprint.haloRadiusPx }] as const));
+    const radii = new Map([...footprints].map(([id, value]) => [id, value.radius] as const));
+    // D087-SIZE END
     // D086-CUSTOM BEGIN: the distinct 2D canvas has no glow witness; use its committed ink radius.
     if (sigma && committedScene && drawnGeometry) for (const node of drawnGeometry.nodes) {
       if (radii.has(node.id)) continue;
       const radius = committedScene.presentation.nodes.get(node.id)?.radiusPx ?? node.radius * appearance.nodeScale;
-      radii.set(node.id, Math.max(0, radius * sigma.scaleSize(1)));
+      const scaled = Math.max(0, radius * sigma.scaleSize(1));
+      radii.set(node.id, scaled);
+      footprints.set(node.id, { radius: scaled, haloRadius: scaled });
     }
     // D086-CUSTOM END
-    const nodeViewport = Object.fromEntries(mounted.map(({ id, position }) => {
+    const nodeViewport: Record<string, { x: number; y: number; radius?: number;
+      haloRadius?: number; representative?: string }> = Object.fromEntries(mounted.map(({ id, position }) => {
       const p = project(position);
-      const radius = radii.get(id);
-      return [id, { x: r.left + p.x, y: r.top + p.y, ...(radius !== undefined ? { radius } : {}) }];
+      const footprint = footprints.get(id);
+      // D087-SIZE BEGIN
+      const representative = axes.projection === "3d" ? coLocatedById.get(id) : undefined;
+      return [id, { x: r.left + p.x, y: r.top + p.y,
+        ...(axes.projection === "2d" ? radii.has(id) ? { radius: radii.get(id)! } : {}
+          : footprint ?? {}),
+        ...(representative && representative !== id ? { representative } : {}) }];
+      // D087-SIZE END
     }));
     const positions = Object.fromEntries(mounted.map(({ id, position }) =>
       [id, { x: position.x, y: position.y, z: position.z }]));
@@ -3406,11 +3996,48 @@ export const createProductView: CreateProductView = async (input) => {
       // D085-X8 BEGIN: witness and status read the same mounted counters.
       const indraComposition = readIndraComposition();
       // D085-X8 END
+      // D087-SIZE BEGIN: sample the shared canvas stroke law after the full-quality restore.
+      const strokeCamera = JSON.stringify(handle.readCameraState());
+      if (axes.projection === '3d' && flowScene && (!strokeWitnessCache || strokeWitnessCache.geometry !== flowScene.geometry
+        || strokeWitnessCache.style !== flowScene.style || strokeWitnessCache.camera !== strokeCamera
+        || strokeWitnessCache.appearanceWidth !== appearance.edgeWidth
+        || strokeWitnessCache.appearanceNodeScale !== appearance.nodeScale
+        || strokeWitnessCache.hoverId !== morphologyInteraction.hoverId
+        || strokeWitnessCache.focusIds !== morphologyInteraction.focusIds))
+        strokeWitnessCache = { geometry: flowScene.geometry, style: flowScene.style,
+          camera: strokeCamera, appearanceWidth: appearance.edgeWidth,
+          appearanceNodeScale: appearance.nodeScale,
+          hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds,
+          widths: morphologyEdgeStrokeWidths(flowScene.geometry, flowScene.style, flowScene.project,
+            appearance, axes.projection, localRect()) };
+      const strokeWidths = strokeWitnessCache?.widths ?? new Map<string, number>();
+      const nativeWidths = axes.projection === '3d' && three
+        ? new Map(three.readRelationGeometryWitnesses().map(edge => [edge.id,
+          // D087-SIZE BEGIN: match the perspective scale applied by the native filament.
+          Math.max(edge.minimumDeviceWidthPx / viewNativeDevicePixelRatio,
+            (edge.widthStartPx + edge.widthEndPx) / 2
+              * perspectiveSizeScale(three!.readReviewCameraPose(), edge.controlPoint))] as const))
+          // D087-SIZE END
+        : new Map<string, number>();
+      const edgeViewport = Object.fromEntries(drawnEdges.flatMap(edge => {
+        const strokeWidth = strokeWidths.get(edge.id) ?? nativeWidths.get(edge.id);
+        return strokeWidth === undefined ? [] : [[edge.id, { strokeWidth }]];
+      }));
+      // D087-SIZE END
       return {
         axes,
+        // D087-SIZE BEGIN: the existing view witness exposes the actual full-graph leaf base.
+        ...(axes.projection === "3d" && fullGraphLeafBases.get(fullGraphLeafKey())
+          ? { leafCalibration: { ...fullGraphLeafBases.get(fullGraphLeafKey())!,
+            fullGraphNodes: input.data.nodes.length } } : {}),
+        // D087-SIZE END
+        // D087-SIZE BEGIN: a sparse 3D mounted settle that kept its mounted sizes is visible here.
+        ...(axes.projection === "3d" ? { sparse3dMountSettleFailed } : {}),
+        // D087-SIZE END
         cameraKind: handle.cameraKind,
         visibleRect: pageRect(),
         nodeViewport,
+        ...(axes.projection === "3d" ? { edgeViewport } : {}),
         positions,
         labels: placed,
         titleCount: visibleTitleCount,

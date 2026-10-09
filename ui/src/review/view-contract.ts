@@ -418,7 +418,12 @@ export type ViewWitness = {
   /** The canvas area really available for the graph: the container minus the declared insets. */
   readonly visibleRect: ViewportRect;
   /** Projected centre of every visible node, page CSS pixels; `radius` is the drawn pearl/soma disc radius. */
-  readonly nodeViewport: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number }>>;
+  // D087-SIZE BEGIN: both radii are live drawn CSS-pixel footprints.
+  readonly nodeViewport: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number;
+    readonly haloRadius?: number; readonly representative?: string }>>;
+  /** Visible real relations sampled at their drawn centre-line in CSS pixels. */
+  readonly edgeViewport?: Readonly<Record<string, { readonly strokeWidth: number }>>;
+  // D087-SIZE END
   /** World coordinates of every visible node, in the layout's own space. */
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly labels: readonly LabelWitness[];
@@ -480,6 +485,11 @@ export type ViewInput = {
    * view must honour it by passing it to `placeLabels` as its budget; absent, it keeps using
    * `LABEL_BUDGET`. */
   readonly labelBudget?: number;
+  // D087-SIZE BEGIN: the page owns the full snapshot hierarchy; a density mounts a subset of it.
+  // This is every id with at least one child in that full hierarchy, so structural/leaf
+  // classification never depends on which children the mounted subset happens to admit.
+  readonly fullGraphStructuralIds?: ReadonlySet<string>;
+  // D087-SIZE END
 };
 
 /** Exact own-property register for the renderer input envelope; optional entries may be absent. */
@@ -490,11 +500,17 @@ export const VIEW_INPUT_FIELD_REGISTER = {
     // D085-S3 BEGIN: the live Lab taxonomy belongs to this exact input envelope.
     "labTopology", "labIndra",
     // D085-S3 END
+    // D087-SIZE BEGIN
+    "fullGraphStructuralIds",
+    // D087-SIZE END
   ],
   optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "brain", "flowMotion", "appearance", "customPalette", "labelBudget",
     // D085-S3 BEGIN
     "labTopology", "labIndra",
     // D085-S3 END
+    // D087-SIZE BEGIN
+    "fullGraphStructuralIds",
+    // D087-SIZE END
   ],
   axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],
   /** Producer-optional axes: the explicit Natural arrangement, absent until a producer resolves it. */

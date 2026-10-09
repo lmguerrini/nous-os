@@ -77,7 +77,7 @@ import {
 import { applyRenderedStateChannel, renderedStateChannel, renderedStateToken } from "#scene/rendered-state.ts";
 
 /** Largest halo-to-core ratio for nodes whose radius the review page states explicitly. */
-const REVIEW_HALO_TO_CORE_MAX = 3;
+export const REVIEW_HALO_TO_CORE_MAX = 3;
 
 /** This is the mathematical divisor for a midpoint or symmetric half-width and does not borrow a filament tuning value. */
 const BISECTION_DIVISOR = 2;
@@ -1516,10 +1516,14 @@ function sceneNode(
   const blindTerminal = isTerminal && material.terminalTreatment === MYCELIUM.terminalTreatment;
   const channel = renderedStateChannel(node.rendered ?? null, calibration);
   const baseToken = nodeTokenForMaterial(tokens, material, resolved, calibration);
-  const requestedHaloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx)
-    * selectedMultiplier * (appearance ? appearance.haloPermille / scale : 1);
+  // D087-SIZE BEGIN
+  const requestedHaloRadiusPx = appearance?.haloRadiusPx !== undefined
+    ? appearance.haloRadiusPx * selectedMultiplier
+    : (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx)
+      * selectedMultiplier * (appearance ? appearance.haloPermille / scale : 1);
+  // D087-SIZE END
   const requestedHaloIntensityPermille = materialIncludes(resolved.node, "halo")
-    ? material.haloIntensityPermille
+    ? appearance?.haloIntensityPermille ?? material.haloIntensityPermille
     : 0;
   // An explicit review radius also bounds the halo, so a high-degree aggregate never becomes a giant disc; without it the
   // engine's own halo stays exactly as before.
@@ -1553,13 +1557,18 @@ function sceneNode(
     terminalTreatment: isTerminal ? material.terminalTreatment : null,
     haloRadiusPx,
     // D082-A-NODES BEGIN
-    haloCoreGapPx: completaPoint ? 0 : fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
+    // D087-SIZE BEGIN: a leaf's short halo and a coalesced member cannot regain a scene floor.
+    haloCoreGapPx: radiusPx === 0 || appearance?.leafMark || presentation?.morphologyLanguage === "distinct" ? 0
+      : completaPoint || fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
     // D082-A-NODES END
     haloIntensityPermille,
     haloAlphaStops: resolveSceneHaloAlphaStops(haloIntensityPermille, calibration),
     coreSharpnessPermille: calibration.morphology[morphology.id].coreSharpnessPermille,
     // D082-A-NODES BEGIN
-    minimumCoreDeviceRadiusPx: completaPoint ? 0 : calibration.salience.minimumCoreDeviceRadiusPx,
+    minimumCoreDeviceRadiusPx: radiusPx === 0 || appearance?.leafMark || completaPoint
+      || presentation?.morphologyLanguage === "distinct"
+      ? 0 : calibration.salience.minimumCoreDeviceRadiusPx,
+    // D087-SIZE END
     // D082-A-NODES END
     labelCandidacy: presentation?.nativeLabels === false ? null : materialIncludes(resolved.node, "label") ? {
       text: node.visual.role,

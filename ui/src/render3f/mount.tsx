@@ -1659,8 +1659,9 @@ export function mount(
         // D085-S3 BEGIN: reuse the existing node-attribute update decision when
         // deciding whether this revision will rebuild the native proxy below.
         // D086-CUSTOM BEGIN: entering or leaving dense policy refreshes resident GPU and proxy radii.
-        const updatesNativeNodeAttributes = (liveUsesDenseDrawingPolicy || update.usesDenseDrawingPolicy === true)
-          && update.nodeEntries.size > 0;
+        // D087-SIZE BEGIN: every sparse revision also changes resident GPU marks.
+        const updatesNativeNodeAttributes = update.nodeEntries.size > 0;
+        // D087-SIZE END
         const nextDenseNeuralPointFloorCssPx = neuralPointFloorFor(update.usesDenseDrawingPolicy === true,
           update.denseNativeRadiusOnly === true);
         const updatesNeuralPointFloor = nextDenseNeuralPointFloorCssPx !== denseNeuralPointFloorCssPx;
@@ -1695,21 +1696,46 @@ export function mount(
           const halo = nodeResources.geometry.getAttribute("a_haloRadiusPx") as THREE.InstancedBufferAttribute;
           const gap = nodeResources.geometry.getAttribute("a_haloCoreGapPx") as THREE.InstancedBufferAttribute;
           const floor = nodeResources.geometry.getAttribute("a_minimumCoreDeviceRadiusPx") as THREE.InstancedBufferAttribute;
+          // D087-SIZE BEGIN
+          const intensity = nodeResources.geometry.getAttribute("a_haloIntensityPermille") as THREE.InstancedBufferAttribute | undefined;
+          let radiiChanged = false;
+          // D087-SIZE END
           for (const [id, entry] of update.nodeEntries) {
             const nodeIndex = indexById.get(id);
             if (nodeIndex === undefined || entry.radiusPx === undefined) continue;
+            // D087-SIZE BEGIN: a density-only update does not replace a resident semantic halo.
+            const painted = entry.radiusPx > 0;
+            const nativeHalo = painted ? entry.haloRadiusPx ?? live.buffers.nodes.haloRadiiPx[nodeIndex]! : 0;
+            const nativeGap = painted ? live.buffers.nodes.haloCoreGapsPx[nodeIndex]! : 0;
+            const nativeFloor = painted ? live.buffers.nodes.minimumCoreDeviceRadiiPx[nodeIndex]! : 0;
+            const nativeIntensity = painted ? entry.haloIntensityPermille
+              ?? live.buffers.nodes.haloIntensityPermille?.[nodeIndex] ?? 0 : 0;
+            if (core.getX(nodeIndex) === entry.radiusPx && halo.getX(nodeIndex) === nativeHalo
+              && gap.getX(nodeIndex) === nativeGap && floor.getX(nodeIndex) === nativeFloor
+              && (!intensity || intensity.getX(nodeIndex) === nativeIntensity)) continue;
+            // D087-SIZE END
             core.setX(nodeIndex, entry.radiusPx);
-            halo.setX(nodeIndex, entry.haloRadiusPx ?? entry.radiusPx);
-            gap.setX(nodeIndex, 0);
-            floor.setX(nodeIndex, 0);
-            denseNodeRadii.set(id, { radius: entry.radiusPx, halo: entry.haloRadiusPx ?? entry.radiusPx });
+            // D087-SIZE BEGIN
+            radiiChanged = true;
+            // D087-SIZE END
+            halo.setX(nodeIndex, nativeHalo);
+            gap.setX(nodeIndex, nativeGap);
+            floor.setX(nodeIndex, nativeFloor);
+            intensity?.setX(nodeIndex, nativeIntensity);
+            denseNodeRadii.set(id, { radius: entry.radiusPx, halo: nativeHalo });
           }
-          core.needsUpdate = halo.needsUpdate = gap.needsUpdate = floor.needsUpdate = true;
-          // D085-S3 BEGIN: keep resident real-ID anchors in the current size revision.
-          rebuildNativeProxy();
-          applyNativeLabPolicy(ladder.state.stage);
-          // D085-S3 END
-          renderFrame();
+          // D087-SIZE BEGIN: a style-only or equal-radius revision must not upload the
+          // entire resident instance buffer or rebuild its moving proxy.
+          if (radiiChanged) {
+            core.needsUpdate = halo.needsUpdate = gap.needsUpdate = floor.needsUpdate = true;
+            if (intensity) intensity.needsUpdate = true;
+            // D085-S3 BEGIN: keep resident real-ID anchors in the current size revision.
+            rebuildNativeProxy();
+            applyNativeLabPolicy(ladder.state.stage);
+            // D085-S3 END
+            renderFrame();
+          }
+          // D087-SIZE END
         }
         if (nativeEdgeVeilById.size) {
           for (const [id, entry] of update.edgeEntries) if (entry.presentation)
@@ -2107,17 +2133,21 @@ function readNodeFootprints(live: LiveSceneState, rig: CameraRig, ids?: Readonly
   const coreAttribute = geometry?.getAttribute("a_coreRadiusPx") as THREE.InstancedBufferAttribute | undefined;
   const haloAttribute = geometry?.getAttribute("a_haloRadiusPx") as THREE.InstancedBufferAttribute | undefined;
   const gapAttribute = geometry?.getAttribute("a_haloCoreGapPx") as THREE.InstancedBufferAttribute | undefined;
+  // D087-SIZE BEGIN: the shader floors the core before it computes the halo gap.
+  const floorAttribute = geometry?.getAttribute("a_minimumCoreDeviceRadiusPx") as THREE.InstancedBufferAttribute | undefined;
+  // D087-SIZE END
   const result: NodeFootprintWitness[] = [];
   buffers.ids.forEach((id, index) => {
     if (ids && !ids.has(id)) return;
     const position = coordinatesAt(buffers.positions, index);
     const sizeScale = rig.sizeScaleAt(position);
-    const coreRadiusPx = requiredNumber(coreAttribute?.getX(index) ?? buffers.coreRadiiPx[index], `mounted node ${id} core radius`) * sizeScale;
+    const coreRadiusPx = Math.max(
+      requiredNumber(coreAttribute?.getX(index) ?? buffers.coreRadiiPx[index], `mounted node ${id} core radius`) * sizeScale,
+      requiredNumber(floorAttribute?.getX(index) ?? buffers.minimumCoreDeviceRadiiPx[index], `mounted node ${id} core floor`));
     const requestedHaloRadius = requiredNumber(haloAttribute?.getX(index) ?? buffers.haloRadiiPx[index], `mounted node ${id} halo radius`) * sizeScale;
     const gapHaloRadius = (
-      requiredNumber(coreAttribute?.getX(index) ?? buffers.coreRadiiPx[index], `mounted node ${id} core radius`)
-      + requiredNumber(gapAttribute?.getX(index) ?? buffers.haloCoreGapsPx[index], `mounted node ${id} halo core gap`)
-    ) * sizeScale;
+      coreRadiusPx + requiredNumber(gapAttribute?.getX(index) ?? buffers.haloCoreGapsPx[index], `mounted node ${id} halo core gap`) * sizeScale
+    );
     result.push({
       id,
       viewportCenter: rig.graphToViewport(position),
