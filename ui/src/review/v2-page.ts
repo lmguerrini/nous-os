@@ -5176,6 +5176,16 @@ export class V2Page {
                     // D082-A-DENSITY BEGIN
                     this.densitySwitchPending = false;
                     // D082-A-DENSITY END
+                    // D086-BURST BEGIN: the accepted in-place drawing owns the
+                    // resident host. Replay its matching frame after page status;
+                    // a newly presented subset frame replaces this certificate.
+                    if (this.viewHost) {
+                        const readinessOwner = this.topology !== 'natural'
+                            ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
+                        const expectedView = `${readinessOwner}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`;
+                        activateRenderReadinessHost(this.viewHost, expectedView);
+                    }
+                    // D086-BURST END
                     return;
                 }
                 // The view could not take the update in place: fall through and remount as before.
@@ -5659,17 +5669,24 @@ export class V2Page {
             }
             // D085-S7 END
             this.refreshPending--;
-            if (this.d081Quality === 'recupero' && this.refreshPending === 0) {
+            // D086-BURST BEGIN: a superseded job may release the last pending
+            // count after the current commit. In that case reconcile only the
+            // committed drawing, never its superseded preparation.
+            const committedView = this.density === this.committedDensity
+                && this.topology === this.committedTaxonomy.topology
+                && this.topologyIndra === this.committedTaxonomy.indra;
+            const reconcile = projectionEpoch === this.projectionEpoch
+                || this.refreshPending === 0 && committedView && !this.geometryTransitionActive;
+            if (reconcile && this.d081Quality === 'recupero' && this.refreshPending === 0) {
                 this.d081FinishIfReady();
             }
             // D082-A-HUD BEGIN: publish after the pending scene count changes, including refusal paths.
-            this.d081Emit();
+            if (reconcile) this.d081Emit();
             // D082-A-HUD END
+            // D086-BURST END
             // D086-BURST BEGIN: an accepted return to a resident drawing has no new frame.
             // Replay only when that drawing already certifies this committed state.
-            if (projectionEpoch === this.projectionEpoch && this.density === this.committedDensity
-                && this.topology === this.committedTaxonomy.topology
-                && this.topologyIndra === this.committedTaxonomy.indra) {
+            if (reconcile && committedView) {
                 const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
                 const readinessOwner = this.topology !== 'natural'
                     ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
@@ -5677,7 +5694,12 @@ export class V2Page {
                 const presented = liveHost ? activateRenderReadinessHost(liveHost, expectedView) : null;
                 if (presented?.quality === 'completa' && this.d081Quality === 'recupero') {
                     this.d081Quality = 'completa';
-                    this.d081Emit();
+                    // A superseded refresh can still be draining. Its count is
+                    // preparation only and must not clear this renderer frame.
+                    if (this.refreshPending === 0) {
+                        this.d081Emit();
+                        if (liveHost) activateRenderReadinessHost(liveHost, expectedView);
+                    }
                 }
             }
             // D086-BURST END
