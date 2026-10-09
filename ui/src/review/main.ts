@@ -595,7 +595,7 @@ function syncTaxonomyControls(): void {
     // explains the measured gate in both dimensions.
     const focusableJuliaRefusal = id === 'julia' && on && !support.ok;
     // D087-JULIA BEGIN
-    const pendingJulia = focusableJuliaRefusal && support.reason.includes('verifica in corso');
+    const pendingJulia = focusableJuliaRefusal && !juliaIndraGateStatus(axes.projection).evaluated;
     button.setAttribute('aria-busy', String(pendingJulia));
     if (pendingJulia) button.textContent = 'ON · verifica';
     else button.textContent = on ? 'ON' : 'OFF';
@@ -1111,28 +1111,12 @@ function readD081Status(): D081GraphStatus | null {
 // D085-S5 BEGIN: page-owned status sources can change after a taxonomy switch.
 let indraStatusSource: (() => D081GraphStatus) | undefined;
 let indraStatusWrapper: (() => D081GraphStatus) | undefined;
-// D087-JULIA BEGIN
-let lastJuliaAtlasGateKey = '';
-// D087-JULIA END
 // D085-S5 END
 function syncContractGraphStatus(): void {
   const contract = readD081Status();
   if (!contract) return;
-  // D087-JULIA BEGIN: once a settled renderer reports its own phase, it
-  // supersedes the source-only preflight for selector admission and refusal text.
-  if (contract.juliaAtlas && contract.quality === 'completa' && !('mode' in geometry)
-    && geometry.topology === 'julia' && geometry.indra === 'on') {
-    const metric = contract.juliaAtlas;
-    const key = JSON.stringify(metric);
-    if (key !== lastJuliaAtlasGateKey) {
-      lastJuliaAtlasGateKey = key;
-      const eligible = metric.phase === 'overview' ? metric.closedPearlsRequired : metric.openEligible;
-      const passing = metric.phase === 'overview' ? Math.min(eligible, metric.closedPearlsDrawn) : metric.openPassing;
-      setJuliaIndraLegibility(axes.projection, metric.ok, { ...metric,
-        eligible, passing, share: eligible ? passing / eligible : 0 });
-      syncTaxonomyControls();
-    }
-  }
+  // D087-JULIA BEGIN: the observed phase stays in contract.juliaAtlas. Only
+  // source preflight may write the selector admission registry.
   // D087-JULIA END
   const formatted = formatD081GraphStatus(contract);
   // D082-A-HUD BEGIN: avoid identical human-status mutations that can retrigger observers.

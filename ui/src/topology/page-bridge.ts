@@ -181,18 +181,29 @@ export function preflightJuliaIndraAtlasAsync(snapshot: TopologySnapshot,
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
+    // D087-JULIA BEGIN: an unresponsive preflight cannot hold URL admission
+    // indefinitely. Only this one-shot worker belongs to this request.
+    let settled = false;
+    const finish = (result: JuliaAtlasPreflight | Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      worker.terminate();
+      if (result instanceof Error) reject(result); else resolve(result);
+    };
+    const timeout = setTimeout(() => finish(new Error('Julia atlas preflight timed out')), 15000);
+    // D087-JULIA END
     const requestId = ++nextLayoutRequest;
     worker.onmessage = event => {
       const message = event.data as { kind?: string; requestId?: number;
         result?: JuliaAtlasPreflight; message?: string };
       if (message.requestId !== requestId) return;
-      worker.terminate();
-      if (message.kind === 'julia-atlas-preflight-result' && message.result) resolve(message.result);
-      else reject(new Error(message.message ?? 'Julia atlas preflight failed'));
+      if (message.kind === 'julia-atlas-preflight-result' && message.result) finish(message.result);
+      else finish(new Error(message.message ?? 'Julia atlas preflight failed'));
     };
-    worker.onerror = event => { worker.terminate(); reject(new Error(event.message || 'Julia atlas preflight failed')); };
+    worker.onerror = event => finish(new Error(event.message || 'Julia atlas preflight failed'));
     try { worker.postMessage({ kind: 'julia-atlas-preflight', requestId, snapshot, dimension }); }
-    catch (error) { worker.terminate(); reject(error instanceof Error ? error : new Error(String(error))); }
+    catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
   });
 }
 // D087-JULIA END

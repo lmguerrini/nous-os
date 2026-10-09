@@ -48,7 +48,7 @@ test('taxonomy changes replace styled tooltips and leave no native title', async
   const geometry = { topology: 'julia', indra: 'on' };
   const axes = { projection: '2d' };
   const run = new Function('document', 'geometry', 'axes', 'v2', 'viewport', 'lawTopology',
-    'topologyRowState', 'topologySupport', 'topologyTooltip',
+    'topologyRowState', 'topologySupport', 'topologyTooltip', 'juliaIndraGateStatus',
     `${helper}\n${sync}\nreturn syncTaxonomyControls;`)(
     document, geometry, axes, {}, {}, (id: string) => id,
     (id: string, _dimension: string, indra: boolean) => ({
@@ -57,6 +57,7 @@ test('taxonomy changes replace styled tooltips and leave no native title', async
     }),
     (id: string, _dimension: string, on: boolean) => id === 'julia' && on
       ? { ok: false, reason: refusal } : { ok: true }, topologyTooltip,
+    () => ({ evaluated: true, ok: false }),
   ) as () => void;
 
   run();

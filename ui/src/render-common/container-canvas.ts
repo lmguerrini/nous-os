@@ -649,9 +649,13 @@ export function containerTitleRect(
     const center = project(container.center);
     const rim = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
     const width = Math.min(30, badgeCount.length * 4.7);
-    if (rim < 8 || center.x - rim < 0 || center.y - rim < 0
-      || center.x + rim > bounds.width || center.y + rim > bounds.height) return null;
-    return { left: center.x - width / 2, top: center.y - 6, width, height: 12 };
+    if (rim < 8 || center.x + rim < 0 || center.y + rim < 0
+      || center.x - rim > bounds.width || center.y - rim > bounds.height) return null;
+    // D087-JULIA BEGIN: a partially visible rim may still carry its badge.
+    // Keep the entire count on canvas, even when the centre reaches an edge.
+    return { left: Math.max(1, Math.min(bounds.width - width - 1, center.x - width / 2)),
+      top: Math.max(1, Math.min(bounds.height - 13, center.y - 6)), width, height: 12 };
+    // D087-JULIA END
   }
   // D087-JULIA END
   if (!readableTruncatedText(containerTitleLayout(container.title, measure, container.level).text)) return null;

@@ -1308,10 +1308,6 @@ export const createProductView: CreateProductView = async (input) => {
     visibleTitleCount = titlePlacements.length;
     const titledContainerIds = new Set(titlePlacements.map(placement => placement.id));
     if (juliaAtlas) juliaAtlasTitledIds = titledContainerIds;
-    // D087-JULIA-PROBE (temporary)
-    if (juliaAtlas) console.log('[J87label]', { paths: pathById.size, placed: titlePlacements.length,
-      labelContainers: labelContainers?.length ?? -1, rims: morphologyInteraction.forceJuliaAtlasRims,
-      titles: [...titledContainerIds].slice(0, 3), bounds: titleBounds });
     const footprintRadius = new Map(footprints.map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
     const fullText = new Map<string, string>();
@@ -1331,8 +1327,10 @@ export const createProductView: CreateProductView = async (input) => {
       // A container whose canvas title is drawn carries no second name (its own node label waits).
       // D087-JULIA BEGIN: a compact atlas +N badge does not replace the
       // important domain name when the normal node label can fit nearby.
-      if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id)
-        && !(juliaAtlas && (pathById.get(id)?.level ?? 9) <= 2))
+      if (pathById.has(id) && titledContainerIds.has(id)
+        && !(juliaAtlas && pathById.get(id)?.open === false
+          && (pathById.get(id)?.level ?? 9) <= 2)
+        && !(!juliaAtlas && (chosen || hovered)))
       // D087-JULIA END
         continue;
       const kind = labelCandidateKind({ id, node, selected: chosen, hovered, labels: axes.labels,
@@ -2298,17 +2296,10 @@ export const createProductView: CreateProductView = async (input) => {
     mountOpeningCamera = openingCamera;
     mountOpeningPoints = openingPoints;
     const saved = restoreSavedCamera();
-    // D087-JULIA-PROBE (temporary)
-    if (juliaAtlas) console.log('[J87fit]', { restored: Boolean(saved && validCamera(saved)),
-      org: axes.organization, containers: layoutContainers?.length ?? -1, visible: visible.size });
     if (saved && validCamera(saved)) handle.restoreCameraState(saved);
     else {
       handle.restoreCameraState(openingCamera);
       const initialPoints = openingPoints();
-      // D087-JULIA-PROBE (temporary)
-      if (juliaAtlas) console.log('[J87solve]', { points: initialPoints.length,
-        spread: initialPoints.length ? { x: Math.max(...initialPoints.map(p => Math.abs(p.x))),
-          y: Math.max(...initialPoints.map(p => Math.abs(p.y))) } : null });
       solveFraming(handle, {
         points: initialPoints,
         rect: localRect(),
@@ -3302,8 +3293,25 @@ export const createProductView: CreateProductView = async (input) => {
     // D085-X8 BEGIN
     readIndraComposition,
     // D087-JULIA BEGIN
-    readJuliaAtlasInk() { return { shells: juliaAtlasDrawnShells,
-      countedShellIds: [...juliaAtlasTitledIds] }; },
+    readJuliaAtlasInk() {
+      // D087-JULIA BEGIN: the distinct 2D canvas has no world-anchor footprint
+      // witness. Its committed geometry and positive ink radius are the source
+      // of painted IDs; 3D keeps the renderer's viewport footprint witness.
+      const sigma2d = sigma;
+      const paintedNodeIds = sigma2d && drawnGeometry && committedScene
+        ? drawnGeometry.nodes.filter(node => {
+          const radius = (committedScene!.presentation.nodes.get(node.id)?.radiusPx
+            ?? node.radius * appearance.nodeScale) * sigma2d.scaleSize(1);
+          if (!(radius > 0)) return false;
+          const p = project(node.position);
+          return p.x + radius >= 0 && p.x - radius <= container.clientWidth
+            && p.y + radius >= 0 && p.y - radius <= container.clientHeight;
+        }).map(node => node.id)
+        : readGestureWitness().viewportPaintedNodeIds;
+      return { shells: juliaAtlasDrawnShells,
+        countedShellIds: [...juliaAtlasTitledIds], paintedNodeIds };
+      // D087-JULIA END
+    },
     // D087-JULIA END
     // D085-X8 END
     witness() {

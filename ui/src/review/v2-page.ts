@@ -745,6 +745,8 @@ export class V2Page {
     private lawLayout: TopologyLayout | null = null;
     // D087-JULIA BEGIN
     private juliaAtlasOverviewCamera: unknown = null;
+    private juliaAtlasAdmitted = new Set<string>();
+    private juliaAtlasAdmittedDimension: '2d' | '3d' | null = null;
     // D087-JULIA END
     private guideLayer: { destroy(): void; invalidate(): void } | null = null;
     // D085-S4 BEGIN: the state of the Llull overview fold.
@@ -783,13 +785,11 @@ export class V2Page {
     // D087-JULIA BEGIN
     private juliaAtlasFocusParent(): string | null {
         if (this.topology !== 'julia' || !this.topologyIndra || !this.selected) return null;
+        if (this.juliaAtlasAdmittedDimension !== this.axes.projection) return null;
         const byId = new Map(this.lawSnapshot.nodes.map(node => [node.id, node]));
-        const counts = new Map<string, number>();
-        for (const node of this.lawSnapshot.nodes) if (node.parent)
-            counts.set(node.parent, (counts.get(node.parent) ?? 0) + 1);
         let node = byId.get(this.selected);
         while (node) {
-            if ((counts.get(node.id) ?? 0) >= 3) return node.id;
+            if (this.juliaAtlasAdmitted.has(node.id)) return node.id;
             node = node.parent ? byId.get(node.parent) : undefined;
         }
         return null;
@@ -798,23 +798,17 @@ export class V2Page {
         if (this.topology !== 'julia' || !this.topologyIndra || !isJuliaAtlasLayout(this.lawLayout) || !this.view?.projectPoint)
             return null;
         const ink = (this.view as ProductView & { readJuliaAtlasInk?: () => {
-            shells: readonly { id: string; radiusPx: number }[]; countedShellIds: readonly string[] } }).readJuliaAtlasInk?.();
+            shells: readonly { id: string; radiusPx: number }[]; countedShellIds: readonly string[];
+            paintedNodeIds: readonly string[] } }).readJuliaAtlasInk?.();
         if (!ink) return null;
         const canvases = document.querySelectorAll<HTMLCanvasElement>('#render-root canvas[data-topology-guides]');
         const canvas = canvases.item(canvases.length - 1);
         let guideIds: string[] = [];
         try { guideIds = JSON.parse(canvas?.dataset.atlasDrawnIds ?? '[]') as string[]; } catch { /* no drawn guides */ }
-        const painted = (this.view.gestureWitness?.() as { viewportPaintedNodeIds?: readonly string[] } | undefined)
-            ?.viewportPaintedNodeIds ?? [];
-        // D087-JULIA-PROBE (temporary)
-        console.log('[J87cert]', { shells: ink.shells.length, counted: ink.countedShellIds.length,
-          countedSample: ink.countedShellIds.slice(0, 3), painted: painted.length,
-          guides: guideIds.length, containers: this.containers.length,
-          shellsSample: ink.shells.slice(0, 2) });
         const radii = new Map(ink.shells.map(shell => [shell.id, shell.radiusPx]));
         const host = document.getElementById('render-root');
         return certifyJuliaAtlasDrawing(this.lawLayout, this.lawSnapshot, {
-            nodeIds: new Set(painted), shellIds: new Set(ink.shells.map(shell => shell.id)),
+            nodeIds: new Set(ink.paintedNodeIds), shellIds: new Set(ink.shells.map(shell => shell.id)),
             countedShellIds: new Set(ink.countedShellIds.filter(id =>
                 this.containers.some(shell => shell.id === id && / · \+\d+$/.test(shell.title ?? '')))),
             guideIds: new Set(guideIds), project: point => this.view!.projectPoint!(point),
@@ -5592,6 +5586,17 @@ export class V2Page {
             this.rawPositions = nextRawPositions;
             // D082-B2 BEGIN
             this.lawLayout = lawResult;
+            // D087-JULIA BEGIN: only the overview's promised pearls can open.
+            // A pathological parent excluded by admission cannot fail a later
+            // search selection or replace the mounted topology.
+            if (isJuliaAtlasLayout(lawResult) && lawResult.atlas.phase === 'overview') {
+                this.juliaAtlasAdmitted = new Set(lawResult.phaseNodeIds);
+                this.juliaAtlasAdmittedDimension = projection;
+            } else if (!isJuliaAtlasLayout(lawResult)) {
+                this.juliaAtlasAdmitted.clear();
+                this.juliaAtlasAdmittedDimension = null;
+            }
+            // D087-JULIA END
             // D082-B2 END
             this.layoutProjection = projection;
             this.canonicalPositions = nextCanonicalPositions;
