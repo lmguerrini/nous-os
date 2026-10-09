@@ -1557,13 +1557,17 @@ function sceneNode(
     terminalTreatment: isTerminal ? material.terminalTreatment : null,
     haloRadiusPx,
     // D082-A-NODES BEGIN
-    haloCoreGapPx: completaPoint ? 0 : fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
+    // D087-SIZE BEGIN: a leaf's short halo and a coalesced member cannot regain a scene floor.
+    haloCoreGapPx: radiusPx === 0 || appearance?.leafMark ? 0
+      : completaPoint || fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
     // D082-A-NODES END
     haloIntensityPermille,
     haloAlphaStops: resolveSceneHaloAlphaStops(haloIntensityPermille, calibration),
     coreSharpnessPermille: calibration.morphology[morphology.id].coreSharpnessPermille,
     // D082-A-NODES BEGIN
-    minimumCoreDeviceRadiusPx: completaPoint ? 0 : calibration.salience.minimumCoreDeviceRadiusPx,
+    minimumCoreDeviceRadiusPx: radiusPx === 0 || appearance?.leafMark || completaPoint
+      ? 0 : calibration.salience.minimumCoreDeviceRadiusPx,
+    // D087-SIZE END
     // D082-A-NODES END
     labelCandidacy: presentation?.nativeLabels === false ? null : materialIncludes(resolved.node, "label") ? {
       text: node.visual.role,

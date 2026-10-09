@@ -83,6 +83,11 @@ import { nonNeuralCompletaScreenDensities } from './non-neural-completa-fit.ts';
 // D082-A-NODES BEGIN
 // D086-F1 BEGIN
 import { labNativeSizeLawApplies, semanticMarkGeometry } from "../render-common/native-node-law.ts";
+// D087-SIZE BEGIN
+import { canvasNodeRadiusPx } from "../render-common/native-node-law.ts";
+import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX, LEAF_HALO_RATIO,
+  LEAF_HALO_INTENSITY_PERMILLE } from "../render-common/semantic-node-mark.ts";
+// D087-SIZE END
 // D086-F1 END
 import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
 import type { DenseEdgeScreenSegment } from '../render-common/dense-node-scale.ts';
@@ -95,7 +100,7 @@ import { canopyCompletaCalibration } from '../fractal/canopy-completa-calibratio
 // D082-B-CANOPYN BEGIN
 import { canopyCompleteNodeScales } from '../fractal/canopy-node-policy.ts';
 import { prepareCanopyNeural3dMount } from '../fractal/canopy-neural-prep.ts';
-import { canopyInitialFitNeedsSubsetRefresh, canopyEmphasisChanged,
+import { canopyEmphasisChanged,
   prepareCanopyDenseInStages } from '../fractal/canopy-neural-stages.ts';
 // D082-B-CANOPYN END
 // D082-B1f END
@@ -672,6 +677,13 @@ export const createProductView: CreateProductView = async (input) => {
   const indraAnchors = input.v2Prepared ? base.indra : placeDynamic(base.indra, input.data);
   const fullDepth = input.v2Prepared ? base.flat : placeDynamic(base.depth, input.data);
   const nodesById = new Map(input.data.nodes.map((node) => [node.id, node]));
+  // D087-SIZE BEGIN: classification always reads the full hierarchy.
+  const structuralIds = new Set(input.data.nodes.flatMap(node => {
+    const parent = (node.v2 as { parent?: string | null } | undefined)?.parent;
+    return parent ? [parent] : [];
+  }));
+  const leafFitGivenById = new Map<string, number>();
+  // D087-SIZE END
   const edgesById = new Map(input.data.edges.map((edge) => [edge.id, edge]));
   const degree = new Map<string, number>();
   for (const edge of input.data.edges) {
@@ -772,6 +784,11 @@ export const createProductView: CreateProductView = async (input) => {
   let canopyPendingEdgeSegments: readonly DenseEdgeScreenSegment[] = [];
   // D082-B1f END
   let denseMembersByRepresentative = new Map<string, string[]>();
+  // D087-SIZE BEGIN
+  let coLocatedById: ReadonlyMap<string, string> = new Map();
+  let coLocationCameraKey = '';
+  let coLocationRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  // D087-SIZE END
   let lastDensePick: { representativeId: string; index: number } | null = null;
   // Screen-space edge density per drawn edge and the zoom blend the last scene build used; both
   // live only inside the reference Completa gate, exactly like denseScaleById.
@@ -799,6 +816,9 @@ export const createProductView: CreateProductView = async (input) => {
   // in-place subset change can ship only the entries that actually flipped.
   // D082-A-NODES BEGIN
   let lastNodeMarks = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined;
+    // D087-SIZE BEGIN
+    leafMark: boolean | undefined;
+    // D087-SIZE END
     radiusPx: number | undefined; haloRadiusPx: number | undefined;
     haloIntensityPermille: number | undefined;
     tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
@@ -1167,8 +1187,8 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-NODES BEGIN
       // Only the representative has ink at this position. Keep the normal generous pick target
       // around that one point, then the click handler cycles through its real member IDs.
-      if (denseScaleById.size && given === 0) return [];
-      const basis = Math.min(contract.node.maxRadiusPx, Math.max(denseScaleById.size ? 0.5
+      if (given === 0) return [];
+      const basis = Math.min(contract.node.maxRadiusPx, Math.max(input.v2Prepared && !structuralIds.has(node.id) ? 0.5
         : axes.morphology === "mycelium" ? 1.3 : 2,
         given * scale * contract.node.scale));
       const radius = axes.morphology === "stellar" && basis > 1 ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
@@ -1595,6 +1615,24 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN: decoration is reported before a changed zoom band is derived.
     scheduleDenseZoomRefresh();
     // D082-A-NODES END
+    // D087-SIZE BEGIN: orbit and zoom change screen-centre co-location at settled quality.
+    if (lodMode && input.v2Prepared && handle && committedScene && !coLocationRefreshTimer) {
+      const key = JSON.stringify(handle.readCameraState());
+      if (key !== coLocationCameraKey) {
+        coLocationRefreshTimer = setTimeout(() => {
+          coLocationRefreshTimer = undefined;
+          if (!handle || destroyed || morphologyInteraction.quality !== 'full') return;
+          const settledKey = JSON.stringify(handle.readCameraState());
+          if (settledKey === coLocationCameraKey) return;
+          coLocationCameraKey = settledKey;
+          const lifted = drawnEdges.flatMap(edge => edge.v2
+            ? [edge.v2 as import("./v2-relations.ts").LiftedRelation] : []);
+          if (lifted.length === drawnEdges.length)
+            applyVisibleSubset({ visibleNodeIds: visible, edges: lifted });
+        }, 0);
+      }
+    }
+    // D087-SIZE END
   };
   // D082-A-NODES BEGIN
   function scheduleDenseZoomRefresh() {
@@ -1962,7 +2000,50 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-NCOMPLETA END
     }
     // D082-A-NODES END
-    // D087-SIZE BEGIN
+    // D087-SIZE BEGIN: one fitted leaf law and one screen-space co-location pass for every density.
+    const markNodes = input.data.nodes.filter(node => state.visible.has(node.id) && anchors.has(node.id));
+    const rawPoints = markNodes.map(node => anchors.get(node.id)!);
+    const minMarkX = Math.min(0, ...rawPoints.map(point => point.x));
+    const maxMarkX = Math.max(1, ...rawPoints.map(point => point.x));
+    const minMarkY = Math.min(0, ...rawPoints.map(point => point.y));
+    const maxMarkY = Math.max(1, ...rawPoints.map(point => point.y));
+    const provisionalScale = Math.min(localRect().width * 0.92 / Math.max(1, maxMarkX - minMarkX),
+      localRect().height * 0.92 / Math.max(1, maxMarkY - minMarkY));
+    const markScale = (point: Coordinates) => axes.projection === '2d'
+      ? sigma?.scaleSize(1) ?? provisionalScale
+      : three ? perspectiveSizeScale(three.readReviewCameraPose(), point) : 1;
+    const leafGiven = (id: string, point: Coordinates): number => {
+      const cached = leafFitGivenById.get(id);
+      if (cached !== undefined) return cached;
+      const given = FITTED_LEAF_CORE_PX / Math.max(0.001,
+        markScale(point) * (axes.projection === '2d' ? MORPHOLOGY_CONTRACT[axes.morphology].node.scale : 1));
+      if (handle) leafFitGivenById.set(id, given);
+      return given;
+    };
+    const markCoordinates = (point: Coordinates) => handle?.graphToViewport(point)
+      ?? { x: (point.x - minMarkX) * provisionalScale, y: (point.y - minMarkY) * provisionalScale };
+    const markCandidates = markNodes.map(node => {
+      const point = anchors.get(node.id)!;
+      const structural = !input.v2Prepared || structuralIds.has(node.id);
+      const given = structural ? input.v2Prepared
+        ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale).radiusPx
+        : encodingOf(node, input.data).corePermille * 8 / SCENE_PERMILLE_SCALE
+        : leafGiven(node.id, point);
+      const scale = markScale(point);
+      const coreRadiusPx = axes.projection === '2d'
+        ? canvasNodeRadiusPx(axes.morphology, given, scale, degree.get(node.id) ?? 0,
+          axes.morphology === 'mycelium' ? 1.3 : 2, !structural)
+        : given * scale;
+      return { id: node.id, ...markCoordinates(point), coreRadiusPx, structural };
+    });
+    coLocatedById = coLocatedRepresentatives(markCandidates);
+    denseMembersByRepresentative = new Map();
+    for (const [id, representative] of coLocatedById) {
+      const members = denseMembersByRepresentative.get(representative) ?? [];
+      members.push(id);
+      denseMembersByRepresentative.set(representative, members);
+    }
+    for (const members of denseMembersByRepresentative.values()) members.sort();
     const canonicalHaloById = canonicalHalos();
     // D087-SIZE END
     const presentation = {
@@ -1995,10 +2076,11 @@ export const createProductView: CreateProductView = async (input) => {
             const v2Encoded = input.v2Prepared ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale) : null;
             const encoding = v2Encoded ?? encodingOf(node, input.data);
             // D082-A-NODES BEGIN
-            const denseSize = denseScaleById.get(node.id);
+            // The dense map remains an edge-opacity source; co-location owns node ink.
             // D087-SIZE BEGIN: only covered members lose ink; a represented id keeps its native size.
-            const hiddenDenseMember = denseSize?.radiusPx === 0
-              && !container.hasAttribute('data-fractal-rails-active');
+            const hiddenDenseMember = coLocatedById.get(node.id) !== node.id;
+            const leafMark = !!input.v2Prepared && !structuralIds.has(node.id);
+            const leafRadius = leafMark ? leafGiven(node.id, anchors.get(node.id)!) : 0;
             const canonicalHalo = canonicalHaloById.get(node.id);
             const haloPermille = hiddenDenseMember ? 0 : node.origin === "dynamic"
               ? Math.round(encoding.haloPermille * 0.55) : encoding.haloPermille;
@@ -2006,9 +2088,13 @@ export const createProductView: CreateProductView = async (input) => {
             // D082-A-NODES END
             return [node.id, {
               ...encoding,
+              // D087-SIZE BEGIN
+              leafMark,
+              // D087-SIZE END
               // D082-A-NODES BEGIN
               // D087-SIZE BEGIN
-              ...(hiddenDenseMember ? { radiusPx: 0, corePermille: 0 } : {}),
+              ...(hiddenDenseMember ? { radiusPx: 0, corePermille: 0 } : leafMark
+                ? { radiusPx: leafRadius } : {}),
               // D087-SIZE END
               // D082-A-NODES END
               glyph: v2Encoded ? v2Encoded.glyph : (node.type === "domain" || node.type === "conversation" ? "ring"
@@ -2016,9 +2102,11 @@ export const createProductView: CreateProductView = async (input) => {
                 : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
               // D087-SIZE BEGIN
               haloPermille,
-              ...(canonicalHalo ? { haloRadiusPx: hiddenDenseMember ? 0
+              ...(canonicalHalo ? { haloRadiusPx: hiddenDenseMember ? 0 : leafMark
+                ? leafRadius * LEAF_HALO_RATIO
                 : canonicalHalo.radiusPx * haloPermille / SCENE_PERMILLE_SCALE,
-                haloIntensityPermille: hiddenDenseMember ? 0 : canonicalHalo.intensityPermille } : {}),
+                haloIntensityPermille: hiddenDenseMember ? 0 : leafMark
+                  ? LEAF_HALO_INTENSITY_PERMILLE : canonicalHalo.intensityPermille } : {}),
               // D087-SIZE END
               // D082-A-NODES BEGIN
               // D087-SIZE BEGIN: an id carries the same halo in every density.
@@ -2027,14 +2115,14 @@ export const createProductView: CreateProductView = async (input) => {
               // D087-SIZE END
               // D082-A-NCOMPLETA END
               // D087-SIZE BEGIN
-              ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: hiddenDenseMember ? 0
+              ...(v2Encoded && !leafMark && axes.morphology === "neural" ? { radiusPx: hiddenDenseMember ? 0
                 : v2Encoded.radiusPx * ((node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
                   : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1) } : {}),
               // D087-SIZE END
               // D082-A-NODES END
               // D087-SIZE BEGIN: an Indra pearl keeps its semantic glyph and radius whether
               // its children are currently admitted or folded into the same real container.
-              ...(axes.morphology === "stellar" && axes.organization === "indra" && axes.projection === "3d"
+              ...(axes.morphology === "stellar" && axes.organization === "indra" && axes.projection === "3d" && !leafMark
                 ? { radiusPx: hiddenDenseMember ? 0 : stellarIndra3dNodeRadiusPx(v2Encoded?.radiusPx
                   ?? encoding.corePermille * 8 / SCENE_PERMILLE_SCALE,
                   axes.morphology, axes.organization, axes.projection) } : {}),
@@ -2125,6 +2213,12 @@ export const createProductView: CreateProductView = async (input) => {
   let mountOpeningCamera: VisualStateCamera | null = null;
   let mountOpeningPoints: (() => Coordinates[]) | null = null;
   function mount() {
+    // D087-SIZE BEGIN: a remount has a new fitted camera or morphology scale.
+    leafFitGivenById.clear();
+    coLocationCameraKey = '';
+    if (coLocationRefreshTimer) clearTimeout(coLocationRefreshTimer);
+    coLocationRefreshTimer = undefined;
+    // D087-SIZE END
     const began = performance.now();
     // D082-B-CANOPYN BEGIN
     const markCanopyMount = !!preparedCanopy3d && perfMarksEnabled;
@@ -2213,6 +2307,9 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN
     lastNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
+        // D087-SIZE BEGIN
+        leafMark: value.leafMark,
+        // D087-SIZE END
         // D087-SIZE BEGIN
         radiusPx: value.radiusPx, haloRadiusPx: value.haloRadiusPx === undefined ? undefined
           : axes.projection === '3d' && value.radiusPx !== undefined
@@ -2312,14 +2409,28 @@ export const createProductView: CreateProductView = async (input) => {
     // and a zoom-band change solves from this fit snapshot off the main thread.
     // D082-B-CANOPYN BEGIN: the stationary Canopy full snapshot already owns its fit radii.
     // Sending the same 11,199 IDs through a subset update rebuilds every Neural shape at rest.
-    if (lodMode && denseScaleById.size && canopyInitialFitNeedsSubsetRefresh(axes.projection,
-      axes.morphology, container.hasAttribute('data-fractal-rails-active'))) {
+    if (lodMode && input.v2Prepared) {
     // D082-B-CANOPYN END
       const lifted = drawnEdges.flatMap(edge => edge.v2
         ? [edge.v2 as import("./v2-relations.ts").LiftedRelation] : []);
+      // D087-SIZE BEGIN: the fitted camera replaces the provisional opening projection.
+      leafFitGivenById.clear();
+      for (const node of input.data.nodes) {
+        if (structuralIds.has(node.id)) continue;
+        const point = anchors.get(node.id);
+        if (!point) continue;
+        const projectedScale = axes.projection === '2d' ? sigma?.scaleSize(1) ?? 1
+          : three ? perspectiveSizeScale(three.readReviewCameraPose(), point) : 1;
+        const morphologyScale = axes.projection === '2d'
+          ? MORPHOLOGY_CONTRACT[axes.morphology].node.scale : 1;
+        leafFitGivenById.set(node.id,
+          FITTED_LEAF_CORE_PX / Math.max(0.001, projectedScale * morphologyScale));
+      }
+      // D087-SIZE END
       if (lifted.length === drawnEdges.length
         && !applyVisibleSubset({ visibleNodeIds: visible, edges: lifted }))
         throw new Error("Completa point sizes could not settle at the mounted fit camera");
+      coLocationCameraKey = JSON.stringify(handle.readCameraState());
     }
     // D082-A-NODES END
     rebuildScreenPickIndex();
@@ -2349,6 +2460,9 @@ export const createProductView: CreateProductView = async (input) => {
   // This cache exists only on the Fractal host and only for one camera gesture.
   // D086-CUSTOM BEGIN: a gesture restores the density metadata of its own full scene.
   let canopyFullScene: { ids: ReadonlySet<string>; scene: FullScene;
+    // D087-SIZE BEGIN
+    representatives: ReadonlyMap<string, string>;
+    // D087-SIZE END
     scales: ReadonlyMap<string, import("../render-common/dense-node-scale.ts").DenseNodeScale>;
     edgeDensities: ReadonlyMap<string, number>; zoomProgress: number } | null = null;
   // D086-CUSTOM END
@@ -2401,6 +2515,9 @@ export const createProductView: CreateProductView = async (input) => {
     const canopyHost = container.hasAttribute('data-fractal-rails-active');
     if (canopyHost && visible.size > 1000 && nextVisible.size < 1000)
       canopyFullScene = { ids: new Set(visible), scene: oldScene,
+        // D087-SIZE BEGIN
+        representatives: coLocatedById,
+        // D087-SIZE END
         scales: denseScaleById, edgeDensities: denseEdgeScreenDensityById,
         zoomProgress: denseZoomProgress };
     const restoreCanopy = canopyHost && canopyFullScene &&
@@ -2441,14 +2558,19 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-B1f BEGIN: the restored Canopy scene also restores the density metadata used
     // by picking and any following subset update; the cached geometry needs no solve.
     if (restoreCanopy && canopyFullScene) {
+      // D087-SIZE BEGIN
+      coLocatedById = canopyFullScene.representatives;
+      // D087-SIZE END
       denseScaleById = new Map(canopyFullScene.scales);
       denseEdgeScreenDensityById = canopyFullScene.edgeDensities;
       denseMembersByRepresentative = new Map();
-      for (const value of denseScaleById.values()) {
-        const members = denseMembersByRepresentative.get(value.representativeId) ?? [];
-        members.push(value.id);
-        denseMembersByRepresentative.set(value.representativeId, members);
+      // D087-SIZE BEGIN
+      for (const [id, representative] of coLocatedById) {
+        const members = denseMembersByRepresentative.get(representative) ?? [];
+        members.push(id);
+        denseMembersByRepresentative.set(representative, members);
       }
+      // D087-SIZE END
       for (const members of denseMembersByRepresentative.values()) members.sort();
       denseZoomProgress = isReferenceCompleta(input.data.nodes.length, nextVisible.size)
         ? denseZoomProgressForCamera(handle.readCameraState().ratio, fitRatio.get(cameraKeys().key))
@@ -2460,6 +2582,9 @@ export const createProductView: CreateProductView = async (input) => {
     const nextNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
         // D087-SIZE BEGIN
+        leafMark: value.leafMark,
+        // D087-SIZE END
+        // D087-SIZE BEGIN
         radiusPx: value.radiusPx, haloRadiusPx: value.haloRadiusPx === undefined ? undefined
           : axes.projection === '3d' && value.radiusPx !== undefined
             ? Math.min(value.haloRadiusPx, value.radiusPx * REVIEW_HALO_TO_CORE_MAX) : value.haloRadiusPx,
@@ -2467,12 +2592,16 @@ export const createProductView: CreateProductView = async (input) => {
         // D087-SIZE END
         tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille }] as const));
     const nodeEntries = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined;
+      // D087-SIZE BEGIN
+      leafMark: boolean | undefined;
+      // D087-SIZE END
       radiusPx: number | undefined; haloRadiusPx: number | undefined;
       haloIntensityPermille: number | undefined;
       tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
     for (const [id, mark] of nextNodeMarks) {
       const before = lastNodeMarks.get(id);
-      if (nextDensity !== witnessDensity || !before || before.glyph !== mark.glyph || before.radiusPx !== mark.radiusPx
+      if (nextDensity !== witnessDensity || !before || before.glyph !== mark.glyph
+        || before.leafMark !== mark.leafMark || before.radiusPx !== mark.radiusPx
         || before.haloRadiusPx !== mark.haloRadiusPx
         || before.haloIntensityPermille !== mark.haloIntensityPermille
         // D086-BURST BEGIN: tint and opacity are part of a density revision.
@@ -2541,6 +2670,9 @@ export const createProductView: CreateProductView = async (input) => {
       // D085-S3 END
       nodeEntries: new Map([...oldScene.presentation.nodes].map(([id, value]) => [id, {
         glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
+        // D087-SIZE BEGIN
+        leafMark: value.leafMark,
+        // D087-SIZE END
         radiusPx: value.radiusPx,
         // D086-BURST BEGIN
         tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille,
@@ -2781,7 +2913,9 @@ export const createProductView: CreateProductView = async (input) => {
     // that sub-pixel set. All IDs remain selectable without moving or inventing graph data.
     let target = pick({ x: event.clientX - r.left, y: event.clientY - r.top });
     if (target?.kind === "node") {
-      const representativeId = denseScaleById.get(target.id)?.representativeId ?? target.id;
+      // D087-SIZE BEGIN
+      const representativeId = coLocatedById.get(target.id) ?? target.id;
+      // D087-SIZE END
       const members = denseMembersByRepresentative.get(representativeId);
       if (members && members.length > 1) {
         const index = lastDensePick?.representativeId === representativeId
@@ -3132,7 +3266,13 @@ export const createProductView: CreateProductView = async (input) => {
     const nodeViewport = Object.fromEntries(mounted.map(({ id, position }) => {
       const p = project(position);
       const footprint = footprints.get(id);
-      return [id, { x: r.left + p.x, y: r.top + p.y, ...(footprint ?? {}) }];
+      // D087-SIZE BEGIN
+      const representative = coLocatedById.get(id);
+      return [id, { x: r.left + p.x, y: r.top + p.y,
+        ...(footprint ?? {}), ...(representative && representative !== id ? {
+          radius: 0, haloRadius: 0, representative,
+        } : {}) }];
+      // D087-SIZE END
     }));
     const positions = Object.fromEntries(mounted.map(({ id, position }) =>
       [id, { x: position.x, y: position.y, z: position.z }]));
@@ -3402,6 +3542,9 @@ export const createProductView: CreateProductView = async (input) => {
       // D086-MOT END
       // D082-A-NODES BEGIN
       if (denseRefreshTimer !== undefined) clearTimeout(denseRefreshTimer);
+      // D087-SIZE BEGIN
+      if (coLocationRefreshTimer !== undefined) clearTimeout(coLocationRefreshTimer);
+      // D087-SIZE END
       denseRefreshRevision++;
       // D082-A-NODES END
       qualityController.destroy();

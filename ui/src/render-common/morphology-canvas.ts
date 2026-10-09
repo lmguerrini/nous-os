@@ -12,6 +12,9 @@ import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 // D082-A-NODES BEGIN
 import { denseEdgeVeilFactor } from "#render-common/dense-node-scale.ts";
+// D087-SIZE BEGIN
+import { LEAF_HALO_RATIO } from "#render-common/semantic-node-mark.ts";
+// D087-SIZE END
 // D082-A-NODES END
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
 import type { CanvasDisc } from "#render-common/container-canvas.ts";
@@ -89,7 +92,11 @@ export type MorphologyCanvasStyle = {
     readonly denseNeuralHaloById?: ReadonlyMap<string, number> | undefined;
     // D082-A-NCOMPLETA END
   } | undefined;
-  readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
+  readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number;
+    // D087-SIZE BEGIN
+    readonly leafMark?: boolean | undefined;
+    // D087-SIZE END
+  }>;
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
 // D086-CUSTOM BEGIN: both the direct style and the shared presentation interaction carry the
@@ -135,6 +142,9 @@ export type DistinctSubsetUpdate = {
   // D085-S3 END
   // D082-A-NODES BEGIN
   readonly nodeEntries: ReadonlyMap<string, { readonly glyph?: NodeGlyph | undefined;
+    // D087-SIZE BEGIN
+    readonly leafMark?: boolean | undefined;
+    // D087-SIZE END
     readonly radiusPx?: number | undefined; readonly haloRadiusPx?: number | undefined;
     readonly haloIntensityPermille?: number | undefined;
     readonly tintSrgb?: readonly [number, number, number] | undefined;
@@ -1110,7 +1120,7 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
     if (given === 0) continue;
     // D087-SIZE END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      denseDrawingPolicy(style) ? 0.5 : 2, contract.node.maxRadiusPx);
+      style.nodes.get(node.id)?.leafMark ? 0.5 : denseDrawingPolicy(style) ? 0.5 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
     // D082-A-NODES END
     const axis = node.axis ?? { x: 1, y: 0, z: 0 };
@@ -1453,7 +1463,8 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
     // D087-SIZE END
     // D082-A-NODES END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      denseDrawingPolicy(style) ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+      visual?.leafMark ? 0.5 : denseDrawingPolicy(style) ? 0.5
+        : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
     const drawn = geometry.morphology === "stellar" && radius > 1
       ? stellarStarCoreRadiusPx(radius, node.degree) : radius;
@@ -2440,7 +2451,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // D082-A-NODES END
     const basis = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       // D087-SIZE BEGIN
-      denseDrawingPolicy(style) ? 0.5
+      visual?.leafMark ? 0.5 : denseDrawingPolicy(style) ? 0.5
         : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
       // D087-SIZE END
     // D086-CUSTOM END
@@ -2467,8 +2478,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
     // D082-A-NODES END
     // A pearl wholly outside the canvas (with its glow halo) draws nothing a viewer could see.
-    const haloRatio = geometry.morphology === "neural"
-      ? Math.min(contract.glow.maximumCoreRatio, NEURAL_HALO_MAX_RADIUS_RATIO) : contract.glow.maximumCoreRatio;
+    const haloRatio = visual?.leafMark ? Math.min(contract.glow.maximumCoreRatio, LEAF_HALO_RATIO)
+      : geometry.morphology === "neural"
+        ? Math.min(contract.glow.maximumCoreRatio, NEURAL_HALO_MAX_RADIUS_RATIO) : contract.glow.maximumCoreRatio;
     const haloExtent = appearance.glow > 0 ? radius * haloRatio : radius;
     if (p.x + haloExtent < 0 || p.x - haloExtent > bounds.width
       || p.y + haloExtent < 0 || p.y - haloExtent > bounds.height) continue;
@@ -2479,7 +2491,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // D087-SIZE BEGIN
     const requestedGlowStrength = contract.glow.strength;
     // D087-SIZE END
-    const glowStrength = geometry.morphology === "neural"
+    const glowStrength = visual?.leafMark ? requestedGlowStrength * 0.35 : geometry.morphology === "neural"
       ? Math.min(requestedGlowStrength, NEURAL_HALO_MAX_ALPHA / Math.max(1, appearance.glow)) : requestedGlowStrength;
     // D082-A-NCOMPLETA BEGIN: local-density halo factor is 1 outside Completa and at z6.
     const denseGlowStrength = glowStrength * (geometry.morphology === "neural"

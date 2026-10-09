@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { buildMorphologyGeometry } from '../src/engine/morphology-geometry.ts';
+import { MORPHOLOGY_CONTRACT } from '../src/engine/morphology-contract.ts';
 import { DEFAULT_APPEARANCE } from '../src/engine/presentation-options.ts';
 import { canvasNodeHaloRadiusPx, canvasNodeRadiusPx, geometryDegrees, labNativeSizeLawApplies, nativeLawSizes,
   semanticMarkGeometry } from '../src/render-common/native-node-law.ts';
@@ -10,6 +11,10 @@ import { morphologyEdgeStrokeWidths, stellarStarCoreRadiusPx, type MorphologyCan
 import { FILAMENT_FRAGMENT_SHADER } from '../src/render3f/filament-material.ts';
 import { buildScene } from '../src/scene/build.ts';
 import { sceneFixtureGraph, sceneVisualState } from './scene/support.ts';
+// D087-SIZE BEGIN
+import { coLocatedRepresentatives, FITTED_LEAF_CORE_PX, LEAF_HALO_RATIO,
+  LEAF_HALO_INTENSITY_PERMILLE } from '../src/render-common/semantic-node-mark.ts';
+// D087-SIZE END
 
 const totals = { essential: 80, balanced: 2_420, complete: 11_199, custom: 2_000 } as const;
 const common = new Map([['domain', 11], ['assertion', 4.5]]);
@@ -131,9 +136,57 @@ test('product policy and witness preserve semantic radius and expose halo and st
   assert.match(product, /haloRadius: footprint\.haloRadiusPx/);
   assert.match(product, /morphologyEdgeStrokeWidths\(/);
   const twoD = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
-  assert.match(twoD, /distinctGlowHaloRadius\(coreRadius, distinct\)/);
+  assert.match(twoD, /distinctGlowHaloRadius\(coreRadius, distinct, id\)/);
   assert.match(twoD, /canvasNodeHaloRadiusPx\(mark\.morphology, coreRadiusPx, mark\.appearance\(\)\.glow\)/);
   assert.match(contract, /readonly haloRadius\?: number/);
   assert.match(contract, /readonly edgeViewport\?/);
 });
+// D087-SIZE BEGIN
+test('thirty co-located leaves produce exactly one mark with structural and id priority', () => {
+  const leaves = Array.from({ length: 30 }, (_, index) => ({
+    id: `leaf-${String(index).padStart(2, '0')}`, x: (index % 5) * 0.1,
+    y: Math.floor(index / 5) * 0.1, coreRadiusPx: FITTED_LEAF_CORE_PX, structural: false,
+  }));
+  const domain = { id: 'domain', x: 0, y: 0, coreRadiusPx: 2, structural: true };
+  for (const density of Object.keys(totals)) {
+    const ids = density === 'essential' ? leaves.slice(0, 6) : leaves;
+    const coalesced = coLocatedRepresentatives([...ids, domain].reverse());
+    assert.deepEqual([...coalesced.values()].filter(id => id === 'domain').length, ids.length + 1);
+    assert.deepEqual([...coalesced.keys()].sort(), [...ids.map(mark => mark.id), domain.id].sort());
+  }
+  const separate = coLocatedRepresentatives([
+    { id: 'b', x: 10, y: 0, coreRadiusPx: 1, structural: false },
+    { id: 'a', x: 10.3, y: 0, coreRadiusPx: 1, structural: false },
+  ]);
+  assert.equal(separate.get('b'), 'a');
+});
+
+test('a fitted leaf has the small D-086 dense mark with matching canvas/native cores', () => {
+  for (const morphology of ['stellar', 'neural', 'mycelium'] as const) {
+    const scale = 0.827;
+    const contract = morphology === 'mycelium' ? 1.3 : 2;
+    const given = FITTED_LEAF_CORE_PX / (scale * MORPHOLOGY_CONTRACT[morphology].node.scale);
+    const canvas = canvasNodeRadiusPx(morphology, given, scale, 1, contract, true);
+    const native = nativeLawSizes({ morphology, projectedScale: scale, floorPx: contract,
+      given: new Map([['leaf', given]]), degree: new Map([['leaf', 1]]),
+      leafIds: new Set(['leaf']) }).get('leaf')! * scale;
+    assert.ok(Math.abs(canvas - FITTED_LEAF_CORE_PX) < 1e-9);
+    assert.ok(Math.abs(native - canvas) < 1e-9);
+    assert.ok(canvas * LEAF_HALO_RATIO <= 1.5);
+  }
+});
+
+test('a coalesced 3D member has zero core, gap, floor and halo', () => {
+  const graph = sceneFixtureGraph();
+  const id = graph.nodes[0]!.id;
+  const node = buildScene(graph, sceneVisualState(graph), undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, { nodes: new Map([[id, {
+      radiusPx: 0, corePermille: 0, haloPermille: 0, haloRadiusPx: 0,
+      haloIntensityPermille: 0, opacityPermille: 1000,
+    }]]) }).nodes.find(item => item.id === id)!;
+  assert.deepEqual([node.radiusPx, node.haloRadiusPx, node.haloCoreGapPx,
+    node.minimumCoreDeviceRadiusPx], [0, 0, 0, 0]);
+  assert.equal(LEAF_HALO_INTENSITY_PERMILLE, 80);
+});
+// D087-SIZE END
 // D087-SIZE END

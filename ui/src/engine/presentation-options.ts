@@ -2,6 +2,9 @@
 import type { MorphologyGeometry, MorphologyInput } from "#engine/morphology-geometry.ts";
 import type { VisualRelation } from "../projection/contract-types.ts";
 export type NodePresentation = {
+  // D087-SIZE BEGIN: semantic class comes from the full hierarchy.
+  readonly leafMark?: boolean;
+  // D087-SIZE END
   readonly corePermille: number;
   /** Exact review v2 core radius before camera scaling, in CSS pixels. */
   readonly radiusPx?: number;

@@ -77,6 +77,9 @@ import { renderReadinessHost } from "#render-common/render-readiness-producer.ts
 // "D086-BURST END"
 // Size-fix BEGIN
 import { canvasNodeFloorPx, canvasNodeHaloRadiusPx, canvasNodeRadiusPx, createNativeSizeLaw, geometryDegrees } from "#render-common/native-node-law.ts";
+// "D087-SIZE BEGIN"
+import { LEAF_HALO_ALPHA_FACTOR, LEAF_HALO_RATIO } from "#render-common/semantic-node-mark.ts";
+// "D087-SIZE END"
 // Size-fix END
 // "D082-A-NODES BEGIN"
 import { denseNativeEdgeAlpha } from "#render-common/dense-node-scale.ts";
@@ -468,11 +471,18 @@ export function mount(
   const distinctLanguage = activeOptions.presentation?.morphologyLanguage === "distinct";
   let handlePickGeometry = activeOptions.presentation?.morphologyGeometry;
   let glowAppearance = activeOptions.presentation?.appearance ?? DEFAULT_APPEARANCE;
+  // "D087-SIZE BEGIN"
+  const leafMarkIds = new Set([...baseNodeAttributes].flatMap(([id]) =>
+    activeOptions.presentation?.nodes?.get(id)?.leafMark ? [id] : []));
+  // "D087-SIZE END"
   const distinctGlow = distinctLanguage ? {
     morphology: activeOptions.morphology,
     geometry: () => handlePickGeometry,
     appearance: () => glowAppearance,
     nativeTier: model.graph.order >= DENSE_SCENE_THRESHOLD,
+    // "D087-SIZE BEGIN"
+    leafIds: () => leafMarkIds,
+    // "D087-SIZE END"
   } : undefined;
   const glow = model.material.node.includes("halo")
     ? mountNodeGlow(sigma, model, options.calibration,
@@ -494,6 +504,9 @@ export function mount(
       active: activeOptions.presentation?.nativeNodeSizeLaw === true,
       given: new Map([...baseNodeAttributes].map(([id, attributes]) => [id, attributes.size] as const)),
       degree: geometryDegrees(activeOptions.presentation?.morphologyGeometry),
+      // "D087-SIZE BEGIN"
+      leafIds: leafMarkIds,
+      // "D087-SIZE END"
       projectedScale: () => sigma.scaleSize(1),
       floorPx: () => canvasNodeFloorPx(activeOptions.morphology, sigma.getContainer().closest('[data-fractal-rails-active]') !== null),
       write: sizes => {
@@ -553,6 +566,12 @@ export function mount(
     },
     updateVisibleSubset(update: DistinctSubsetUpdate): void {
       distinct?.updateVisibleSubset(update);
+      // "D087-SIZE BEGIN"
+      for (const [id, entry] of update.nodeEntries) {
+        if (entry.leafMark) leafMarkIds.add(id);
+        else leafMarkIds.delete(id);
+      }
+      // "D087-SIZE END"
       // Size-fix BEGIN
       nativeSizeLaw?.retarget(update.nativeNodeSizeLaw === true, new Map([...update.nodeEntries].flatMap(([id, entry]) =>
         entry.radiusPx === undefined ? [] : [[id, entry.radiusPx] as const])), geometryDegrees(update.geometry));
@@ -873,6 +892,9 @@ function mountDistinctCanvas(
     color: graph.getNodeAttributes(id).color,
     glyph: options.presentation?.nodes?.get(id)?.glyph,
     radiusPx: options.presentation?.nodes?.get(id)?.radiusPx,
+    // "D087-SIZE BEGIN"
+    leafMark: options.presentation?.nodes?.get(id)?.leafMark,
+    // "D087-SIZE END"
   }]));
   let edgeStyles = new Map<string, { color: string; presentation: import("#engine/presentation-options.ts").EdgePresentation | undefined }>(graph.edges().map((id) => [id, {
     color: graph.getEdgeAttributes(id).color,
@@ -1002,6 +1024,9 @@ function mountDistinctCanvas(
         const current = nodeStyles.get(id);
         // "D086-BURST BEGIN": a retained canvas must consume the revised color as well as radius.
         if (current) nodeStyles.set(id, { ...current, glyph: entry.glyph, radiusPx: entry.radiusPx,
+          // "D087-SIZE BEGIN"
+          leafMark: entry.leafMark,
+          // "D087-SIZE END"
           color: revisedCanvasNodeColor(current.color, model.fieldColor,
             entry.tintSrgb, entry.opacityPermille) });
         // "D086-BURST END"
@@ -1200,7 +1225,7 @@ function mountNodeGlow(
       const attributes = model.graph.getNodeAttributes(id);
       const center = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
       const coreRadius = sigma.scaleSize(attributes.size);
-      const haloRadius = distinct ? distinctGlowHaloRadius(coreRadius, distinct)
+      const haloRadius = distinct ? distinctGlowHaloRadius(coreRadius, distinct, id)
         : resolvedGlowHaloRadius(coreRadius, sigma.scaleSize(attributes.haloRadiusPx), profile,
           model.filamentMaterial.neuralProfile ?? false);
       if (haloRadius <= coreRadius || center.x + haloRadius < 0 || center.y + haloRadius < 0
@@ -1209,10 +1234,14 @@ function mountNodeGlow(
       }
       const gradient = context.createRadialGradient(center.x, center.y, coreRadius, center.x, center.y, haloRadius);
       const color = parseColor(attributes.color);
-      const requestedAlpha = distinct
+      const baseAlpha = distinct
         ? MORPHOLOGY_CONTRACT[distinct.morphology].glow.strength * distinct.appearance().glow * color.a
         : (boundedPermille(attributes.haloIntensityPermille, profile) / permilleScale(profile)) * color.a;
-      const peakAlpha = model.filamentMaterial.neuralProfile ? Math.min(requestedAlpha, NEURAL_HALO_MAX_ALPHA) : requestedAlpha;
+      // "D087-SIZE BEGIN"
+      const requestedAlpha = distinct?.leafIds().has(id) ? baseAlpha * LEAF_HALO_ALPHA_FACTOR : baseAlpha;
+      const peakAlpha = model.filamentMaterial.neuralProfile
+        ? Math.min(requestedAlpha, NEURAL_HALO_MAX_ALPHA) : requestedAlpha;
+      // "D087-SIZE END"
       for (const stop of haloAlphaStops(profile, peakAlpha)) {
         gradient.addColorStop(stop.offset, `rgba(${color.r}, ${color.g}, ${color.b}, ${stop.alpha})`);
       }
@@ -1245,10 +1274,16 @@ type DistinctGlowMark = {
   readonly geometry: () => MorphologyGeometry | undefined;
   readonly appearance: () => AppearanceOptions;
   readonly nativeTier: boolean;
+  // "D087-SIZE BEGIN"
+  readonly leafIds: () => ReadonlySet<string>;
+  // "D087-SIZE END"
 };
 
-function distinctGlowHaloRadius(coreRadiusPx: number, mark: DistinctGlowMark): number {
-  return canvasNodeHaloRadiusPx(mark.morphology, coreRadiusPx, mark.appearance().glow);
+function distinctGlowHaloRadius(coreRadiusPx: number, mark: DistinctGlowMark, id: string): number {
+  // "D087-SIZE BEGIN"
+  const radius = canvasNodeHaloRadiusPx(mark.morphology, coreRadiusPx, mark.appearance().glow);
+  return mark.leafIds().has(id) ? Math.min(radius, coreRadiusPx * LEAF_HALO_RATIO) : radius;
+  // "D087-SIZE END"
 }
 
 function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationProfile,
@@ -1258,14 +1293,14 @@ function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationPro
     const attributes = model.graph.getNodeAttributes(id);
     const coreRadiusPx = distinct && !distinct.nativeTier && attributes.size > 0
       ? canvasNodeRadiusPx(distinct.morphology, attributes.size, sigma.scaleSize(1),
-        degrees?.get(id) ?? 0, canvasNodeFloorPx(distinct.morphology, false))
+        degrees?.get(id) ?? 0, canvasNodeFloorPx(distinct.morphology, false), distinct.leafIds().has(id))
       : sigma.scaleSize(attributes.size);
     const viewportCenter = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
     return {
       id,
       viewportCenter,
       coreRadiusPx,
-      haloRadiusPx: distinct ? distinctGlowHaloRadius(coreRadiusPx, distinct)
+      haloRadiusPx: distinct ? distinctGlowHaloRadius(coreRadiusPx, distinct, id)
         : resolvedGlowHaloRadius(coreRadiusPx, sigma.scaleSize(attributes.haloRadiusPx), profile,
           model.filamentMaterial.neuralProfile ?? false),
     };

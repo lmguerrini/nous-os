@@ -22,9 +22,12 @@ export function labNativeSizeLawApplies(labTopology: string | undefined,
 
 /** The settled drawn radius, in CSS px, that the morphology canvas gives one node at this projected scale. */
 export function canvasNodeRadiusPx(morphology: Morphology, givenRadiusPx: number, projectedScale: number,
-  degree: number, floorPx: number): number {
+  degree: number, floorPx: number, leaf = false): number {
   const node = MORPHOLOGY_CONTRACT[morphology].node;
-  const basis = Math.max(floorPx, Math.min(node.maxRadiusPx, givenRadiusPx * projectedScale * node.scale));
+  // D087-SIZE BEGIN
+  const basis = Math.max(leaf ? 0.5 : floorPx,
+    Math.min(node.maxRadiusPx, givenRadiusPx * projectedScale * node.scale));
+  // D087-SIZE END
   return morphology === "stellar" && basis > 1 ? stellarStarCoreRadiusPx(basis, degree) : basis;
 }
 
@@ -51,13 +54,16 @@ export function nativeLawSizes(input: {
   readonly floorPx: number;
   readonly given: ReadonlyMap<string, number>;
   readonly degree: ReadonlyMap<string, number>;
+  // D087-SIZE BEGIN
+  readonly leafIds?: ReadonlySet<string>;
+  // D087-SIZE END
 }): ReadonlyMap<string, number> {
   if (!(input.projectedScale > 0) || !Number.isFinite(input.projectedScale))
     throw new RangeError("native node size law needs a positive projected scale");
   const sizes = new Map<string, number>();
   // D087-SIZE BEGIN: a member omitted by the representative policy stays without ink.
   for (const [id, given] of input.given) sizes.set(id, given <= 0 ? 0 : canvasNodeRadiusPx(input.morphology, given,
-    input.projectedScale, input.degree.get(id) ?? 0, input.floorPx) / input.projectedScale);
+    input.projectedScale, input.degree.get(id) ?? 0, input.floorPx, input.leafIds?.has(id)) / input.projectedScale);
   // D087-SIZE END
   return sizes;
 }
@@ -87,6 +93,9 @@ export function createNativeSizeLaw(input: {
   readonly active: boolean;
   readonly given: ReadonlyMap<string, number>;
   readonly degree: ReadonlyMap<string, number>;
+  // D087-SIZE BEGIN
+  readonly leafIds?: ReadonlySet<string>;
+  // D087-SIZE END
   readonly projectedScale: () => number;
   readonly floorPx: () => number;
   readonly write: (sizes: ReadonlyMap<string, number>) => void;
@@ -103,7 +112,8 @@ export function createNativeSizeLaw(input: {
     if (!active) return false;
     const projectedScale = input.projectedScale();
     if (projectedScale === settledScale) return false;
-    input.write(nativeLawSizes({ morphology: input.morphology, projectedScale, floorPx: input.floorPx(), given, degree }));
+    input.write(nativeLawSizes({ morphology: input.morphology, projectedScale, floorPx: input.floorPx(), given, degree,
+      ...(input.leafIds ? { leafIds: input.leafIds } : {}) }));
     settledScale = projectedScale;
     return true;
   };

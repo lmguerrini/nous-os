@@ -420,7 +420,7 @@ export type ViewWitness = {
   /** Projected centre of every visible node, page CSS pixels; `radius` is the drawn pearl/soma disc radius. */
   // D087-SIZE BEGIN: both radii are live drawn CSS-pixel footprints.
   readonly nodeViewport: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number;
-    readonly haloRadius?: number }>>;
+    readonly haloRadius?: number; readonly representative?: string }>>;
   /** Visible real relations sampled at their drawn centre-line in CSS pixels. */
   readonly edgeViewport?: Readonly<Record<string, { readonly strokeWidth: number }>>;
   // D087-SIZE END
