@@ -22,10 +22,16 @@ import { DENSE_NEURAL_POINT_FLOOR_CSS_PX } from "#engine/presentation-options.ts
 export function neural3dCompletaPointFloorCssPx(input: {
   readonly morphology: Morphology;
   readonly morphologyLanguage: "distinct" | undefined;
-  readonly nodeCount: number;
   readonly canopyMount: boolean;
+  // D086-CUSTOM BEGIN
+  readonly usesDenseDrawingPolicy: boolean;
+  readonly denseNativeRadiusOnly?: boolean;
+  // D086-CUSTOM END
 }): number {
+  // D086-CUSTOM BEGIN: Custom caps native radii at their neighbours, so a GPU floor
+  // would silently undo that cap. The caller supplies the scene's explicit policy.
   return input.morphology === "neural" && input.morphologyLanguage === "distinct"
-    && input.nodeCount === 11_199 && !input.canopyMount ? DENSE_NEURAL_POINT_FLOOR_CSS_PX : 0;
+    && input.usesDenseDrawingPolicy && !input.denseNativeRadiusOnly && !input.canopyMount ? DENSE_NEURAL_POINT_FLOOR_CSS_PX : 0;
+  // D086-CUSTOM END
 }
 // D082-B-GPUFLOOR END

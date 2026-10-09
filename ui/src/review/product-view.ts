@@ -79,7 +79,7 @@ import { nonNeuralCompletaScreenDensities } from './non-neural-completa-fit.ts';
 // D086-F1 BEGIN
 import { labNativeSizeLawApplies } from "../render-common/native-node-law.ts";
 // D086-F1 END
-import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta } from "../render-common/dense-node-scale.ts";
+import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
 import type { DenseEdgeScreenSegment } from '../render-common/dense-node-scale.ts';
 // D082-A-VEIL BEGIN
 import { fittedDenseEdgeScreenDensities } from "../render-common/dense-node-scale.ts";
@@ -797,6 +797,10 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NCOMPLETA BEGIN
     denseNeuralHaloById?: ReadonlyMap<string, number> | undefined;
     // D082-A-NCOMPLETA END
+    // D086-CUSTOM BEGIN
+    usesDenseDrawingPolicy?: boolean | undefined;
+    denseNativeRadiusOnly?: boolean | undefined;
+    // D086-CUSTOM END
   } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate" };
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
@@ -1582,8 +1586,12 @@ export const createProductView: CreateProductView = async (input) => {
       denseRefreshInFlight = true;
       let failed = false;
       try {
+        // D086-CUSTOM BEGIN: a zoom revision preserves Custom's native radius law.
         const scales = await denseNodeScalesDeferred(denseFitSamples,
-          { zoomProgress: current / 6, screenDistanceNorm: denseFitDistanceNorm });
+          { zoomProgress: current / 6, screenDistanceNorm: denseFitDistanceNorm,
+            nativeRadiusOnly: witnessDensity === 'custom'
+              && !isReferenceCompleta(input.data.nodes.length, visible.size) });
+        // D086-CUSTOM END
         if (destroyed || morphologyInteraction.quality !== "full" || revision !== denseRefreshRevision
           || !handle || current !== denseZoomBand(handle.readCameraState().ratio, semanticFitRatio(handle.readCameraState().ratio))) return;
         const lifted = drawnEdges.flatMap(edge => edge.v2
@@ -1667,7 +1675,7 @@ export const createProductView: CreateProductView = async (input) => {
   /** The presentation edge record for one drawn relation: colour category, opacity and width
    * derived from the relation record and the axes alone — never from the subset, which is why an
    * in-place LOD change only ever needs entries for edges that were not drawn before. */
-  const presentationEdge = (edge: ReviewEdge, palette: PaletteValues) => {
+  const presentationEdge = (edge: ReviewEdge, palette: PaletteValues, customDense = false) => {
     const exploratory = (input.v2Prepared ? edge.attested_by : relationClass(edge, nodesById)) === "exploratory";
     const relation = edge.v2 as import('./v2-relations.ts').LiftedRelation | undefined;
     const coMembership = Boolean(input.v2Prepared && relation?.type === 'co_membership');
@@ -1696,7 +1704,7 @@ export const createProductView: CreateProductView = async (input) => {
     // Screen-space density is the actual overlap measure for the visible edge bundle. Do not
     // stack the older endpoint/node-density penalty on a measured screen cell: doing so would
     // undercut the calibrated per-pixel veil. Keep that fallback only when a segment is unmeasured.
-    const denseOpacityPermille = denseScaleById.size && screenDensity === undefined
+    const denseOpacityPermille = denseScaleById.size && screenDensity === undefined && !customDense
       ? denseEdgeAlphaPermille(legible.opacityPermille,
         denseScaleById.get(edge.source)?.localDensity ?? 1, denseScaleById.get(edge.target)?.localDensity ?? 1)
       : legible.opacityPermille;
@@ -1741,7 +1749,8 @@ export const createProductView: CreateProductView = async (input) => {
    * identical pixels. `anchors` is the mounted anchor map; only drawn ids are ever read. */
   function buildDrawnScene(anchors: ReadonlyMap<string, Coordinates>, state: {
     visible: ReadonlySet<string>; containers: typeof layoutContainers; edges: readonly ReviewEdge[];
-  } = { visible, containers: layoutContainers, edges: drawnEdges }, deferGeometry = false,
+    density?: string;
+  } = { visible, containers: layoutContainers, edges: drawnEdges, density: witnessDensity }, deferGeometry = false,
   // D082-A-PERF BEGIN: a subset revision can reuse the committed geometry.
   previous?: { readonly morphologyInput: MorphologyInput;
     readonly geometry: import("../engine/morphology-geometry.ts").MorphologyGeometry },
@@ -1763,8 +1772,15 @@ export const createProductView: CreateProductView = async (input) => {
     const containers = state.containers && axes.organization === "indra" ? state.containers : undefined;
     // D085-S5 END
     // D082-A-NODES BEGIN
-    // Completa's full reference dataset is the only view that receives the drawing-only radius and
-    // dense-edge policy. Position and relation collections remain byte-for-byte the same.
+    // D086-CUSTOM BEGIN: Custom uses the drawing safeguards at every amount. At the
+    // reference maximum it takes the original Completa arithmetic and cache path exactly.
+    const referenceCompleta = isReferenceCompleta(input.data.nodes.length, state.visible.size);
+    const customDense = state.density === 'custom' && !referenceCompleta;
+    const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
+      state.visible.size, state.density ?? witnessDensity);
+    morphologyInteraction.usesDenseDrawingPolicy = denseDrawingPolicy;
+    morphologyInteraction.denseNativeRadiusOnly = customDense;
+    // D086-CUSTOM END
     denseScaleById = new Map();
     denseMembersByRepresentative = new Map();
     // D082-A-VEIL2 BEGIN: A-INT12 recomputes the shared screen veil for every new
@@ -1779,7 +1795,7 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NCOMPLETA BEGIN
     if (!reuseDenseFit) denseFitProjectionScaleById = new Map();
     // D082-A-NCOMPLETA END
-    if (input.v2Prepared && isReferenceCompleta(input.data.nodes.length, state.visible.size)) {
+    if (input.v2Prepared && denseDrawingPolicy) {
       const canopyComplete = container.hasAttribute('data-fractal-rails-active');
       const current = handle?.readCameraState().ratio;
       const fit = canopyComplete ? fitRatio.get(cameraKeys().key)
@@ -1789,7 +1805,7 @@ export const createProductView: CreateProductView = async (input) => {
       denseZoomProgress = zoomProgress;
       denseRenderedZoomBand = band;
       // D082-B1f BEGIN: apply the core policy once to this stationary Canopy snapshot.
-      if (canopyComplete && !deferCanopyDense && !preparedDenseScales
+      if (canopyComplete && referenceCompleta && !deferCanopyDense && !preparedDenseScales
         && !preparedCanopyEdgeDensities && canopyCompleteScales
         && canopyCompleteScaleNodeSize === appearance.nodeScale
         && canopyCompleteEdgeDensities.has(axes.reading)) {
@@ -1840,7 +1856,7 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-NCOMPLETA END
       // D082-B-CANOPYN BEGIN
       denseScaleById = deferCanopyDense ? new Map() : new Map(preparedDenseScales ?? denseNodeScales(denseFitSamples,
-        { zoomProgress, screenDistanceNorm: denseFitDistanceNorm }));
+        { zoomProgress, screenDistanceNorm: denseFitDistanceNorm, nativeRadiusOnly: customDense }));
       // D082-B-CANOPYN END
       // D082-B1f BEGIN: Canopy represents every real mark at its own overlap-safe point;
       // the core's covered-member zero radius belongs to Natural and Indra.
@@ -1864,7 +1880,7 @@ export const createProductView: CreateProductView = async (input) => {
         ?? denseEdgeScreenDensities(canopyPendingEdgeSegments);
       // D082-B-CANOPYN END
       // D082-B1f BEGIN: the full Canopy drawing and its screen-space overlaps are stationary.
-      if (canopyComplete && !deferCanopyDense) {
+      if (canopyComplete && referenceCompleta && !deferCanopyDense) {
         canopyCompleteScales = denseScaleById;
         canopyCompleteScaleNodeSize = appearance.nodeScale;
         canopyCompleteEdgeDensities.set(axes.reading, denseEdgeScreenDensityById);
@@ -1924,16 +1940,24 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES END
     const presentation = {
       morphologyLanguage: "distinct" as const,
+      // D086-CUSTOM BEGIN: the same scene policy reaches scene construction and native rendering.
+      usesDenseDrawingPolicy: denseDrawingPolicy,
+      denseNativeRadiusOnly: customDense,
+      // D086-CUSTOM END
       nativeLabels: false,
       windowGeometryFromAnchors: true,
       // D086-F1 BEGIN
+      // D086-CUSTOM BEGIN: the native Lab tier must receive the capped radius directly;
+      // its sparse-scene floor would otherwise grow a capped Custom point again.
       ...(labNativeSizeLawApplies(input.labTopology, input.data.nodes.length, state.visible.size)
+        && !customDense
         ? { nativeNodeSizeLaw: true } : {}),
+      // D086-CUSTOM END
       // D086-F1 END
       ...(containers ? { containers } : {}),
       emphasisIds: emphasis,
       appearance,
-      edges: new Map(state.edges.map((edge) => [edge.id, presentationEdge(edge, palette)] as const)),
+      edges: new Map(state.edges.map((edge) => [edge.id, presentationEdge(edge, palette, customDense)] as const)),
       nodes: new Map(
         input.data.nodes
           .filter((node) => state.visible.has(node.id))
@@ -1964,8 +1988,12 @@ export const createProductView: CreateProductView = async (input) => {
               ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: denseSize
                 // D082-A-NCOMPLETA BEGIN: fit collapses every represented soma to a point;
                 // six zoom bands restore the approved A-INT12 size without changing identity.
-                ? neuralCompletaPointRadius(denseSize.radiusPx,
+                // D086-CUSTOM BEGIN: the Completa point floor can exceed Custom's
+                // nearest-centre cap; Custom uses its already capped radius directly.
+                ? (customDense ? denseSize.radiusPx : neuralCompletaPointRadius(denseSize.radiusPx,
                   denseFitProjectionScaleById.get(node.id) ?? 1, denseZoomProgress)
+                  )
+                // D086-CUSTOM END
                   * ((node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
                   : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1)
                 // D082-A-NCOMPLETA END
@@ -2175,6 +2203,10 @@ export const createProductView: CreateProductView = async (input) => {
         },
       style: {
         fieldColor: palette.background,
+        // D086-CUSTOM BEGIN
+        usesDenseDrawingPolicy: presentation.usesDenseDrawingPolicy,
+        denseNativeRadiusOnly: presentation.denseNativeRadiusOnly,
+        // D086-CUSTOM END
         interaction: morphologyInteraction,
         nodes: new Map([...presentation.nodes].map(([id, value]) => [id, {
           color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(245, 245, 245)",
@@ -2275,7 +2307,11 @@ export const createProductView: CreateProductView = async (input) => {
    * touched. Returns false when the update cannot land in place; the caller remounts then. */
   // D082-B1 BEGIN: a Canopy motion subset restores its worker-prepared full scene.
   // This cache exists only on the Fractal host and only for one camera gesture.
-  let canopyFullScene: { ids: ReadonlySet<string>; scene: FullScene } | null = null;
+  // D086-CUSTOM BEGIN: a gesture restores the density metadata of its own full scene.
+  let canopyFullScene: { ids: ReadonlySet<string>; scene: FullScene;
+    scales: ReadonlyMap<string, import("../render-common/dense-node-scale.ts").DenseNodeScale>;
+    edgeDensities: ReadonlyMap<string, number>; zoomProgress: number } | null = null;
+  // D086-CUSTOM END
   // D086-MOT BEGIN: an interrupted gesture cannot retain an orphan restore snapshot.
   const discardCanopyGesture = (event: Event) => {
     if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return;
@@ -2312,6 +2348,10 @@ export const createProductView: CreateProductView = async (input) => {
     const oldColor = morphologyInteraction.containerColor;
     // D082-A-NCOMPLETA BEGIN
     const oldDenseNeuralHaloById = morphologyInteraction.denseNeuralHaloById;
+    // D086-CUSTOM BEGIN
+    const oldDenseDrawingPolicy = morphologyInteraction.usesDenseDrawingPolicy;
+    const oldDenseNativeRadiusOnly = morphologyInteraction.denseNativeRadiusOnly;
+    // D086-CUSTOM END
     // D082-A-NCOMPLETA END
     const oldBackground = container.style.backgroundColor;
     const oldFocusIds = morphologyInteraction.focusIds;
@@ -2320,7 +2360,9 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-B1 BEGIN.
     const canopyHost = container.hasAttribute('data-fractal-rails-active');
     if (canopyHost && visible.size > 1000 && nextVisible.size < 1000)
-      canopyFullScene = { ids: new Set(visible), scene: oldScene };
+      canopyFullScene = { ids: new Set(visible), scene: oldScene,
+        scales: denseScaleById, edgeDensities: denseEdgeScreenDensityById,
+        zoomProgress: denseZoomProgress };
     const restoreCanopy = canopyHost && canopyFullScene &&
       nextVisible.size === canopyFullScene.ids.size &&
       [...nextVisible].every(id => canopyFullScene!.ids.has(id)) && update.edges.length === 0;
@@ -2348,16 +2390,19 @@ export const createProductView: CreateProductView = async (input) => {
     const anchors = restrictAnchors(fullAnchor(axes), mountedIds);
     // D082-A-PERF BEGIN: prepare only the revealed neighbourhood on an in-place Neural revision;
     // a Canopy restore reuses its cached full scene (D082-B1c).
+    // D086-CUSTOM BEGIN: derive from the requested density before committing its witness.
+    const nextDensity = (update as typeof update & { density?: string }).density ?? witnessDensity;
     const nextScene = restoreCanopy ? canopyFullScene!.scene
       : requireGeometry(buildDrawnScene(anchors,
-        { visible: nextVisible, containers: nextContainers, edges: nextEdges }, false, oldScene,
+        { visible: nextVisible, containers: nextContainers, edges: nextEdges, density: nextDensity }, false, oldScene,
         reuseDenseFit, preparedDenseScales, nextBudget));
+    // D086-CUSTOM END
     // D082-A-PERF END
     // D082-B1f BEGIN: the restored Canopy scene also restores the density metadata used
     // by picking and any following subset update; the cached geometry needs no solve.
-    if (restoreCanopy && canopyCompleteScales) {
-      denseScaleById = canopyCompleteScales;
-      denseEdgeScreenDensityById = canopyCompleteEdgeDensities.get(axes.reading) ?? new Map();
+    if (restoreCanopy && canopyFullScene) {
+      denseScaleById = new Map(canopyFullScene.scales);
+      denseEdgeScreenDensityById = canopyFullScene.edgeDensities;
       denseMembersByRepresentative = new Map();
       for (const value of denseScaleById.values()) {
         const members = denseMembersByRepresentative.get(value.representativeId) ?? [];
@@ -2365,7 +2410,9 @@ export const createProductView: CreateProductView = async (input) => {
         denseMembersByRepresentative.set(value.representativeId, members);
       }
       for (const members of denseMembersByRepresentative.values()) members.sort();
-      denseZoomProgress = denseZoomProgressForCamera(handle.readCameraState().ratio, fitRatio.get(cameraKeys().key));
+      denseZoomProgress = isReferenceCompleta(input.data.nodes.length, nextVisible.size)
+        ? denseZoomProgressForCamera(handle.readCameraState().ratio, fitRatio.get(cameraKeys().key))
+        : canopyFullScene.zoomProgress;
     }
     // D082-B1f END
     const { presentation, morphologyInput, geometry } = nextScene;
@@ -2397,6 +2444,10 @@ export const createProductView: CreateProductView = async (input) => {
     // D085-S3 BEGIN: moving native law skeletons read semantic ranks and hierarchy
     // independently of the Indra-only drawing containers.
     const nextOverlay: DistinctSubsetUpdate = { input: morphologyInput, geometry, nodeEntries, edgeEntries,
+      // D086-CUSTOM BEGIN
+      usesDenseDrawingPolicy: presentation.usesDenseDrawingPolicy,
+      denseNativeRadiusOnly: presentation.denseNativeRadiusOnly,
+      // D086-CUSTOM END
       // D086-F1 BEGIN
       nativeNodeSizeLaw: presentation.nativeNodeSizeLaw === true,
       // D086-F1 END
@@ -2412,6 +2463,10 @@ export const createProductView: CreateProductView = async (input) => {
     // entries before its canvas draw threw. The old geometry hides any newly introduced ids.
     const restoreOverlay: DistinctSubsetUpdate = {
       input: oldScene.morphologyInput, geometry: oldScene.geometry,
+      // D086-CUSTOM BEGIN
+      usesDenseDrawingPolicy: oldScene.presentation.usesDenseDrawingPolicy,
+      denseNativeRadiusOnly: oldScene.presentation.denseNativeRadiusOnly,
+      // D086-CUSTOM END
       // D086-F1 BEGIN
       nativeNodeSizeLaw: oldScene.presentation.nativeNodeSizeLaw === true,
       // D086-F1 END
@@ -2441,6 +2496,10 @@ export const createProductView: CreateProductView = async (input) => {
       ...flowScene, geometry,
       style: {
         ...flowScene.style,
+        // D086-CUSTOM BEGIN
+        usesDenseDrawingPolicy: presentation.usesDenseDrawingPolicy,
+        denseNativeRadiusOnly: presentation.denseNativeRadiusOnly,
+        // D086-CUSTOM END
         nodes: new Map([...presentation.nodes].map(([id, value]) => [id, {
           color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(245, 245, 245)",
           glyph: value.glyph, radiusPx: value.radiusPx,
@@ -2481,6 +2540,10 @@ export const createProductView: CreateProductView = async (input) => {
         morphologyInteraction.containerColor = oldColor;
         // D082-A-NCOMPLETA BEGIN
         morphologyInteraction.denseNeuralHaloById = oldDenseNeuralHaloById;
+        // D086-CUSTOM BEGIN
+        morphologyInteraction.usesDenseDrawingPolicy = oldDenseDrawingPolicy;
+        morphologyInteraction.denseNativeRadiusOnly = oldDenseNativeRadiusOnly;
+        // D086-CUSTOM END
         // D082-A-NCOMPLETA END
         morphologyInteraction.focusIds = oldFocusIds;
         // D085-X8 BEGIN
@@ -2496,7 +2559,7 @@ export const createProductView: CreateProductView = async (input) => {
     }
     visible = nextVisible;
     // D086-CUSTOM BEGIN: an accepted in-place density revision owns the witness.
-    witnessDensity = (update as typeof update & { density?: string }).density ?? witnessDensity;
+    witnessDensity = nextDensity;
     // D086-CUSTOM END
     if (restoreCanopy) canopyFullScene = null;
     layoutContainers = nextContainers;

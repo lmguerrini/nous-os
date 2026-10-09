@@ -65,7 +65,15 @@ export function screenSpaceEdgeWidthPx(widthPx: number, minimumScreenWidthPx = 0
 export const DENSE_SCENE_THRESHOLD = 1200;
 export type MorphologyCanvasStyle = {
   readonly fieldColor: string;
+  // D086-CUSTOM BEGIN
+  readonly usesDenseDrawingPolicy?: boolean;
+  readonly denseNativeRadiusOnly?: boolean;
+  // D086-CUSTOM END
   readonly interaction?: { readonly hoverId: string | null; readonly focusIds: ReadonlySet<string> | null; readonly labelDiscs?: readonly CanvasDisc[] | null;
+    // D086-CUSTOM BEGIN: existing presentation interaction carries policy to both canvas renderers.
+    readonly usesDenseDrawingPolicy?: boolean | undefined;
+    readonly denseNativeRadiusOnly?: boolean | undefined;
+    // D086-CUSTOM END
     readonly dimFocus?: { readonly members: ReadonlySet<string>; readonly arcs: ReadonlySet<string>; readonly bridges: ReadonlySet<string> } | null;
     /** D-072 M1b: the containers already honour this field (I1). `"moving"` is the reduced frame
      * while the camera rotates, pans or zooms: nodes draw as solid fills (no radial gradients,
@@ -84,6 +92,13 @@ export type MorphologyCanvasStyle = {
   readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
+// D086-CUSTOM BEGIN: both the direct style and the shared presentation interaction carry the
+// same page-owned policy; the latter is the path used by the mounted 2D and 3D canvases.
+const denseDrawingPolicy = (style: MorphologyCanvasStyle): boolean =>
+  style.usesDenseDrawingPolicy ?? style.interaction?.usesDenseDrawingPolicy ?? false;
+const denseNativeRadiusOnly = (style: MorphologyCanvasStyle): boolean =>
+  style.denseNativeRadiusOnly ?? style.interaction?.denseNativeRadiusOnly ?? false;
+// D086-CUSTOM END
 export function focusNodeOpacity(members: ReadonlySet<string> | null, id: string): number {
   return !members || members.has(id) ? 1 : 0.15;
 }
@@ -104,6 +119,10 @@ export function focusArcOpacity(
 export type DistinctSubsetUpdate = {
   readonly input: MorphologyInput;
   readonly geometry: MorphologyGeometry;
+  // D086-CUSTOM BEGIN
+  readonly usesDenseDrawingPolicy?: boolean;
+  readonly denseNativeRadiusOnly?: boolean;
+  // D086-CUSTOM END
   // D085-S3 BEGIN: renderer-only law hierarchy and relation rank follow in-place density revisions.
   readonly labLevels?: readonly { readonly id: string; readonly level: number }[];
   readonly labRelationRanks?: ReadonlyMap<string, Readonly<{ evidenceCount: number;
@@ -1078,9 +1097,11 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
       : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
     const given = style.nodes.get(node.id)?.radiusPx ?? node.radius * appearance.nodeScale;
     // D082-A-NODES BEGIN
-    if (style.nodes.size === 11_199 && given === 0) continue;
+    // D086-CUSTOM BEGIN
+    if (denseDrawingPolicy(style) && given === 0) continue;
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      style.nodes.size === 11_199 ? 0.5 : 2, contract.node.maxRadiusPx);
+      denseDrawingPolicy(style) ? 0.5 : 2, contract.node.maxRadiusPx);
+    // D086-CUSTOM END
     // D082-A-NODES END
     const axis = node.axis ?? { x: 1, y: 0, z: 0 };
     const q = project({ x: node.position.x + axis.x, y: node.position.y + axis.y, z: node.position.z + axis.z });
@@ -1416,10 +1437,12 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
       : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
     const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
     // D082-A-NODES BEGIN
-    if (style.nodes.size === 11_199 && given === 0) continue;
+    // D086-CUSTOM BEGIN
+    if (denseDrawingPolicy(style) && given === 0) continue;
     // D082-A-NODES END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      style.nodes.size === 11_199 ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+      denseDrawingPolicy(style) ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    // D086-CUSTOM END
     const drawn = geometry.morphology === "stellar" && radius > 1
       ? stellarStarCoreRadiusPx(radius, node.degree) : radius;
     const elongation = geometry.morphology === "neural"
@@ -2386,12 +2409,14 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
     // D082-B1f BEGIN: Canopy Completa honours the overlap-safe radius below 2 px.
     // D082-A-NODES BEGIN: hidden core members have no glyph in the full source scene.
-    if (!canopyHost && style.nodes.size === 11_199 && given === 0) continue;
+    // D086-CUSTOM BEGIN
+    if (!canopyHost && denseDrawingPolicy(style) && given === 0) continue;
     // D082-A-NODES END
     const basis = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       canopyHost && geometry.nodes.length >= DENSE_SCENE_THRESHOLD ? 0.5
-        : style.nodes.size === 11_199 ? 0.5
+        : denseDrawingPolicy(style) ? 0.5
         : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    // D086-CUSTOM END
     // D082-B1f END
     // D-072 M1b: a Stellar node draws as a star — the importance basis compressed into the star
     // window of this node's degree, never above the basis (pick radius untouched), 2D and 3D alike.
@@ -2400,13 +2425,16 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // D082-A-NODES BEGIN
     // Below a CSS pixel, a bright point is more legible than a clipped star or soma outline.
     // D082-A-N3D BEGIN: the 3D Neural fit uses a larger point before the soma outline resolves.
-    if (!canopyHost && style.nodes.size === 11_199 && radius <= (projection === "3d" && geometry.morphology === "neural" ? 0.9 : 0.75)) {
+    // D086-CUSTOM BEGIN: Custom's capped native radius must not rise to the reference 3D point floor.
+    const neuralPointRadius = projection === "3d" && geometry.morphology === "neural" && !denseNativeRadiusOnly(style) ? 0.9 : 0.5;
+    if (!canopyHost && denseDrawingPolicy(style) && radius <= (projection === "3d" && geometry.morphology === "neural" && !denseNativeRadiusOnly(style) ? 0.9 : 0.75)) {
     // D082-A-N3D END
       context.globalAlpha = 1;
       context.fillStyle = visual?.color ?? "rgb(245, 245, 245)";
       // D082-A-N3D BEGIN
       context.beginPath(); context.arc(p.x, p.y,
-        projection === "3d" && geometry.morphology === "neural" ? 0.9 : 0.5, 0, Math.PI * 2); context.fill();
+        neuralPointRadius, 0, Math.PI * 2); context.fill();
+    // D086-CUSTOM END
       // D082-A-N3D END
       continue;
     }

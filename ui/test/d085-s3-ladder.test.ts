@@ -149,12 +149,15 @@ test('plain law views deliver layout levels and relation evidence without drawin
   assert.equal(Object.values(isolated.anchorRules).reduce((sum, n) => sum + n, 0), isolated.nodeIds.size);
 });
 
-test('density level changes use one shared reference gate and a size-independent proxy fallback', () => {
+test('density level changes use one shared dense-policy gate and a size-independent proxy fallback', () => {
   const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
-  assert.match(mount, /const updatesNativeNodeAttributes = live\.scene\.nodes\.length === 11_199 && update\.nodeEntries\.size > 0/);
+  // D086-CUSTOM BEGIN: capped Custom slices below the reference maximum update the same proxy.
+  assert.match(mount, /const updatesNativeNodeAttributes = update\.usesDenseDrawingPolicy === true && update\.nodeEntries\.size > 0/);
   assert.match(mount, /if \(!updatesNativeNodeAttributes && nativeEdgeVeilById\.size === 0\)/);
   assert.match(mount, /if \(updatesNativeNodeAttributes\) \{/);
-  assert.equal((mount.match(/live\.scene\.nodes\.length === 11_199 && update\.nodeEntries\.size/g) ?? []).length, 1);
+  assert.equal((mount.match(/const updatesNativeNodeAttributes = update\.usesDenseDrawingPolicy === true && update\.nodeEntries\.size > 0/g) ?? []).length, 1);
+  assert.doesNotMatch(mount, /live\.scene\.nodes\.length === 11_199 && update\.nodeEntries\.size/);
+  // D086-CUSTOM END
 });
 
 test('above the relation cap, domain incidence then evidence and class outrank edge ID', () => {

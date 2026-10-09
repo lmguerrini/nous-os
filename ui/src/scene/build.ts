@@ -1527,7 +1527,12 @@ function sceneNode(
     ? requestedHaloRadiusPx
     : Math.min(requestedHaloRadiusPx, radiusPx * REVIEW_HALO_TO_CORE_MAX);
   // D082-A-NODES BEGIN
-  const completaPoint = presentation?.nodes?.size === 11_199 && appearance?.radiusPx !== undefined;
+  // D086-CUSTOM BEGIN: the page publishes the drawing policy with the presentation.
+  const completaPoint = presentation?.morphologyInteraction
+    && "usesDenseDrawingPolicy" in presentation.morphologyInteraction
+    && presentation.morphologyInteraction.usesDenseDrawingPolicy === true
+    && appearance?.radiusPx !== undefined;
+  // D086-CUSTOM END
   const haloRadiusPx = completaPoint && appearance!.haloPermille === 0 ? radiusPx
     : fusedJunction || blindTerminal ? radiusPx : boundedHaloRadiusPx;
   const haloIntensityPermille = fusedJunction || blindTerminal ? 0 : requestedHaloIntensityPermille;
