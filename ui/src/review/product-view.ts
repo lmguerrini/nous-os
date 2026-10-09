@@ -4,10 +4,13 @@ import './render-readiness.ts';
 // D082-A-PERF END
 import type { VisualStateCamera } from "../engine/visual-state.ts";
 import type { Coordinates } from "../engine/contract.ts";
+import { createEngineGraphView } from "../engine/contract.ts";
 import type { GraphRendererHandle } from "../engine/renderer-handle.ts";
 import type { RendererCameraState } from "../engine/renderer-handle.ts";
 import { DEFAULT_CALIBRATION } from "../engine/calibration.ts";
+import { applyMorphology, MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR } from "../engine/morphology.ts";
 import { SCENE_PERMILLE_SCALE } from "../scene/contract.ts";
+import { REVIEW_HALO_TO_CORE_MAX } from "../scene/build.ts";
 import { mount as mount2d } from "../render2d/index.ts";
 import { buildScreenPickIndex } from "../render2d/model.ts";
 // D082-A-PERF BEGIN
@@ -70,7 +73,7 @@ import { containerSphereLOD, containerTitleFont, placeContainerTitles, projected
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
-import { DENSE_SCENE_THRESHOLD, drawFlowLayer, neuralCompletaHaloFactor, neuralCompletaPointRadius, neuralCompletaVeilFactor, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
+import { DENSE_SCENE_THRESHOLD, drawFlowLayer, morphologyEdgeStrokeWidths, neuralCompletaVeilFactor, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
 // D082-A-NCOMPLETA3 BEGIN
 import { clipNeuralCompletaScreenSegment, neuralCompletaFirstSceneScreen } from './neural-completa-first-scene.ts';
 // D082-A-NCOMPLETA3 END
@@ -79,7 +82,7 @@ import { nonNeuralCompletaScreenDensities } from './non-neural-completa-fit.ts';
 // D082-A-VEIL2 END
 // D082-A-NODES BEGIN
 // D086-F1 BEGIN
-import { labNativeSizeLawApplies } from "../render-common/native-node-law.ts";
+import { labNativeSizeLawApplies, semanticMarkGeometry } from "../render-common/native-node-law.ts";
 // D086-F1 END
 import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
 import type { DenseEdgeScreenSegment } from '../render-common/dense-node-scale.ts';
@@ -365,8 +368,6 @@ export function preparationHostLive(host: Pick<HTMLElement, 'isConnected'>): boo
 }
 // D086-F2 END
 
-/** On-screen radius of an Indra container's own marker; the container ring carries the node. */
-const INDRA_CONTAINER_MARKER_PX = 2.5;
 
 /** One offscreen measuring canvas owned by this module (never a per-renderer context, which would
  * pin a dead renderer's canvas after teardown). Both measuring fonts — container titles and node
@@ -689,6 +690,26 @@ export const createProductView: CreateProductView = async (input) => {
     overflow: "hidden",
   });
   let axes: Axes = { ...input.axes };
+  // D087-SIZE BEGIN: all densities read one real-graph halo material per morphology and renderer.
+  const canonicalHaloCache = new Map<string, ReadonlyMap<string, {
+    readonly radiusPx: number; readonly intensityPermille: number }>>();
+  const canonicalHalos = (): ReadonlyMap<string, { readonly radiusPx: number; readonly intensityPermille: number }> => {
+    if (!input.v2Prepared) return new Map();
+    const key = `${axes.morphology}/${axes.projection}`;
+    const cached = canonicalHaloCache.get(key);
+    if (cached) return cached;
+    const profile = axes.morphology === "stellar" ? STELLAR
+      : axes.morphology === "neural" ? NEURAL : MYCELIUM;
+    const graph = createEngineGraphView(prepared.flatGraph, { fast: true }).graph;
+    const material = applyMorphology(graph, profile, DEFAULT_CALIBRATION,
+      axes.projection === "3d" ? SHARED_SCENE_MATERIAL_TARGET : "legacy-renderer");
+    const halos = new Map(material.nodes.map(node => [node.id, {
+      radiusPx: node.haloRadiusPx, intensityPermille: node.haloIntensityPermille,
+    }] as const));
+    canonicalHaloCache.set(key, halos);
+    return halos;
+  };
+  // D087-SIZE END
   let appearance: AppearanceOptions = input.appearance ?? DEFAULT_APPEARANCE;
   let customPalette: PaletteValues = input.customPalette ?? PALETTES.bw;
   let visible = new Set(input.visibleNodeIds);
@@ -765,9 +786,6 @@ export const createProductView: CreateProductView = async (input) => {
   let denseRefreshInFlight = false;
   // Retain the fit-state projection: pan and orbit leave point grouping and radii alone.
   let denseFitSamples: readonly import("../render-common/dense-node-scale.ts").DenseNodeSample[] = [];
-  // D082-A-NCOMPLETA BEGIN: use the same fit projection that sized the representative points.
-  let denseFitProjectionScaleById: ReadonlyMap<string, number> = new Map();
-  // D082-A-NCOMPLETA END
   let denseFitDistanceNorm: ReadonlyMap<string, number> = new Map();
   // The alpha/width bits of the edge styles the renderers last saw, so an in-place subset change
   // can re-ship a mounted edge whose dense presentation actually flipped.
@@ -782,6 +800,7 @@ export const createProductView: CreateProductView = async (input) => {
   // D082-A-NODES BEGIN
   let lastNodeMarks = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined;
     radiusPx: number | undefined; haloRadiusPx: number | undefined;
+    haloIntensityPermille: number | undefined;
     tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
   // D082-A-NODES END
   let handle: GraphRendererHandle | null = null;
@@ -895,6 +914,13 @@ export const createProductView: CreateProductView = async (input) => {
     readonly project: Parameters<typeof drawFlowLayer>[2];
     readonly style: MorphologyCanvasStyle;
   } | null = null;
+  // D087-SIZE BEGIN: a status read reuses the same stroke sample until the scene or camera changes.
+  let strokeWitnessCache: { readonly geometry: Parameters<typeof drawFlowLayer>[1];
+    readonly style: MorphologyCanvasStyle; readonly camera: string; readonly appearanceWidth: number;
+    readonly appearanceNodeScale: number;
+    readonly hoverId: string | null; readonly focusIds: ReadonlySet<string> | null;
+    readonly widths: ReadonlyMap<string, number> } | null = null;
+  // D087-SIZE END
   let flowWidth = 0, flowHeight = 0;
   // D082-A-PERF BEGIN: an animated overlay needs one frame per due cadence, never a polling rAF.
   const flowLoop = { running: false, raf: 0, timer: undefined as ReturnType<typeof setTimeout> | undefined,
@@ -1770,8 +1796,6 @@ export const createProductView: CreateProductView = async (input) => {
   ) {
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     // D085-S5 BEGIN: Lab containers use the same approved Indra shell path.
-    const openContainers = new Set(input.v2Prepared && axes.organization === "indra"
-      ? (state.containers ?? []).filter((container) => container.open !== false).map((container) => container.id) : []);
     const containers = state.containers && axes.organization === "indra" ? state.containers : undefined;
     // D085-S5 END
     // D082-A-NODES BEGIN
@@ -1781,8 +1805,10 @@ export const createProductView: CreateProductView = async (input) => {
     const customDense = state.density === 'custom' && !referenceCompleta;
     const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
       state.visible.size, state.density ?? witnessDensity);
-    morphologyInteraction.usesDenseDrawingPolicy = denseDrawingPolicy;
-    morphologyInteraction.denseNativeRadiusOnly = customDense;
+    // D087-SIZE BEGIN: density controls admission and opacity; drawing keeps the sparse mark law.
+    morphologyInteraction.usesDenseDrawingPolicy = false;
+    morphologyInteraction.denseNativeRadiusOnly = true;
+    // D087-SIZE END
     // D086-CUSTOM END
     denseScaleById = new Map();
     denseMembersByRepresentative = new Map();
@@ -1796,7 +1822,6 @@ export const createProductView: CreateProductView = async (input) => {
     morphologyInteraction.denseNeuralHaloById = undefined;
     // D082-A-NCOMPLETA END
     // D082-A-NCOMPLETA BEGIN
-    if (!reuseDenseFit) denseFitProjectionScaleById = new Map();
     // D082-A-NCOMPLETA END
     if (input.v2Prepared && denseDrawingPolicy) {
       const canopyComplete = container.hasAttribute('data-fractal-rails-active');
@@ -1853,10 +1878,6 @@ export const createProductView: CreateProductView = async (input) => {
             : sigma ? sigma.scaleSize(1) : firstNeuralScreen?.scale ?? 1 };
       });
       // D082-A-NCOMPLETA3 END
-      // D082-A-NCOMPLETA BEGIN
-      if (!reuseDenseFit) denseFitProjectionScaleById = new Map(denseFitSamples.map(sample =>
-        [sample.id, Math.max(0.001, sample.projectionScale ?? 1)]));
-      // D082-A-NCOMPLETA END
       // D082-B-CANOPYN BEGIN
       denseScaleById = deferCanopyDense ? new Map() : new Map(preparedDenseScales ?? denseNodeScales(denseFitSamples,
         { zoomProgress, screenDistanceNorm: denseFitDistanceNorm, nativeRadiusOnly: customDense }));
@@ -1935,26 +1956,32 @@ export const createProductView: CreateProductView = async (input) => {
       }
       for (const members of denseMembersByRepresentative.values()) members.sort();
       // D082-A-NCOMPLETA BEGIN: 2D canvas glow and native 3D halo share these local factors.
-      if (axes.morphology === 'neural') morphologyInteraction.denseNeuralHaloById = new Map(
-        [...denseScaleById].map(([id, value]) => [id, neuralCompletaHaloFactor(value.localDensity,
-          axes.projection, zoomProgress)]));
+      // D087-SIZE BEGIN: local crowding never changes a node's glow.
+      morphologyInteraction.denseNeuralHaloById = undefined;
+      // D087-SIZE END
       // D082-A-NCOMPLETA END
     }
     // D082-A-NODES END
+    // D087-SIZE BEGIN
+    const canonicalHaloById = canonicalHalos();
+    // D087-SIZE END
     const presentation = {
       morphologyLanguage: "distinct" as const,
       // D086-CUSTOM BEGIN: the same scene policy reaches scene construction and native rendering.
       usesDenseDrawingPolicy: denseDrawingPolicy,
-      denseNativeRadiusOnly: customDense,
+      // D087-SIZE BEGIN
+      denseNativeRadiusOnly: true,
+      // D087-SIZE END
       // D086-CUSTOM END
       nativeLabels: false,
       windowGeometryFromAnchors: true,
       // D086-F1 BEGIN
       // D086-CUSTOM BEGIN: the native Lab tier must receive the capped radius directly;
       // its sparse-scene floor would otherwise grow a capped Custom point again.
+      // D087-SIZE BEGIN
       ...(labNativeSizeLawApplies(input.labTopology, input.data.nodes.length, state.visible.size)
-        && !customDense
         ? { nativeNodeSizeLaw: true } : {}),
+      // D087-SIZE END
       // D086-CUSTOM END
       // D086-F1 END
       ...(containers ? { containers } : {}),
@@ -1969,51 +1996,49 @@ export const createProductView: CreateProductView = async (input) => {
             const encoding = v2Encoded ?? encodingOf(node, input.data);
             // D082-A-NODES BEGIN
             const denseSize = denseScaleById.get(node.id);
+            // D087-SIZE BEGIN: only covered members lose ink; a represented id keeps its native size.
+            const hiddenDenseMember = denseSize?.radiusPx === 0
+              && !container.hasAttribute('data-fractal-rails-active');
+            const canonicalHalo = canonicalHaloById.get(node.id);
+            const haloPermille = hiddenDenseMember ? 0 : node.origin === "dynamic"
+              ? Math.round(encoding.haloPermille * 0.55) : encoding.haloPermille;
+            // D087-SIZE END
             // D082-A-NODES END
             return [node.id, {
               ...encoding,
               // D082-A-NODES BEGIN
-              ...(denseSize ? { radiusPx: denseSize.radiusPx,
-                corePermille: Math.round(denseSize.radiusPx / 8 * SCENE_PERMILLE_SCALE) } : {}),
+              // D087-SIZE BEGIN
+              ...(hiddenDenseMember ? { radiusPx: 0, corePermille: 0 } : {}),
+              // D087-SIZE END
               // D082-A-NODES END
               glyph: v2Encoded ? v2Encoded.glyph : (node.type === "domain" || node.type === "conversation" ? "ring"
                 : node.type === "canon" ? "double-ring"
                 : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
-              ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
+              // D087-SIZE BEGIN
+              haloPermille,
+              ...(canonicalHalo ? { haloRadiusPx: hiddenDenseMember ? 0
+                : canonicalHalo.radiusPx * haloPermille / SCENE_PERMILLE_SCALE,
+                haloIntensityPermille: hiddenDenseMember ? 0 : canonicalHalo.intensityPermille } : {}),
+              // D087-SIZE END
               // D082-A-NODES BEGIN
-              ...(input.v2Prepared && state.visible.size > 400 && !denseSize
-                ? { haloPermille: Math.round(encoding.haloPermille * 0.28) } : {}),
+              // D087-SIZE BEGIN: an id carries the same halo in every density.
               // D082-A-NCOMPLETA BEGIN
-              ...(denseSize ? { haloPermille: Math.round(encoding.haloPermille * 0.28 * denseZoomProgress
-                * (axes.morphology === 'neural' ? neuralCompletaHaloFactor(denseSize.localDensity,
-                  axes.projection, denseZoomProgress) : 1)) } : {}),
+              // The canonical halo above includes the hidden-member suppression.
+              // D087-SIZE END
               // D082-A-NCOMPLETA END
-              ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: denseSize
-                // D082-A-NCOMPLETA BEGIN: fit collapses every represented soma to a point;
-                // six zoom bands restore the approved A-INT12 size without changing identity.
-                // D086-CUSTOM BEGIN: the Completa point floor can exceed Custom's
-                // nearest-centre cap; Custom uses its already capped radius directly.
-                ? (customDense ? denseSize.radiusPx : neuralCompletaPointRadius(denseSize.radiusPx,
-                  denseFitProjectionScaleById.get(node.id) ?? 1, denseZoomProgress)
-                  )
-                // D086-CUSTOM END
-                  * ((node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
-                  : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1)
-                // D082-A-NCOMPLETA END
-                  : v2Encoded.radiusPx * ((node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
+              // D087-SIZE BEGIN
+              ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: hiddenDenseMember ? 0
+                : v2Encoded.radiusPx * ((node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
                   : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1) } : {}),
+              // D087-SIZE END
               // D082-A-NODES END
-              // In Indra a node whose children are visible is drawn by its container ring; its own disc
-              // shrinks to a small hollow marker. A closed `+N` container keeps its own pearl, because
-              // below the sphere LOD the pearl is all that carries it.
-              // D082-A-NODES BEGIN
-              ...(openContainers.has(node.id) ? { radiusPx: denseSize
-                ? denseSize.radiusPx : INDRA_CONTAINER_MARKER_PX, haloPermille: 0, glyph: "hollow" as const } : {}),
+              // D087-SIZE BEGIN: an Indra pearl keeps its semantic glyph and radius whether
+              // its children are currently admitted or folded into the same real container.
               ...(axes.morphology === "stellar" && axes.organization === "indra" && axes.projection === "3d"
-                ? { radiusPx: denseSize ? denseSize.radiusPx : stellarIndra3dNodeRadiusPx(openContainers.has(node.id) ? INDRA_CONTAINER_MARKER_PX
-                  : v2Encoded?.radiusPx ?? encoding.corePermille * 8 / SCENE_PERMILLE_SCALE,
+                ? { radiusPx: hiddenDenseMember ? 0 : stellarIndra3dNodeRadiusPx(v2Encoded?.radiusPx
+                  ?? encoding.corePermille * 8 / SCENE_PERMILLE_SCALE,
                   axes.morphology, axes.organization, axes.projection) } : {}),
-              // D082-A-NODES END
+              // D087-SIZE END
               ...(input.v2Prepared && axes.colour === "bw" ? { tintSrgb: (() => { const level = (node.v2 as import("./v2-core.ts").V2Node).level; const gray = level <= 2 ? 0.88 : level <= 4 ? 0.7 : 0.56; return [gray, gray, gray] as const; })() }
                 : input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
                 : axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
@@ -2049,10 +2074,13 @@ export const createProductView: CreateProductView = async (input) => {
     };
     // D082-A-PERF BEGIN: the cold complete path is prepared by the worker below; warm
     // revisions reuse exact positioned geometry and do not rebuild soma/ribbon samples.
-    const geometry = deferGeometry ? null : previous && axes.morphology === "neural"
+    const rawGeometry = deferGeometry ? null : previous && axes.morphology === "neural"
       ? preparedIncrementalGeometryNow(previous.geometry, previous.morphologyInput, morphologyInput, appearance.curvature)
       : preparedGeometryNow([axes.morphology, morphologyInput.nodes, morphologyInput.edges,
         morphologyInput.colonies, appearance.curvature, morphologyInput.containers]);
+    // D087-SIZE BEGIN
+    const geometry = rawGeometry ? semanticMarkGeometry(rawGeometry, degree) : null;
+    // D087-SIZE END
     // D082-A-PERF END
     return { palette, presentation, morphologyInput, geometry };
   }
@@ -2185,8 +2213,12 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN
     lastNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
-        radiusPx: value.radiusPx, haloRadiusPx: value.radiusPx === undefined ? undefined
-          : value.radiusPx * (1 + denseZoomProgress * 0.28),
+        // D087-SIZE BEGIN
+        radiusPx: value.radiusPx, haloRadiusPx: value.haloRadiusPx === undefined ? undefined
+          : axes.projection === '3d' && value.radiusPx !== undefined
+            ? Math.min(value.haloRadiusPx, value.radiusPx * REVIEW_HALO_TO_CORE_MAX) : value.haloRadiusPx,
+        haloIntensityPermille: value.haloIntensityPermille,
+        // D087-SIZE END
         tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille }]));
     // D082-A-NCOMPLETA3 BEGIN
     lastEdgeMarks = new Map([...presentation.edges].map(([id, value]) =>
@@ -2427,16 +2459,22 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN
     const nextNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
-        radiusPx: value.radiusPx, haloRadiusPx: value.radiusPx === undefined ? undefined
-          : value.radiusPx * (1 + denseZoomProgress * 0.28),
+        // D087-SIZE BEGIN
+        radiusPx: value.radiusPx, haloRadiusPx: value.haloRadiusPx === undefined ? undefined
+          : axes.projection === '3d' && value.radiusPx !== undefined
+            ? Math.min(value.haloRadiusPx, value.radiusPx * REVIEW_HALO_TO_CORE_MAX) : value.haloRadiusPx,
+        haloIntensityPermille: value.haloIntensityPermille,
+        // D087-SIZE END
         tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille }] as const));
     const nodeEntries = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined;
       radiusPx: number | undefined; haloRadiusPx: number | undefined;
+      haloIntensityPermille: number | undefined;
       tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
     for (const [id, mark] of nextNodeMarks) {
       const before = lastNodeMarks.get(id);
       if (nextDensity !== witnessDensity || !before || before.glyph !== mark.glyph || before.radiusPx !== mark.radiusPx
         || before.haloRadiusPx !== mark.haloRadiusPx
+        || before.haloIntensityPermille !== mark.haloIntensityPermille
         // D086-BURST BEGIN: tint and opacity are part of a density revision.
         || before.opacityPermille !== mark.opacityPermille
         || before.tintSrgb?.some((value, index) => value !== mark.tintSrgb?.[index])) nodeEntries.set(id, mark);
@@ -2509,6 +2547,7 @@ export const createProductView: CreateProductView = async (input) => {
         // D086-BURST END
         // D082-A-NODES BEGIN
         haloRadiusPx: lastNodeMarks.get(id)?.haloRadiusPx,
+        haloIntensityPermille: lastNodeMarks.get(id)?.haloIntensityPermille,
         // D082-A-NODES END
       }])),
       edgeEntries: new Map([...oldScene.presentation.edges].map(([id, value]) => [id, {
@@ -2841,7 +2880,9 @@ export const createProductView: CreateProductView = async (input) => {
         draft.morphologyInput.colonies, appearance.curvature, draft.morphologyInput.containers,
       ]);
       // D082-A-PERF END
-      initialScene = { ...draft, geometry };
+      // D087-SIZE BEGIN
+      initialScene = { ...draft, geometry: semanticMarkGeometry(geometry, degree) };
+      // D087-SIZE END
       // D082-B-CANOPYN BEGIN: the initial 3D GPU geometry receives the same scene-specific
       // radii and edge widths that the synchronous buffer builder would have used.
       if (axes.projection === '3d' && axes.morphology === 'neural'
@@ -3074,18 +3115,24 @@ export const createProductView: CreateProductView = async (input) => {
     if (!handle) throw new Error("view destroyed");
     const r = container.getBoundingClientRect();
     const mounted = throughVisible(handle.readWorldAnchorWitnesses());
-    const radii = new Map(handle.readNodeFootprintWitnesses().map(footprint => [footprint.id, footprint.coreRadiusPx]));
+    // D087-SIZE BEGIN
+    const footprints = new Map(handle.readNodeFootprintWitnesses().map(footprint =>
+      [footprint.id, { radius: footprint.coreRadiusPx, haloRadius: footprint.haloRadiusPx }] as const));
+    const radii = new Map([...footprints].map(([id, value]) => [id, value.radius] as const));
+    // D087-SIZE END
     // D086-CUSTOM BEGIN: the distinct 2D canvas has no glow witness; use its committed ink radius.
     if (sigma && committedScene && drawnGeometry) for (const node of drawnGeometry.nodes) {
       if (radii.has(node.id)) continue;
       const radius = committedScene.presentation.nodes.get(node.id)?.radiusPx ?? node.radius * appearance.nodeScale;
-      radii.set(node.id, Math.max(0, radius * sigma.scaleSize(1)));
+      const scaled = Math.max(0, radius * sigma.scaleSize(1));
+      radii.set(node.id, scaled);
+      footprints.set(node.id, { radius: scaled, haloRadius: scaled });
     }
     // D086-CUSTOM END
     const nodeViewport = Object.fromEntries(mounted.map(({ id, position }) => {
       const p = project(position);
-      const radius = radii.get(id);
-      return [id, { x: r.left + p.x, y: r.top + p.y, ...(radius !== undefined ? { radius } : {}) }];
+      const footprint = footprints.get(id);
+      return [id, { x: r.left + p.x, y: r.top + p.y, ...(footprint ?? {}) }];
     }));
     const positions = Object.fromEntries(mounted.map(({ id, position }) =>
       [id, { x: position.x, y: position.y, z: position.z }]));
@@ -3280,11 +3327,40 @@ export const createProductView: CreateProductView = async (input) => {
       // D085-X8 BEGIN: witness and status read the same mounted counters.
       const indraComposition = readIndraComposition();
       // D085-X8 END
+      // D087-SIZE BEGIN: sample the shared canvas stroke law after the full-quality restore.
+      const strokeCamera = JSON.stringify(handle.readCameraState());
+      if (flowScene && (!strokeWitnessCache || strokeWitnessCache.geometry !== flowScene.geometry
+        || strokeWitnessCache.style !== flowScene.style || strokeWitnessCache.camera !== strokeCamera
+        || strokeWitnessCache.appearanceWidth !== appearance.edgeWidth
+        || strokeWitnessCache.appearanceNodeScale !== appearance.nodeScale
+        || strokeWitnessCache.hoverId !== morphologyInteraction.hoverId
+        || strokeWitnessCache.focusIds !== morphologyInteraction.focusIds))
+        strokeWitnessCache = { geometry: flowScene.geometry, style: flowScene.style,
+          camera: strokeCamera, appearanceWidth: appearance.edgeWidth,
+          appearanceNodeScale: appearance.nodeScale,
+          hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds,
+          widths: morphologyEdgeStrokeWidths(flowScene.geometry, flowScene.style, flowScene.project,
+            appearance, axes.projection, localRect()) };
+      const strokeWidths = strokeWitnessCache?.widths ?? new Map<string, number>();
+      const nativeWidths = axes.projection === '3d' && three
+        ? new Map(three.readRelationGeometryWitnesses().map(edge => [edge.id,
+          // D087-SIZE BEGIN: match the perspective scale applied by the native filament.
+          Math.max(edge.minimumDeviceWidthPx / viewNativeDevicePixelRatio,
+            (edge.widthStartPx + edge.widthEndPx) / 2
+              * perspectiveSizeScale(three!.readReviewCameraPose(), edge.controlPoint))] as const))
+          // D087-SIZE END
+        : new Map<string, number>();
+      const edgeViewport = Object.fromEntries(drawnEdges.flatMap(edge => {
+        const strokeWidth = strokeWidths.get(edge.id) ?? nativeWidths.get(edge.id);
+        return strokeWidth === undefined ? [] : [[edge.id, { strokeWidth }]];
+      }));
+      // D087-SIZE END
       return {
         axes,
         cameraKind: handle.cameraKind,
         visibleRect: pageRect(),
         nodeViewport,
+        edgeViewport,
         positions,
         labels: placed,
         titleCount: visibleTitleCount,

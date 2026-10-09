@@ -27,7 +27,9 @@ function recordProfile(factor?: number, somaAlpha = 0.9) {
     part: {} as MorphologyEdgePaint["part"], edgeId: "relation", category: "attested", neural: true,
     points: [{ x: 0, y: 0, scale: 1 }, { x: 80, y: 0, scale: 1 }], cumulative: [0, 80], totalPx: 80,
     color: "rgb(120, 120, 120)", alpha: 0.4 * (factor ?? 1),
-    widthAt: () => 4 * neuralDenseRibbonWidthFactor(factor ?? 1),
+    // D087-SIZE BEGIN: the same relation retains its stroke when corridor alpha changes.
+    widthAt: () => 4,
+    // D087-SIZE END
     rootStart: { outlinePx: 0, radiusPx: 8, lengthPx: 24, ratio: 1.8, degree: 2,
       trunkWidthPx: 4, somaColor: "rgb(230, 230, 230)", somaAlpha },
     neuralDenseFactor: factor,
@@ -36,13 +38,15 @@ function recordProfile(factor?: number, somaAlpha = 0.9) {
   return fills;
 }
 
-test("measured Completa overlap narrows the root and dims the edge without overriding soma alpha", () => {
+test("measured Completa overlap dims the edge without narrowing its stroke or overriding soma alpha", () => {
   const denseAlpha = denseEdgeScreenAlphaPermille(720, 500, 0);
   const factor = denseEdgeVeilFactor(denseAlpha, 720);
   assert.ok(factor < 0.1);
   const base = recordProfile();
   const dense = recordProfile(factor);
-  assert.ok(dense[0]!.width < base[0]!.width * 0.5);
+  // D087-SIZE BEGIN
+  assert.equal(dense[0]!.width, base[0]!.width);
+  // D087-SIZE END
   // D084-W7-DENSE BEGIN: the edge's measured Completa veil dims its root too —
   // a factor below zero point one must cut the root alpha below a tenth of base.
   assert.ok(dense[0]!.rootAlpha < base[0]!.rootAlpha * 0.1);
@@ -50,7 +54,9 @@ test("measured Completa overlap narrows the root and dims the edge without overr
   assert.equal(recordProfile(1, 0.9)[0]!.rootAlpha, base[0]!.rootAlpha);
   // D084-W7-DENSE END
   assert.ok(neuralDenseHaloFactor(4, 0.5) < neuralDenseHaloFactor(1, 0.5));
-  assert.match(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth \*= max\(0\.22, sqrt\(denseFactor\)\)/);
+  // D087-SIZE BEGIN
+  assert.doesNotMatch(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth \*= max\(0\.22, sqrt\(denseFactor\)\)/);
+  // D087-SIZE END
   // D084-W7-DENSE BEGIN: the veil factor multiplies the root alpha in the native shader.
   assert.match(FILAMENT_FRAGMENT_SHADER, /rootSomaOpacity \* longitudinal \* radial \* denseRootFactor, rootSomaMix/);
   // D084-W7-DENSE END
@@ -130,7 +136,9 @@ test('first 2D Completa scene has density factors before a renderer or gesture e
   // D082-A-VEIL END
   const source = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   assert.match(source, /firstNeuralScreen\?\.edgeDensities[\s\S]*?const presentation = \{/);
-  assert.match(source, /initialScene = \{ \.\.\.draft, geometry \}/);
+  // D087-SIZE BEGIN: initial Stellar geometry carries full-graph incidence.
+  assert.match(source, /initialScene = \{ \.\.\.draft, geometry: semanticMarkGeometry\(geometry, degree\) \}/);
+  // D087-SIZE END
   const shader = readFileSync(new URL('../src/render2d/filament-program.ts', import.meta.url), 'utf8');
   // D084-W7-DENSE BEGIN: the dense veil factor multiplies the root alpha in the dense
   // 2D program; the factor-one identity keeps R6's soma-to-root continuity.

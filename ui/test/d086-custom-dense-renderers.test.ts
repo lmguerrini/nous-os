@@ -37,7 +37,9 @@ test('Custom canvas omits represented zero-radius members and uses the dense hal
     appearance, '2d', true);
   assert.deepEqual([...customFrames.keys()], ['represented']);
   assert.equal(customFrames.get('represented')?.radius, 0.5);
-  assert.equal(sparseFrames.size, 2);
+  // D087-SIZE BEGIN: an explicitly unpainted member does not regain ink from a floor.
+  assert.equal(sparseFrames.size, 1);
+  // D087-SIZE END
   assert.equal(sparseFrames.get('represented')?.radius, 2);
 
   const arcs: [number, number, number][] = [];
@@ -129,7 +131,11 @@ test('resident native radii, proxy, and drawn count refresh across dense and spa
     let renders = 0;
     let drawn = beforeCount;
     compiled.exports(sourceDense, { usesDenseDrawingPolicy: targetDense, nodeEntries: entries },
-      { buffers: { nodes: { ids } } }, { geometry }, new Map(),
+      // D087-SIZE BEGIN: the resident material baselines restore halo, gap and floor.
+      { buffers: { nodes: { ids, haloRadiiPx: Float32Array.from(ids, () => 1),
+        haloCoreGapsPx: Float32Array.from(ids, () => 0),
+        minimumCoreDeviceRadiiPx: Float32Array.from(ids, () => 0) } } }, { geometry }, new Map(),
+      // D087-SIZE END
       () => { proxyRebuilds += 1; }, () => {}, { state: { stage: 4 } },
       () => { renders += 1;
         const core = geometry.getAttribute('a_coreRadiusPx') as THREE.InstancedBufferAttribute;

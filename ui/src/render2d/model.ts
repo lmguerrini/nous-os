@@ -489,9 +489,11 @@ export function* renderModelSteps(
       y: anchor.y,
       size: appearance?.radiusPx ?? (appearance ? (size * appearance.corePermille) / SCENE_PERMILLE_SCALE : size),
       color: appearance ? mixTowardField(tintedColor, fieldColor, appearance.opacityPermille) : baseColor,
-      haloRadiusPx: (materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size)
-        * (appearance ? appearance.haloPermille / SCENE_PERMILLE_SCALE : 1),
-      haloIntensityPermille: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloIntensityPermille : 0,
+      haloRadiusPx: appearance?.haloRadiusPx ??
+        (materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size)
+          * (appearance ? appearance.haloPermille / SCENE_PERMILLE_SCALE : 1),
+      haloIntensityPermille: materialIncludes(view.material.node, "halo")
+        ? appearance?.haloIntensityPermille ?? nodeMaterial.haloIntensityPermille : 0,
       label: "",
       labelText: activeOptions.presentation?.nativeLabels === false
         ? ""

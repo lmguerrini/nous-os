@@ -6,6 +6,10 @@ export type NodePresentation = {
   /** Exact review v2 core radius before camera scaling, in CSS pixels. */
   readonly radiusPx?: number;
   readonly haloPermille: number;
+  // D087-SIZE BEGIN: a full real-graph material can stabilize review halo ink across subsets.
+  readonly haloRadiusPx?: number;
+  readonly haloIntensityPermille?: number;
+  // D087-SIZE END
   readonly opacityPermille: number;
   readonly tintSrgb?: readonly [number, number, number];
 };

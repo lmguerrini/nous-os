@@ -10,14 +10,18 @@ const DENSITIES = { essential: 80, balanced: 2_420, complete: 11_199 } as const;
 const LAB = ['canopy-ifs', 'julia', 'sierpinski', 'lull'] as const;
 
 // D086-F1 BEGIN: Lab compositions now share the existing two-density native size scope.
-test('the size law covers Lab Essenziale and Bilanciata, never Completa, Natural or standalone Indra', () => {
+test('the size law covers every density and topology', () => {
   for (const topology of LAB) {
     assert.equal(labNativeSizeLawApplies(topology, 11_199, DENSITIES.essential), true, topology);
     assert.equal(labNativeSizeLawApplies(topology, 11_199, DENSITIES.balanced), true, topology);
-    assert.equal(labNativeSizeLawApplies(topology, 11_199, DENSITIES.complete), false, topology);
+    // D087-SIZE BEGIN
+    assert.equal(labNativeSizeLawApplies(topology, 11_199, DENSITIES.complete), true, topology);
+    // D087-SIZE END
   }
-  assert.equal(labNativeSizeLawApplies('natural', 11_199, DENSITIES.balanced), false);
-  assert.equal(labNativeSizeLawApplies(undefined, 11_199, DENSITIES.balanced), false);
+  // D087-SIZE BEGIN
+  assert.equal(labNativeSizeLawApplies('natural', 11_199, DENSITIES.balanced), true);
+  assert.equal(labNativeSizeLawApplies(undefined, 11_199, DENSITIES.balanced), true);
+  // D087-SIZE END
 });
 // D086-F1 END
 
@@ -30,7 +34,9 @@ test('the law radius is the stellar canvas core, so it never exceeds the compres
   }
   // A raw encoded domain radius of 15.5 px at the Canopy fit scale drew a 12.8 px disc; the core is under 7 px.
   assert.ok(canvasNodeRadiusPx('stellar', 15.47, 0.827, 12, 0.5) < 7);
-  assert.equal(canvasNodeFloorPx('stellar', true), 0.5);
+  // D087-SIZE BEGIN
+  assert.equal(canvasNodeFloorPx('stellar', true), 2);
+  // D087-SIZE END
   assert.equal(canvasNodeFloorPx('stellar', false), 2);
   assert.equal(canvasNodeFloorPx('mycelium', false), 1.3);
 });

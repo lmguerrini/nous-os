@@ -418,7 +418,12 @@ export type ViewWitness = {
   /** The canvas area really available for the graph: the container minus the declared insets. */
   readonly visibleRect: ViewportRect;
   /** Projected centre of every visible node, page CSS pixels; `radius` is the drawn pearl/soma disc radius. */
-  readonly nodeViewport: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number }>>;
+  // D087-SIZE BEGIN: both radii are live drawn CSS-pixel footprints.
+  readonly nodeViewport: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number;
+    readonly haloRadius?: number }>>;
+  /** Visible real relations sampled at their drawn centre-line in CSS pixels. */
+  readonly edgeViewport?: Readonly<Record<string, { readonly strokeWidth: number }>>;
+  // D087-SIZE END
   /** World coordinates of every visible node, in the layout's own space. */
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly labels: readonly LabelWitness[];

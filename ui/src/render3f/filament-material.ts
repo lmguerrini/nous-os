@@ -398,13 +398,8 @@ void main() {
     // D084-W7-DENSE BEGIN: keep the decoded veil available to the root alpha.
     denseRootFactor = denseFactor;
     // D084-W7-DENSE END
-    bodyHalfWidth *= max(0.22, sqrt(denseFactor));
-    // D082-A-N3D BEGIN: opacity still carries the screen-cell veil; width never breaks into dots.
-    if (v_neuralProfile.w >= 3.0 && bodyHalfWidth < 0.75) {
-      denseWidthFloorActive = 1.0;
-      bodyHalfWidth = 0.75;
-    }
-    // D082-A-N3D END
+    // D087-SIZE BEGIN: the decoded factor belongs to alpha, not the stroke footprint.
+    // D087-SIZE END
     // D082-A-NCOMPLETA END
     // D082-A-NEURAL END
   }

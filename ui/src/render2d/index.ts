@@ -76,7 +76,7 @@ import { createPresentedPublisher } from "#render-common/presented-publisher.ts"
 import { renderReadinessHost } from "#render-common/render-readiness-producer.ts";
 // "D086-BURST END"
 // Size-fix BEGIN
-import { canvasNodeFloorPx, createNativeSizeLaw, geometryDegrees } from "#render-common/native-node-law.ts";
+import { canvasNodeFloorPx, canvasNodeHaloRadiusPx, canvasNodeRadiusPx, createNativeSizeLaw, geometryDegrees } from "#render-common/native-node-law.ts";
 // Size-fix END
 // "D082-A-NODES BEGIN"
 import { denseNativeEdgeAlpha } from "#render-common/dense-node-scale.ts";
@@ -466,14 +466,22 @@ export function mount(
   // BELOW the windows: atmosphere does not occlude structure.
   const windows = mountAggregateWindows(sigma, model, options.calibration);
   const distinctLanguage = activeOptions.presentation?.morphologyLanguage === "distinct";
-  const glow = model.material.node.includes("halo") && !(distinctLanguage && model.graph.order >= DENSE_SCENE_THRESHOLD)
-    ? mountNodeGlow(sigma, model, options.calibration, !distinctLanguage)
+  let handlePickGeometry = activeOptions.presentation?.morphologyGeometry;
+  let glowAppearance = activeOptions.presentation?.appearance ?? DEFAULT_APPEARANCE;
+  const distinctGlow = distinctLanguage ? {
+    morphology: activeOptions.morphology,
+    geometry: () => handlePickGeometry,
+    appearance: () => glowAppearance,
+    nativeTier: model.graph.order >= DENSE_SCENE_THRESHOLD,
+  } : undefined;
+  const glow = model.material.node.includes("halo")
+    ? mountNodeGlow(sigma, model, options.calibration,
+      !distinctLanguage || model.graph.order >= DENSE_SCENE_THRESHOLD, distinctGlow)
     : noGlowLayer();
   const distinct = distinctLanguage
     ? mountDistinctCanvas(sigma, model, activeOptions, screenPaint)
     : null;
   sigma.refresh();
-  let handlePickGeometry = activeOptions.presentation?.morphologyGeometry;
   let handlePickIndex: ScreenPickIndex;
   let handlePickFrame = '';
   let handlePickSettleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -537,6 +545,7 @@ export function mount(
   return {
     model,
     setAppearance(appearance: AppearanceOptions): void {
+      glowAppearance = appearance;
       model.filamentMaterial.neuralWidthPx = appearance.edgeWidth;
       if (model.graph.order >= DENSE_SCENE_THRESHOLD) sigma.refresh();
       distinct?.setAppearance(appearance);
@@ -554,7 +563,7 @@ export function mount(
       let nativeNodeStyleChanged = false;
       // "D082-A-VEIL2 BEGIN: A-INT12 leaves the native Stellar/Mycelium tier"
       // untouched on a subset refresh. Only Neural needs its post-fit soma settle.
-      if (activeOptions.morphology === "neural") for (const [id, entry] of update.nodeEntries) {
+      for (const [id, entry] of update.nodeEntries) {
         const base = baseNodeAttributes.get(id);
         if (!base || entry.radiusPx === undefined) continue;
         // "D086-F1 BEGIN": retain the settled native law size while updating Neural's halo.
@@ -1157,12 +1166,13 @@ function mountNodeGlow(
   model: RenderModel,
   calibration: CalibrationProfile | undefined,
   paint = true,
+  distinct?: DistinctGlowMark,
 ): GlowLayer {
   const profile = calibration ?? DEFAULT_CALIBRATION;
   if (!paint) {
     // The distinct path covers the glow with its own canvas and keeps only the footprints the
     // DOM label pass collides against: no layer, no afterRender draw, witnesses unchanged.
-    return witnessesOnlyGlowLayer(sigma, model, profile);
+    return witnessesOnlyGlowLayer(sigma, model, profile, distinct);
   }
   sigma.createCanvasContext("node-glow");
   const canvas = requiredCanvas(sigma, "node-glow");
@@ -1190,18 +1200,18 @@ function mountNodeGlow(
       const attributes = model.graph.getNodeAttributes(id);
       const center = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
       const coreRadius = sigma.scaleSize(attributes.size);
-      const haloRadius = resolvedGlowHaloRadius(
-        coreRadius,
-        sigma.scaleSize(attributes.haloRadiusPx),
-        profile,
-        model.filamentMaterial.neuralProfile ?? false,
-      );
-      if (haloRadius <= coreRadius) {
+      const haloRadius = distinct ? distinctGlowHaloRadius(coreRadius, distinct)
+        : resolvedGlowHaloRadius(coreRadius, sigma.scaleSize(attributes.haloRadiusPx), profile,
+          model.filamentMaterial.neuralProfile ?? false);
+      if (haloRadius <= coreRadius || center.x + haloRadius < 0 || center.y + haloRadius < 0
+        || center.x - haloRadius > box.width || center.y - haloRadius > box.height) {
         continue;
       }
       const gradient = context.createRadialGradient(center.x, center.y, coreRadius, center.x, center.y, haloRadius);
       const color = parseColor(attributes.color);
-      const requestedAlpha = (boundedPermille(attributes.haloIntensityPermille, profile) / permilleScale(profile)) * color.a;
+      const requestedAlpha = distinct
+        ? MORPHOLOGY_CONTRACT[distinct.morphology].glow.strength * distinct.appearance().glow * color.a
+        : (boundedPermille(attributes.haloIntensityPermille, profile) / permilleScale(profile)) * color.a;
       const peakAlpha = model.filamentMaterial.neuralProfile ? Math.min(requestedAlpha, NEURAL_HALO_MAX_ALPHA) : requestedAlpha;
       for (const stop of haloAlphaStops(profile, peakAlpha)) {
         gradient.addColorStop(stop.offset, `rgba(${color.r}, ${color.g}, ${color.b}, ${stop.alpha})`);
@@ -1217,7 +1227,7 @@ function mountNodeGlow(
   draw();
   return {
     readWitnesses(): readonly RenderNodeGlowWitness[] {
-      return glowWitnesses(sigma, model, profile);
+      return glowWitnesses(sigma, model, profile, distinct);
     },
     setVisible(visible: boolean): void {
       canvas.style.visibility = visible ? "visible" : "hidden";
@@ -1230,30 +1240,44 @@ function mountNodeGlow(
 }
 
 /** This reports the live core and halo footprints with or without a painted canvas. */
-function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationProfile): readonly RenderNodeGlowWitness[] {
+type DistinctGlowMark = {
+  readonly morphology: Morphology;
+  readonly geometry: () => MorphologyGeometry | undefined;
+  readonly appearance: () => AppearanceOptions;
+  readonly nativeTier: boolean;
+};
+
+function distinctGlowHaloRadius(coreRadiusPx: number, mark: DistinctGlowMark): number {
+  return canvasNodeHaloRadiusPx(mark.morphology, coreRadiusPx, mark.appearance().glow);
+}
+
+function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationProfile,
+  distinct?: DistinctGlowMark): readonly RenderNodeGlowWitness[] {
+  const degrees = distinct ? geometryDegrees(distinct.geometry()) : undefined;
   return model.graph.nodes().map((id) => {
     const attributes = model.graph.getNodeAttributes(id);
-    const coreRadiusPx = sigma.scaleSize(attributes.size);
+    const coreRadiusPx = distinct && !distinct.nativeTier && attributes.size > 0
+      ? canvasNodeRadiusPx(distinct.morphology, attributes.size, sigma.scaleSize(1),
+        degrees?.get(id) ?? 0, canvasNodeFloorPx(distinct.morphology, false))
+      : sigma.scaleSize(attributes.size);
     const viewportCenter = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
     return {
       id,
       viewportCenter,
       coreRadiusPx,
-      haloRadiusPx: resolvedGlowHaloRadius(
-        coreRadiusPx,
-        sigma.scaleSize(attributes.haloRadiusPx),
-        profile,
-        model.filamentMaterial.neuralProfile ?? false,
-      ),
+      haloRadiusPx: distinct ? distinctGlowHaloRadius(coreRadiusPx, distinct)
+        : resolvedGlowHaloRadius(coreRadiusPx, sigma.scaleSize(attributes.haloRadiusPx), profile,
+          model.filamentMaterial.neuralProfile ?? false),
     };
   });
 }
 
 /** This answers the footprint witnesses the label pass collides against without a layer of its own. */
-function witnessesOnlyGlowLayer(sigma: Sigma, model: RenderModel, profile: CalibrationProfile): GlowLayer {
+function witnessesOnlyGlowLayer(sigma: Sigma, model: RenderModel, profile: CalibrationProfile,
+  distinct?: DistinctGlowMark): GlowLayer {
   return {
     readWitnesses(): readonly RenderNodeGlowWitness[] {
-      return glowWitnesses(sigma, model, profile);
+      return glowWitnesses(sigma, model, profile, distinct);
     },
     setVisible(): void {},
     destroy(): void {},

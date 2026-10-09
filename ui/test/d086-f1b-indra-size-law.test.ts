@@ -10,14 +10,18 @@ const fitScale = 0.827;
 const shared = new Map([['domain:pearl', 2.5], ['member:record', 5.75], ['member:hub', 15.47]]);
 const degrees = new Map([['domain:pearl', 8], ['member:record', 1], ['member:hub', 12]]);
 
-test('Lab + Indra compositions enter the native law at balanced density; standalone Indra and Natural do not', () => {
+test('Lab + Indra compositions enter the native law at every density; standalone Indra and Natural do not', () => {
   for (const [index, topology] of compositions.entries()) {
     assert.equal(labNativeSizeLawApplies(topology, 11_199, 80), true, topology);
     assert.equal(labNativeSizeLawApplies(topology, 11_199, balancedCounts[index]!), true, topology);
-    assert.equal(labNativeSizeLawApplies(topology, 11_199, 11_199), false, topology);
+    // D087-SIZE BEGIN
+    assert.equal(labNativeSizeLawApplies(topology, 11_199, 11_199), true, topology);
+    // D087-SIZE END
   }
-  assert.equal(labNativeSizeLawApplies(undefined, 11_199, 2_420), false);
-  assert.equal(labNativeSizeLawApplies('natural', 11_199, 2_420), false);
+  // D087-SIZE BEGIN
+  assert.equal(labNativeSizeLawApplies(undefined, 11_199, 2_420), true);
+  assert.equal(labNativeSizeLawApplies('natural', 11_199, 2_420), true);
+  // D087-SIZE END
 });
 
 test('each composition retains identical native size attributes for shared pearl and member IDs at one camera', () => {
