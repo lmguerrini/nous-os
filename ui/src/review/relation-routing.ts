@@ -45,6 +45,13 @@ export type RouteResult = Readonly<{
   detail?: RelationDetailCounts;
   detailFilteredSourceIds?: readonly string[];
   // D085-S7 END
+  // D087-JULIA BEGIN: the route carries the atlas decision that produced it.
+  // The status census, the LOD `arcs.available` and the witness `arcs.total`
+  // read this flag instead of the mounted law layout — only the remount path
+  // reassigns that layout, so an in-place revision publish must never let the
+  // counters describe a route the page no longer draws (review J1/J2).
+  atlas?: boolean;
+  // D087-JULIA END
 }>;
 export type RouteInput = Readonly<{
   nodes: readonly RouteNode[]; disclosedIds: ReadonlySet<string>; renderedNodeIds: ReadonlySet<string>;

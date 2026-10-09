@@ -42,11 +42,14 @@ export function juliaOverviewPearlQuota(density: 'essential' | 'balanced' | 'com
   return Math.min(available, Math.max(0, target));
 }
 
-// D087-JULIA BEGIN: the atlas census names strokes in the active phase. The
-// full snapshot remains available in the source and density-budget witnesses.
+// D087-JULIA BEGIN: the atlas census names strokes in the active phase: `drawn`
+// and `eligible` are the route's relations, while `total` keeps the fixed source
+// denominator every other view reports (review J3) — a partial phase must
+// never read as a complete relation set. The full snapshot remains available in
+// the source and density-budget witnesses.
 export function juliaAtlasEdgeCensus(drawn: number, eligible: number, total: number,
   atlasActive: boolean): { drawn: number; eligible: number; total: number } {
-  return atlasActive ? { drawn, eligible: drawn, total: drawn } : { drawn, eligible, total };
+  return atlasActive ? { drawn, eligible: drawn, total } : { drawn, eligible, total };
 }
 // D087-JULIA END
 
