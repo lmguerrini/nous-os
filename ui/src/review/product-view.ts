@@ -611,7 +611,11 @@ export function forgetProductCamera(
  * Camera persistence remains keyed only by axes, so changing density never restores or moves a
  * camera. A density with no recorded fit keeps the historical live-camera fallback. */
 export function productSceneFitKey(cameraKey: string, labelBudget: number | undefined): string {
-  return `${cameraKey}\u00b7scene:${labelBudget === undefined ? "default" : labelBudget}`;
+  // D086-CUSTOM BEGIN: camera-fit identities change only at label policy steps.
+  const quantized = labelBudget === undefined ? 'default' : Math.min(60, Math.max(0,
+    Math.round(labelBudget / 5) * 5));
+  return `${cameraKey}\u00b7scene:${quantized}`;
+  // D086-CUSTOM END
 }
 
 export function productSceneFitRatio(
@@ -727,6 +731,9 @@ export const createProductView: CreateProductView = async (input) => {
   // D-072 R2: the label allowance is view state — an in-place density change moves it with the
   // subset instead of remounting.
   let labelBudget = input.labelBudget;
+  // D086-CUSTOM BEGIN
+  let witnessDensity = (input as typeof input & { density?: string }).density ?? 'complete';
+  // D086-CUSTOM END
   let drawnEdges: readonly ReviewEdge[];
   let drawnEdgeIds: ReadonlySet<string>;
   const readingAllows = (edge: ReviewEdge): boolean => {
@@ -2537,6 +2544,9 @@ export const createProductView: CreateProductView = async (input) => {
       return false;
     }
     visible = nextVisible;
+    // D086-CUSTOM BEGIN: an accepted in-place density revision owns the witness.
+    witnessDensity = (update as typeof update & { density?: string }).density ?? witnessDensity;
+    // D086-CUSTOM END
     if (restoreCanopy) canopyFullScene = null;
     layoutContainers = nextContainers;
     labelBudget = nextBudget;
@@ -3025,6 +3035,13 @@ export const createProductView: CreateProductView = async (input) => {
     const r = container.getBoundingClientRect();
     const mounted = throughVisible(handle.readWorldAnchorWitnesses());
     const radii = new Map(handle.readNodeFootprintWitnesses().map(footprint => [footprint.id, footprint.coreRadiusPx]));
+    // D086-CUSTOM BEGIN: the distinct 2D canvas has no glow witness; use its committed ink radius.
+    if (sigma && committedScene && drawnGeometry) for (const node of drawnGeometry.nodes) {
+      if (radii.has(node.id)) continue;
+      const radius = committedScene.presentation.nodes.get(node.id)?.radiusPx ?? node.radius * appearance.nodeScale;
+      radii.set(node.id, Math.max(0, radius * sigma.scaleSize(1)));
+    }
+    // D086-CUSTOM END
     const nodeViewport = Object.fromEntries(mounted.map(({ id, position }) => {
       const p = project(position);
       const radius = radii.get(id);
@@ -3032,7 +3049,18 @@ export const createProductView: CreateProductView = async (input) => {
     }));
     const positions = Object.fromEntries(mounted.map(({ id, position }) =>
       [id, { x: position.x, y: position.y, z: position.z }]));
-    return { visibleRect: pageRect(), nodeViewport, positions, mounted };
+    // D086-CUSTOM BEGIN: zero-radius dense representatives are submitted, not painted.
+    const paintedNodeIds = mounted.filter(({ id }) => (radii.get(id) ?? 0) > 0).map(({ id }) => id);
+    const visibleRect = pageRect();
+    const viewportPaintedNodeIds = paintedNodeIds.filter(id => {
+      const point = nodeViewport[id];
+      if (!point) return false;
+      const radius = point.radius ?? 0;
+      return point.x + radius >= visibleRect.left && point.x - radius <= visibleRect.left + visibleRect.width
+        && point.y + radius >= visibleRect.top && point.y - radius <= visibleRect.top + visibleRect.height;
+    });
+    return { visibleRect, nodeViewport, positions, mounted, paintedNodeIds, viewportPaintedNodeIds };
+    // D086-CUSTOM END
   };
   // D082-A-PERF END
   return {
@@ -3171,8 +3199,10 @@ export const createProductView: CreateProductView = async (input) => {
     projectPoint: (point) => project(point),
     // D082-A-PERF BEGIN
     gestureWitness() {
-      const { visibleRect, nodeViewport, positions } = readGestureWitness();
-      return { visibleRect, nodeViewport, positions };
+      // D086-CUSTOM BEGIN
+      const { visibleRect, nodeViewport, positions, paintedNodeIds, viewportPaintedNodeIds } = readGestureWitness();
+      return { visibleRect, nodeViewport, positions, paintedNodeIds, viewportPaintedNodeIds };
+      // D086-CUSTOM END
     },
     readPlacedCounts() { return { labels: placed.length, titles: visibleTitleCount }; },
     // D082-A-PERF END
@@ -3181,7 +3211,7 @@ export const createProductView: CreateProductView = async (input) => {
     // D085-X8 END
     witness() {
       // D082-A-PERF BEGIN
-      const { mounted, nodeViewport, positions } = readGestureWitness();
+      const { mounted, nodeViewport, positions, paintedNodeIds, viewportPaintedNodeIds } = readGestureWitness();
       if (!handle) throw new Error("view destroyed");
       const r = container.getBoundingClientRect();
       // D082-A-PERF END
@@ -3191,7 +3221,9 @@ export const createProductView: CreateProductView = async (input) => {
       const represented = countAggregateRepresentation(input.data.nodes.map(node => { const v2 = node.v2 as import('./v2-core.ts').V2Node | undefined;
         return { id: node.id, parent: v2?.parent }; }), visible);
       const visibility = buildVisibilityWitness({
-        axes, relationDetail: 'essential', density: 'complete',
+        // D086-CUSTOM BEGIN
+        axes, relationDetail: 'essential', density: witnessDensity,
+        // D086-CUSTOM END
         nodes: input.data.nodes.map(node => { const v2 = node.v2 as import('./v2-core.ts').V2Node | undefined;
           return { id: node.id, level: v2?.level, kind: v2?.kind ?? node.type, parent: v2?.parent }; }),
         renderedNodeIds: visible,
@@ -3234,7 +3266,9 @@ export const createProductView: CreateProductView = async (input) => {
               ? "engine-flat+depth"
               : "engine-flat",
         palette: "monochrome",
-        visibility,
+        // D086-CUSTOM BEGIN
+        visibility: { ...visibility, paintedNodeIds, viewportPaintedNodeIds },
+        // D086-CUSTOM END
         // D085-S5 BEGIN
         ...(indraComposition ? { indraComposition } : {}),
         // D085-S5 END

@@ -61,6 +61,12 @@ export type LullOverviewVisibility = Readonly<{
 // D085-S4 END
 export type VisibilityWitnessInput = Readonly<{
   axes: Axes; relationDetail: 'essential' | 'all'; density: string;
+  // D086-CUSTOM BEGIN
+  custom?: Readonly<{ requested: number; available: number; minimum: number; selected: number;
+    contextIncluded: number; submitted: number; drawn: number; viewportDrawn: number;
+    manualOpened?: number; sourceDigest: string; orderDigest: string; clampedFrom?: number;
+    phase: string; serial: number }>;
+  // D086-CUSTOM END
   nodes: readonly VisibilityNode[]; renderedNodeIds: ReadonlySet<string>;
   submittedEdges: readonly VisibilityEdge[]; sourceEdges?: readonly VisibilityEdge[];
   labels: number; aggregateCount: number; representedCount: number; starCount: number;
@@ -163,6 +169,9 @@ export function buildVisibilityWitness(input: VisibilityWitnessInput) {
   for (const node of input.nodes) if (node.parent) { legitimate.add(node.id); legitimate.add(node.parent); }
   const submittedIds = new Set(input.submittedEdges.map(edge => edge.id));
   return {
+    // D086-CUSTOM BEGIN
+    ...(input.custom ? { custom: input.custom } : {}),
+    // D086-CUSTOM END
     state: { organization: input.axes.organization, projection: input.axes.projection,
       morphology: input.axes.morphology, reading: input.axes.reading as Reading,
       relationDetail: input.relationDetail, density: input.density },
