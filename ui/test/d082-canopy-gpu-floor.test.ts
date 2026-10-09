@@ -5,8 +5,11 @@ import { neural3dCompletaPointFloorCssPx } from '#render3f/neural-point-floor.ts
 import { DENSE_NEURAL_POINT_FLOOR_CSS_PX } from '#engine/presentation-options.ts';
 
 /** The floor-relevant slice of a full 3D Neural Completa mount, exactly as mount() reads it:
- * morphology, distinct morphology language and the 11,199-node scene size. */
-const completaNeural3d = { morphology: 'neural' as const, morphologyLanguage: 'distinct' as const, nodeCount: 11_199 };
+ * morphology, distinct morphology language and the page's explicit dense drawing policy. */
+// D086-CUSTOM BEGIN
+const completaNeural3d = { morphology: 'neural' as const, morphologyLanguage: 'distinct' as const,
+  usesDenseDrawingPolicy: true };
+// D086-CUSTOM END
 
 /** mount()'s own derivation of the Canopy host signal: the explicit prepared-Canopy mount
  * argument OR the data-fractal-rails-active attribute on the render container. */
@@ -36,9 +39,11 @@ test('the floor stays exclusive to the full distinct Neural Completa scene', () 
   assert.equal(neural3dCompletaPointFloorCssPx({ ...completaNeural3d, morphology: 'stellar',
     canopyMount: false }), 0);
   assert.equal(neural3dCompletaPointFloorCssPx({ morphology: 'neural', morphologyLanguage: undefined,
-    nodeCount: 11_199, canopyMount: false }), 0);
-  assert.equal(neural3dCompletaPointFloorCssPx({ ...completaNeural3d, nodeCount: 11_198,
+    usesDenseDrawingPolicy: true, canopyMount: false }), 0);
+  // D086-CUSTOM BEGIN: sparse scenes remain excluded even if their count happens to be large.
+  assert.equal(neural3dCompletaPointFloorCssPx({ ...completaNeural3d, usesDenseDrawingPolicy: false,
     canopyMount: false }), 0);
+  // D086-CUSTOM END
 });
 
 test('mount.tsx resolves the floor through the shared helper and the Canopy host signal', async () => {
@@ -72,5 +77,7 @@ test('the floor value originates in the engine, not in the renderer helper modul
   // returning 0.9 literal fails the exact-set comparison.
   const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
   const literals = [...code.matchAll(/(?<![\w$])\d[\d_]*(?:\.\d[\d_]*)?(?![\w$])/g)].map((m) => m[0]);
-  assert.deepEqual([...new Set(literals)].sort(), ['0', '11_199']);
+  // D086-CUSTOM BEGIN: no count literal remains in the renderer policy helper.
+  assert.deepEqual([...new Set(literals)].sort(), ['0']);
+  // D086-CUSTOM END
 });

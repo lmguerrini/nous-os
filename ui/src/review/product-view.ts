@@ -797,6 +797,10 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NCOMPLETA BEGIN
     denseNeuralHaloById?: ReadonlyMap<string, number> | undefined;
     // D082-A-NCOMPLETA END
+    // D086-CUSTOM BEGIN
+    usesDenseDrawingPolicy?: boolean | undefined;
+    denseNativeRadiusOnly?: boolean | undefined;
+    // D086-CUSTOM END
   } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate" };
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
@@ -1772,6 +1776,10 @@ export const createProductView: CreateProductView = async (input) => {
     // reference maximum it takes the original Completa arithmetic and cache path exactly.
     const referenceCompleta = isReferenceCompleta(input.data.nodes.length, state.visible.size);
     const customDense = state.density === 'custom' && !referenceCompleta;
+    const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
+      state.visible.size, state.density ?? witnessDensity);
+    morphologyInteraction.usesDenseDrawingPolicy = denseDrawingPolicy;
+    morphologyInteraction.denseNativeRadiusOnly = customDense;
     // D086-CUSTOM END
     denseScaleById = new Map();
     denseMembersByRepresentative = new Map();
@@ -1787,8 +1795,7 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NCOMPLETA BEGIN
     if (!reuseDenseFit) denseFitProjectionScaleById = new Map();
     // D082-A-NCOMPLETA END
-    if (input.v2Prepared && usesDenseDrawingPolicy(input.data.nodes.length,
-      state.visible.size, state.density ?? witnessDensity)) {
+    if (input.v2Prepared && denseDrawingPolicy) {
       const canopyComplete = container.hasAttribute('data-fractal-rails-active');
       const current = handle?.readCameraState().ratio;
       const fit = canopyComplete ? fitRatio.get(cameraKeys().key)
@@ -1933,6 +1940,10 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES END
     const presentation = {
       morphologyLanguage: "distinct" as const,
+      // D086-CUSTOM BEGIN: the same scene policy reaches scene construction and native rendering.
+      usesDenseDrawingPolicy: denseDrawingPolicy,
+      denseNativeRadiusOnly: customDense,
+      // D086-CUSTOM END
       nativeLabels: false,
       windowGeometryFromAnchors: true,
       // D086-F1 BEGIN
@@ -2192,6 +2203,10 @@ export const createProductView: CreateProductView = async (input) => {
         },
       style: {
         fieldColor: palette.background,
+        // D086-CUSTOM BEGIN
+        usesDenseDrawingPolicy: presentation.usesDenseDrawingPolicy,
+        denseNativeRadiusOnly: presentation.denseNativeRadiusOnly,
+        // D086-CUSTOM END
         interaction: morphologyInteraction,
         nodes: new Map([...presentation.nodes].map(([id, value]) => [id, {
           color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(245, 245, 245)",
@@ -2333,6 +2348,10 @@ export const createProductView: CreateProductView = async (input) => {
     const oldColor = morphologyInteraction.containerColor;
     // D082-A-NCOMPLETA BEGIN
     const oldDenseNeuralHaloById = morphologyInteraction.denseNeuralHaloById;
+    // D086-CUSTOM BEGIN
+    const oldDenseDrawingPolicy = morphologyInteraction.usesDenseDrawingPolicy;
+    const oldDenseNativeRadiusOnly = morphologyInteraction.denseNativeRadiusOnly;
+    // D086-CUSTOM END
     // D082-A-NCOMPLETA END
     const oldBackground = container.style.backgroundColor;
     const oldFocusIds = morphologyInteraction.focusIds;
@@ -2425,6 +2444,10 @@ export const createProductView: CreateProductView = async (input) => {
     // D085-S3 BEGIN: moving native law skeletons read semantic ranks and hierarchy
     // independently of the Indra-only drawing containers.
     const nextOverlay: DistinctSubsetUpdate = { input: morphologyInput, geometry, nodeEntries, edgeEntries,
+      // D086-CUSTOM BEGIN
+      usesDenseDrawingPolicy: presentation.usesDenseDrawingPolicy,
+      denseNativeRadiusOnly: presentation.denseNativeRadiusOnly,
+      // D086-CUSTOM END
       // D086-F1 BEGIN
       nativeNodeSizeLaw: presentation.nativeNodeSizeLaw === true,
       // D086-F1 END
@@ -2440,6 +2463,10 @@ export const createProductView: CreateProductView = async (input) => {
     // entries before its canvas draw threw. The old geometry hides any newly introduced ids.
     const restoreOverlay: DistinctSubsetUpdate = {
       input: oldScene.morphologyInput, geometry: oldScene.geometry,
+      // D086-CUSTOM BEGIN
+      usesDenseDrawingPolicy: oldScene.presentation.usesDenseDrawingPolicy,
+      denseNativeRadiusOnly: oldScene.presentation.denseNativeRadiusOnly,
+      // D086-CUSTOM END
       // D086-F1 BEGIN
       nativeNodeSizeLaw: oldScene.presentation.nativeNodeSizeLaw === true,
       // D086-F1 END
@@ -2469,6 +2496,10 @@ export const createProductView: CreateProductView = async (input) => {
       ...flowScene, geometry,
       style: {
         ...flowScene.style,
+        // D086-CUSTOM BEGIN
+        usesDenseDrawingPolicy: presentation.usesDenseDrawingPolicy,
+        denseNativeRadiusOnly: presentation.denseNativeRadiusOnly,
+        // D086-CUSTOM END
         nodes: new Map([...presentation.nodes].map(([id, value]) => [id, {
           color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(245, 245, 245)",
           glyph: value.glyph, radiusPx: value.radiusPx,
@@ -2509,6 +2540,10 @@ export const createProductView: CreateProductView = async (input) => {
         morphologyInteraction.containerColor = oldColor;
         // D082-A-NCOMPLETA BEGIN
         morphologyInteraction.denseNeuralHaloById = oldDenseNeuralHaloById;
+        // D086-CUSTOM BEGIN
+        morphologyInteraction.usesDenseDrawingPolicy = oldDenseDrawingPolicy;
+        morphologyInteraction.denseNativeRadiusOnly = oldDenseNativeRadiusOnly;
+        // D086-CUSTOM END
         // D082-A-NCOMPLETA END
         morphologyInteraction.focusIds = oldFocusIds;
         // D085-X8 BEGIN

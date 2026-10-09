@@ -475,8 +475,15 @@ export function mount(
   const denseNeuralPointFloorCssPx = neural3dCompletaPointFloorCssPx({
     morphology: options.morphology,
     morphologyLanguage: options.presentation?.morphologyLanguage,
-    nodeCount: live.scene.nodes.length,
     canopyMount,
+    // D086-CUSTOM BEGIN
+    usesDenseDrawingPolicy: options.presentation?.morphologyInteraction
+      && "usesDenseDrawingPolicy" in options.presentation.morphologyInteraction
+      ? options.presentation.morphologyInteraction.usesDenseDrawingPolicy === true : false,
+    denseNativeRadiusOnly: options.presentation?.morphologyInteraction
+      && "denseNativeRadiusOnly" in options.presentation.morphologyInteraction
+      ? options.presentation.morphologyInteraction.denseNativeRadiusOnly === true : false,
+    // D086-CUSTOM END
   });
   const denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;
   // D082-B-GPUFLOOR END
@@ -1545,7 +1552,9 @@ export function mount(
         distinct?.updateVisibleSubset(update);
         // D085-S3 BEGIN: reuse the existing node-attribute update decision when
         // deciding whether this revision will rebuild the native proxy below.
-        const updatesNativeNodeAttributes = live.scene.nodes.length === 11_199 && update.nodeEntries.size > 0;
+        // D086-CUSTOM BEGIN: a capped Custom slice must refresh the resident GPU and proxy radii.
+        const updatesNativeNodeAttributes = update.usesDenseDrawingPolicy === true && update.nodeEntries.size > 0;
+        // D086-CUSTOM END
         // D085-S3 END
         // D085-S3 BEGIN: an in-place density slice can change the mounted
         // hierarchy without changing the native scene or its materials.
