@@ -3970,8 +3970,11 @@ export class V2Page {
             const projection = this.axes.projection;
             let canopyViewMarks: CanopyMark[] = [];
             if (canopy) {
-                const focusId = this.selected ?? this.revealState.focusClusterId
-                    ?? this.history.state.manualOrder.at(-1) ?? null;
+                // D086-F2 BEGIN: the fixed Canopy evidence prefix has one
+                // explicit focus input. A prior reveal cluster must not add a
+                // mark after Escape.
+                const focusId = this.selected;
+                // D086-F2 END
                 const rootWidth = Math.max(1, canopy.bounds.x[1] - canopy.bounds.x[0]);
                 const clearWidth = Math.max(1, (element('render-root').clientWidth || 1000)
                     - this.insets.left - this.insets.right);
@@ -4231,6 +4234,9 @@ export class V2Page {
             // lower levels. Direct endpoints give every retained relation a stable identity.
             const densityPolicy = !canopy && !this.lawActive() && this.density !== 'complete' && source.nodes.length > V2_CAP &&
                 (organization === 'natural' || organization === 'indra');
+            // D086-F2 BEGIN: hover changes emphasis, not the Canopy evidence set.
+            const evidenceFocus = canopy ? this.selected : active;
+            // D086-F2 END
             const projectedArcs = this.density === 'complete'
                 ? cachedCanopyArcs ?? this.densityRelations(this.axes.reading)
                 : densityPolicy
@@ -4239,7 +4245,7 @@ export class V2Page {
                 // D082-A-SWITCH END
                 // D085-S7 BEGIN
                 : projectRelations(source.nodes, source.edges, ids, this.axes.reading,
-                    organization, this.topology === 'natural' ? 'all' : this.relationDetail, active);
+                    organization, this.topology === 'natural' ? 'all' : this.relationDetail, evidenceFocus);
                 // D085-S7 END
             // D082-B1c END.
             // D085-S7 BEGIN: preserve the approved Complete Canopy route verbatim.
@@ -4469,10 +4475,10 @@ export class V2Page {
                         budget: !lab && organization === 'indra' && this.relationDetail === 'essential'
                             ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                         // D085-S2 END
-                        focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
+                        focusId: evidenceFocus, pinnedRelationIds: this.pinnedArcIds(tiers) });
             const otherArcs = lab && this.density !== 'complete'
                 ? projectRelations(source.nodes, source.edges, ids, this.axes.reading,
-                    organization, this.relationDetail === 'essential' ? 'all' : 'essential', active) : null;
+                    organization, this.relationDetail === 'essential' ? 'all' : 'essential', evidenceFocus) : null;
             const otherEvidence = otherArcs && canopy ? canopyEvidenceArcs(otherArcs.edges) : otherArcs?.edges;
             const otherAvailable = otherArcs && otherEvidence ? { ...otherArcs,
                 edges: otherEvidence, byId: new Map(otherEvidence.map(edge => [edge.id, edge])) } : null;
@@ -4483,7 +4489,7 @@ export class V2Page {
                     count: edge.count, sourceEdgeIds: edge.underlying.map(item => item.id) })),
                 reading: this.axes.reading,
                 budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs) : budget.arcs,
-                focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers),
+                focusId: evidenceFocus, pinnedRelationIds: this.pinnedArcIds(tiers),
             }) : candidateRoute;
             const allRoute = lab && this.relationDetail === 'essential' ? otherRoute : candidateRoute;
             let route = lab ? resolveLabRelationDetail(
@@ -5355,6 +5361,10 @@ export class V2Page {
         if (this.neighbourhoodBefore) this.restoreNeighbourhood = true;
         this.neighbourhoodDepth = null;
         this.selected = null;
+        // D086-F2 BEGIN: Escape retires the picked node's implicit routing focus.
+        this.hovered = null;
+        this.hoveredEdge = null;
+        // D086-F2 END
         // D086-F2 BEGIN: selection is committed here; retire its panel immediately.
         // A following refresh can be superseded by another toolbar request.
         this.renderPanel();
@@ -5460,6 +5470,10 @@ export class V2Page {
         return this.transitions.enqueue(async () => {
             if (intent !== this.geometryIntent) return 'superseded' as const;
             const previousDensity = this.density;
+            // D086-F2 BEGIN: provisional density work also owns the camera
+            // preservation flag, which a superseded no-op cannot clear.
+            const previousDensitySwitchPending = this.densitySwitchPending;
+            // D086-F2 END
             const committedBefore = this.committedAxes;
             // D085-S5 BEGIN: Complete may publish a provisional recovery phase.
             const previousQuality = this.d081Quality;
@@ -5467,14 +5481,25 @@ export class V2Page {
             // D085-S5 END
             this.geometryTransitionActive = true;
             try {
-                await this.applyDensity(value, inheritedOrganization);
+                await this.applyDensity(value, inheritedOrganization, intent);
                 if (intent !== this.geometryIntent) {
-                    if (this.committedAxes === committedBefore) this.density = previousDensity;
+                    if (this.committedAxes === committedBefore) {
+                        // D086-F2 BEGIN: release a superseded Complete HUD lease.
+                        this.density = previousDensity;
+                        this.densitySwitchPending = previousDensitySwitchPending;
+                        this.d081Quality = previousQuality;
+                        this.d081Metrics = previousMetrics;
+                        if (previousMetrics?.nodes && previousMetrics?.edges) this.d081Emit();
+                        // D086-F2 END
+                    }
                     return 'superseded' as const;
                 }
             } catch (error) {
                 if (this.committedAxes === committedBefore) {
                     this.density = previousDensity;
+                    // D086-F2 BEGIN
+                    this.densitySwitchPending = previousDensitySwitchPending;
+                    // D086-F2 END
                     // D085-S5 BEGIN
                     this.d081Quality = previousQuality;
                     this.d081Metrics = previousMetrics;
@@ -5486,7 +5511,8 @@ export class V2Page {
         });
         // D085-S1 END
     }
-    private async applyDensity(value: Density, inheritedOrganization: PageAxes['organization'] | null = null) {
+    private async applyDensity(value: Density, inheritedOrganization: PageAxes['organization'] | null = null,
+        intent = this.geometryIntent) {
         const next = normalizeDensity(value);
         if (next === this.density && !inheritedOrganization)
             return;
@@ -5515,6 +5541,10 @@ export class V2Page {
             // D081-P3c END
         }
         // D081-P3b END
+        // D086-F2 BEGIN: the preparation lease can be superseded during its
+        // paint yield; it must not start a stale full refresh afterward.
+        if (intent !== this.geometryIntent) return;
+        // D086-F2 END
         // D085-S1 BEGIN: direct page callers keep a pending organization; main's lane
         // normally resolves the preceding geometry task before density reaches here.
         if (inheritedOrganization) await this.applyAxes({ organization: inheritedOrganization });

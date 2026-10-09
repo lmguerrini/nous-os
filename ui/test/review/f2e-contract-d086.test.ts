@@ -26,6 +26,11 @@ test('leaving Canopy restores the current core status even after the toolbar wra
 test('Escape clears the selection panel in the same turn, before an async refresh', async () => {
   const page = makePage(environment.mod);
   page.selected = 'domain:qrs';
+  // D086-F2 BEGIN: a pick may leave the selected node hovered through Canopy.
+  page.hovered = 'domain:qrs';
+  page.hoveredEdge = 'edge:old';
+  page.renderedRelations = new Map();
+  // D086-F2 END
   page.neighbourhoodBefore = null;
   page.neighbourhoodCamera = null;
   page.revealCamera = { zoom: 1 };
@@ -42,6 +47,11 @@ test('Escape clears the selection panel in the same turn, before an async refres
   const pending = page.exitFocus();
   assert.equal(page.selected, null);
   assert.equal(panelSelection, null);
+  // D086-F2 BEGIN
+  assert.equal(page.hovered, null);
+  assert.equal(page.hoveredEdge, null);
+  assert.equal(page.projectionFocus(), null);
+  // D086-F2 END
   release();
   await pending;
 });

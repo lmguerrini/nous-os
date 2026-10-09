@@ -47,6 +47,41 @@ function consistent(page: any, main: any) {
   assert.equal(main.log.sync.at(-1).organization, mounted.organization);
 }
 
+// D086-F2 BEGIN: the pending Complete click survives a topology click.
+test('pending density is carried into the next topology mount', async () => {
+  const page = makePage(environment.mod);
+  page.selected = 'domain:qrs';
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  main.applyDensity('complete');
+  for (let step = 0; step < 30 && page.d081Quality !== 'recupero'; step++) await tick(4);
+  assert.equal(page.d081Quality, 'recupero', 'Complete reached preparation');
+  const canopy = main.chooseTaxonomy('canopy-ifs');
+  await drain(page, main, [canopy]);
+  consistent(page, main);
+  assert.equal(page.committedViewTaxonomy.topology, 'canopy-ifs');
+  assert.equal(page.density, 'complete');
+  assert.equal(main.state.density, 'complete');
+  assert.equal(main.state.geometry.density, 'complete');
+});
+
+test('superseded Complete preparation releases its provisional HUD state', async () => {
+  const page = makePage(environment.mod);
+  page.d081Quality = 'completa';
+  page.d081Metrics.hint = 'Densità Bilanciata';
+  page.d081Metrics.limit = { kind: 'densità', value: 400 };
+  const complete = page.setDensity('complete');
+  for (let step = 0; step < 30 && page.d081Quality !== 'recupero'; step++) await tick(4);
+  assert.equal(page.d081Quality, 'recupero');
+  const balanced = page.setDensity('balanced');
+  await drain(page, { lane: environment.mod.createGeometryTransitionQueue() }, [complete, balanced]);
+  assert.equal(page.density, 'balanced');
+  assert.equal(page.d081Quality, 'completa');
+  assert.equal(page.d081Metrics.hint, 'Densità Bilanciata');
+  assert.equal(page.d081Metrics.limit.value, 400);
+  assert.equal(page.densitySwitchPending, false);
+});
+// D086-F2 END
+
 for (const successor of ['topology', 'density', 'indra', 'axis'] as const) {
   test(`superseded 3D mount restores committed axes before ${successor}`, async () => {
     const page = makePage(environment.mod);
