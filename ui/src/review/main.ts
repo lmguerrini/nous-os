@@ -341,7 +341,12 @@ function persistView(): void {
       ? { naturalArrangement: axes.arrangement } : {}) };
   // D082-B2 END
   // D082-B2 BEGIN: the same storage key now carries the canonical schema-2 record.
-  if (view2WriteAllowed) writeLocal(storage, VIEW_STORAGE_KEY, serializeGeometryView2(geometry));
+  if (view2WriteAllowed) {
+    writeLocal(storage, VIEW_STORAGE_KEY, serializeGeometryView2(geometry));
+    // D086-CUSTOM BEGIN: the legacy fallback retains the committed Custom choice; the view stores its amount.
+    writeLocal(storage, 'd072.density', geometry.density);
+    // D086-CUSTOM END
+  }
   // D082-B2 END
   writeViewUrl();
 }
@@ -731,10 +736,10 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, den
     ...(topology === 'natural' ? { compatibility: indra ? 'd081-indra-recursive' as const : 'd081-natural' as const }
       : topology === 'canopy-ifs' && !indra ? { compatibility: 'd081-canopy' as const } : {}) };
   view2WriteAllowed = true;
-  persistView(); updateButtons(); syncToolbarSummary();
-  // D086-CUSTOM BEGIN
+  persistView(); updateButtons();
+  // D086-F2 BEGIN: density chrome and the summary present the combined mount together.
   if (typeof syncDensity === 'function') syncDensity();
-  // D086-CUSTOM END
+  // D086-F2 END
   // D086-F2 BEGIN
   if (pendingDensityIntent === densityIntent) pendingDensityIntent = null;
   if (pendingTopologyIntent === topologyIntent) pendingTopologyIntent = null;
@@ -1350,7 +1355,7 @@ function syncCommittedPageGeometry(): void {
   // D085-S1 END
   density = v2.densitySetting ?? density;
   // D086-CUSTOM BEGIN: a committed Custom fact is the source of the saved amount.
-  if (customNodes !== undefined && !('mode' in geometry))
+  if (typeof customNodes !== 'undefined' && customNodes !== undefined && !('mode' in geometry))
     geometry = { ...geometry, customNodes };
   // D086-CUSTOM END
   if (!('mode' in geometry)) geometry = { ...geometry, rendering: axes.projection,
@@ -1495,10 +1500,10 @@ function applyAxes(input: AxesInput): Promise<void> {
 // D085-S1 BEGIN: location navigation cannot interleave a toolbar transition.
 function restoreGeometryFromLocation(): Promise<void> {
   const search = location.search, hash = location.hash;
-  // D086-CUSTOM BEGIN: navigation owns the next view; earlier toolbar intents cannot reappear.
+  // D086-F2 BEGIN: navigation owns the next view; earlier toolbar intents cannot reappear.
   pendingDensityIntent = null;
   pendingTopologyIntent = null;
-  // D086-CUSTOM END
+  // D086-F2 END
   v2?.supersedeGeometry();
   return geometryTransitions.enqueue(() => applyGeometryFromLocation(search, hash));
 }
@@ -2049,7 +2054,9 @@ get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.s
 // D-072 L1: the density selector — Essenziale · Bilanciata · Completa — a small segmented control
 // in the toolbar row, default Bilanciata and remembered like the other preferences.
 // D082-B2 BEGIN: a portable view2 carries its own density.
-let density: ViewDensity = geometry.density === 'custom' ? 'balanced' : geometry.density;
+// D086-CUSTOM BEGIN: preserve the saved choice while the initial page prepares its Custom commit.
+let density: ViewDensity = geometry.density;
+// D086-CUSTOM END
 // D086-F2 BEGIN: click intent is distinct from the density last painted.
 let pendingDensityIntent: { value: Density } | CustomDensityIntent | null = null;
 // D086-F2 BEGIN: the last taxonomy request remains owned until a combined mount presents it.
@@ -2108,7 +2115,7 @@ function syncCustomControls(): void {
     customRange.value = customNumber.value = String(value);
   }
   customRange.disabled = customNumber.disabled = customApply.disabled = !usable;
-  customRange.setAttribute('aria-label', `Nodi Custom: ${customRange.value} · disponibili ${availability?.available ?? 0}`);
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${availability?.available ?? 0}`);
 }
 function applyCustomDensity(initialAmount?: number): void {
   const page = customCapability(), availability = customAvailability();
@@ -2151,14 +2158,14 @@ function applyCustomDensity(initialAmount?: number): void {
 customRange.addEventListener('input', () => {
   customNumber.value = customRange.value;
   customDraftDirty = true;
-  customRange.setAttribute('aria-label', `Nodi Custom: ${customRange.value} · disponibili ${customAvailability()?.available ?? 0}`);
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${customAvailability()?.available ?? 0}`);
   customMessage.textContent = `bozza ${Number(customRange.value).toLocaleString('it-IT')}`;
 });
 customNumber.addEventListener('input', () => {
   const value = Number(customNumber.value);
   if (Number.isFinite(value)) customRange.value = String(value);
   customDraftDirty = true;
-  customRange.setAttribute('aria-label', `Nodi Custom: ${customRange.value} · disponibili ${customAvailability()?.available ?? 0}`);
+  customRange.setAttribute('aria-label', `Nodi densità Custom: ${customRange.value} · disponibili ${customAvailability()?.available ?? 0}`);
   customMessage.textContent = 'bozza';
 });
 customNumber.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); applyCustomDensity(); } });

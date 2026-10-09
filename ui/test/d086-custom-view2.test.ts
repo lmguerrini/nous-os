@@ -33,10 +33,19 @@ test('URL amount wins over storage, while absent URL amount inherits the last sa
   assert.equal(withAmount.value.customNodes, 77);
   const withoutAmount = resolveGeometryView2(url(serializeGeometryView2({ ...base, density: 'custom' })), '', stored, 'balanced');
   assert.equal(withoutAmount.value.customNodes, 311);
+  const beforeCustom = resolveGeometryView2(url(serializeGeometryView2(base)), '', stored, 'custom');
+  assert.equal(beforeCustom.value.density, 'balanced');
+  assert.equal(beforeCustom.value.customNodes, 311, 'Back to a pre-Custom URL preserves the stored amount');
   const invalid = resolveGeometryView2(url(JSON.stringify({ ...base, density: 'custom', customNodes: 1.5 })), '', stored, 'balanced');
   assert.equal(invalid.source, 'query-view2');
   assert.ok(invalid.error);
   assert.equal(invalid.value.customNodes, undefined);
+});
+
+test('legacy density fallback carries Custom when schema-2 storage is unavailable', () => {
+  const restored = resolveGeometryView2('', '', null, 'custom');
+  assert.equal(restored.source, 'default');
+  assert.equal(restored.value.density, 'custom');
 });
 
 test('reload retains amount through rewritten URL and storage; v1 migration remains unchanged', () => {

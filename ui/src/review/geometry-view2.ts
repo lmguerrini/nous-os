@@ -166,14 +166,16 @@ export function migrateLegacyView(raw: string, density: Density, search = '', ha
       ? { naturalArrangement: axes.arrangement ?? defaultNaturalArrangement(axes.morphology) } : {}),
     compatibility, ...(suspendedIntent ? { suspendedIntent } : {}) };
 }
-export function defaultGeometryView2(density: Density = 'balanced'): GeometryView2 {
+export function defaultGeometryView2(density: ViewDensity = 'balanced'): GeometryView2 {
   return { schema: 2, rendering: '2d', topology: 'natural', indra: 'off', morphology: 'stellar',
     density, reading: 'attested', colour: 'bw', labels: true, naturalArrangement: 'constellation',
     compatibility: 'd081-natural' };
 }
 export function resolveGeometryView2(search: string, hash: string, storedView: string | null, storedDensity: string | null): ResolvedGeometryView2 {
   const query = new URLSearchParams(search), fragment = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
-  const density = normalizeDensity(storedDensity);
+  // D086-CUSTOM BEGIN: the legacy density key is a fallback even when no view record survives.
+  const density: ViewDensity = storedDensity === 'custom' ? 'custom' : normalizeDensity(storedDensity);
+  // D086-CUSTOM END
   // D086-CUSTOM BEGIN: an explicit URL amount wins; an omitted amount inherits the last saved choice.
   let storedCustomNodes: number | undefined;
   if (storedView) {
@@ -194,7 +196,7 @@ export function resolveGeometryView2(search: string, hash: string, storedView: s
   for (const [source, raw] of [['query-view',query.get('view')],['hash-view',fragment.get('view')],['storage',storedView]] as const) {
     if (raw !== null) {
       try { return { value: inheritCustomNodes(source === 'storage' && JSON.parse(raw)?.schema === 2
-        ? parseGeometryView2(raw) : migrateLegacyView(raw, density, search, hash)), source }; }
+        ? parseGeometryView2(raw) : migrateLegacyView(raw, density === 'custom' ? 'balanced' : density, search, hash)), source }; }
       catch (error) { return { value: defaultGeometryView2(density), source, error: String(error) }; }
     }
   }

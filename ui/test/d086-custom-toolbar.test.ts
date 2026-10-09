@@ -33,6 +33,17 @@ test('Apply and Enter call the same one-commit path, with integer validation and
   assert.equal(parseCustomDraft('2000', available), 2000);
   for (const invalid of ['', '1.5', 'Infinity', 'NaN', '9007199254740992'])
     assert.equal(parseCustomDraft(invalid, available), null);
+  const applyDensity = main.slice(main.indexOf('function applyDensity('), main.indexOf('for (const button of densityButtons)', main.indexOf('function applyDensity(')));
+  assert.match(applyDensity, /if \(next === 'custom'\) \{[\s\S]*?applyCustomDensity\(/);
+  assert.ok(applyDensity.indexOf("if (next === 'custom')") < applyDensity.indexOf('if (value === density)'),
+    'same-density Custom Apply must bypass the three-state no-op guard');
+});
+
+test('Custom storage and neighboring palette controls identify their separate purposes', () => {
+  assert.match(main, /writeLocal\(storage, 'd072\.density', geometry\.density\)/);
+  assert.match(html, /data-density="custom"[^>]*aria-label="Densità Custom"/);
+  assert.match(html, /id="palette"[^>]*aria-label="Preset colori"[^>]*>[\s\S]*?<option value="custom">Colori personalizzati<\/option>/);
+  assert.match(html, /id="fullscreen-palette"[^>]*aria-label="Preset colori fullscreen"[^>]*>[\s\S]*?<option value="custom">Colori personalizzati<\/option>/);
 });
 
 test('pending Custom intent is captured by topology and axis transitions', () => {
