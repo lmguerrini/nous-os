@@ -168,6 +168,9 @@ function circleTable(segments: number): CircleTable {
 
 /** Selection state the container layer needs: a focused or hovered pearl shows its sphere. */
 export type ContainerInteraction = {
+  // D087-JULIA BEGIN
+  readonly forceJuliaAtlasRims?: boolean;
+  // D087-JULIA END
   readonly hoverId?: string | null;
   readonly focusIds?: ReadonlySet<string> | null;
   readonly dimFocus?: { readonly members: ReadonlySet<string> } | null;
@@ -386,6 +389,12 @@ const TITLE_CHAR_WIDTH = 6.5;
 export const TITLE_MAX_WIDTH = 190;
 /** A closed pearl carries its title this far above its own centre, clear of the pearl itself. */
 const PEARL_TITLE_GAP_PX = 12;
+// D087-JULIA BEGIN: a small atlas pearl carries its real hidden count inside
+// the rim; the complete title remains on the source container for picking.
+const juliaCount = (container: MorphologyContainerPath, interaction?: ContainerInteraction) =>
+  interaction?.forceJuliaAtlasRims && container.open === false
+    ? / · (\+\d+)$/.exec(container.title ?? '')?.[1] ?? null : null;
+// D087-JULIA END
 
 /** The exact font a title of this level is drawn in — the measure must use it, so a title that
  * fits the budget at the real font is never truncated by a per-character estimate. */
@@ -634,6 +643,21 @@ export function containerTitleRect(
   discIndex?: ReturnType<typeof createDiscOverlapIndex>,
 ): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
   if (!container.title) return null;
+  // D087-JULIA BEGIN
+  const badgeCount = juliaCount(container, interaction);
+  if (badgeCount) {
+    const center = project(container.center);
+    const rim = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
+    const width = Math.min(30, badgeCount.length * 4.7);
+    if (rim < 8 || center.x + rim < 0 || center.y + rim < 0
+      || center.x - rim > bounds.width || center.y - rim > bounds.height) return null;
+    // D087-JULIA BEGIN: a partially visible rim may still carry its badge.
+    // Keep the entire count on canvas, even when the centre reaches an edge.
+    return { left: Math.max(1, Math.min(bounds.width - width - 1, center.x - width / 2)),
+      top: Math.max(1, Math.min(bounds.height - 13, center.y - 6)), width, height: 12 };
+    // D087-JULIA END
+  }
+  // D087-JULIA END
   if (!readableTruncatedText(containerTitleLayout(container.title, measure, container.level).text)) return null;
   // In 3D titles return with full quality after motion. The 2D moving rule remains level ≤ 1.
   if (interaction?.quality === "moving" && (projection === "3d" || container.level > 1)) return null;
@@ -787,12 +811,20 @@ export function drawContainers(
     const selected = containerSelected(container, interaction);
     // True projected radius, measured on the projection itself (world radius × px per world unit).
     const limbRadius = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
-    if (!containerSphereLOD(container.level, open, selected, limbRadius)) return;
+    // D087-JULIA BEGIN
+    if (!interaction?.forceJuliaAtlasRims && !containerSphereLOD(container.level, open, selected, limbRadius)) return;
+    // A closed atlas pearl is an overview pearl: it draws like its own 2D ring —
+    // one legible stroke at the 2D width and alpha with the same faint fill —
+    // instead of the distance-simplified thin faint limb the bright Julia bands
+    // swallow, and it stays drawn through the moving pass so approaching or
+    // wheeling over the overview never blanks the rims.
+    const atlasPearl = interaction?.forceJuliaAtlasRims === true && !open && container.level > 0;
+    // D087-JULIA END
     context.globalAlpha *= deepZoomShellOpacity(limbRadius, bounds);
     if (context.globalAlpha <= 0) return;
     // The moving pass keeps only the limbs of the spheres that carry the structure: the absolute
     // shell and the domains always, any other pearl only while open or selected.
-    if (moving && container.level > 1 && !open && !selected) return;
+    if (moving && container.level > 1 && !open && !selected && !atlasPearl) return;
     // A sphere wholly outside the canvas draws nothing a viewer could see; the NousOS shell keeps its
     // witness (the framing checks read it) even while panned out.
     if (container.level > 0 && (center.x + limbRadius < -2 || center.x - limbRadius > bounds.width + 2
@@ -804,7 +836,16 @@ export function drawContainers(
     const segments = sphereSegmentsForQuality(limbRadius, moving ? "moving" : "full");
     const table = circleTable(segments);
     const fillFade = deepZoomShellFillOpacity(limbRadius, bounds);
-    if (!tiny && !moving && fillFade > 0) {
+    // D087-JULIA BEGIN: the atlas pearl carries the 2D ring's faint interior
+    // fill, not the glass shading a larger sphere earns.
+    if (atlasPearl && !moving && fillFade > 0 && typeof context.fill === "function") {
+      context.fillStyle = `rgba(${ink}, 0.014)`;
+      context.beginPath();
+      context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2);
+      context.fill();
+    }
+    // D087-JULIA END
+    if (!atlasPearl && !tiny && !moving && fillFade > 0) {
       const shellAlpha = context.globalAlpha;
       context.globalAlpha *= fillFade;
       // Subtle radial gradient fill: a translucent glass sphere with the light gathered off-centre, and
@@ -873,8 +914,16 @@ export function drawContainers(
       limbStyle = `rgba(${ink}, ${limbAlpha})`;
       limbStyles.set(container.level, limbStyle);
     }
-    context.strokeStyle = limbStyle;
-    context.lineWidth = tiny ? 0.5 : container.level === 0 ? 1.1 : 0.75;
+    // D087-JULIA BEGIN: the closed atlas pearl's rim uses the 2D ring formula,
+    // so the pearl reads over the Julia bands exactly as it does in 2D.
+    if (atlasPearl) {
+      context.strokeStyle = `rgba(${ink}, ${clamp(0.95 - container.level * 0.1, 0.3, 0.8)})`;
+      context.lineWidth = 0.85 + Math.max(0, 4 - container.level) * 0.18;
+    } else {
+      context.strokeStyle = limbStyle;
+      context.lineWidth = tiny ? 0.5 : container.level === 0 ? 1.1 : 0.75;
+    }
+    // D087-JULIA END
     setDash(context, []);
     context.beginPath();
     context.moveTo(center.x + table.cos[0]! * limbRadius, center.y + table.sin[0]! * limbRadius);
@@ -924,10 +973,34 @@ export function placeContainerTitles(
     if (interaction?.dimFocus && !interaction.dimFocus.members.has(container.id) && container.level > 1) continue;
     const rect = containerTitleRect(container, project, bounds, projection, interaction, discs, measure, cache, discIndex);
     if (!rect) continue;
-    const box = { left: rect.left - 3, top: rect.top, right: rect.left + rect.width + 3, bottom: rect.top + rect.height };
-    if (boxes.some(other => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom)) continue;
+    // D087-JULIA BEGIN: count badges use the pearl centre first. A badge whose
+    // centre collides with an earlier title gets a nearby slot around its own rim.
+    const badge = juliaCount(container, interaction);
+    const center = badge ? project(container.center) : null;
+    const rim = badge ? Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project)) : 0;
+    const offset = rim + 5;
+    const choices = center ? [rect,
+      { ...rect, top: center.y - offset - rect.height },
+      { ...rect, top: center.y + offset },
+      { ...rect, left: center.x + offset },
+      { ...rect, left: center.x - offset - rect.width },
+      { ...rect, left: center.x + offset, top: center.y - offset - rect.height },
+      { ...rect, left: center.x - offset - rect.width, top: center.y + offset }] : [rect];
+    const pad = badge ? 0 : 3;
+    const choice = choices.find(candidate => {
+      if (badge && (candidate.left < 1 || candidate.top < 1 || candidate.left + candidate.width > bounds.width - 1
+        || candidate.top + candidate.height > bounds.height - 1)) return false;
+      const candidateBox = { left: candidate.left - pad, top: candidate.top,
+        right: candidate.left + candidate.width + pad, bottom: candidate.top + candidate.height };
+      return boxes.every(other => !(candidateBox.left < other.right && other.left < candidateBox.right
+        && candidateBox.top < other.bottom && other.top < candidateBox.bottom));
+    });
+    if (!choice) continue;
+    const box = { left: choice.left - pad, top: choice.top,
+      right: choice.left + choice.width + pad, bottom: choice.top + choice.height };
+    // D087-JULIA END
     boxes.push(box);
-    placements.push({ id: container.id, level: container.level, left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    placements.push({ id: container.id, level: container.level, left: choice.left, top: choice.top, width: choice.width, height: choice.height });
   }
   return placements;
 }
@@ -960,17 +1033,21 @@ export function drawContainerTitles(
   for (const placement of placeContainerTitles(containers, project, bounds, projection, interaction, effectiveDiscs, effectiveMeasure, cache)) {
     const container = byId.get(placement.id);
     if (!container?.title) continue;
-    const text = containerTitleLayout(container.title, effectiveMeasure, container.level).text;
+    // D087-JULIA BEGIN
+    const badge = juliaCount(container, interaction);
+    const text = badge ?? containerTitleLayout(container.title, effectiveMeasure, container.level).text;
     // The font is set before the halo so the stroke and the fill share one letterform.
-    context.font = containerTitleFont(placement.level);
+    context.font = badge ? '8px Arial' : containerTitleFont(placement.level);
+    const baseline = placement.top + (badge ? 9 : 14);
+    // D087-JULIA END
     // A thin dark halo keeps the name legible over any arc that still runs beneath it.
     if (typeof context.strokeText === "function") {
       context.strokeStyle = fieldIsLight ? "rgba(255, 255, 255, 0.55)" : "rgba(10, 10, 10, 0.6)";
       context.lineWidth = 3;
-      context.strokeText(text, placement.left, placement.top + 14, TITLE_MAX_WIDTH);
+      context.strokeText(text, placement.left, baseline, TITLE_MAX_WIDTH);
     }
     context.fillStyle = `rgba(${ink}, ${clamp(0.95 - placement.level * 0.1, 0.5, 0.9)})`;
-    context.fillText(text, placement.left, placement.top + 14, TITLE_MAX_WIDTH);
+    context.fillText(text, placement.left, baseline, TITLE_MAX_WIDTH);
   }
 }
 

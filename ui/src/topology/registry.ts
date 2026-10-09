@@ -42,13 +42,28 @@ export const JULIA_INDRA_REFUSAL = 'Julia con Indra non è disponibile: alla sca
 // D086-F4 END
 const juliaIndraGate = new Map<TopologyDimension, boolean>();
 // D085-S5 BEGIN: the selector and graph status share the evaluated gate record.
-type JuliaGateMetric = Readonly<{ eligible: number; passing: number; share: number }>;
+// D087-JULIA BEGIN
+type JuliaGateMetric = Readonly<{ eligible: number; passing: number; share: number;
+  snapshotDigest?: string; phase?: string; eligibleParents?: number;
+  closedPearlsDrawn?: number; closedPearlsProjected?: number;
+  openPassing?: number; openPassingProjected?: number; openEligible?: number;
+  childSeparationMinPx?: number; insideGuideMaxPx?: number;
+  shellOverlapCount?: number; focusedParent?: string | null }>;
+// D087-JULIA END
 const juliaGateMetrics = new Map<TopologyDimension, JuliaGateMetric>();
 export function juliaIndraGateStatus(dimension: TopologyDimension) {
   const metric = juliaGateMetrics.get(dimension);
   return { evaluated: metric !== undefined, ok: juliaIndraGate.get(dimension) === true,
     eligible: metric?.eligible ?? 0, passing: metric?.passing ?? 0, share: metric?.share ?? 0,
-    reason: juliaIndraGate.get(dimension) === true ? null : JULIA_INDRA_REFUSAL };
+    // D087-JULIA BEGIN
+    ...(metric ?? {}),
+    reason: juliaIndraGate.get(dimension) === true ? null : !metric
+      ? 'Julia con Indra: verifica in corso.' : metric.phase
+      ? `Julia con Indra rifiutata (${metric.phase}): ${metric.closedPearlsDrawn ?? metric.closedPearlsProjected ?? 0} perle, `
+        + `${metric.openPassing ?? metric.openPassingProjected ?? 0}/${metric.openEligible ?? 0} carte aperte, `
+        + `${metric.shellOverlapCount ?? 0} sovrapposizioni; separazione ${metric.childSeparationMinPx ?? 0} px, `
+        + `guida ${metric.insideGuideMaxPx ?? 0} px.` : JULIA_INDRA_REFUSAL };
+    // D087-JULIA END
 }
 export function setJuliaIndraLegibility(dimension: TopologyDimension, ok: boolean,
   metric?: JuliaGateMetric): void {
@@ -85,7 +100,9 @@ export function topologySupport(id: TopologyId, dimension: TopologyDimension, in
   // Julia retains its separate legibility gate.
   // D086-F4 END
   if (id === 'julia' && indra && juliaIndraGate.get(dimension) !== true)
-    return { ok: false, reason: JULIA_INDRA_REFUSAL };
+    // D087-JULIA BEGIN
+    return { ok: false, reason: juliaIndraGateStatus(dimension).reason ?? JULIA_INDRA_REFUSAL };
+    // D087-JULIA END
   // D085-S5 END
   if (id === 'natural') return { ok: true };
   const support = TOPOLOGY_LAWS[id]!.supports(dimension);

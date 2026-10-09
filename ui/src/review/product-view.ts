@@ -26,7 +26,7 @@ import type { PreparedCanopyNeural3dMount } from "../render3f/mount.tsx";
 // D082-B-CANOPYN END
 import { framingEnvelopeSpherePoints, framingVolumePoints, solveFraming } from "./framing.ts";
 // D082-A-DENSITY BEGIN: share one full-hierarchy Indra fit envelope across densities.
-import { indraFullHierarchyFitPoints } from "./indra-fit-bounds.ts";
+import { indraFullHierarchyFitPoints, juliaAtlasMountedFitPoints } from "./indra-fit-bounds.ts";
 // D085-S5 BEGIN: exclude the absolute visual shell from real pearl accounting.
 import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
 // D085-S5 END
@@ -654,6 +654,9 @@ export function brainRendererEnabled(axes: Axes, inputBrain?: boolean): boolean 
 }
 
 export const createProductView: CreateProductView = async (input) => {
+  // D087-JULIA BEGIN
+  const juliaAtlas = input.labTopology === 'julia' && input.labIndra === true;
+  // D087-JULIA END
   // D-073 C6: the arrangement axis is Natural-only at every entry point, creation included.
   assertNaturalArrangementAxis(input.axes);
   const prepared = input.v2Prepared ?? adaptReviewExport(input.data);
@@ -793,6 +796,9 @@ export const createProductView: CreateProductView = async (input) => {
   let hover: { kind: "node" | "edge"; id: string; x: number; y: number } | null = null;
   const morphologyInteraction: {
     hoverId: string | null; focusIds: ReadonlySet<string> | null; labelDiscs: readonly CanvasDisc[] | null; containerColor: string | null;
+    // D087-JULIA BEGIN
+    forceJuliaAtlasRims?: boolean;
+    // D087-JULIA END
     /** D-072 P1a: the shared passes read both fields — "moving" makes the container/morphology
      * pass draw its reduced frame, "separate" leaves the travelling highlights to the overlay. */
     quality: RenderQuality; flowLayer: "inline" | "separate";
@@ -809,7 +815,11 @@ export const createProductView: CreateProductView = async (input) => {
     hideContainerTitles?: boolean;
     // D087-LABELS END
   } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate",
-    hideContainerTitles: !input.axes.labels };
+    hideContainerTitles: !input.axes.labels,
+    // D087-JULIA BEGIN
+    forceJuliaAtlasRims: juliaAtlas,
+    // D087-JULIA END
+  };
   // D087-LABELS BEGIN: the labels-off pass reads anchors only for the marks it can still draw, and
   // whether the dataset holds any dynamic-origin node is a property of the mounted data itself.
   const dynamicOriginsPresent = input.data.nodes.some((node) => node.origin === "dynamic");
@@ -820,22 +830,38 @@ export const createProductView: CreateProductView = async (input) => {
   // with camera, mounted subset and focus, never merely because status was read.
   let indraShellsSubmitted = 0;
   let indraShellsDrawn = 0;
+  // D087-JULIA BEGIN
+  let juliaAtlasDrawnShells: readonly { id: string; radiusPx: number }[] = [];
+  let juliaAtlasTitledIds = new Set<string>();
+  // D087-JULIA END
   function refreshIndraShellCounts(containers = layoutContainers) {
     if (axes.organization !== 'indra' || !containers || !handle) {
       indraShellsSubmitted = 0;
       indraShellsDrawn = 0;
+      juliaAtlasDrawnShells = [];
       return;
     }
     indraShellsSubmitted = 0;
     indraShellsDrawn = 0;
+    const drawnShells: { id: string; radiusPx: number }[] = [];
     for (const shell of containers) {
       if (shell.id === ABSOLUTE_CONTAINER_ID) continue;
       indraShellsSubmitted++;
-      if (axes.projection === '2d' || containerSphereLOD(shell.level, shell.open !== false,
-        morphologyInteraction.focusIds?.has(shell.id) ?? false,
-        Math.max(0.5, shell.radius * projectedWorldScale(shell.center, shell.radius, project))))
-        indraShellsDrawn++;
+      const radiusPx = Math.max(0.5, shell.radius * projectedWorldScale(shell.center, shell.radius, project));
+      // D087-JULIA BEGIN: a submitted but offscreen pearl has no drawn rim.
+      const centerPx = juliaAtlas ? project(shell.center) : null;
+      const inFrame = !centerPx || centerPx.x + radiusPx >= 0 && centerPx.x - radiusPx <= container.clientWidth
+        && centerPx.y + radiusPx >= 0 && centerPx.y - radiusPx <= container.clientHeight;
+      // D087-JULIA END
+      if (axes.projection === '2d' || juliaAtlas || containerSphereLOD(shell.level, shell.open !== false,
+        morphologyInteraction.focusIds?.has(shell.id) ?? false, radiusPx)) {
+        if (inFrame) {
+          indraShellsDrawn++;
+          if (juliaAtlas) drawnShells.push({ id: shell.id, radiusPx });
+        }
+      }
     }
+    juliaAtlasDrawnShells = drawnShells;
   }
   function readIndraComposition() {
     if (axes.organization !== 'indra' || !layoutContainers || !handle) return undefined;
@@ -1317,7 +1343,14 @@ export const createProductView: CreateProductView = async (input) => {
     // placement puts it, and the DOM label pass suppresses the same container's node label in
     // exactly those cases (and allows it otherwise), so a pearl never carries two names. The
     // interaction must be the same object state the canvas layer uses, so both agree on the LOD.
-    const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds, dimFocus: focusStyle };
+    // D087-JULIA BEGIN
+    const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds, dimFocus: focusStyle,
+      // Without the atlas flag this placement never takes the badge branch, the
+      // counted ink stays empty of closed pearls and the observed certificate
+      // reports zero drawn pearls while the canvas still draws them.
+      ...(morphologyInteraction.forceJuliaAtlasRims === undefined ? {}
+        : { forceJuliaAtlasRims: morphologyInteraction.forceJuliaAtlasRims }) };
+    // D087-JULIA END
     const pathById = new Map<string, MorphologyContainerPath>();
     if (!movingIndra3d && axes.organization === "indra" && labelContainers) {
       for (const path of buildContainerGeometry(axes.morphology, labelContainers)) pathById.set(path.id, path);
@@ -1353,6 +1386,7 @@ export const createProductView: CreateProductView = async (input) => {
     const titlePlacements = movingIndra3d ? [] : placeContainerTitles([...pathById.values()], project, titleBounds, axes.projection, containerInteraction, discs, titleMeasure);
     visibleTitleCount = titlePlacements.length;
     const titledContainerIds = new Set(titlePlacements.map(placement => placement.id));
+    if (juliaAtlas) juliaAtlasTitledIds = titledContainerIds;
     const footprintRadius = new Map(footprints.map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
     const fullText = new Map<string, string>();
@@ -1370,7 +1404,13 @@ export const createProductView: CreateProductView = async (input) => {
       if (occluded.has(id) && !chosen && !hovered
         && node.type !== "domain") continue;
       // A container whose canvas title is drawn carries no second name (its own node label waits).
-      if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id))
+      // D087-JULIA BEGIN: a compact atlas +N badge does not replace the
+      // important domain name when the normal node label can fit nearby.
+      if (pathById.has(id) && titledContainerIds.has(id)
+        && !(juliaAtlas && pathById.get(id)?.open === false
+          && (pathById.get(id)?.level ?? 9) <= 2)
+        && !(!juliaAtlas && (chosen || hovered)))
+      // D087-JULIA END
         continue;
       const kind = labelCandidateKind({ id, node, selected: chosen, hovered, labels: axes.labels,
         neighbour: neighbours.has(id), overview, close, organization: axes.organization,
@@ -1439,7 +1479,7 @@ export const createProductView: CreateProductView = async (input) => {
       const worldRadius = axes.projection === "2d" ? path.radius2d ?? path.radius : path.radius;
       const radius = worldRadius * projectedWorldScale(path.center, worldRadius, project);
       if (!Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(radius)) continue;
-      if (axes.projection === "3d" && !containerSphereLOD(path.level, path.open !== false,
+      if (axes.projection === "3d" && !juliaAtlas && !containerSphereLOD(path.level, path.open !== false,
         morphologyInteraction.focusIds?.has(path.id) ?? false, radius)) continue;
       rims.push({ x: center.x, y: center.y, radius });
     }
@@ -2303,7 +2343,8 @@ export const createProductView: CreateProductView = async (input) => {
       if (axes.projection === '3d' && axes.organization === 'natural')
         points.push(...framingVolumePoints(points));
       if (axes.organization === 'indra' && layoutContainers)
-        points = indraFullHierarchyFitPoints(layoutContainers, axes.projection);
+        points = juliaAtlas ? juliaAtlasMountedFitPoints(layoutContainers, axes.projection)
+          : indraFullHierarchyFitPoints(layoutContainers, axes.projection);
       if (input.v2Prepared && axes.organization === 'natural' && axes.projection === '2d'
         && isReferenceCompleta(input.data.nodes.length, visible.size))
         points = naturalCompletaFitPoints(points);
@@ -2711,7 +2752,7 @@ export const createProductView: CreateProductView = async (input) => {
         if (axes.projection === '3d') {
           const center = project(outline.center);
           const limbRadius = outline.radius * projectedWorldScale(outline.center, outline.radius, project);
-          if (!containerSphereLOD(outline.level, outline.open !== false,
+          if (!juliaAtlas && !containerSphereLOD(outline.level, outline.open !== false,
             morphologyInteraction.focusIds?.has(outline.id) ?? false, Math.max(0.5, limbRadius))) continue;
           if (center.x + limbRadius < -8 || center.x - limbRadius > container.clientWidth + 8
             || center.y + limbRadius < -8 || center.y - limbRadius > container.clientHeight + 8) continue;
@@ -3025,7 +3066,8 @@ export const createProductView: CreateProductView = async (input) => {
     const fullIndraFrame = ids.length === visible.size && axes.organization === 'indra' && layoutContainers;
     if (fullIndraFrame) {
       // D082-A-DENSITY: «Adatta» ignores density-specific node and edge witnesses.
-      points = indraFullHierarchyFitPoints(layoutContainers, axes.projection);
+      points = juliaAtlas ? juliaAtlasMountedFitPoints(layoutContainers!, axes.projection)
+        : indraFullHierarchyFitPoints(layoutContainers, axes.projection);
     }
     // D082-A-DENSITY BEGIN: frame Natural 2D Completa from the robust visible node cloud;
     // the preserved outlier witnesses otherwise shrink the disc to roughly one quarter.
@@ -3313,6 +3355,27 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-PERF END
     // D085-X8 BEGIN
     readIndraComposition,
+    // D087-JULIA BEGIN
+    readJuliaAtlasInk() {
+      // D087-JULIA BEGIN: the distinct 2D canvas has no world-anchor footprint
+      // witness. Its committed geometry and positive ink radius are the source
+      // of painted IDs; 3D keeps the renderer's viewport footprint witness.
+      const sigma2d = sigma;
+      const paintedNodeIds = sigma2d && drawnGeometry && committedScene
+        ? drawnGeometry.nodes.filter(node => {
+          const radius = (committedScene!.presentation.nodes.get(node.id)?.radiusPx
+            ?? node.radius * appearance.nodeScale) * sigma2d.scaleSize(1);
+          if (!(radius > 0)) return false;
+          const p = project(node.position);
+          return p.x + radius >= 0 && p.x - radius <= container.clientWidth
+            && p.y + radius >= 0 && p.y - radius <= container.clientHeight;
+        }).map(node => node.id)
+        : readGestureWitness().viewportPaintedNodeIds;
+      return { shells: juliaAtlasDrawnShells,
+        countedShellIds: [...juliaAtlasTitledIds], paintedNodeIds };
+      // D087-JULIA END
+    },
+    // D087-JULIA END
     // D085-X8 END
     witness() {
       // D082-A-PERF BEGIN

@@ -2,6 +2,9 @@ import { currentRenderReadiness, renderPercent } from "./render-readiness.ts";
 import type { RenderReadiness } from "./render-readiness.ts";
 // D085-S7 BEGIN
 import type { RelationDetailCounts } from './relation-routing.ts';
+// D087-JULIA BEGIN
+import type { JuliaAtlasCertificate } from '../topology/julia-indra-atlas.ts';
+// D087-JULIA END
 // D085-S7 END
 
 /** Discreet, opt-in D-081 performance HUD. No sampling work runs while closed. */
@@ -12,6 +15,9 @@ export type D081Status = {
     guidesSuppressed: number; eligibleRealEdgeRoutes: number };
   juliaIndraGate?: { evaluated: boolean; ok: boolean; eligible: number;
     passing: number; share: number; reason: string | null };
+  // D087-JULIA BEGIN
+  juliaAtlas?: JuliaAtlasCertificate;
+  // D087-JULIA END
   // D085-S5 END
   nodes?: { visible?: number; represented?: number; total?: number; eligible?: number; aggregated?: number };
   // D085-S7 BEGIN
@@ -127,6 +133,9 @@ export function formatHud(status: D081Status | null, frames: readonly FrameSampl
     <dt>Guide richieste / disegnate / soppresse</dt><dd>${status.indraComposition.guidesRequested} / ${status.indraComposition.guidesDrawn} / ${status.indraComposition.guidesSuppressed}</dd>
     <dt>Percorsi guida di archi eleggibili</dt><dd>${status.indraComposition.eligibleRealEdgeRoutes}</dd>` : ''}
     ${status?.juliaIndraGate ? `<dt>Julia × Indra</dt><dd>${status.juliaIndraGate.ok ? 'leggibile' : 'disabilitata'} · ${status.juliaIndraGate.passing}/${status.juliaIndraGate.eligible} carte · ${status.juliaIndraGate.reason ?? 'criterio superato'}</dd>` : ''}
+    <!-- D087-JULIA BEGIN -->
+    ${status?.juliaAtlas ? `<dt>Atlante Julia · ${status.juliaAtlas.phase}</dt><dd>${status.juliaAtlas.ok ? 'leggibile' : 'rifiutata'} · ${status.juliaAtlas.closedPearlsDrawn}/${status.juliaAtlas.closedPearlsSubmitted} perle chiuse (minimo ${status.juliaAtlas.closedPearlsRequired}, rim ${status.juliaAtlas.minimumRimPx} px) · ${status.juliaAtlas.openPassing}/${status.juliaAtlas.openEligible} carte aperte · separazione ${status.juliaAtlas.childSeparationMinPx.toFixed(1)} px · guida ${status.juliaAtlas.insideGuideMaxPx.toFixed(1)} px alla cornice ${status.juliaAtlas.focusReferenceRimPx} px · sovrapposizioni ${status.juliaAtlas.shellOverlapCount}</dd>` : ''}
+    <!-- D087-JULIA END -->
     <!-- D085-S5 END -->
   </dl>${status?.hint ? `<p class="performance-hint"></p>` : ""}`;
   // D085-S7 END

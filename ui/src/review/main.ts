@@ -71,8 +71,10 @@ import { LAB_CONTAINER_DESCRIPTION, TOPOLOGY_IDS, topologyLabel, topologyRowStat
 // D084-W3-LABELS END
 import type { TopologyId } from '../topology/contract.ts';
 // D085-S5 BEGIN: certify Julia's fitted atlas from the loaded read-only snapshot.
-import { topologySnapshot, computeTopologyLayoutAsync } from '../topology/page-bridge.ts';
-import { assessJuliaIndraLegibility } from '../topology/indra-compose.ts';
+import { topologySnapshot } from '../topology/page-bridge.ts';
+// D087-JULIA BEGIN
+import { preflightJuliaIndraAtlasAsync } from '../topology/page-bridge.ts';
+// D087-JULIA END
 import { juliaIndraGateStatus, setJuliaIndraLegibility } from '../topology/registry.ts';
 // D085-S5 END
 // D082-B2 END
@@ -266,14 +268,23 @@ const geometryRead = resolveGeometryView2(location.search, location.hash,
   readLocal<string>(storage, VIEW_STORAGE_KEY, '') || null,
   readLocal<string>(storage, 'd072.density', 'balanced'));
 let geometry: SavedGeometryView2 = geometryRead.value;
+// D087-JULIA BEGIN: preserve a linked ON request until admission is measured.
+const initialJuliaIndraIntent = !('mode' in geometry) && geometry.topology === 'julia'
+  && geometry.indra === 'on' && !juliaIndraGateStatus(geometry.rendering).evaluated;
+let pendingJuliaIndraOn = initialJuliaIndraIntent;
+// D087-JULIA END
 // D082-LAB-FIX4 BEGIN: an unsupported linked combination resolves before V2Page construction.
-const initialSupportResolution = resolveSupportedGeometryView2(geometry, topologySupport);
+// D087-JULIA BEGIN: the pending linked ON view is the first scene, not an
+// intermediate plain Julia mount that later has to be replaced.
+const initialSupportResolution = initialJuliaIndraIntent
+  ? { value: geometry } : resolveSupportedGeometryView2(geometry, topologySupport);
+// D087-JULIA END
 geometry = initialSupportResolution.value;
-if (initialSupportResolution.notice)
+if (initialSupportResolution.notice && !initialJuliaIndraIntent)
   experimentalSuspensionNotice = initialSupportResolution.notice;
 // D082-LAB-FIX4 END
 if (!('mode' in geometry) && geometry.compatibility === 'typed-natural-v1') typedPipelineFlag = true;
-let view2WriteAllowed = geometryRead.error === undefined;
+let view2WriteAllowed = geometryRead.error === undefined && !initialJuliaIndraIntent;
 if (geometryRead.error) {
   errors.push(`view2 rifiutata: ${geometryRead.error}`);
   experimentalSuspensionNotice = `view2 rifiutata: ${geometryRead.error}. URL conservato per la riparazione.`;
@@ -511,8 +522,19 @@ function installTaxonomyControls(): void {
       button.dataset.indra = value;
       button.textContent = value.toUpperCase();
       // D085-S1 BEGIN
-      button.addEventListener('click', () => { if (button.getAttribute('aria-disabled') !== 'true' && !('mode' in geometry))
-        void chooseTaxonomy(lawTopology(geometry.topology), value === 'on').catch(reportTaxonomyTransitionError); });
+      button.addEventListener('click', () => {
+        // D087-JULIA BEGIN: a pending ON click becomes an intent to apply after preflight.
+        if (value === 'on' && !('mode' in geometry) && geometry.topology === 'julia'
+          && !juliaIndraGateStatus(axes.projection).evaluated) {
+          pendingJuliaIndraOn = true;
+          syncTaxonomyControls();
+          return;
+        }
+        if (!('mode' in geometry) && geometry.topology === 'julia') pendingJuliaIndraOn = false;
+        // D087-JULIA END
+        if (button.getAttribute('aria-disabled') !== 'true' && !('mode' in geometry))
+          void chooseTaxonomy(lawTopology(geometry.topology), value === 'on').catch(reportTaxonomyTransitionError);
+      });
       // D085-S1 END
       indraAxis.append(button);
     }
@@ -576,6 +598,12 @@ function syncTaxonomyControls(): void {
     // D085-S5 BEGIN: Julia's refused ON control stays keyboard reachable and
     // explains the measured gate in both dimensions.
     const focusableJuliaRefusal = id === 'julia' && on && !support.ok;
+    // D087-JULIA BEGIN
+    const pendingJulia = focusableJuliaRefusal && !juliaIndraGateStatus(axes.projection).evaluated;
+    button.setAttribute('aria-busy', String(pendingJulia));
+    if (pendingJulia) button.textContent = 'ON · verifica';
+    else button.textContent = on ? 'ON' : 'OFF';
+    // D087-JULIA END
     button.disabled = !support.ok && !focusableJuliaRefusal;
     if (focusableJuliaRefusal) {
       const descriptionId = `${button.id}-reason`;
@@ -587,7 +615,8 @@ function syncTaxonomyControls(): void {
         document.body.append(description);
       }
       description.textContent = support.reason;
-      button.setAttribute('aria-disabled', 'true');
+      if (pendingJulia) button.removeAttribute('aria-disabled');
+      else button.setAttribute('aria-disabled', 'true');
       button.setAttribute('aria-describedby', descriptionId);
       button.tabIndex = 0;
     } else {
@@ -1111,6 +1140,9 @@ let indraStatusWrapper: (() => D081GraphStatus) | undefined;
 function syncContractGraphStatus(): void {
   const contract = readD081Status();
   if (!contract) return;
+  // D087-JULIA BEGIN: the observed phase stays in contract.juliaAtlas. Only
+  // source preflight may write the selector admission registry.
+  // D087-JULIA END
   const formatted = formatD081GraphStatus(contract);
   // D082-A-HUD BEGIN: avoid identical human-status mutations that can retrigger observers.
   const statusLine = get<HTMLElement>('human-status');
@@ -2648,21 +2680,43 @@ async function load() {
         ...(initialCustomIntent ? { initialCustomNodes: initialCustomIntent.requestedNodes } : {}),
         // D082-B2 BEGIN
         ...(!('mode' in geometry) ? { taxonomy: { topology: lawTopology(geometry.topology), indra: geometry.indra === 'on' } } : {}),
+        // D087-JULIA BEGIN
+        ...(initialJuliaIndraIntent ? { pendingJuliaIndraAdmission: true } : {}),
+        // D087-JULIA END
         ...(!('mode' in geometry) && geometry.topology === 'natural' && geometry.indra === 'on'
           ? { legacyIndra: geometry.compatibility !== 'indras-pearls-v1' } : {}),
         ...(!('mode' in geometry) && geometry.compatibility === 'typed-natural-v1'
           ? { useDefaultPipeline: true } : {}),
         // D082-B2 END
       });
+    // D087-JULIA BEGIN: the renderer readiness hook carries the same observed
+    // atlas phase as the page witness and graph status, without changing its ladder.
+    const d082 = (window as Window & { __d082?: { render?: () => object | null } }).__d082;
+    if (d082?.render) {
+      const render = d082.render;
+      d082.render = () => {
+        const readiness = render();
+        const atlas = v2?.atlasStatus();
+        return readiness && atlas ? { ...readiness, juliaAtlas: atlas } : readiness;
+      };
+    }
+    // D087-JULIA END
     // D085-S5 BEGIN: assess both Julia dimensions once from the fixed source
     // snapshot. A failed or interrupted assessment leaves the control refused.
     const juliaSnapshot = topologySnapshot(manifest, v2.index);
-    void Promise.all((['2d', '3d'] as const).map(async dimension => {
+    const juliaPreflight = Promise.all((['2d', '3d'] as const).map(async dimension => {
       try {
-        const layout = await computeTopologyLayoutAsync('julia', juliaSnapshot, dimension, true);
-        const metric = assessJuliaIndraLegibility(juliaSnapshot, layout);
-        setJuliaIndraLegibility(dimension, metric.ok, metric);
-      } catch { setJuliaIndraLegibility(dimension, false); }
+        // D087-JULIA BEGIN: source preflight is explicit; the mounted page
+        // publishes the observed phase certificate through its witness/status.
+        const metric = await preflightJuliaIndraAtlasAsync(juliaSnapshot, dimension);
+        setJuliaIndraLegibility(dimension, metric.ok, {
+          ...metric, eligible: metric.openEligible, passing: metric.openPassingProjected,
+          share: metric.openEligible ? metric.openPassingProjected / metric.openEligible : 0,
+        });
+        // D087-JULIA END
+      } catch { setJuliaIndraLegibility(dimension, false, { phase: 'preflight', eligible: 0,
+        passing: 0, share: 0, closedPearlsProjected: 0, openPassingProjected: 0,
+        openEligible: 0, shellOverlapCount: 0 }); }
       syncTaxonomyControls();
       syncContractGraphStatus();
     }));
@@ -2714,6 +2768,24 @@ async function load() {
     // D082-B-NOTICE BEGIN
     showSelectedGeometryDescription(true);
     // D082-B-NOTICE END
+    // D087-JULIA BEGIN: the requested URL or pending click wins after admission.
+    await juliaPreflight;
+    if (pendingJuliaIndraOn && !('mode' in geometry) && geometry.topology === 'julia') {
+      pendingJuliaIndraOn = false;
+      view2WriteAllowed = geometryRead.error === undefined;
+      if (juliaIndraGateStatus(axes.projection).ok) {
+        if (!initialJuliaIndraIntent)
+          await chooseTaxonomy('julia', true);
+        else persistView();
+      }
+      else {
+        if (initialJuliaIndraIntent) await chooseTaxonomy('julia', false);
+        persistView();
+        showLabNotice(juliaIndraGateStatus(axes.projection).reason ?? 'Julia con Indra rifiutata.');
+      }
+      syncTaxonomyControls();
+    }
+    // D087-JULIA END
     return;
   }
   if (probe.status !== 404) throw new Error(`Manifest del grafo: HTTP ${probe.status}`);
