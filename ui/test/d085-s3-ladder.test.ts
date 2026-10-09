@@ -151,11 +151,13 @@ test('plain law views deliver layout levels and relation evidence without drawin
 
 test('density level changes use one shared dense-policy gate and a size-independent proxy fallback', () => {
   const mount = readFileSync(new URL('../src/render3f/mount.tsx', import.meta.url), 'utf8');
-  // D086-CUSTOM BEGIN: capped Custom slices below the reference maximum update the same proxy.
-  assert.match(mount, /const updatesNativeNodeAttributes = update\.usesDenseDrawingPolicy === true && update\.nodeEntries\.size > 0/);
+  // D086-CUSTOM BEGIN: entering and leaving dense scenes update the same native proxy.
+  assert.match(mount, /let liveUsesDenseDrawingPolicy = initialDenseDrawingPolicy/);
+  assert.match(mount, /const updatesNativeNodeAttributes = \(liveUsesDenseDrawingPolicy \|\| update\.usesDenseDrawingPolicy === true\)\s*&& update\.nodeEntries\.size > 0/);
   assert.match(mount, /if \(!updatesNativeNodeAttributes && nativeEdgeVeilById\.size === 0\)/);
   assert.match(mount, /if \(updatesNativeNodeAttributes\) \{/);
-  assert.equal((mount.match(/const updatesNativeNodeAttributes = update\.usesDenseDrawingPolicy === true && update\.nodeEntries\.size > 0/g) ?? []).length, 1);
+  assert.equal((mount.match(/const updatesNativeNodeAttributes = \(liveUsesDenseDrawingPolicy \|\| update\.usesDenseDrawingPolicy === true\)\s*&& update\.nodeEntries\.size > 0/g) ?? []).length, 1);
+  assert.match(mount, /liveUsesDenseDrawingPolicy = update\.usesDenseDrawingPolicy === true/);
   assert.doesNotMatch(mount, /live\.scene\.nodes\.length === 11_199 && update\.nodeEntries\.size/);
   // D086-CUSTOM END
 });

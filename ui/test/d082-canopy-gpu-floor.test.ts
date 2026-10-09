@@ -51,8 +51,12 @@ test('mount.tsx resolves the floor through the shared helper and the Canopy host
   assert.match(source, /import \{ neural3dCompletaPointFloorCssPx \} from "#render3f\/neural-point-floor\.ts";/);
   // Both a prepared and an unprepared Canopy mount are covered by the one signal.
   assert.match(source, /const canopyMount = !!preparedCanopy \|\| container\.hasAttribute\("data-fractal-rails-active"\);/);
-  assert.match(source, /const denseNeuralPointFloorCssPx = neural3dCompletaPointFloorCssPx\(\{/);
-  assert.match(source, /const denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;/);
+  // D086-CUSTOM BEGIN: the same floor helper follows the current in-place policy.
+  assert.match(source, /const neuralPointFloorFor = \(usesDenseDrawingPolicy: boolean, denseNativeRadiusOnly: boolean\): number =>\s*neural3dCompletaPointFloorCssPx\(\{/);
+  assert.match(source, /let denseNeuralPointFloorCssPx = neuralPointFloorFor\(liveUsesDenseDrawingPolicy, initialDenseNativeRadiusOnly\)/);
+  assert.match(source, /let denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;/);
+  assert.match(source, /denseNeuralPointFloorCssPx = nextDenseNeuralPointFloorCssPx;\s*denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;\s*applyNativeEdgeVeil\(\)/);
+  // D086-CUSTOM END
   // The node material uniform receives the helper's value; the old inline ternary is gone.
   assert.match(source, /^\s*denseNeuralPointFloorCssPx,$/m);
   assert.doesNotMatch(source, /denseNeuralCompleta \? 0\.9 : 0/);
