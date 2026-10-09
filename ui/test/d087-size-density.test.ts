@@ -303,5 +303,40 @@ test('2D native tier retains D-086 canvas and Sigma split', () => {
   assert.doesNotMatch(twoD, /distinct\?\.leafIds\(\)/);
 });
 // D087-SIZE END
+// D087-SIZE BEGIN: D-089 keeps the D-086 2D pick target; a sparse 3D mount must not throw.
+test('the 2D pick index keeps the D-086 dense skip and pick floor', () => {
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const pick = product.slice(product.indexOf('function rebuildScreenPickIndex()'),
+    product.indexOf('function labelPass('));
+  assert.match(pick, /if \(denseScaleById\.size && given === 0\) return \[\];/);
+  assert.match(pick, /Math\.min\(contract\.node\.maxRadiusPx, Math\.max\(denseScaleById\.size \? 0\.5/);
+  assert.match(pick, /: axes\.morphology === "mycelium" \? 1\.3 : 2,/);
+  assert.doesNotMatch(pick, /axes\.projection === "3d"/);
+});
+
+test('a sparse 3D mounted settle keeps its sizes instead of throwing', () => {
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const mounted = product.indexOf('lastCamera = handle.readCameraState();');
+  const settle = product.slice(product.indexOf('if (lodMode && (axes.projection', mounted),
+    product.indexOf('rebuildScreenPickIndex();', mounted));
+  assert.match(settle, /: denseScaleById\.size > 0 && canopyInitialFitNeedsSubsetRefresh\(axes\.projection,/);
+  assert.match(settle, /if \(denseScaleById\.size === 0\) \{\s*sparse3dMountSettleFailed = true;\s*\} else/);
+  const sparseBranch = settle.slice(settle.indexOf('if (denseScaleById.size === 0)'),
+    settle.indexOf('} else', settle.indexOf('if (denseScaleById.size === 0)')));
+  assert.ok(sparseBranch.length > 0, 'the sparse branch exists');
+  assert.doesNotMatch(sparseBranch, /throw/);
+  assert.match(settle, /throw new Error\("Completa point sizes could not settle at the mounted fit camera"\);/);
+  assert.match(product, /\.\.\.\(axes\.projection === "3d" \? \{ sparse3dMountSettleFailed \} : \{\}\)/);
+});
+
+test('no-op glow calls and unused leafGiven parameters are gone', () => {
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const canvas = readFileSync(new URL('../src/render-common/morphology-canvas.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(product, /setGlowVisible/);
+  assert.match(product, /const leafGiven = leafCalibration\?\.given \?\? 0;/);
+  assert.doesNotMatch(product, /leafGiven\(/);
+  assert.doesNotMatch(canvas, /\/\/ D087-SIZE BEGIN[ \t]*\r?\n[ \t]*\/\/ D087-SIZE END/);
+});
+// D087-SIZE END
 // D087-SIZE END
 // D087-SIZE END

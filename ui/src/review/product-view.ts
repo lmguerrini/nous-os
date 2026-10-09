@@ -1137,6 +1137,9 @@ export const createProductView: CreateProductView = async (input) => {
   const fullGraphLeafBases = new Map<string, { given: number; exactFit: boolean; targetPx: number }>();
   let mountedLeafSceneKey: string | null = null;
   // D087-SIZE END
+  // D087-SIZE BEGIN: a sparse 3D mounted settle that cannot land in place is witnessed, not thrown.
+  let sparse3dMountSettleFailed = false;
+  // D087-SIZE END
   const fullAnchor = (current: Axes) =>
     current.organization === "indra"
       ? indraAnchors
@@ -1199,10 +1202,14 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-NODES BEGIN
       // Only the representative has ink at this position. Keep the normal generous pick target
       // around that one point, then the click handler cycles through its real member IDs.
-      if (axes.projection === "3d" ? given === 0 : denseScaleById.size > 0 && given === 0) return [];
-      const basis = Math.min(contract.node.maxRadiusPx, Math.max(axes.projection === "3d" && input.v2Prepared && !structuralIds.has(node.id) ? 0.5
+      // D087-SIZE BEGIN: this index is rebuilt only under the mounted 2D renderer, so the
+      // earlier 3D branches were dead here and their floor cost D-086 its pick target: a click
+      // in a 3 px gap between two dense marks must select nothing. Both lines are D-086 again.
+      if (denseScaleById.size && given === 0) return [];
+      const basis = Math.min(contract.node.maxRadiusPx, Math.max(denseScaleById.size ? 0.5
         : axes.morphology === "mycelium" ? 1.3 : 2,
         given * scale * contract.node.scale));
+      // D087-SIZE END
       const radius = axes.morphology === "stellar" && basis > 1 ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
       // D082-A-NODES END
       return [{ id: node.id, x: p.x, y: p.y, radius: radius + 2 }];
@@ -1603,9 +1610,6 @@ export const createProductView: CreateProductView = async (input) => {
     clearFlowOverlay();
     // D082-A-PERF END
     morphologyInteraction.quality = "moving";
-    // D087-SIZE BEGIN: a settled structural glow has no camera-frame work.
-    if (axes.projection === "3d") sigma?.setGlowVisible(false);
-    // D087-SIZE END
     scheduleMarks.record("quality-moving", performance.now(), 0);
     cancelSettleLabelPass();
     // X9: no backing-store swap during motion. A rest apply still pending from a previous
@@ -1624,9 +1628,6 @@ export const createProductView: CreateProductView = async (input) => {
     if (flowAnimatesNow() && !document.hidden) startFlowLoop();
     // D082-A-PERF END
     morphologyInteraction.quality = "full";
-    // D087-SIZE BEGIN: restore one glow draw at rest, after the moving canvas is hidden.
-    if (axes.projection === "3d") sigma?.setGlowVisible(true);
-    // D087-SIZE END
     scheduleMarks.record("quality-full", now, 0);
     scheduleResolution(40);
     // labelPass redraws the morphology canvas with the newly placed title discs. Avoid a second
@@ -2402,7 +2403,9 @@ export const createProductView: CreateProductView = async (input) => {
       leafCalibration = { given, exactFit, targetPx };
       fullGraphLeafBases.set(leafKey, leafCalibration);
     }
-    const leafGiven = (_id: string, _point: Coordinates): number => leafCalibration?.given ?? 0;
+    // D087-SIZE BEGIN: the calibration is one full-graph value; the per-node arguments were unused.
+    const leafGiven = leafCalibration?.given ?? 0;
+    // D087-SIZE END
     // D087-SIZE END
     const markCoordinates = (point: Coordinates) => handle?.graphToViewport(point)
       ?? { x: (point.x - minMarkX) * provisionalScale, y: (point.y - minMarkY) * provisionalScale };
@@ -2412,7 +2415,7 @@ export const createProductView: CreateProductView = async (input) => {
       const given = structural ? input.v2Prepared
         ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale).radiusPx
         : encodingOf(node, input.data).corePermille * 8 / SCENE_PERMILLE_SCALE
-        : leafGiven(node.id, point);
+        : leafGiven;
       const scale = markScale(point);
       // D087-SIZE BEGIN: co-location uses the final 3D core, after morphology policy.
       const coreRadiusPx = (structural && axes.morphology === 'stellar' && axes.organization === 'indra'
@@ -2468,7 +2471,7 @@ export const createProductView: CreateProductView = async (input) => {
             // D087-SIZE BEGIN: only covered members lose ink; a represented id keeps its native size.
             const hiddenDenseMember = coLocatedById.get(node.id) !== node.id;
             const leafMark = !!input.v2Prepared && !structuralIds.has(node.id);
-            const leafRadius = leafMark ? leafGiven(node.id, anchors.get(node.id)!) : 0;
+            const leafRadius = leafMark ? leafGiven : 0;
             const canonicalHalo = canonicalHaloById.get(node.id);
             const haloPermille = hiddenDenseMember ? 0 : node.origin === "dynamic"
               ? Math.round(encoding.haloPermille * 0.55) : encoding.haloPermille;
@@ -2800,6 +2803,10 @@ export const createProductView: CreateProductView = async (input) => {
     // and a zoom-band change solves from this fit snapshot off the main thread.
     // D082-B-CANOPYN BEGIN: the stationary Canopy full snapshot already owns its fit radii.
     // Sending the same 11,199 IDs through a subset update rebuilds every Neural shape at rest.
+    // D087-SIZE BEGIN: an earlier revision let this settle's throw reject a whole sparse 3D mount whose
+    // in-place update cannot land. Dense mounts keep D-086's throw exactly; a sparse 3D mount
+    // keeps its mounted sizes and the failure is witnessed beside the leaf calibration.
+    sparse3dMountSettleFailed = false;
     if (lodMode && (axes.projection === "3d" ? input.v2Prepared
       : denseScaleById.size > 0 && canopyInitialFitNeedsSubsetRefresh(axes.projection,
         axes.morphology, container.hasAttribute('data-fractal-rails-active')))) {
@@ -2807,9 +2814,14 @@ export const createProductView: CreateProductView = async (input) => {
       const lifted = drawnEdges.flatMap(edge => edge.v2
         ? [edge.v2 as import("./v2-relations.ts").LiftedRelation] : []);
       if (lifted.length === drawnEdges.length
-        && !applyVisibleSubset({ visibleNodeIds: visible, edges: lifted }))
-        throw new Error("Completa point sizes could not settle at the mounted fit camera");
+        && !applyVisibleSubset({ visibleNodeIds: visible, edges: lifted })) {
+        if (denseScaleById.size === 0) {
+          sparse3dMountSettleFailed = true;
+        } else
+          throw new Error("Completa point sizes could not settle at the mounted fit camera");
+      }
     }
+    // D087-SIZE END
     // D082-A-NODES END
     rebuildScreenPickIndex();
     // D085-X8 BEGIN
@@ -3892,6 +3904,9 @@ export const createProductView: CreateProductView = async (input) => {
         ...(axes.projection === "3d" && fullGraphLeafBases.get(fullGraphLeafKey())
           ? { leafCalibration: { ...fullGraphLeafBases.get(fullGraphLeafKey())!,
             fullGraphNodes: input.data.nodes.length } } : {}),
+        // D087-SIZE END
+        // D087-SIZE BEGIN: a sparse 3D mounted settle that kept its mounted sizes is visible here.
+        ...(axes.projection === "3d" ? { sparse3dMountSettleFailed } : {}),
         // D087-SIZE END
         cameraKind: handle.cameraKind,
         visibleRect: pageRect(),

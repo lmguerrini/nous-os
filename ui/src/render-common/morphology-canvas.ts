@@ -12,8 +12,6 @@ import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 // D082-A-NODES BEGIN
 import { denseEdgeVeilFactor } from "#render-common/dense-node-scale.ts";
-// D087-SIZE BEGIN
-// D087-SIZE END
 // D082-A-NODES END
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
 import type { CanvasDisc } from "#render-common/container-canvas.ts";
