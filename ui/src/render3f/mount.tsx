@@ -398,6 +398,12 @@ export function mount(
   if (markCanopyBuffers) performance.mark('d082-canopyn:buffers:start');
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount,
     preparedCanopy?.neuralGeometry);
+  // D086-CUSTOM BEGIN: the resident scene may be denser than an incoming in-place slice.
+  const initialDenseDrawingPolicy = options.presentation?.morphologyInteraction
+    && "usesDenseDrawingPolicy" in options.presentation.morphologyInteraction
+    ? options.presentation.morphologyInteraction.usesDenseDrawingPolicy === true : false;
+  let liveUsesDenseDrawingPolicy = initialDenseDrawingPolicy;
+  // D086-CUSTOM END
   if (markCanopyBuffers) { performance.mark('d082-canopyn:buffers:end');
     performance.measure('d082-canopyn:buffers', 'd082-canopyn:buffers:start', 'd082-canopyn:buffers:end'); }
   // D082-B-CANOPYN END
@@ -472,20 +478,21 @@ export function mount(
   // plus the explicit preparedCanopy argument, so a prepared and an unprepared Canopy 3D
   // Neural mount both keep the Canopy node policy (canopy-node-policy.ts, 0.5 px minimum).
   const canopyMount = !!preparedCanopy || container.hasAttribute("data-fractal-rails-active");
-  const denseNeuralPointFloorCssPx = neural3dCompletaPointFloorCssPx({
-    morphology: options.morphology,
-    morphologyLanguage: options.presentation?.morphologyLanguage,
-    canopyMount,
-    // D086-CUSTOM BEGIN
-    usesDenseDrawingPolicy: options.presentation?.morphologyInteraction
-      && "usesDenseDrawingPolicy" in options.presentation.morphologyInteraction
-      ? options.presentation.morphologyInteraction.usesDenseDrawingPolicy === true : false,
-    denseNativeRadiusOnly: options.presentation?.morphologyInteraction
-      && "denseNativeRadiusOnly" in options.presentation.morphologyInteraction
-      ? options.presentation.morphologyInteraction.denseNativeRadiusOnly === true : false,
-    // D086-CUSTOM END
-  });
-  const denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;
+  // D086-CUSTOM BEGIN: an accepted subset can enter or leave the Neural floor policy.
+  const neuralPointFloorFor = (usesDenseDrawingPolicy: boolean, denseNativeRadiusOnly: boolean): number =>
+    neural3dCompletaPointFloorCssPx({
+      morphology: options.morphology,
+      morphologyLanguage: options.presentation?.morphologyLanguage,
+      canopyMount,
+      usesDenseDrawingPolicy,
+      denseNativeRadiusOnly,
+    });
+  const initialDenseNativeRadiusOnly = options.presentation?.morphologyInteraction
+    && "denseNativeRadiusOnly" in options.presentation.morphologyInteraction
+    ? options.presentation.morphologyInteraction.denseNativeRadiusOnly === true : false;
+  let denseNeuralPointFloorCssPx = neuralPointFloorFor(liveUsesDenseDrawingPolicy, initialDenseNativeRadiusOnly);
+  let denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;
+  // D086-CUSTOM END
   // D082-B-GPUFLOOR END
   // D082-A-N3D END
   registry.registerGeometry(aggregateResources.geometry);
@@ -1438,6 +1445,11 @@ export function mount(
       options.temporalInstant, suppliedAnchors, { ...options.presentation, emphasisIds },
     );
     live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
+    // D086-CUSTOM BEGIN: a rebuilt scene again uses its mount presentation.
+    liveUsesDenseDrawingPolicy = initialDenseDrawingPolicy;
+    denseNeuralPointFloorCssPx = neuralPointFloorFor(initialDenseDrawingPolicy, initialDenseNativeRadiusOnly);
+    denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;
+    // D086-CUSTOM END
     brainEnvelope?.update(live.scene.nodes, live.scene.edges);
     refreshPresentedCounts();
     // D085-S3 BEGIN
@@ -1552,8 +1564,12 @@ export function mount(
         distinct?.updateVisibleSubset(update);
         // D085-S3 BEGIN: reuse the existing node-attribute update decision when
         // deciding whether this revision will rebuild the native proxy below.
-        // D086-CUSTOM BEGIN: a capped Custom slice must refresh the resident GPU and proxy radii.
-        const updatesNativeNodeAttributes = update.usesDenseDrawingPolicy === true && update.nodeEntries.size > 0;
+        // D086-CUSTOM BEGIN: entering or leaving dense policy refreshes resident GPU and proxy radii.
+        const updatesNativeNodeAttributes = (liveUsesDenseDrawingPolicy || update.usesDenseDrawingPolicy === true)
+          && update.nodeEntries.size > 0;
+        const nextDenseNeuralPointFloorCssPx = neuralPointFloorFor(update.usesDenseDrawingPolicy === true,
+          update.denseNativeRadiusOnly === true);
+        const updatesNeuralPointFloor = nextDenseNeuralPointFloorCssPx !== denseNeuralPointFloorCssPx;
         // D086-CUSTOM END
         // D085-S3 END
         // D085-S3 BEGIN: an in-place density slice can change the mounted
@@ -1611,6 +1627,15 @@ export function mount(
           // D085-S3 END
           renderFrame();
         }
+        // D086-CUSTOM BEGIN: the point and ribbon floors follow the accepted subset.
+        if (updatesNeuralPointFloor) {
+          denseNeuralPointFloorCssPx = nextDenseNeuralPointFloorCssPx;
+          denseNeuralCompleta = denseNeuralPointFloorCssPx > 0;
+          applyNativeEdgeVeil();
+          renderFrame();
+        }
+        liveUsesDenseDrawingPolicy = update.usesDenseDrawingPolicy === true;
+        // D086-CUSTOM END
         // D082-A-NODES END
         return;
       }
