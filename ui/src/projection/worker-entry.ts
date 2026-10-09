@@ -52,6 +52,7 @@ export function installProjectionWorkerEntry(
       dimension?: TopologyDimension; indra?: boolean;
       // D087-JULIA BEGIN
       focusedParent?: string | null;
+      mountedAdmissionPx?: number;
       // D087-JULIA END
     } | null;
     // D087-JULIA BEGIN
@@ -87,7 +88,9 @@ export function installProjectionWorkerEntry(
       try { scope.postMessage({ kind: 'topology-layout-result', requestId: message.requestId,
         // D087-JULIA BEGIN
         result: computeTopologyLayout(message.id, message.snapshot, message.dimension, message.indra,
-          typeof message.focusedParent === 'string' ? message.focusedParent : null) }); }
+          typeof message.focusedParent === 'string' ? message.focusedParent : null,
+          typeof message.mountedAdmissionPx === 'number' && Number.isFinite(message.mountedAdmissionPx)
+            ? message.mountedAdmissionPx : undefined) }); }
         // D087-JULIA END
       catch (error) { scope.postMessage({ kind: 'topology-layout-error', requestId: message.requestId,
         message: String(error) }); }

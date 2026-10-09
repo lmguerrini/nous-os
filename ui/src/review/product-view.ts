@@ -69,7 +69,7 @@ import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
-import { containerSphereLOD, containerTitleFont, juliaAtlas2dDrawnRimPx, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
+import { containerSphereLOD, containerTitleFont, juliaAtlasDrawnRimPx, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
@@ -873,7 +873,7 @@ export const createProductView: CreateProductView = async (input) => {
   let indraShellsSubmitted = 0;
   let indraShellsDrawn = 0;
   // D087-JULIA BEGIN
-  let juliaAtlasDrawnShells: readonly { id: string; radiusPx: number; overlapRadiusPx?: number }[] = [];
+  let juliaAtlasDrawnShells: readonly { id: string; radiusPx: number }[] = [];
   let juliaAtlasTitledIds = new Set<string>();
   // D087-JULIA END
   function refreshIndraShellCounts(containers = layoutContainers) {
@@ -885,7 +885,7 @@ export const createProductView: CreateProductView = async (input) => {
     }
     indraShellsSubmitted = 0;
     indraShellsDrawn = 0;
-    const drawnShells: { id: string; radiusPx: number; overlapRadiusPx?: number }[] = [];
+    const drawnShells: { id: string; radiusPx: number }[] = [];
     // D087-JULIA BEGIN: the atlas flag the canvas layers draw with, as the one
     // interaction object the counted ink shares with them.
     const atlasInkInteraction = morphologyInteraction.forceJuliaAtlasRims === undefined ? undefined
@@ -894,13 +894,12 @@ export const createProductView: CreateProductView = async (input) => {
       if (shell.id === ABSOLUTE_CONTAINER_ID) continue;
       indraShellsSubmitted++;
       const trueRadiusPx = Math.max(0.5, shell.radius * projectedWorldScale(shell.center, shell.radius, project));
-      // D087-JULIA BEGIN: a closed 2D atlas pearl reports the rim its ring
-      // really draws — floored at the badge threshold, exactly like the ring
-      // ink and the badge predicate — as its counted `radiusPx`, while
-      // `overlapRadiusPx` keeps the true projected rim so a legibility pin can
-      // never read as a layout overlap. Every other shell (3D included)
-      // reports its projected limb exactly as before.
-      const radiusPx = juliaAtlas2dDrawnRimPx(shell, trueRadiusPx, axes.projection, atlasInkInteraction);
+      // D087-JULIA BEGIN: a closed atlas pearl reports the rim its ring really
+      // draws — floored at the badge threshold, exactly like the ring ink and
+      // the badge predicate — as its counted `radiusPx`, in 2D and in 3D; the
+      // certificate measures that one drawn rim for both its gates. Every
+      // other shell reports its projected limb exactly as before.
+      const radiusPx = juliaAtlasDrawnRimPx(shell, trueRadiusPx, axes.projection, atlasInkInteraction);
       // D087-JULIA BEGIN: a submitted but offscreen pearl has no drawn rim.
       const centerPx = juliaAtlas ? project(shell.center) : null;
       const inFrame = !centerPx || centerPx.x + radiusPx >= 0 && centerPx.x - radiusPx <= container.clientWidth
@@ -910,8 +909,7 @@ export const createProductView: CreateProductView = async (input) => {
         morphologyInteraction.focusIds?.has(shell.id) ?? false, radiusPx)) {
         if (inFrame) {
           indraShellsDrawn++;
-          if (juliaAtlas) drawnShells.push({ id: shell.id, radiusPx,
-            ...(radiusPx === trueRadiusPx ? {} : { overlapRadiusPx: trueRadiusPx }) });
+          if (juliaAtlas) drawnShells.push({ id: shell.id, radiusPx });
         }
       }
     }
@@ -3977,6 +3975,30 @@ export const createProductView: CreateProductView = async (input) => {
         countedShellIds: [...juliaAtlasTitledIds], paintedNodeIds };
       // D087-JULIA END
     },
+    // D087-JULIA BEGIN
+    /** The screen-px-per-source-unit scale the mounted overview fit really
+     * lands on, measured over the drawn closed pearls at the solved mount pose
+     * (the same subjects, rect, margin and fill the mount itself solved, on
+     * the live renderer) — the page recomposes the atlas admission at this
+     * scale. The live camera is left exactly as it was. */
+    readJuliaAtlasMountedPx() {
+      if (!juliaAtlas || !handle || !layoutContainers || !mountOpeningCamera || !mountOpeningPoints) return null;
+      const before = handle.readCameraState();
+      try {
+        handle.restoreCameraState(mountOpeningCamera);
+        solveFraming(handle, { points: mountOpeningPoints(), rect: localRect(),
+          marginPx: 24, anchorFirst: false, fill: 0.92 });
+        // The oblique 3D pose compresses depth and one screen axis: the
+        // smallest per-pearl scale is the one admission must hold at.
+        let scale = Infinity;
+        for (const shell of layoutContainers) {
+          if (shell.id === ABSOLUTE_CONTAINER_ID || shell.open) continue;
+          scale = Math.min(scale, projectedWorldScale(shell.center, shell.radius, project));
+        }
+        return Number.isFinite(scale) && scale > 0 ? scale : null;
+      } finally { handle.restoreCameraState(before); }
+    },
+    // D087-JULIA END
     // D087-JULIA END
     // D085-X8 END
     witness() {

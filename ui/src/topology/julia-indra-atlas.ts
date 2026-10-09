@@ -27,9 +27,11 @@ export function juliaOverviewPearlQuota(density: 'essential' | 'balanced' | 'com
   if (density === 'custom' && customAvailableNodes !== undefined
     && customNodes !== undefined && customNodes >= customAvailableNodes) return available;
   // D087-JULIA END
-  // D087-JULIA BEGIN: the oblique 3D admission has forty available pearls.
-  // Give its density steps distinct deterministic prefixes as in 2D.
-  if (available >= 20 && available <= 40) {
+  // D087-JULIA BEGIN: the oblique 3D admission — and any small window whose
+  // mounted-scale admission lands under the 45-pearl overview — has fewer
+  // available pearls. Give its density steps distinct deterministic prefixes
+  // as in 2D, down to a single pearl.
+  if (available <= 40) {
     const target = density === 'essential' ? available - 4 : density === 'balanced' ? available - 2
       : density === 'complete' ? available : available - 4 + Math.floor(Math.max(0, customNodes ?? 0) / 2000);
     return Math.min(available, Math.max(1, target));
@@ -162,12 +164,18 @@ function chartGuidesFromFull(full: TopologyLayout, points: readonly Point3[]): G
   }));
 }
 
-/** Build from one complete Julia law certificate. A focus recomposes only its one chart. */
+/** Build from one complete Julia law certificate. A focus recomposes only its one chart.
+ * `mountedAdmissionPx` is the screen-px-per-source-unit scale of the viewport the overview
+ * will be fitted into: admission spaces the pearls by the rim they will actually draw
+ * (floored at the badge threshold) plus the clearance at that scale, so admitted pearls
+ * never touch at the mounted view. It is clamped to the reference projection's scale, so
+ * a mounted admission is never looser than the source preflight's. */
 export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: TopologyDimension,
   focusedParent: string | null = null, referenceWidth = REFERENCE_WIDTH,
-  sourceFull?: TopologyLayout): JuliaAtlasLayout {
+  sourceFull?: TopologyLayout, mountedAdmissionPx?: number): JuliaAtlasLayout {
   // D087-JULIA BEGIN
-  const cacheKey = `${snapshot.digest}|${dimension}|${referenceWidth}|${snapshot.nodes.length}|${snapshot.edges.length}`;
+  const cacheKey = `${snapshot.digest}|${dimension}|${referenceWidth}|${snapshot.nodes.length}|${snapshot.edges.length}`
+    + `|px:${mountedAdmissionPx ?? 'reference'}`;
   if (focusedParent === null && !sourceFull) {
     const cached = overviewCache.get(cacheKey);
     if (cached) return cached;
@@ -197,7 +205,16 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
     .sort((a, b) => nodes.get(a)!.level - nodes.get(b)!.level || compare(a, b));
   const fullExtent = Math.max(1, ...[...full.positions.values()].map(p => Math.hypot(p.x, p.y)),
     ...full.guides.flatMap(g => g.points.map(p => Math.hypot(p.x, p.y))));
-  const px = 0.8 * referenceWidth / (2 * fullExtent);
+  const referencePx = 0.8 * referenceWidth / (2 * fullExtent);
+  // D087-JULIA BEGIN: admission at the window's real scale. The composition's
+  // own px is the mounted viewport's fitted scale (never above the reference,
+  // so the source preflight stays the loosest admission), which makes the
+  // drawn rim — `rim * px`, floored at the badge threshold by the drawing —
+  // exactly the threshold, and the admitted spacing `2 × rim + gap` exactly
+  // the drawn-rim clearance at the fitted view.
+  const px = mountedAdmissionPx === undefined ? referencePx
+    : Math.min(Math.max(1e-9, mountedAdmissionPx), referencePx);
+  // D087-JULIA END
   const rim = RIM_PX / px;
   const gap = GAP_PX / px;
   // D087-JULIA BEGIN: the default oblique 3D camera compresses one screen axis.
@@ -214,7 +231,7 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
   // candidate rims whose real children fail in the pinned focus reference.
   if (focusedParent === null) admitted = admitted.filter(id => {
     try {
-      const opened = composeJuliaIndraAtlas(snapshot, dimension, id, referenceWidth, full);
+      const opened = composeJuliaIndraAtlas(snapshot, dimension, id, referenceWidth, full, mountedAdmissionPx);
       const shell = opened.containers.find(container => container.id === id)!;
       const focusPx = FOCUS_REFERENCE_RIM_PX / shell.radius;
       return certifyJuliaAtlasDrawing(opened, snapshot, {
@@ -328,25 +345,21 @@ export function certifyJuliaAtlasDrawing(layout: JuliaAtlasLayout, snapshot: Top
   nodeIds: ReadonlySet<string>; shellIds: ReadonlySet<string>; countedShellIds: ReadonlySet<string>;
   guideIds: ReadonlySet<string>; project(point: Point3): Readonly<{ x: number; y: number }>;
   shellRadiusPx(shell: LayoutContainer): number;
-  // D087-JULIA BEGIN: the radius the rim-overlap inequality measures. Absent —
-  // every historical caller — it is `shellRadiusPx` itself: the drawn rim is
-  // the layout rim. A caller that pins a screen-space minimum drawn rim in
-  // `shellRadiusPx` (the 2D atlas legibility floor) passes the true projected
-  // rim here, so a legibility pin can never read as a layout overlap.
-  overlapShellRadiusPx?(shell: LayoutContainer): number;
   viewport?: Readonly<{ width: number; height: number }>;
 }>): JuliaAtlasCertificate {
   const shells = layout.containers.filter(c => c.id !== ABSOLUTE_CONTAINER_ID && drawn.shellIds.has(c.id));
   const projected = (p: Point3) => drawn.project(p);
-  // D087-JULIA BEGIN: see the field above; the default keeps one radius for
-  // both gates exactly as before.
-  const overlapRadiusPx = drawn.overlapShellRadiusPx ?? drawn.shellRadiusPx;
+  // D087-JULIA BEGIN: the overlap inequality measures one radius — the rim the
+  // caller actually draws, the same `shellRadiusPx` the counted ink reports.
+  // A legibility floor pinned in the drawing is real ink and is measured as
+  // such; admission is composed at the mounted scale so the floor can never
+  // read as a layout overlap.
   // D087-JULIA END
   let overlap = 0;
   for (let i = 0; i < shells.length; i++) for (let j = i + 1; j < shells.length; j++) {
     const a = shells[i]!, b = shells[j]!;
     const pa = projected(a.center), pb = projected(b.center);
-    if (Math.hypot(pa.x - pb.x, pa.y - pb.y) < overlapRadiusPx(a) + overlapRadiusPx(b) + GAP_PX) overlap++;
+    if (Math.hypot(pa.x - pb.x, pa.y - pb.y) < drawn.shellRadiusPx(a) + drawn.shellRadiusPx(b) + GAP_PX) overlap++;
   }
   const closed = shells.filter(shell => !shell.open && drawn.nodeIds.has(shell.id)
     && drawn.countedShellIds.has(shell.id) && drawn.shellRadiusPx(shell) >= RIM_PX

@@ -42,13 +42,13 @@ export function topologySnapshot(manifest: GraphManifest, index: V2Index): Topol
 }
 export function computeTopologyLayout(id: Exclude<TopologyId, 'natural'>,
   snapshot: TopologySnapshot, dimension: TopologyDimension, indra: boolean,
-  focusedParent: string | null = null): TopologyLayout {
+  focusedParent: string | null = null, mountedAdmissionPx?: number): TopologyLayout {
   const law = TOPOLOGY_LAWS[id]!;
   const support = law.supports(dimension);
   if (!support.ok) throw new Error(support.reason);
   // D087-JULIA BEGIN
   const result = id === 'julia' && indra
-    ? composeJuliaIndraAtlas(snapshot, dimension, focusedParent)
+    ? composeJuliaIndraAtlas(snapshot, dimension, focusedParent, undefined, undefined, mountedAdmissionPx)
     : indra ? composeIndra(law, snapshot, dimension) : law.layoutFull(snapshot, dimension);
   // D087-JULIA END
   if (result.positions.size !== snapshot.nodes.length || result.witnesses.size !== snapshot.nodes.length)
@@ -152,14 +152,15 @@ function embeddedTopologyWorker(): Worker | null {
 
 export function computeTopologyLayoutAsync(id: Exclude<TopologyId, 'natural'>,
   snapshot: TopologySnapshot, dimension: TopologyDimension, indra: boolean,
-  focusedParent: string | null = null): Promise<TopologyLayout> {
+  focusedParent: string | null = null, mountedAdmissionPx?: number): Promise<TopologyLayout> {
   const worker = embeddedTopologyWorker();
-  if (!worker) return Promise.resolve().then(() => computeTopologyLayout(id, snapshot, dimension, indra, focusedParent));
+  if (!worker) return Promise.resolve().then(() => computeTopologyLayout(id, snapshot, dimension, indra, focusedParent, mountedAdmissionPx));
   const requestId = ++nextLayoutRequest;
   return new Promise((resolve, reject) => {
     pendingLayouts.set(requestId, { resolve, reject });
     // D087-JULIA BEGIN
-    try { worker.postMessage({ kind: 'topology-layout', requestId, id, snapshot, dimension, indra, focusedParent }); }
+    try { worker.postMessage({ kind: 'topology-layout', requestId, id, snapshot, dimension, indra, focusedParent,
+      ...(mountedAdmissionPx !== undefined ? { mountedAdmissionPx } : {}) }); }
     // D087-JULIA END
     catch (error) { pendingLayouts.delete(requestId); reject(error); }
   });
