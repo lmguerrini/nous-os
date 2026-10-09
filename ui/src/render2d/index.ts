@@ -1,4 +1,4 @@
-import { mixTowardField } from "#engine/presentation-options.ts";
+import { mixTowardField, revisedCanvasNodeColor } from "#engine/presentation-options.ts";
 import type { AppearanceOptions, EdgeCategory, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 // "D082-A-NCOMPLETA2 BEGIN"
@@ -869,7 +869,7 @@ function mountDistinctCanvas(
     color: graph.getEdgeAttributes(id).color,
     presentation: options.presentation?.edges?.get(id),
   }]));
-  const mainEdgeIds = new Set(graph.edges().filter(id => {
+  let mainEdgeIds = new Set(graph.edges().filter(id => {
     const source = graph.source(id), target = graph.target(id);
     const category = options.presentation?.edges?.get(id)?.category;
     const sourceGlyph = options.presentation?.nodes?.get(source)?.glyph;
@@ -880,6 +880,9 @@ function mountDistinctCanvas(
       sourceDomain: sourceGlyph === 'ring', targetDomain: targetGlyph === 'ring' });
   }));
   let requestedNodes = 0, requestedEdges = 0, requestedMainEdges = 0;
+  // "D086-BURST BEGIN": the distinct canvas owns the visible subset census.
+  let readinessView = (options as typeof options & { readinessView?: string }).readinessView;
+  // "D086-BURST END"
   let nativeCountDirty = true;
   let nativeNodeIdsDrawn = 0;
   let nativeEdgeIdsDrawn: string[] = [];
@@ -917,7 +920,7 @@ function mountDistinctCanvas(
     const mainDrawn = nativeTier ? nativeDrawnIds.filter(id => mainEdgeIds.has(id)).length
       : canvasDrawn ? geometry.edges.filter(edge => mainEdgeIds.has(edge.id)).length : 0;
     const snapshot = {
-      view: `distinct/2d/${options.morphology}`,
+      view: readinessView ?? `distinct/2d/${options.morphology}`,
       quality: ladder.state.moving ? 'movimento' : stage === FULL_QUALITY_STAGE ? 'completa' : 'recupero',
       ladder: stage,
       nodes: { required: requestedNodes, loaded: requestedNodes, drawn: nodesDrawn },
@@ -980,16 +983,35 @@ function mountDistinctCanvas(
     // in-place update derives from the current subset, not the mounted one.
     updateVisibleSubset(update): void {
       geometry = update.geometry;
-      recountPresented();
+      // "D086-BURST BEGIN"
+      readinessView = update.readinessView ?? readinessView;
+      // "D086-BURST END"
       sharedInput = update.input;
       nodeStyles = new Map(nodeStyles);
       edgeStyles = new Map(edgeStyles);
       for (const [id, entry] of update.nodeEntries) {
         const current = nodeStyles.get(id);
-        if (current) nodeStyles.set(id, { ...current, glyph: entry.glyph, radiusPx: entry.radiusPx });
+        // "D086-BURST BEGIN": a retained canvas must consume the revised color as well as radius.
+        if (current) nodeStyles.set(id, { ...current, glyph: entry.glyph, radiusPx: entry.radiusPx,
+          color: revisedCanvasNodeColor(current.color, model.fieldColor,
+            entry.tintSrgb, entry.opacityPermille) });
+        // "D086-BURST END"
       }
       for (const [id, entry] of update.edgeEntries)
         edgeStyles.set(id, { color: entry.color, presentation: entry.presentation });
+      // "D086-BURST BEGIN": newly visible real relations join the current main census.
+      mainEdgeIds = new Set(update.input.edges.filter(edge => {
+        const category = edgeStyles.get(edge.id)?.presentation?.category;
+        const sourceGlyph = nodeStyles.get(edge.source)?.glyph;
+        const targetGlyph = nodeStyles.get(edge.target)?.glyph;
+        return mainRelation({ attested: category === 'attested', exploratory: category === 'exploratory',
+          selectedIncident: !!(options.presentation?.emphasisIds?.has(edge.source)
+            || options.presentation?.emphasisIds?.has(edge.target)),
+          sourceHub: sourceGlyph === 'double-ring', targetHub: targetGlyph === 'double-ring',
+          sourceDomain: sourceGlyph === 'ring', targetDomain: targetGlyph === 'ring' });
+      }).map(edge => edge.id));
+      recountPresented();
+      // "D086-BURST END"
       // "D082-A-NCOMPLETA2 END"
       draw();
     },
@@ -1912,8 +1934,14 @@ export function mountProjection2d(
     const semanticDrawn = nativeTier ? nativeEdgeIds.length : morphologyVisible ? paint.geometry.edges.length : 0;
     const mainDrawn = nativeTier ? nativeEdgeIds.filter(id => mainEdgeIds.has(id)).length
       : morphologyVisible ? paint.geometry.edges.filter(edge => mainEdgeIds.has(edge.id)).length : 0;
+    // "D086-BURST BEGIN"
+    const typedOwner = scene.styled.projection.determinism.algorithmId === 'indras-pearls'
+      ? 'indra' : scene.styled.projection.determinism.algorithmId;
+    // "D086-BURST END"
     return {
-      view: `${scene.styled.projection.determinism.algorithmId}/2d/${morphology}/${scope?.density ?? 'default'}`,
+      // "D086-BURST BEGIN": typed readiness uses the page's topology and reading key.
+      view: `${typedOwner}/2d/${morphology}/${scope?.density ?? 'default'}/${scope?.reading ?? 'combined'}`,
+      // "D086-BURST END"
       quality: ladder.state.moving ? 'movimento' : stage === FULL_QUALITY_STAGE ? 'completa' : 'recupero',
       ladder: stage,
       nodes: { required: nodes, loaded: nodes, drawn: nodeDrawn },

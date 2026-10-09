@@ -297,6 +297,9 @@ export function styleProjection(
 export type ProjectionStyleScope = {
   readonly morphology: ProjectionStyleMorphology;
   readonly density: Density;
+  // D086-BURST BEGIN: the renderer's readiness key retains the styled reading.
+  readonly reading: ProjectionReading;
+  // D086-BURST END
   readonly lodLevel: LodLevel;
   readonly labelBudget: number;
   readonly background: string;
@@ -319,6 +322,9 @@ export function readProjectionStyle(styled: StyledProjection): ProjectionStyleSc
   const background = scope.background;
   return {
     morphology, density: normalizeDensity(scope.density), lodLevel,
+    // D086-BURST BEGIN
+    reading: scope.reading === 'attested' || scope.reading === 'exploratory' ? scope.reading : 'combined',
+    // D086-BURST END
     labelBudget: typeof budget === "number" && Number.isFinite(budget) && budget > 0 ? budget : 60,
     background: typeof background === "string" && background.length > 0 ? background : "#050505",
     selection: typeof scope.selection === "string" ? scope.selection : PALETTES.bw.selection,

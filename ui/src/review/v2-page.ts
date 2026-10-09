@@ -1107,7 +1107,10 @@ export class V2Page {
         };
         const next: RenderReadiness = {
             frame: this.d082Frame + 1,
-            view: `${this.axes.organization}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`,
+            // D086-BURST BEGIN: preparation names the active Lab law, not its native renderer organization.
+            view: `${this.topology !== 'natural' ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}`
+                : this.axes.organization}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`,
+            // D086-BURST END
             quality,
             ladder: visible === 0 ? 0 : full ? 4 : quality === 'recupero' ? 2 : 1,
             nodes: counts(nodeRequired, visible, visible),
@@ -2649,6 +2652,12 @@ export class V2Page {
         // D082-A-DENSITY BEGIN
         this.densitySwitchPending = false;
         // D082-A-DENSITY END
+        // D086-BURST BEGIN: an identical typed drawing may accept no new renderer frame.
+        const readinessOwner = this.topology !== 'natural'
+            ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
+        const expectedView = `${readinessOwner}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`;
+        if (this.projectionHost) activateRenderReadinessHost(this.projectionHost, expectedView);
+        // D086-BURST END
     }
     /** A selection that did not come from a canvas pick (a search result, a list, a programmatic call)
      * reaches the typed explanation the way a pick does: a selected node the result draws becomes the
@@ -5656,6 +5665,22 @@ export class V2Page {
             // D082-A-HUD BEGIN: publish after the pending scene count changes, including refusal paths.
             this.d081Emit();
             // D082-A-HUD END
+            // D086-BURST BEGIN: an accepted return to a resident drawing has no new frame.
+            // Replay only when that drawing already certifies this committed state.
+            if (projectionEpoch === this.projectionEpoch && this.density === this.committedDensity
+                && this.topology === this.committedTaxonomy.topology
+                && this.topologyIndra === this.committedTaxonomy.indra) {
+                const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
+                const readinessOwner = this.topology !== 'natural'
+                    ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
+                const expectedView = `${readinessOwner}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`;
+                const presented = liveHost ? activateRenderReadinessHost(liveHost, expectedView) : null;
+                if (presented?.quality === 'completa' && this.d081Quality === 'recupero') {
+                    this.d081Quality = 'completa';
+                    this.d081Emit();
+                }
+            }
+            // D086-BURST END
         });
     }
     async expand(id: string) {

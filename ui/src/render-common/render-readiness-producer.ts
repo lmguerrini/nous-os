@@ -36,10 +36,13 @@ export function renderReadinessHost(container: Element): Element {
 }
 
 /** Commit the view that actually owns the displayed drawing and replay its last frame. */
-export function activateRenderReadinessHost(host: Element): PresentedRenderReadiness | null {
+export function activateRenderReadinessHost(host: Element, expectedView?: string): PresentedRenderReadiness | null {
   activeHost = host;
   const presented = hostPresentations.get(host);
-  return presented ? presentRenderReadiness(presented, host) : null;
+  // D086-BURST BEGIN: an unchanged commit may replay only its own visible state.
+  return presented && (expectedView === undefined || presented.view === expectedView)
+    ? presentRenderReadiness(presented, host) : null;
+  // D086-BURST END
 }
 // D086-BURST END
 

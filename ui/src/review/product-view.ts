@@ -781,7 +781,8 @@ export const createProductView: CreateProductView = async (input) => {
   // in-place subset change can ship only the entries that actually flipped.
   // D082-A-NODES BEGIN
   let lastNodeMarks = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined;
-    radiusPx: number | undefined; haloRadiusPx: number | undefined }>();
+    radiusPx: number | undefined; haloRadiusPx: number | undefined;
+    tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
   // D082-A-NODES END
   let handle: GraphRendererHandle | null = null;
   let sigma: RenderHandle | null = null;
@@ -2063,6 +2064,10 @@ export const createProductView: CreateProductView = async (input) => {
   // option object to the renderer model. This helper carries no new policy.
   const renderOptionsForScene = (scene: FullScene) => ({
     ...options,
+    // D086-BURST BEGIN: the mounted renderer and later subsets publish one page identity.
+    readinessView: `${input.labTopology && input.labTopology !== 'natural'
+      ? `lab/${input.labTopology}${input.labIndra ? '+indra' : ''}` : axes.organization}/${axes.projection}/${axes.morphology}/${witnessDensity}/${axes.reading}`,
+    // D086-BURST END
     ...(axes.organization === 'indra' ? { calibration: { ...DEFAULT_CALIBRATION,
       selection: { ...DEFAULT_CALIBRATION.selection, focusDimFactorPermille: 600 } } } : {}),
     // D082-B1f BEGIN: preserve the small Canopy Completa radii in both prepared and mounted scenes.
@@ -2181,7 +2186,8 @@ export const createProductView: CreateProductView = async (input) => {
     lastNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
         radiusPx: value.radiusPx, haloRadiusPx: value.radiusPx === undefined ? undefined
-          : value.radiusPx * (1 + denseZoomProgress * 0.28) }]));
+          : value.radiusPx * (1 + denseZoomProgress * 0.28),
+        tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille }]));
     // D082-A-NCOMPLETA3 BEGIN
     lastEdgeMarks = new Map([...presentation.edges].map(([id, value]) =>
       [id, { opacityPermille: value.opacityPermille, widthPermille: value.widthPermille,
@@ -2422,13 +2428,19 @@ export const createProductView: CreateProductView = async (input) => {
     const nextNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
       [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
         radiusPx: value.radiusPx, haloRadiusPx: value.radiusPx === undefined ? undefined
-          : value.radiusPx * (1 + denseZoomProgress * 0.28) }] as const));
+          : value.radiusPx * (1 + denseZoomProgress * 0.28),
+        tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille }] as const));
     const nodeEntries = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined;
-      radiusPx: number | undefined; haloRadiusPx: number | undefined }>();
+      radiusPx: number | undefined; haloRadiusPx: number | undefined;
+      tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
     for (const [id, mark] of nextNodeMarks) {
       const before = lastNodeMarks.get(id);
-      if (!before || before.glyph !== mark.glyph || before.radiusPx !== mark.radiusPx
-        || before.haloRadiusPx !== mark.haloRadiusPx) nodeEntries.set(id, mark);
+      if (nextDensity !== witnessDensity || !before || before.glyph !== mark.glyph || before.radiusPx !== mark.radiusPx
+        || before.haloRadiusPx !== mark.haloRadiusPx
+        // D086-BURST BEGIN: tint and opacity are part of a density revision.
+        || before.opacityPermille !== mark.opacityPermille
+        || before.tintSrgb?.some((value, index) => value !== mark.tintSrgb?.[index])) nodeEntries.set(id, mark);
+        // D086-BURST END
     }
     // D082-A-NODES END
     const edgeEntries = new Map<string, { color: string; presentation: ReturnType<typeof presentationEdge> }>();
@@ -2446,6 +2458,10 @@ export const createProductView: CreateProductView = async (input) => {
     // D085-S3 BEGIN: moving native law skeletons read semantic ranks and hierarchy
     // independently of the Indra-only drawing containers.
     const nextOverlay: DistinctSubsetUpdate = { input: morphologyInput, geometry, nodeEntries, edgeEntries,
+      // D086-BURST BEGIN
+      readinessView: `${input.labTopology && input.labTopology !== 'natural'
+        ? `lab/${input.labTopology}${input.labIndra ? '+indra' : ''}` : axes.organization}/${axes.projection}/${axes.morphology}/${nextDensity}/${axes.reading}`,
+      // D086-BURST END
       // D086-CUSTOM BEGIN
       usesDenseDrawingPolicy: presentation.usesDenseDrawingPolicy,
       denseNativeRadiusOnly: presentation.denseNativeRadiusOnly,
@@ -2465,6 +2481,10 @@ export const createProductView: CreateProductView = async (input) => {
     // entries before its canvas draw threw. The old geometry hides any newly introduced ids.
     const restoreOverlay: DistinctSubsetUpdate = {
       input: oldScene.morphologyInput, geometry: oldScene.geometry,
+      // D086-BURST BEGIN
+      readinessView: `${input.labTopology && input.labTopology !== 'natural'
+        ? `lab/${input.labTopology}${input.labIndra ? '+indra' : ''}` : axes.organization}/${axes.projection}/${axes.morphology}/${witnessDensity}/${axes.reading}`,
+      // D086-BURST END
       // D086-CUSTOM BEGIN
       usesDenseDrawingPolicy: oldScene.presentation.usesDenseDrawingPolicy,
       denseNativeRadiusOnly: oldScene.presentation.denseNativeRadiusOnly,
@@ -2484,6 +2504,9 @@ export const createProductView: CreateProductView = async (input) => {
       nodeEntries: new Map([...oldScene.presentation.nodes].map(([id, value]) => [id, {
         glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined,
         radiusPx: value.radiusPx,
+        // D086-BURST BEGIN
+        tintSrgb: value.tintSrgb, opacityPermille: value.opacityPermille,
+        // D086-BURST END
         // D082-A-NODES BEGIN
         haloRadiusPx: lastNodeMarks.get(id)?.haloRadiusPx,
         // D082-A-NODES END
