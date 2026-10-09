@@ -29,7 +29,7 @@ const bundled = await build({
     resolveDir: dirname(fileURLToPath(source)),
     sourcefile: "d073-c6-camera-entry.ts",
     loader: "ts",
-    contents: `export { assertNaturalArrangementAxis, brainRendererEnabled, commitProductCamera, forgetProductCamera, nativeSubsetRequiresRemount, productCameraKey, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement } from ${JSON.stringify(fileURLToPath(source))};`,
+    contents: `export { assertNaturalArrangementAxis, brainRendererEnabled, commitProductCamera, forgetProductCamera, nativeSubsetRequiresRemount, preparationHostLive, productCameraKey, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement } from ${JSON.stringify(fileURLToPath(source))};`,
   },
 });
 writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
@@ -39,7 +39,7 @@ Object.assign(globalThis, {
 });
 const {
   assertNaturalArrangementAxis, brainRendererEnabled, commitProductCamera, forgetProductCamera, productCameraKey,
-  nativeSubsetRequiresRemount, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement,
+  nativeSubsetRequiresRemount, preparationHostLive, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement,
 } = await import(pathToFileURL(bundlePath).href) as typeof import("../../src/review/product-view.ts");
 
 // D086-F2 BEGIN: the native tier cannot present a new edge or node ID through
@@ -54,6 +54,14 @@ test("native scene identity includes drawn node and edge IDs", () => {
   assert.equal(nativeSubsetRequiresRemount(11_199, nodes, balanced, new Set(["a", "c"]), balanced), true);
   assert.equal(nativeSubsetRequiresRemount(11_199, nodes, balanced, nodes, balanced), false);
   assert.equal(nativeSubsetRequiresRemount(100, nodes, balanced, nodes, complete), false);
+});
+// D086-F2 END
+
+// D086-F2 BEGIN: a removed async host must stop reporting preparation for an
+// obsolete scene, even though its worker may still finish in the background.
+test("superseded preparation loses its presentation lease", () => {
+  assert.equal(preparationHostLive({ isConnected: true } as HTMLElement), true);
+  assert.equal(preparationHostLive({ isConnected: false } as HTMLElement), false);
 });
 // D086-F2 END
 
@@ -92,6 +100,27 @@ test("the camera key is arrangement-qualified for Natural and unchanged in form 
   assert.deepEqual(productCameraKey(axes({ projection: "3d", organization: "indra" })),
     { key: "3d/indra", legacyKey: "3d/indra", replaysLegacy: false });
 });
+
+// D086-F2 BEGIN: a law mount must never replay Natural's normalization bounds.
+test("a law camera uses its own coordinate-space record and leaves Natural replay intact", () => {
+  const natural = productCameraKey(axes({ arrangement: 'constellation' }));
+  const julia = productCameraKey(axes({ arrangement: 'constellation' }), 'julia');
+  const sierpinski = productCameraKey(axes({ arrangement: 'constellation' }), 'sierpinski');
+  assert.notEqual(julia.key, natural.key);
+  assert.notEqual(sierpinski.key, julia.key);
+  assert.equal(julia.replaysLegacy, false);
+  const cameras = new Map<string, VisualStateCamera>();
+  const fits = new Map<string, number>();
+  const naturalCamera = { ...camera(0.4), bounds: { x: [-849, 885] as const, y: [-600, 600] as const } };
+  const juliaCamera = { ...camera(0.6), bounds: { x: [-6, 6] as const, y: [-6, 6] as const } };
+  commitProductCamera(cameras, fits, natural, naturalCamera, 1.1375);
+  assert.equal(replayProductCamera(cameras, fits, julia), undefined, 'Julia must fit its own layout');
+  commitProductCamera(cameras, fits, julia, juliaCamera, 1.2488);
+  assert.equal(replayProductCamera(cameras, fits, sierpinski), undefined);
+  assert.equal(replayProductCamera(cameras, fits, natural), naturalCamera, 'return to Natural replays its camera');
+  assert.equal(replayProductCamera(cameras, fits, julia), juliaCamera, 'return to Julia replays Julia');
+});
+// D086-F2 END
 
 test("an unresolved arrangement resolves from the morphology once and an explicit one wins", () => {
   assert.equal(resolvedViewArrangement(axes({ morphology: "stellar" })), "constellation");

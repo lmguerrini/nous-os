@@ -114,15 +114,20 @@ function showNodeDrawer(id: string): void {
 }
 const drawerSelectionObserver = new MutationObserver(() => {
   const selected = details.querySelector<HTMLElement>(".selection-card[data-node-id]")?.dataset.nodeId ?? null;
+  // D086-F2 BEGIN: selection removal always closes the external drawer, even
+  // after the initial canvas-pick observation window has elapsed.
+  if (!selected && drawerSelectionId) {
+    drawerSelectionId = null;
+    nodeDrawer.close();
+    return;
+  }
+  // D086-F2 END
   if (!canvasPickPending) return;
   canvasPickPending = false;
   if (selected && (selected !== drawerSelectionId || nodeDrawerHost.hidden)) {
     drawerSelectionId = selected;
     nodeDrawer.setDisplayTitle(drawerTitle(selected));
     void nodeDrawer.open(selected);
-  } else if (!selected && drawerSelectionId) {
-    drawerSelectionId = null;
-    nodeDrawer.close();
   }
 });
 drawerSelectionObserver.observe(details, { childList: true, subtree: true });
@@ -639,10 +644,14 @@ function reportTaxonomyTransitionError(error: unknown): void {
   get<HTMLElement>('error').textContent = message;
 }
 function chooseTaxonomy(topology: TopologyId, indra?: boolean): Promise<void> {
+  // D086-F2 BEGIN: carry a density click already accepted by the toolbar into
+  // the next topology mount, even if that click's slow mount is superseded.
+  const densityIntent = pendingDensityIntent;
   v2?.supersedeGeometry();
-  return geometryTransitions.enqueue(() => applyTaxonomy(topology, indra));
+  return geometryTransitions.enqueue(() => applyTaxonomy(topology, indra, densityIntent));
+  // D086-F2 END
 }
-async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Promise<void> {
+async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, densityIntent: { value: Density } | null = null): Promise<void> {
   const indra = requestedIndra ?? ('mode' in geometry ? false : geometry.indra === 'on');
   const support = topologySupport(topology, axes.projection, indra);
   // D085-S1 BEGIN: an accepted click cannot silently finish without a page task.
@@ -656,7 +665,9 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
   // D085-S5 END
   // D085-S1 BEGIN: the page mounts the final law and organization once; defer completion
   // until the controls and URL have been presented below.
-  try { await v2?.setTaxonomy(topology, indra, true); }
+  // D086-F2 BEGIN
+  try { await v2?.setTaxonomy(topology, indra, true, undefined, densityIntent?.value); }
+  // D086-F2 END
   catch (error) {
     if (v2) { syncCommittedPageGeometry(); persistView(); }
     throw error;
@@ -681,6 +692,9 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean): Pr
       : topology === 'canopy-ifs' && !indra ? { compatibility: 'd081-canopy' as const } : {}) };
   view2WriteAllowed = true;
   persistView(); updateButtons(); syncToolbarSummary();
+  // D086-F2 BEGIN
+  if (pendingDensityIntent === densityIntent) pendingDensityIntent = null;
+  // D086-F2 END
   if (taxonomyErrorShown) { get<HTMLElement>('error').hidden = true; taxonomyErrorShown = false; }
   // D084-W3-LABELS BEGIN: the legend surfaces follow the taxonomy change, so the classification
   // block appears with the lab topology and leaves with it.
@@ -1943,6 +1957,9 @@ get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.s
 // in the toolbar row, default Bilanciata and remembered like the other preferences.
 // D082-B2 BEGIN: a portable view2 carries its own density.
 let density = geometry.density;
+// D086-F2 BEGIN: click intent is distinct from the density last painted.
+let pendingDensityIntent: { value: Density } | null = null;
+// D086-F2 END
 // D082-B2 END
 const densityButtons = [...document.querySelectorAll<HTMLButtonElement>("#density-control button[data-density]")];
 // D084-W6-TOOLBAR BEGIN: the Relazioni and Densità groups are laid out from the first paint
@@ -1965,12 +1982,19 @@ function syncDensity(): void {
 }
 function applyDensity(next: unknown): void {
   const value = normalizeDensity(next);
+  // D086-F2 BEGIN
+  const intent = { value };
+  pendingDensityIntent = intent;
+  // D086-F2 END
   // D085-S1 BEGIN: density must reach the renderer before the next topology intent.
   v2?.supersedeGeometry();
   void geometryTransitions.enqueue(async () => {
     // D085-S1 BEGIN: a no-op can follow an already displayed, still settling mount.
     if (value === density) {
       if (v2) { syncCommittedPageGeometry(); persistView(); }
+      // D086-F2 BEGIN
+      if (pendingDensityIntent === intent) pendingDensityIntent = null;
+      // D086-F2 END
       return;
     }
     // D085-S1 BEGIN: persist only after the page accepts the density.
@@ -1990,6 +2014,9 @@ function applyDensity(next: unknown): void {
     // D082-B2 END
     writeLocal(storage, "d072.density", density);
     syncDensity();
+    // D086-F2 BEGIN
+    if (pendingDensityIntent === intent) pendingDensityIntent = null;
+    // D086-F2 END
     // D085-S1 END
   }).catch(reportTaxonomyTransitionError);
   // D085-S1 END
@@ -2138,6 +2165,11 @@ refreshFlowLegends();
 if (geometryRead.source !== 'default') writeLocal(storage, 'd069.palette', axes.colour);
 else { axes = { ...axes, colour: paletteName(readLocal(storage, 'd069.palette', 'bw')) };
   if (!('mode' in geometry)) geometry = { ...geometry, colour: axes.colour }; }
+// D086-F2 BEGIN: boot commits colour before either palette control is presented.
+get<HTMLSelectElement>('palette').value = axes.colour;
+const bootFullscreenPalette = document.getElementById('fullscreen-palette') as HTMLSelectElement | null;
+if (bootFullscreenPalette) bootFullscreenPalette.value = axes.colour;
+// D086-F2 END
 // D082-B2 END
 syncBrainControls();
 persistView();

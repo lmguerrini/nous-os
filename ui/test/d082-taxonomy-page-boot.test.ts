@@ -6,6 +6,9 @@ import { transformSync } from 'esbuild';
 import { readLocal, writeLocal } from '../src/review/appearance.ts';
 import { geometryToLegacyAxes, resolveGeometryView2, resolveSupportedGeometryView2, rewriteGeometryUrl, serializeGeometryView2 } from '../src/review/geometry-view2.ts';
 import { DEFAULT_AXES, parseSavedAxes, resolveArrangementReadout } from '../src/review/view-contract.ts';
+// D086-F2 BEGIN
+import { paletteName } from '../src/review/palette.ts';
+// D086-F2 END
 import { topologySupport } from '../src/topology/registry.ts';
 
 // Execute the actual main.ts boot and persistence statements with page location,
@@ -21,7 +24,10 @@ const bootSource = section('const initialUrlView =', 'function appliedAxes(')
   + section('function appliedAxes(', 'function productAxes(')
   + section('function writeViewUrl(): void {', 'function syncArrangementInspector(): void {')
   + '\nif (morphologySwitch) { axes = appliedAxes({ morphology: morphologySwitch }); }'
-  + '\npersistView(); globalThis.bootResult = { axes, geometry, geometryRead, notice: experimentalSuspensionNotice, errors, writable: view2WriteAllowed };';
+  // D086-F2 BEGIN: execute the same late boot block that presents both selects.
+  + '\npersistView();' + section("if (geometryRead.source !== 'default')", '// D082-B2 END')
+  + '\nglobalThis.bootResult = { axes, geometry, geometryRead, notice: experimentalSuspensionNotice, errors, writable: view2WriteAllowed, palette: paletteControl.value, fullscreenPalette: fullscreenPaletteControl.value };';
+  // D086-F2 END
 const bootScript = transformSync(bootSource, { loader: 'ts', format: 'iife', target: 'es2022' }).code;
 
 function boot(input: { search?: string; hash?: string; storedView?: string; density?: string; morphologySwitch?: string; storage?: Record<string, unknown> }) {
@@ -38,19 +44,25 @@ function boot(input: { search?: string; hash?: string; storedView?: string; dens
     const next = new URL(path, url); location.pathname = next.pathname; location.search = next.search; location.hash = next.hash;
   } };
   const context: Record<string, unknown> = {
-    location, history, storage, URLSearchParams, readLocal, writeLocal, DEFAULT_AXES, resolveArrangementReadout,
+    location, history, storage, URLSearchParams, readLocal, writeLocal, DEFAULT_AXES, resolveArrangementReadout, paletteName,
     resolveGeometryView2, resolveSupportedGeometryView2, topologySupport, geometryToLegacyAxes, rewriteGeometryUrl, serializeGeometryView2,
     typedPipelineFlag: new URLSearchParams(url.search).get('projection') === 'natural'
       || new URLSearchParams(url.hash.slice(1)).get('projection') === 'natural',
     experimentalSuspensionNotice: null, experimentalInitialFallback: false, errors: [],
     VIEW_STORAGE_KEY: 'd073.view', VIEW_URL_PARAMETER: 'view',
     morphologySwitch: input.morphologySwitch,
+    // D086-F2 BEGIN: real boot assignments operate on both select doubles.
+    paletteControl: { value: 'bw' }, fullscreenPaletteControl: { value: 'bw' },
+    get: (id: string) => id === 'palette' ? context.paletteControl : null,
+    document: { getElementById: (id: string) => id === 'fullscreen-palette' ? context.fullscreenPaletteControl : null },
+    // D086-F2 END
   };
   runInNewContext(bootScript, context);
   const result = JSON.parse(JSON.stringify(context.bootResult)) as {
     axes: { organization: string; morphology: string; arrangement?: string; colour: string; reading: string; brain?: boolean };
     geometry: { topology?: string; indra?: string; density: string; naturalArrangement?: string; compatibility?: string; suspendedIntent?: string; mode?: string };
     geometryRead: { source: string; error?: string }; notice: string | null; errors: string[]; writable: boolean;
+    palette: string; fullscreenPalette: string;
   };
   return { ...result, location, records };
 }
@@ -89,6 +101,24 @@ test('main.ts boot migrates every legacy taxonomy row into page axes and rewrite
     assert.equal(result.notice?.includes('view2 rifiutata') ?? false, false, row.name);
   }
 });
+
+// D086-F2 BEGIN: URL and storage restoration must be visible in both palette controls at boot.
+test('main.ts boot presents restored palette in toolbar and fullscreen selects', () => {
+  for (const colour of ['gems', 'amber', 'warm', 'custom'] as const) {
+    const view = { schema: 2 as const, rendering: '2d' as const, topology: 'natural' as const,
+      indra: 'off' as const, morphology: 'stellar' as const, density: 'balanced' as const,
+      reading: 'attested' as const, colour, labels: true };
+    const linked = boot({ hash: '#view2=' + encodeURIComponent(serializeGeometryView2(view)) });
+    assert.equal(linked.axes.colour, colour);
+    assert.equal(linked.palette, colour);
+    assert.equal(linked.fullscreenPalette, colour);
+    const stored = boot({ storage: { 'd069.palette': colour } });
+    assert.equal(stored.axes.colour, colour);
+    assert.equal(stored.palette, colour);
+    assert.equal(stored.fullscreenPalette, colour);
+  }
+});
+// D086-F2 END
 
 test('main.ts boot preserves precedence, stored appearance and unrelated URL values', () => {
   const defaults = boot({});

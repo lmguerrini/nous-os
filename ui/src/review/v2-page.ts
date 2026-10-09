@@ -74,7 +74,9 @@ import type { Reading } from './view-contract.ts';
 // D082-A-SWITCH END
 import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
 import { summarizeD081Bundles } from './toolbar-status.ts';
-import { createProductView } from './product-view.ts';
+// D086-F2 BEGIN: page carryover uses the same coordinate-space key as the product renderer.
+import { createProductView, productCameraKey } from './product-view.ts';
+// D086-F2 END
 // C2 Fractal-only integration imports. Natural and Indra do not call these modules.
 import { CANOPY_RATIO, type CanopyLayout } from '../fractal/canopy-layout.ts';
 import { computeCanopyLayoutOffThread } from '../fractal/canopy-worker.ts';
@@ -1138,6 +1140,11 @@ export class V2Page {
     private readonly onNodePicked: ((id: string) => void) | undefined;
     private insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
+    // D086-F2 BEGIN: successful topology switches retain each layout's last camera.
+    private readonly topologyCameras = new Map<string, {
+        camera: ReturnType<ProductView['readCamera']>; userMovedSinceFit: boolean;
+    }>();
+    // D086-F2 END
     // D081-P6c BEGIN: an explicit fit reuses the exact settled camera for this scene.
     private readonly canonicalFitCameras = new Map<string, ReturnType<ProductView['readCamera']>>();
     private canonicalFitKey(): string {
@@ -1191,7 +1198,12 @@ export class V2Page {
     private readonly overviewRatioByDensity = new Map<string, number>();
     private readonly mostRecentOverviewRatioByView = new Map<string, number>();
     private overviewRatioViewKey(): string {
-        return `${this.cameraKey()}/${this.axes.morphology}/${this.axes.reading}`;
+        // D086-F2 BEGIN: law zoom thresholds belong to that law's own fitted camera.
+        const space = this.topology === 'natural' ? this.cameraKey()
+            : productCameraKey({ ...this.axes, organization: this.axes.organization === 'indra' ? 'indra' : 'natural' },
+                this.topology, this.topologyIndra).key;
+        return `${space}/${this.axes.morphology}/${this.axes.reading}`;
+        // D086-F2 END
     }
     private overviewRatioKey(): string {
         return `${this.overviewRatioViewKey()}/${this.density}`;
@@ -1243,6 +1255,15 @@ export class V2Page {
     private readonly coreStatusGetter = () => this.d081Status();
     private readonly canopyStatusGetter = () => this.canopyStatus && ({ ...this.canopyStatus,
         msSinceInteraction: Math.max(0, performance.now() - this.canopyStatusAt) });
+    // D086-F2 BEGIN: the shell decorates the public getter, so identity cannot
+    // decide whether an old Canopy source needs replacing.
+    private restoreCoreStatus(): void {
+        this.canopyStatus = null;
+        this.canopyStatusSignature = '';
+        const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
+        if (owner.__d081) owner.__d081.status = this.coreStatusGetter;
+    }
+    // D086-F2 END
     private publishCanopyStatus(): void {
         if (!this.canopyActive() || !this.canopyRailLayer) return;
         const stats = this.canopyRailLayer.stats();
@@ -1255,7 +1276,7 @@ export class V2Page {
         }
         // D082-B1c END.
         const elapsed = Math.max(0, performance.now() - this.canopyStatusAt);
-        if (elapsed >= 400 && stats.paintedFull && stats.motionNodes === null && !this.canopyQualityRecorded) {
+        if (elapsed >= 400 && stats.paintedFull && !stats.overlayMotion && !this.canopyQualityRecorded) {
             this.canopyLastQualityMs = elapsed;
             this.canopyQualityRecorded = true;
         }
@@ -1264,7 +1285,7 @@ export class V2Page {
         const baseStatus = canopyGraphStatus({ marks: this.canopyMarksShown,
             visible: stats.motionNodes ?? this.rendered.size,
             totalNodes: this.canopyDatasetNodes.length,
-            evidenceDrawn: this.density === 'complete' && stats.motionNodes === null
+            evidenceDrawn: this.density === 'complete' && !stats.overlayMotion
                 ? stats.paintedFull ? stats.submittedEdges : 0 : stats.evidenceDrawn,
             evidenceBundles: stats.evidenceBundles, evidenceBundled: stats.evidenceBundled,
             eligibleEdges: denominators.eligible, totalEdges: denominators.total,
@@ -1274,7 +1295,10 @@ export class V2Page {
             // drew 13 evidence arcs because the mark selection was the binding constraint.
             ...(this.density === 'complete' ? {} : { edgeBudget: densityBudget(this.density, 'canopy').arcs }),
             // D085-S2 END
-            motion: stats.motionNodes !== null, ready: stats.paintedFull,
+            // D086-F2 BEGIN: structural motion remains visible even if the native
+            // product correctly retains every drawn node ID.
+            motion: stats.overlayMotion, ready: stats.paintedFull,
+            // D086-F2 END
             msSinceInteraction: elapsed, msToFullQuality: this.canopyLastQualityMs });
         const status = { ...baseStatus, edges: { ...baseStatus.edges,
             ...(this.revealRoute?.detail ? { detail: this.revealRoute.detail } : {}) } };
@@ -1285,7 +1309,7 @@ export class V2Page {
         // D082-B1 BEGIN: a static complete scene has no RAF after the full pass.
         // Publish its settled readiness once without keeping the renderer alive.
         if (this.canopyStatusTimer) clearTimeout(this.canopyStatusTimer);
-        this.canopyStatusTimer = status.quality !== 'completa' && stats.paintedFull && stats.motionNodes === null
+        this.canopyStatusTimer = status.quality !== 'completa' && stats.paintedFull && !stats.overlayMotion
             ? setTimeout(() => { this.canopyStatusTimer = null; this.publishCanopyStatus(); },
                 Math.max(1, 401 - elapsed)) : null;
         // D082-B1 END.
@@ -2920,10 +2944,9 @@ export class V2Page {
         this.guideLayer?.destroy(); this.guideLayer = null;
         // D082-B2 END
         // D081-P7b BEGIN: a retired Fractal view cannot keep serving stale counts.
-        this.canopyStatus = null;
-        this.canopyStatusSignature = '';
-        const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
-        if (owner.__d081?.status === this.canopyStatusGetter) owner.__d081.status = this.coreStatusGetter;
+        // D086-F2 BEGIN
+        this.restoreCoreStatus();
+        // D086-F2 END
         // D081-P7b END.
         this.view = null;
         this.viewHost = null;
@@ -3900,9 +3923,11 @@ export class V2Page {
         ]);
         if (settingKey !== this.lastRefreshSettingKey) {
             // D086-F2 BEGIN: law routing must not inherit a focus from a prior
-            // toolbar view after the pointer has left the graph. Keep live
-            // pointer focus, including the established Natural/Indra pin path.
-            if (this.lawActive() && this.cursor === null) {
+            // toolbar view. A retained cursor is not proof that the old
+            // renderer's hovered ID still belongs to the new law. The next
+            // pointer event can establish a new focus. Natural/Indra keep their
+            // established pin path.
+            if (this.lawActive()) {
                 this.hovered = null;
                 this.hoveredEdge = null;
             }
@@ -3945,8 +3970,11 @@ export class V2Page {
             const projection = this.axes.projection;
             let canopyViewMarks: CanopyMark[] = [];
             if (canopy) {
-                const focusId = this.selected ?? this.revealState.focusClusterId
-                    ?? this.history.state.manualOrder.at(-1) ?? null;
+                // D086-F2 BEGIN: the fixed Canopy evidence prefix has one
+                // explicit focus input. A prior reveal cluster must not add a
+                // mark after Escape.
+                const focusId = this.selected;
+                // D086-F2 END
                 const rootWidth = Math.max(1, canopy.bounds.x[1] - canopy.bounds.x[0]);
                 const clearWidth = Math.max(1, (element('render-root').clientWidth || 1000)
                     - this.insets.left - this.insets.right);
@@ -4206,6 +4234,9 @@ export class V2Page {
             // lower levels. Direct endpoints give every retained relation a stable identity.
             const densityPolicy = !canopy && !this.lawActive() && this.density !== 'complete' && source.nodes.length > V2_CAP &&
                 (organization === 'natural' || organization === 'indra');
+            // D086-F2 BEGIN: hover changes emphasis, not the Canopy evidence set.
+            const evidenceFocus = canopy ? this.selected : active;
+            // D086-F2 END
             const projectedArcs = this.density === 'complete'
                 ? cachedCanopyArcs ?? this.densityRelations(this.axes.reading)
                 : densityPolicy
@@ -4214,7 +4245,7 @@ export class V2Page {
                 // D082-A-SWITCH END
                 // D085-S7 BEGIN
                 : projectRelations(source.nodes, source.edges, ids, this.axes.reading,
-                    organization, this.topology === 'natural' ? 'all' : this.relationDetail, active);
+                    organization, this.topology === 'natural' ? 'all' : this.relationDetail, evidenceFocus);
                 // D085-S7 END
             // D082-B1c END.
             // D085-S7 BEGIN: preserve the approved Complete Canopy route verbatim.
@@ -4444,10 +4475,10 @@ export class V2Page {
                         budget: !lab && organization === 'indra' && this.relationDetail === 'essential'
                             ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                         // D085-S2 END
-                        focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
+                        focusId: evidenceFocus, pinnedRelationIds: this.pinnedArcIds(tiers) });
             const otherArcs = lab && this.density !== 'complete'
                 ? projectRelations(source.nodes, source.edges, ids, this.axes.reading,
-                    organization, this.relationDetail === 'essential' ? 'all' : 'essential', active) : null;
+                    organization, this.relationDetail === 'essential' ? 'all' : 'essential', evidenceFocus) : null;
             const otherEvidence = otherArcs && canopy ? canopyEvidenceArcs(otherArcs.edges) : otherArcs?.edges;
             const otherAvailable = otherArcs && otherEvidence ? { ...otherArcs,
                 edges: otherEvidence, byId: new Map(otherEvidence.map(edge => [edge.id, edge])) } : null;
@@ -4458,7 +4489,7 @@ export class V2Page {
                     count: edge.count, sourceEdgeIds: edge.underlying.map(item => item.id) })),
                 reading: this.axes.reading,
                 budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs) : budget.arcs,
-                focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers),
+                focusId: evidenceFocus, pinnedRelationIds: this.pinnedArcIds(tiers),
             }) : candidateRoute;
             const allRoute = lab && this.relationDetail === 'essential' ? otherRoute : candidateRoute;
             let route = lab ? resolveLabRelationDetail(
@@ -4682,6 +4713,18 @@ export class V2Page {
             this.recordProjectionPhase('preView', performance.now() - preViewBegan);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
             const old = this.view?.readCamera();
+            // D086-F2 BEGIN: a prior law's pose and bounds cannot normalize this layout.
+            // Classic Natural/Indra transitions keep their established camera policy.
+            const priorAxes = this.committedAxes ?? this.axes;
+            const priorSpace = productCameraKey({ ...priorAxes,
+                organization: priorAxes.organization === 'indra' ? 'indra' : 'natural' },
+                this.committedTaxonomy.topology, this.committedTaxonomy.indra).key;
+            const nextSpace = productCameraKey({ ...this.axes, organization },
+                this.topology, this.topologyIndra).key;
+            const topologySpaceChanged = priorSpace !== nextSpace
+                && (this.committedTaxonomy.topology !== 'natural' || this.topology !== 'natural');
+            const returningCamera = topologySpaceChanged ? this.topologyCameras.get(nextSpace) : null;
+            // D086-F2 END
             const disclosureChanged = this.disclosureKey() !== this.lastDisclosureKey
                 || ids.size !== this.positions.size || [...ids].some(id => !this.positions.has(id));
             const indraLayoutMoved = organization === 'indra' && [...next].some(([id, point]) => {
@@ -4794,7 +4837,9 @@ export class V2Page {
             const sceneKey = `${topologySceneKey}|${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
             // D085-S1 END
             const sceneUnchanged = !!old && sceneKey === this.lastSceneKey;
-            const keep = old && arrangement === this.lastArrangement;
+            // D086-F2 BEGIN
+            const keep = old && arrangement === this.lastArrangement && !topologySpaceChanged;
+            // D086-F2 END
             // A disclosure can move a node in any product layout (Natural 3D recalculates its
             // depth volume; Indra repacks recursively). Capture one screen point before replacing
             // the layout, then compensate only if that node actually moved on screen.
@@ -4837,8 +4882,11 @@ export class V2Page {
             // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
             const userMoved = !!old && this.userMovedSinceFit;
             // D082-A-DENSITY BEGIN
-            const cameraAction = this.densitySwitchPending && old && keep ? 'restore'
+            // D086-F2 BEGIN: a fresh law mounts at its own fit; a return uses its own record.
+            const cameraAction = topologySpaceChanged ? 'none'
+                : this.densitySwitchPending && old && keep ? 'restore'
                 : refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
+            // D086-F2 END
             // D082-A-DENSITY END
             // D-072 R1: never destroy the working view before its replacement exists. The new view
             // mounts first; only a mount that succeeds swaps it in, destroys the old one exactly
@@ -4998,6 +5046,11 @@ export class V2Page {
             const previousGuideLayer = this.guideLayer;
             // D082-B2 END
             this.view = mounted;
+            // D086-F2 BEGIN: only an accepted replacement may record and replay cameras.
+            const departingCamera = topologySpaceChanged ? previousView?.readCamera() : null;
+            if (topologySpaceChanged && departingCamera) this.topologyCameras.set(priorSpace,
+                { camera: departingCamera, userMovedSinceFit: this.userMovedSinceFit });
+            // D086-F2 END
             // D085-S1 BEGIN
             this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
             this.committedAxes = { ...this.axes };
@@ -5017,10 +5070,9 @@ export class V2Page {
                 this.canopyQualityRecorded = false;
                 this.publishCanopyStatus();
             } else {
-                this.canopyStatus = null;
-                this.canopyStatusSignature = '';
-                const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
-                if (owner.__d081?.status === this.canopyStatusGetter) owner.__d081.status = this.coreStatusGetter;
+                // D086-F2 BEGIN
+                this.restoreCoreStatus();
+                // D086-F2 END
             }
             this.installProjectionPerfHook();
             try { previousView?.destroy(); }
@@ -5077,7 +5129,18 @@ export class V2Page {
                     volumeRow.title = VOLUME_READOUT_HELP;
                 }
             }
-            if (cameraAction === "restore" || anchor) {
+            // D086-F2 BEGIN: the replacement already fitted its own coordinates at mount.
+            if (topologySpaceChanged) {
+                if (returningCamera?.camera) {
+                    this.noteCameraIntent();
+                    this.view.restoreCamera(returningCamera.camera);
+                }
+                this.lastFitCamera = this.view.readCamera();
+                this.userMovedSinceFit = returningCamera?.userMovedSinceFit ?? false;
+                this.overviewRatio = null;
+                this.rememberOverviewRatio((this.lastFitCamera as { ratio?: number } | null)?.ratio ?? 1);
+            } else if (cameraAction === "restore" || anchor) {
+            // D086-F2 END
                 try {
                     this.noteCameraIntent();
                     this.view.restoreCamera(old);
@@ -5301,6 +5364,15 @@ export class V2Page {
         if (this.neighbourhoodBefore) this.restoreNeighbourhood = true;
         this.neighbourhoodDepth = null;
         this.selected = null;
+        // D086-F2 BEGIN: Escape retires the picked node's implicit routing focus.
+        this.hovered = null;
+        this.hoveredEdge = null;
+        // D086-F2 END
+        // D086-F2 BEGIN: selection is committed here; retire its panel immediately.
+        // A following refresh can be superseded by another toolbar request.
+        this.renderPanel();
+        this.syncFocusControls();
+        // D086-F2 END
         this.sampleReveal(this.revealCamera.zoom, true);
         if (this.typedActive()) this.typedSelection = null;
         this.view?.select(null);
@@ -5401,6 +5473,10 @@ export class V2Page {
         return this.transitions.enqueue(async () => {
             if (intent !== this.geometryIntent) return 'superseded' as const;
             const previousDensity = this.density;
+            // D086-F2 BEGIN: provisional density work also owns the camera
+            // preservation flag, which a superseded no-op cannot clear.
+            const previousDensitySwitchPending = this.densitySwitchPending;
+            // D086-F2 END
             const committedBefore = this.committedAxes;
             // D085-S5 BEGIN: Complete may publish a provisional recovery phase.
             const previousQuality = this.d081Quality;
@@ -5408,14 +5484,25 @@ export class V2Page {
             // D085-S5 END
             this.geometryTransitionActive = true;
             try {
-                await this.applyDensity(value, inheritedOrganization);
+                await this.applyDensity(value, inheritedOrganization, intent);
                 if (intent !== this.geometryIntent) {
-                    if (this.committedAxes === committedBefore) this.density = previousDensity;
+                    if (this.committedAxes === committedBefore) {
+                        // D086-F2 BEGIN: release a superseded Complete HUD lease.
+                        this.density = previousDensity;
+                        this.densitySwitchPending = previousDensitySwitchPending;
+                        this.d081Quality = previousQuality;
+                        this.d081Metrics = previousMetrics;
+                        if (previousMetrics?.nodes && previousMetrics?.edges) this.d081Emit();
+                        // D086-F2 END
+                    }
                     return 'superseded' as const;
                 }
             } catch (error) {
                 if (this.committedAxes === committedBefore) {
                     this.density = previousDensity;
+                    // D086-F2 BEGIN
+                    this.densitySwitchPending = previousDensitySwitchPending;
+                    // D086-F2 END
                     // D085-S5 BEGIN
                     this.d081Quality = previousQuality;
                     this.d081Metrics = previousMetrics;
@@ -5427,7 +5514,8 @@ export class V2Page {
         });
         // D085-S1 END
     }
-    private async applyDensity(value: Density, inheritedOrganization: PageAxes['organization'] | null = null) {
+    private async applyDensity(value: Density, inheritedOrganization: PageAxes['organization'] | null = null,
+        intent = this.geometryIntent) {
         const next = normalizeDensity(value);
         if (next === this.density && !inheritedOrganization)
             return;
@@ -5456,6 +5544,10 @@ export class V2Page {
             // D081-P3c END
         }
         // D081-P3b END
+        // D086-F2 BEGIN: the preparation lease can be superseded during its
+        // paint yield; it must not start a stale full refresh afterward.
+        if (intent !== this.geometryIntent) return;
+        // D086-F2 END
         // D085-S1 BEGIN: direct page callers keep a pending organization; main's lane
         // normally resolves the preceding geometry task before density reaches here.
         if (inheritedOrganization) await this.applyAxes({ organization: inheritedOrganization });
@@ -5903,7 +5995,7 @@ export class V2Page {
         this.lastRevealSampleKey = '';
         // D086-F2 BEGIN: Adatta can refresh without changing the settings key,
         // so invalidate an off-graph law hover before routing the far scene.
-        if (this.lawActive() && this.cursor === null) {
+        if (this.lawActive()) {
             this.hovered = null;
             this.hoveredEdge = null;
         }

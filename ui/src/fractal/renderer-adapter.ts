@@ -396,7 +396,7 @@ export type CanopyRailLayer = Readonly<{
   // D086-F3 END
   stats(): Readonly<{ drawn: number; evidenceDrawn: number; evidenceBundles: number;
     evidenceBundled: number; labels: number; badges: number;
-    submittedEdges: number; motionNodes: number | null; paintedFull: boolean;
+    submittedEdges: number; motionNodes: number | null; overlayMotion: boolean; paintedFull: boolean;
     treeOnly: boolean; cycleFree: boolean; paletteValid: boolean }>;
   destroy(): void;
 }>;
@@ -467,7 +467,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   const context = canvas.getContext('2d');
   if (!context || !view.projectPoint) return { update() {}, setInsets() {}, invalidate() {},
     stats: () => ({ drawn: 0, evidenceDrawn: 0, evidenceBundles: 0, evidenceBundled: 0,
-      submittedEdges: 0, motionNodes: null, paintedFull: false,
+      submittedEdges: 0, motionNodes: null, overlayMotion: false, paintedFull: false,
       labels: 0, badges: 0, treeOnly: true, cycleFree: true, paletteValid: true }), destroy() {
     host.removeAttribute('data-fractal-rails-active'); canvas.remove(); titleRule.remove(); } };
   let rails = visibleCanopyRails(layout, ids, initialCap);
@@ -489,6 +489,10 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   // D082-B1 BEGIN: the complete resident scene takes a bounded motion subset once
   // per gesture, then restores every real ID automatically after input settles.
   let motionIds: ReadonlySet<string> | null = null;
+  // D086-F2 BEGIN: the native buffer keeps its real IDs when a dense subset is
+  // declined. The structural overlay can still use its bounded motion pass.
+  let overlayMotionIds: ReadonlySet<string> | null = null;
+  // D086-F2 END
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
   const motionSubset = new Set([...layout.lineageIds,
     ...[...layout.positions.values()].filter(row => row.level <= 2).map(row => row.id),
@@ -496,16 +500,21 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
   const completeScene = marks.length > 1000 && marks.every(mark => !mark.aggregate);
   const restoreFull = () => {
     restoreTimer = null;
-    if (!motionIds) return;
+    if (!overlayMotionIds) return;
     // D082-B1c BEGIN: a profile can separate product restoration from overlay paint.
     const restoreBegan = performance.now();
-    const restored = view.updateVisibleSubset?.({ visibleNodeIds: currentIds,
-      edges: [], containers: [], labelBudget: 0 });
-    performance.mark('d082-b1c:canopy-product-restore', { detail: {
+    // D086-F2 BEGIN: no product restoration is needed if its IDs never changed.
+    const restored = motionIds ? view.updateVisibleSubset?.({ visibleNodeIds: currentIds,
+      edges: [], containers: [], labelBudget: 0 }) : true;
+    // D086-F2 END
+    // D086-F2 BEGIN: a canvas-only motion pass does not restore product IDs.
+    if (motionIds) performance.mark('d082-b1c:canopy-product-restore', { detail: {
       durationMs: performance.now() - restoreBegan, nodes: currentIds.size, projection, morphology } });
+    // D086-F2 END
     // D082-B1c END.
     if (restored === false) return;
     motionIds = null;
+    overlayMotionIds = null;
     activeUntil = performance.now();
     schedule(0, 'restore'); onDraw?.();
   };
@@ -608,8 +617,8 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     // representative endpoints are in the clear viewport at this camera orbit.
     // D082-B1 BEGIN: full evidence is drawn once at rest; ordinary camera motion
     // keeps source IDs intact but paints a bounded sample until restoration.
-    const evidenceForFrame = motionIds ? currentEvidence.slice(0, 300) : currentEvidence;
-    const batchCompleteEvidence = completeScene && !motionIds;
+    const evidenceForFrame = overlayMotionIds ? currentEvidence.slice(0, 300) : currentEvidence;
+    const batchCompleteEvidence = completeScene && !overlayMotionIds;
     // D086-F3 BEGIN: structural evidence keeps its aggregate role even in batched scenes.
     const structuralPath = batchCompleteEvidence ? new Path2D() : null;
     // D086-F3 END
@@ -650,7 +659,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       context.strokeStyle = auditInk(exploratoryEvidenceInk); context.stroke(exploratoryPath!);
       // D086-F3 END
     }
-    for (const rail of motionIds ? drawOrder.filter(rail => rail.address.length <= 10) : drawOrder) {
+    for (const rail of overlayMotionIds ? drawOrder.filter(rail => rail.address.length <= 10) : drawOrder) {
       if (rail.address === 'root') continue; // D081-P7d: no unlabeled terminal stem.
       if (!drawablePrefixes.has(rail.address)) continue;
       // Clipping a long 3D segment with either junction outside the clear canvas
@@ -693,7 +702,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       // D086-F3 END
       context.strokeStyle = ink;
       context.lineCap = morphology === 'stellar' ? 'butt' : 'round';
-      if (morphology === 'neural' && smooth && !motionIds)
+      if (morphology === 'neural' && smooth && !overlayMotionIds)
         paintNeuralRail(context, controls.map(segment => ({ ...segment,
           c1: inside(segment.c1), c2: inside(segment.c2) })), context.lineWidth, ink);
       else if (morphology === 'mycelium' && smooth)
@@ -703,7 +712,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       for (const junction of [from, to]) {
         paintJunction(context, junction.x, junction.y,
           morphology === 'neural' ? 4.8 : morphology === 'stellar' ? 3.4 : 1.3,
-          morphology, ink, Math.atan2(to.y - from.y, to.x - from.x), motionIds !== null);
+          morphology, ink, Math.atan2(to.y - from.y, to.x - from.x), overlayMotionIds !== null);
       }
       drawn++;
       drawnRails.push(rail);
@@ -714,7 +723,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       if (canopyEndpointVisible(p, safe))
         paintJunction(context, p.x, p.y,
           morphology === 'neural' ? 7 : morphology === 'stellar' ? 5 : 2.5,
-          morphology, '#e8e8e8', 0, motionIds !== null);
+          morphology, '#e8e8e8', 0, overlayMotionIds !== null);
     }
     const semantic = [...layout.positions.values()].filter(row => row.level <= 3 && currentIds.has(row.id));
     for (const row of semantic) {
@@ -729,13 +738,13 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       paintJunction(context, p.x, p.y, radius,
         // D086-F3 BEGIN
         morphology, row.level === 3 ? auditInk(paletteInk(palette, 'aggregate', CANOPY_INK_LEVEL.structural, '.88')) : '#e8e8e8',
-        0, motionIds !== null);
+        0, overlayMotionIds !== null);
         // D086-F3 END
     }
     // Completa's product layer already draws one pickable glyph per real ID.
     // A second 10k-leaf canvas pass only overpaints those glyphs.
     for (const mark of completeScene ? []
-      : motionIds ? currentMarks.filter(mark => motionIds!.has(mark.id)) : currentMarks) {
+      : overlayMotionIds ? currentMarks.filter(mark => overlayMotionIds!.has(mark.id)) : currentMarks) {
       const row = layout.positions.get(mark.id);
       if (!row || row.level < 4 || !currentIds.has(mark.id)) continue;
       const point = projection === '3d' ? row.point3d : row.point;
@@ -744,12 +753,12 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       const rail = railByAddress.get(row.address);
       const parent = rail ? view.projectPoint!(projection === '3d' ? rail.from3d : rail.from) : p;
       // D086-F3 BEGIN
-      paintLeaf(context, p.x, p.y, morphology, Math.atan2(p.y - parent.y, p.x - parent.x), motionIds !== null,
+      paintLeaf(context, p.x, p.y, morphology, Math.atan2(p.y - parent.y, p.x - parent.x), overlayMotionIds !== null,
         auditInk(haloInk));
       // D086-F3 END
     }
     projectedNodeGrid = new Map();
-    for (const id of motionIds ?? currentIds) {
+    for (const id of overlayMotionIds ?? currentIds) {
       const row = layout.positions.get(id);
       if (!row) continue;
       const p = view.projectPoint!(projection === '3d' ? row.point3d : row.point);
@@ -855,10 +864,10 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       // D086-F3 END
     }
     context.restore();
-    if (!motionIds) paintedFull = true;
+    if (!overlayMotionIds) paintedFull = true;
     // D082-B1c BEGIN: a bounded phase mark for a PerformanceObserver.
     performance.mark('d082-b1c:canopy-overlay-draw', { detail: {
-      durationMs: performance.now() - drawBegan, motion: motionIds !== null,
+      durationMs: performance.now() - drawBegan, motion: overlayMotionIds !== null,
       rails: drawn, evidence: evidenceDrawn, projection, morphology, triggers,
       // D082-B-CANOPYN2 BEGIN: distinguish overlay junction work from the
       // product soma cache in the existing mark capture.
@@ -902,13 +911,18 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     if (interacting) onInteraction?.();
     // D082-B1 BEGIN.
     if ((interacting || cameraMoving) && completeScene) {
-      if (!motionIds) {
+      if (!overlayMotionIds) {
         if (selected) motionSubset.add(selected);
         const applied = view.updateVisibleSubset?.({ visibleNodeIds: motionSubset,
           edges: [], containers: [], labelBudget: 0 });
-        if (applied !== false) { motionIds = motionSubset; paintedFull = false; }
+        // D086-F2 BEGIN: a rejected native subset leaves all product nodes drawn;
+        // only the separately counted structural overlay enters motion quality.
+        if (applied !== false) motionIds = motionSubset;
+        overlayMotionIds = motionSubset;
+        paintedFull = false;
+        // D086-F2 END
       }
-      if (motionIds) {
+      if (overlayMotionIds) {
         if (restoreTimer) clearTimeout(restoreTimer);
         restoreTimer = setTimeout(restoreFull, 260);
       }
@@ -991,6 +1005,7 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     },
     stats: () => ({ drawn, evidenceDrawn, evidenceBundles, evidenceBundled,
       submittedEdges: currentEvidence.length, motionNodes: motionIds?.size ?? null,
+      overlayMotion: overlayMotionIds !== null,
       // D082-B1f BEGIN: 2D and 3D Neural both wait for the current product soma pass.
       paintedFull: paintedFull && (morphology !== 'neural'
         || !completeScene || host.hasAttribute('data-fractal-somata-ready')),

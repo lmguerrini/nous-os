@@ -218,7 +218,9 @@ test('superseded Canopy, 3D, then refused Julia leaves URL, toolbar and witness 
   assert.deepEqual(page.committedTaxonomy, { topology: 'natural', indra: true });
   assert.equal(page.axes.projection, '3d');
   const mainSource = await readFile(fileURLToPath(new URL('../../src/review/main.ts', import.meta.url)), 'utf8');
-  assert.match(mainSource, /await v2\?\.setTaxonomy\(topology, indra, true\);[\s\S]*?persistView\(\)/);
+  // D086-F2 BEGIN: the awaited mount also carries a pending density intent.
+  assert.match(mainSource, /await v2\?\.setTaxonomy\(topology, indra, true, undefined, densityIntent\?\.value\);[\s\S]*?persistView\(\)/);
+  // D086-F2 END
   assert.match(mainSource, /if \(error instanceof GeometrySupersededError\) return/);
   assert.match(mainSource, /if \(await v2\?\.setDensity\(value\) === 'superseded'\) return;[\s\S]*?persistView\(\)/);
   assert.match(mainSource, /if \(result === 'superseded'\) throw new GeometrySupersededError\(\)/);
@@ -332,6 +334,9 @@ test('Lab with Indra and Julia 3D complete each mount once and present matching 
         reading: 'combined', colour: 'bw', labels: true },
       geometry: { topology: 'natural', indra: 'off' }, density: scenario.density,
       view2WriteAllowed: false, taxonomyErrorShown: false,
+      // D086-F2 BEGIN
+      pendingDensityIntent: null,
+      // D086-F2 END
       topologySupport: () => ({ ok: true }),
       appliedAxes(partial: Record<string, unknown>) { return { ...state.axes, ...partial }; },
       wireTopology: (value: string) => value,

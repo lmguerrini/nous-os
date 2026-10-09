@@ -118,6 +118,9 @@ import type {
   StyledProjection, VisualRelation,
 } from "../projection/contract-types.ts";
 import { resolveNaturalArrangement } from "../projection/natural-bridge.ts";
+// D086-F2 BEGIN: a law layout has its own camera normalization space.
+import type { TopologyId } from "../topology/contract.ts";
+// D086-F2 END
 import { validatePickResult, validateRenderVisibility, validateSemanticEdgeCarriers } from "../projection/contract.ts";
 import { structuralVisualPresentation } from "../engine/presentation-options.ts";
 import type { StructuralVisualPresentation } from "../engine/presentation-options.ts";
@@ -353,6 +356,13 @@ export function nativeSubsetRequiresRemount(
 }
 // D086-F2 END
 
+// D086-F2 BEGIN: a superseded async mount keeps computing after its host is
+// removed. It must not publish preparation over a later renderer's full frame.
+export function preparationHostLive(host: Pick<HTMLElement, 'isConnected'>): boolean {
+  return host.isConnected !== false;
+}
+// D086-F2 END
+
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
 const INDRA_CONTAINER_MARKER_PX = 2.5;
 
@@ -498,7 +508,14 @@ export type ProductCameraKey = Readonly<{
  * selected morphology. The unqualified key stays as the replay source, so a camera recorded before
  * the arrangement axis existed still replays instead of being silently dropped.
  */
-export function productCameraKey(axes: Axes): ProductCameraKey {
+export function productCameraKey(axes: Axes, topology: TopologyId = 'natural', labIndra = false): ProductCameraKey {
+  // D086-F2 BEGIN: only classic Natural and Indra use the D-073 replay contract.
+  // A law's positions have different bounds even though its product organization is Natural.
+  if (topology !== 'natural') {
+    const key = `${axes.projection}/law/${topology}/${labIndra ? 'indra' : 'natural'}`;
+    return { key, legacyKey: key, replaysLegacy: false };
+  }
+  // D086-F2 END
   if (axes.organization === "indra") {
     const key = `${axes.projection}/indra`;
     return { key, legacyKey: key, replaysLegacy: false };
@@ -1064,7 +1081,9 @@ export const createProductView: CreateProductView = async (input) => {
   // D-073 C6: the camera key is arrangement-qualified for Natural (see productCameraKey). Reads go
   // through the legacy replay, writes mirror back so an explicit fit becomes the replay source, and
   // the two maps above are the only state any of this touches.
-  const cameraKeys = () => productCameraKey(axes);
+  // D086-F2 BEGIN: the certified law is part of the mounted camera identity.
+  const cameraKeys = () => productCameraKey(axes, input.labTopology, input.labIndra);
+  // D086-F2 END
   const restoreSavedCamera = () => replayProductCamera(cameras, fitRatio, cameraKeys());
   const semanticFitRatio = (ratio: number, densityBudget = labelBudget) =>
     productSceneFitRatio(sceneFitRatios, cameraKeys().key, densityBudget, ratio);
@@ -2716,6 +2735,9 @@ export const createProductView: CreateProductView = async (input) => {
         const subset = { ...full, edges: full.edges.filter(edge => drawnEdgeIds.has(edge.id)) };
         initialRenderModel = await prepareRenderModelInSlices(subset,
           renderOptionsForScene(initialScene), undefined, anchors, progress => {
+            // D086-F2 BEGIN
+            if (!preparationHostLive(container)) return;
+            // D086-F2 END
             reportPreparationReadiness({
               view: `${axes.organization}/2d/${axes.morphology}/complete/${axes.reading}`,
               quality: 'recupero', ladder: 0,
@@ -2734,6 +2756,10 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-PERF END
     }
     // D081-P3c END
+    // D086-F2 BEGIN: a canceled host can finish worker preparation after the
+    // successor has already presented. Do not mount or publish its old scene.
+    if (!preparationHostLive(container)) throw new DOMException('Mount superseded', 'AbortError');
+    // D086-F2 END
     mount();
   }
   catch (error) {
