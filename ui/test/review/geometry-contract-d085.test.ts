@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { canopyDensityMarks } from '../../src/fractal/canopy-reveal.ts';
+import type { CanopyLayout } from '../../src/fractal/canopy-layout.ts';
 // D085-S1 BEGIN: exercise the real page setters and extracted main transition bodies.
 import { load, makePage, makeMain, macro, tick, wit } from './geometry-contract-harness-d085.mjs';
 
@@ -63,6 +65,171 @@ test('pending density is carried into the next topology mount', async () => {
   assert.equal(main.state.density, 'complete');
   assert.equal(main.state.geometry.density, 'complete');
 });
+
+// D086-F2 BEGIN: the inverse click order and the other geometry axes keep the
+// latest request for each axis through an interruptible real page mount.
+for (const [firstTopology, firstIndra] of [
+  ['canopy-ifs', false], ['natural', true],
+] as const) {
+  test(`slow ${firstTopology}${firstIndra ? ' Indra' : ''} mount carries a later density click`, async () => {
+    const page = makePage(environment.mod);
+    const main = await makeMain(environment.mod, environment.mainSource, page);
+    const first = main.chooseTaxonomy(firstTopology, firstIndra);
+    for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+    assert.equal(page.mounts.length, 1);
+    main.applyDensity('complete');
+    await drain(page, main, [first]);
+    consistent(page, main);
+    assert.equal(page.committedViewTaxonomy.topology, firstTopology);
+    assert.equal(page.committedViewTaxonomy.indra, firstIndra);
+    assert.equal(page.density, 'complete');
+    assert.equal(main.state.geometry.density, 'complete');
+    assert.equal(page.mounts[0].interrupted, true);
+  });
+}
+
+for (const [axis, requested] of [
+  ['projection', '3d'], ['reading', 'exploratory'], ['morphology', 'neural'],
+] as const) {
+  test(`slow topology mount carries a later ${axis} click`, async () => {
+    const page = makePage(environment.mod);
+    const main = await makeMain(environment.mod, environment.mainSource, page);
+    const first = main.chooseTaxonomy('canopy-ifs');
+    for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+    assert.equal(page.mounts.length, 1);
+    const second = main.setAxes({ [axis]: requested });
+    await drain(page, main, [first, second]);
+    consistent(page, main);
+    assert.equal(page.committedViewTaxonomy.topology, 'canopy-ifs');
+    assert.equal(page.axes[axis], requested);
+    assert.equal(main.state.axes[axis], requested);
+  });
+}
+
+for (const [axis, requested] of [
+  ['projection', '3d'], ['reading', 'exploratory'],
+] as const) {
+  test(`pending density survives a later ${axis} click`, async () => {
+    const page = makePage(environment.mod);
+    const main = await makeMain(environment.mod, environment.mainSource, page);
+    main.applyDensity('complete');
+    for (let step = 0; step < 30 && page.d081Quality !== 'recupero'; step++) await tick(4);
+    assert.equal(page.d081Quality, 'recupero');
+    const axisTask = main.setAxes({ [axis]: requested });
+    await drain(page, main, [axisTask]);
+    consistent(page, main);
+    assert.equal(page.density, 'complete');
+    assert.equal(page.axes[axis], requested);
+  });
+}
+
+test('newer topology owns a density carry and older intent cannot revive', async () => {
+  const page = makePage(environment.mod);
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  const first = main.chooseTaxonomy('canopy-ifs');
+  for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+  main.applyDensity('complete');
+  const last = main.chooseTaxonomy('julia');
+  await drain(page, main, [first, last]);
+  consistent(page, main);
+  assert.equal(page.committedViewTaxonomy.topology, 'julia');
+  assert.equal(page.density, 'complete');
+});
+
+test('topology then density then Connessione keeps all three requested axes', async () => {
+  const page = makePage(environment.mod);
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  const first = main.chooseTaxonomy('canopy-ifs');
+  for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+  main.applyDensity('complete');
+  const last = main.setAxes({ reading: 'exploratory' });
+  await drain(page, main, [first, last]);
+  consistent(page, main);
+  assert.equal(page.committedViewTaxonomy.topology, 'canopy-ifs');
+  assert.equal(page.density, 'complete');
+  assert.equal(page.axes.reading, 'exploratory');
+});
+
+test('pending Complete survives a later Indra click', async () => {
+  const page = makePage(environment.mod);
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  main.applyDensity('complete');
+  for (let step = 0; step < 30 && page.d081Quality !== 'recupero'; step++) await tick(4);
+  assert.equal(page.d081Quality, 'recupero');
+  const indra = main.chooseTaxonomy('natural', true);
+  await drain(page, main, [indra]);
+  consistent(page, main);
+  assert.equal(page.committedViewTaxonomy.indra, true);
+  assert.equal(page.density, 'complete');
+});
+
+test('pending 3D Canopy followed by 2D and Indra ends on the latest topology and dimension', async () => {
+  const page = makePage(environment.mod);
+  const main = await makeMain(environment.mod, environment.mainSource, page);
+  await drain(page, main, [main.setAxes({ projection: '3d' })]);
+  const previousMounts = page.mounts.length;
+  const canopy = main.chooseTaxonomy('canopy-ifs');
+  for (let step = 0; step < 30 && page.mounts.length === previousMounts; step++) await tick(4);
+  assert.equal(page.mounts.length, previousMounts + 1);
+  const twoD = main.setAxes({ projection: '2d' });
+  const indra = main.chooseTaxonomy('natural', true);
+  await drain(page, main, [canopy, twoD, indra]);
+  consistent(page, main);
+  assert.equal(page.axes.projection, '2d');
+  assert.equal(page.committedViewTaxonomy.topology, 'natural');
+  assert.equal(page.committedViewTaxonomy.indra, true);
+});
+
+test('Canopy reveal focus marks without selection and Escape retires a picked focus', async () => {
+  const page = makePage(environment.mod);
+  const nodes = Array.from({ length: 200 }, (_, index) => ({ id: `domain:${String(index).padStart(3, '0')}`,
+    parent: null, level: 1 }));
+  const positions = new Map(nodes.map((node, index) => [node.id, {
+    id: node.id, point: { x: index, y: 0, z: 0 }, point3d: { x: index, y: 0, z: 0 },
+  }]));
+  const layout = { positions } as unknown as CanopyLayout;
+  const markIds = () => new Set(canopyDensityMarks(layout, nodes, 'essential', 'fit',
+    page.canopyMarkFocusId(), 1, '2d').map(mark => mark.id));
+  const revealId = 'domain:180';
+  assert.equal(canopyDensityMarks(layout, nodes, 'essential', 'fit', null, 1, '2d')
+    .some(mark => mark.id === revealId), false, 'fixture focus is outside the sparse prefix');
+  page.history = { state: { manualOrder: [] } };
+  page.revealState = { focusClusterId: revealId, focusSource: 'viewport',
+    pendingFocusClusterId: null, admissions: [] };
+  page.selected = null;
+  assert.equal(markIds().has(revealId), true, 'zoom reveal contributes its real focus mark');
+  page.selected = revealId;
+  page.revealState = { ...page.revealState, focusClusterId: revealId, focusSource: 'selection' };
+  page.noteCameraIntent = () => {};
+  page.renderPanel = () => {};
+  page.syncFocusControls = () => {};
+  page.sampleReveal = () => false;
+  page.refresh = async () => {};
+  page.updateEmphasis = () => {};
+  page.revealCamera = { zoom: 2, band: 'mid', settled: true };
+  page.view.select = () => {};
+  await page.exitFocus();
+  assert.equal(page.canopyMarkFocusId(), null);
+  assert.equal(markIds().has(revealId), false, 'Escape removes the picked mark');
+  page.revealState = { ...page.revealState, focusClusterId: revealId, focusSource: 'cursor' };
+  assert.equal(markIds().has(revealId), true, 'later zoom may establish a new focus');
+  page.revealState = { ...page.revealState, focusClusterId: null, focusSource: null };
+  page.history.state.manualOrder.push('domain:manual');
+  assert.equal(page.canopyMarkFocusId(), 'domain:manual');
+});
+
+test('direct page density request carries pending taxonomy through a slow mount', async () => {
+  const page = makePage(environment.mod);
+  const first = page.setTaxonomy('canopy-ifs', false);
+  for (let step = 0; step < 30 && page.mounts.length === 0; step++) await tick(4);
+  assert.equal(page.mounts.length, 1);
+  const second = page.setDensity('complete');
+  await drain(page, { lane: environment.mod.createGeometryTransitionQueue() }, [first, second]);
+  assert.equal(page.committedViewTaxonomy.topology, 'canopy-ifs');
+  assert.equal(page.density, 'complete');
+  assert.equal(page.pendingTaxonomyIntent, null);
+});
+// D086-F2 END
 
 test('superseded Complete preparation releases its provisional HUD state', async () => {
   const page = makePage(environment.mod);

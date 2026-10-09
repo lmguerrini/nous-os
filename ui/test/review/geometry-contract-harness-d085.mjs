@@ -63,6 +63,9 @@ let geometry = { schema: 2, rendering: '2d', topology: 'natural', indra: 'off', 
 let density = 'balanced';
 // D086-F2 BEGIN: main's pending click contract is part of the extracted page path.
 let pendingDensityIntent = null;
+// D086-F2 BEGIN: test the same topology intent owner as the review toolbar.
+let pendingTopologyIntent = null;
+// D086-F2 END
 // D086-F2 END
 let view2WriteAllowed = false;
 const errors = []; const status = { textContent: '' };

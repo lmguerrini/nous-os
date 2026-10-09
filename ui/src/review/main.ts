@@ -647,15 +647,22 @@ function chooseTaxonomy(topology: TopologyId, indra?: boolean): Promise<void> {
   // D086-F2 BEGIN: carry a density click already accepted by the toolbar into
   // the next topology mount, even if that click's slow mount is superseded.
   const densityIntent = pendingDensityIntent;
+  // D086-F2 BEGIN: a later density or axis click still owns this topology choice.
+  const topologyIntent = { topology, indra };
+  pendingTopologyIntent = topologyIntent;
+  // D086-F2 END
   v2?.supersedeGeometry();
-  return geometryTransitions.enqueue(() => applyTaxonomy(topology, indra, densityIntent));
+  return geometryTransitions.enqueue(() => applyTaxonomy(topology, indra, densityIntent, undefined, topologyIntent));
   // D086-F2 END
 }
-async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, densityIntent: { value: Density } | null = null): Promise<void> {
+async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, densityIntent: { value: Density } | null = null, targetAxes?: AxesInput, topologyIntent: { topology: TopologyId; indra: boolean | undefined } | null = null): Promise<void> {
   const indra = requestedIndra ?? ('mode' in geometry ? false : geometry.indra === 'on');
-  const support = topologySupport(topology, axes.projection, indra);
+  const support = topologySupport(topology, targetAxes?.projection ?? axes.projection, indra);
   // D085-S1 BEGIN: an accepted click cannot silently finish without a page task.
   if (!support.ok) {
+    // D086-F2 BEGIN: a refused law cannot be revived by a later density click.
+    if (pendingTopologyIntent === topologyIntent) pendingTopologyIntent = null;
+    // D086-F2 END
     if (v2) { syncCommittedPageGeometry(); persistView(); }
     throw new Error(support.reason);
   }
@@ -666,9 +673,17 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, den
   // D085-S1 BEGIN: the page mounts the final law and organization once; defer completion
   // until the controls and URL have been presented below.
   // D086-F2 BEGIN
-  try { await v2?.setTaxonomy(topology, indra, true, undefined, densityIntent?.value); }
+  try {
+    if (targetAxes) await v2?.setTaxonomy(topology, indra, true, targetAxes, densityIntent?.value);
+    else await v2?.setTaxonomy(topology, indra, true, undefined, densityIntent?.value);
+  }
   // D086-F2 END
   catch (error) {
+    // D086-F2 BEGIN: only a real refusal retires this request; a superseding
+    // density or axis task still needs the topology object it captured.
+    if (!(error instanceof GeometrySupersededError) && pendingTopologyIntent === topologyIntent)
+      pendingTopologyIntent = null;
+    // D086-F2 END
     if (v2) { syncCommittedPageGeometry(); persistView(); }
     throw error;
   }
@@ -694,6 +709,7 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, den
   persistView(); updateButtons(); syncToolbarSummary();
   // D086-F2 BEGIN
   if (pendingDensityIntent === densityIntent) pendingDensityIntent = null;
+  if (pendingTopologyIntent === topologyIntent) pendingTopologyIntent = null;
   // D086-F2 END
   if (taxonomyErrorShown) { get<HTMLElement>('error').hidden = true; taxonomyErrorShown = false; }
   // D084-W3-LABELS BEGIN: the legend surfaces follow the taxonomy change, so the classification
@@ -704,6 +720,10 @@ async function applyTaxonomy(topology: TopologyId, requestedIndra?: boolean, den
   showSelectedGeometryDescription();
   // D082-B-NOTICE END
   } finally {
+    // D086-F2 BEGIN: presentation failure after a mount must not leave stale intent.
+    if (pendingTopologyIntent === topologyIntent && v2?.committedViewTaxonomy.topology === topology
+      && v2.committedViewTaxonomy.indra === indra) pendingTopologyIntent = null;
+    // D086-F2 END
     // D085-S1 BEGIN: a failed final sync cannot leave the mounted witness in transition.
     v2?.confirmTaxonomyPresentation(topology, indra);
     // D085-S1 END
@@ -1319,7 +1339,17 @@ function syncCommittedPageGeometry(): void {
   // D085-S1 END
 }
 function setAxes(input: AxesInput): Promise<void> {
+  // D086-F2 BEGIN: an axis click supersedes the mount but carries its pending law.
+  const topologyIntent = pendingTopologyIntent;
+  const densityIntent = pendingDensityIntent;
   v2?.supersedeGeometry();
+  if (topologyIntent) return geometryTransitions.enqueue(() =>
+    applyTaxonomy(topologyIntent.topology, topologyIntent.indra, densityIntent, input, topologyIntent));
+  if (densityIntent && v2 && !('mode' in geometry)) {
+    const topology = lawTopology(geometry.topology), indra = geometry.indra === 'on';
+    return geometryTransitions.enqueue(() => applyTaxonomy(topology, indra, densityIntent, input));
+  }
+  // D086-F2 END
   return geometryTransitions.enqueue(() => applyAxes(input));
 }
 function applyAxes(input: AxesInput): Promise<void> {
@@ -1959,6 +1989,9 @@ get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.s
 let density = geometry.density;
 // D086-F2 BEGIN: click intent is distinct from the density last painted.
 let pendingDensityIntent: { value: Density } | null = null;
+// D086-F2 BEGIN: the last taxonomy request remains owned until a combined mount presents it.
+let pendingTopologyIntent: { topology: TopologyId; indra: boolean | undefined } | null = null;
+// D086-F2 END
 // D086-F2 END
 // D082-B2 END
 const densityButtons = [...document.querySelectorAll<HTMLButtonElement>("#density-control button[data-density]")];
@@ -1985,10 +2018,17 @@ function applyDensity(next: unknown): void {
   // D086-F2 BEGIN
   const intent = { value };
   pendingDensityIntent = intent;
+  const topologyIntent = pendingTopologyIntent;
   // D086-F2 END
   // D085-S1 BEGIN: density must reach the renderer before the next topology intent.
   v2?.supersedeGeometry();
   void geometryTransitions.enqueue(async () => {
+    // D086-F2 BEGIN: a density click during topology preparation mounts both requests.
+    if (topologyIntent) {
+      await applyTaxonomy(topologyIntent.topology, topologyIntent.indra, intent, undefined, topologyIntent);
+      return;
+    }
+    // D086-F2 END
     // D085-S1 BEGIN: a no-op can follow an already displayed, still settling mount.
     if (value === density) {
       if (v2) { syncCommittedPageGeometry(); persistView(); }
