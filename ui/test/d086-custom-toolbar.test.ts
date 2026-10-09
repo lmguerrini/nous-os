@@ -10,12 +10,15 @@ const html = readFileSync(new URL('../review/index.html', import.meta.url), 'utf
 const main = readFileSync(new URL('../src/review/main.ts', import.meta.url), 'utf8');
 const available: CustomAvailability = { available: 4000, minimum: 7, sourceDigest: 'source' };
 
-test('toolbar contains one reserved Custom row with synchronized draft inputs and no slider commit', () => {
+test('Custom editor keeps synchronized draft inputs outside the toolbar flow and does not commit on slide', () => {
   assert.match(html, /data-density="complete"[^>]*>Completa<\/button><button data-density="custom"/);
   assert.match(html, /id="custom-density-range"[^>]*aria-label=/);
   assert.match(html, /id="custom-density-number"[^>]*aria-label=/);
-  assert.match(html, /#custom-density-row \{[^}]*height:36px/);
+  // D087-TOOLBAR BEGIN: the former reserved row is now a fixed transient editor.
+  assert.match(html, /#custom-density-row \{[^}]*position:fixed;[^}]*height:auto/);
   assert.match(html, /#custom-density-row\[aria-hidden="true"\] \{visibility:hidden\}/);
+  assert.doesNotMatch(html.slice(html.indexOf('<header'), html.indexOf('</header>')), /id="custom-density-row"/);
+  // D087-TOOLBAR END
   const slider = main.slice(main.indexOf("customRange.addEventListener('input'"), main.indexOf("customNumber.addEventListener('input'"));
   assert.match(slider, /customNumber.value = customRange.value/);
   assert.doesNotMatch(slider, /setDensityIntent|applyCustomDensity|persistView/);

@@ -1,4 +1,18 @@
 /** A single stack for Escape, button toggles and pressed state across review surfaces. */
+// D087-TOOLBAR BEGIN
+const customAmountFormatter = new Intl.NumberFormat('it-IT', { useGrouping: true });
+export function formatCustomAmount(amount: number): string { return customAmountFormatter.format(amount); }
+export function customDensityLabel(amount: number | undefined): string {
+  return amount === undefined ? 'Custom' : `Custom · ${formatCustomAmount(amount)}`;
+}
+export function isAnchorVisibleInColumn(
+  anchor: Pick<DOMRect, 'top' | 'right' | 'bottom' | 'left'>,
+  column: Pick<DOMRect, 'top' | 'right' | 'bottom' | 'left'>,
+): boolean {
+  return anchor.bottom > column.top && anchor.top < column.bottom &&
+    anchor.right > column.left && anchor.left < column.right;
+}
+// D087-TOOLBAR END
 export class PopoverStack {
   private readonly opened: string[] = [];
   private readonly listeners = new Set<() => void>();
@@ -38,7 +52,18 @@ export type SurfaceBinding = {
   id: string; surface: HTMLElement; openers: HTMLElement[];
   readOpen: () => boolean; writeOpen: (open: boolean) => void;
   canClose?: () => boolean;
+  // D087-TOOLBAR BEGIN: opt-in outside dismissal for a transient anchored editor.
+  closeOnOutside?: boolean;
+  syncPressed?: boolean;
+  closeLabel?: string;
+  // D087-TOOLBAR END
 };
+
+// D087-TOOLBAR BEGIN
+export function isOutsideSurface(binding: Pick<SurfaceBinding, 'surface' | 'openers'>, target: Node): boolean {
+  return !binding.surface.contains(target) && !binding.openers.some(opener => opener.contains(target));
+}
+// D087-TOOLBAR END
 
 export function bindSurfaces(
   bindings: SurfaceBinding[],
@@ -52,7 +77,7 @@ export function bindSurfaces(
     const open = stack.isOpen(binding.id);
     if (binding.readOpen() !== open) binding.writeOpen(open);
     for (const opener of binding.openers) {
-      opener.setAttribute('aria-pressed', String(open));
+      if (binding.syncPressed !== false) opener.setAttribute('aria-pressed', String(open));
       opener.classList.toggle('surface-active', open);
       if (opener.tagName === 'SUMMARY') opener.setAttribute('aria-expanded', String(open));
     }
@@ -67,7 +92,11 @@ export function bindSurfaces(
       stack.toggle(binding.id);
     });
     const close = document.createElement('button'); close.type = 'button'; close.className = 'surface-close';
-    close.textContent = '×'; close.setAttribute('aria-label', `Chiudi ${binding.id}`);
+    // D087-TOOLBAR BEGIN: announce the visible surface name, not its implementation id.
+    close.textContent = '×';
+    if (binding.closeLabel) close.setAttribute('aria-label', `Chiudi ${binding.closeLabel}`);
+    else close.setAttribute('aria-label', `Chiudi ${binding.id}`);
+    // D087-TOOLBAR END
     close.addEventListener('click', event => {
       event.stopPropagation();
       if (binding.canClose && !binding.canClose()) return;
@@ -77,6 +106,17 @@ export function bindSurfaces(
     install();
     new MutationObserver(install).observe(binding.surface, { childList: true });
   }
+  // D087-TOOLBAR BEGIN: a press inside the editor or its opener stays inside the surface.
+  document.addEventListener('pointerdown', event => {
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    for (const binding of bindings) {
+      if (!binding.closeOnOutside || !stack.isOpen(binding.id)) continue;
+      if (!isOutsideSurface(binding, target)) continue;
+      stack.set(binding.id, false);
+    }
+  }, true);
+  // D087-TOOLBAR END
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
     // Escape precedence is transient surface, focus/neighbourhood, then today's page behaviour.
