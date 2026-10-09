@@ -101,6 +101,27 @@ test("the camera key is arrangement-qualified for Natural and unchanged in form 
     { key: "3d/indra", legacyKey: "3d/indra", replaysLegacy: false });
 });
 
+// D086-F2 BEGIN: a law mount must never replay Natural's normalization bounds.
+test("a law camera uses its own coordinate-space record and leaves Natural replay intact", () => {
+  const natural = productCameraKey(axes({ arrangement: 'constellation' }));
+  const julia = productCameraKey(axes({ arrangement: 'constellation' }), 'julia');
+  const sierpinski = productCameraKey(axes({ arrangement: 'constellation' }), 'sierpinski');
+  assert.notEqual(julia.key, natural.key);
+  assert.notEqual(sierpinski.key, julia.key);
+  assert.equal(julia.replaysLegacy, false);
+  const cameras = new Map<string, VisualStateCamera>();
+  const fits = new Map<string, number>();
+  const naturalCamera = { ...camera(0.4), bounds: { x: [-849, 885] as const, y: [-600, 600] as const } };
+  const juliaCamera = { ...camera(0.6), bounds: { x: [-6, 6] as const, y: [-6, 6] as const } };
+  commitProductCamera(cameras, fits, natural, naturalCamera, 1.1375);
+  assert.equal(replayProductCamera(cameras, fits, julia), undefined, 'Julia must fit its own layout');
+  commitProductCamera(cameras, fits, julia, juliaCamera, 1.2488);
+  assert.equal(replayProductCamera(cameras, fits, sierpinski), undefined);
+  assert.equal(replayProductCamera(cameras, fits, natural), naturalCamera, 'return to Natural replays its camera');
+  assert.equal(replayProductCamera(cameras, fits, julia), juliaCamera, 'return to Julia replays Julia');
+});
+// D086-F2 END
+
 test("an unresolved arrangement resolves from the morphology once and an explicit one wins", () => {
   assert.equal(resolvedViewArrangement(axes({ morphology: "stellar" })), "constellation");
   assert.equal(resolvedViewArrangement(axes({ morphology: "neural" })), "network");

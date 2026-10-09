@@ -2143,6 +2143,11 @@ refreshFlowLegends();
 if (geometryRead.source !== 'default') writeLocal(storage, 'd069.palette', axes.colour);
 else { axes = { ...axes, colour: paletteName(readLocal(storage, 'd069.palette', 'bw')) };
   if (!('mode' in geometry)) geometry = { ...geometry, colour: axes.colour }; }
+// D086-F2 BEGIN: boot commits colour before either palette control is presented.
+get<HTMLSelectElement>('palette').value = axes.colour;
+const bootFullscreenPalette = document.getElementById('fullscreen-palette') as HTMLSelectElement | null;
+if (bootFullscreenPalette) bootFullscreenPalette.value = axes.colour;
+// D086-F2 END
 // D082-B2 END
 syncBrainControls();
 persistView();

@@ -118,6 +118,9 @@ import type {
   StyledProjection, VisualRelation,
 } from "../projection/contract-types.ts";
 import { resolveNaturalArrangement } from "../projection/natural-bridge.ts";
+// D086-F2 BEGIN: a law layout has its own camera normalization space.
+import type { TopologyId } from "../topology/contract.ts";
+// D086-F2 END
 import { validatePickResult, validateRenderVisibility, validateSemanticEdgeCarriers } from "../projection/contract.ts";
 import { structuralVisualPresentation } from "../engine/presentation-options.ts";
 import type { StructuralVisualPresentation } from "../engine/presentation-options.ts";
@@ -505,7 +508,14 @@ export type ProductCameraKey = Readonly<{
  * selected morphology. The unqualified key stays as the replay source, so a camera recorded before
  * the arrangement axis existed still replays instead of being silently dropped.
  */
-export function productCameraKey(axes: Axes): ProductCameraKey {
+export function productCameraKey(axes: Axes, topology: TopologyId = 'natural', labIndra = false): ProductCameraKey {
+  // D086-F2 BEGIN: only classic Natural and Indra use the D-073 replay contract.
+  // A law's positions have different bounds even though its product organization is Natural.
+  if (topology !== 'natural') {
+    const key = `${axes.projection}/law/${topology}/${labIndra ? 'indra' : 'natural'}`;
+    return { key, legacyKey: key, replaysLegacy: false };
+  }
+  // D086-F2 END
   if (axes.organization === "indra") {
     const key = `${axes.projection}/indra`;
     return { key, legacyKey: key, replaysLegacy: false };
@@ -1071,7 +1081,9 @@ export const createProductView: CreateProductView = async (input) => {
   // D-073 C6: the camera key is arrangement-qualified for Natural (see productCameraKey). Reads go
   // through the legacy replay, writes mirror back so an explicit fit becomes the replay source, and
   // the two maps above are the only state any of this touches.
-  const cameraKeys = () => productCameraKey(axes);
+  // D086-F2 BEGIN: the certified law is part of the mounted camera identity.
+  const cameraKeys = () => productCameraKey(axes, input.labTopology, input.labIndra);
+  // D086-F2 END
   const restoreSavedCamera = () => replayProductCamera(cameras, fitRatio, cameraKeys());
   const semanticFitRatio = (ratio: number, densityBudget = labelBudget) =>
     productSceneFitRatio(sceneFitRatios, cameraKeys().key, densityBudget, ratio);

@@ -74,7 +74,9 @@ import type { Reading } from './view-contract.ts';
 // D082-A-SWITCH END
 import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
 import { summarizeD081Bundles } from './toolbar-status.ts';
-import { createProductView } from './product-view.ts';
+// D086-F2 BEGIN: page carryover uses the same coordinate-space key as the product renderer.
+import { createProductView, productCameraKey } from './product-view.ts';
+// D086-F2 END
 // C2 Fractal-only integration imports. Natural and Indra do not call these modules.
 import { CANOPY_RATIO, type CanopyLayout } from '../fractal/canopy-layout.ts';
 import { computeCanopyLayoutOffThread } from '../fractal/canopy-worker.ts';
@@ -1138,6 +1140,11 @@ export class V2Page {
     private readonly onNodePicked: ((id: string) => void) | undefined;
     private insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
+    // D086-F2 BEGIN: successful topology switches retain each layout's last camera.
+    private readonly topologyCameras = new Map<string, {
+        camera: ReturnType<ProductView['readCamera']>; userMovedSinceFit: boolean;
+    }>();
+    // D086-F2 END
     // D081-P6c BEGIN: an explicit fit reuses the exact settled camera for this scene.
     private readonly canonicalFitCameras = new Map<string, ReturnType<ProductView['readCamera']>>();
     private canonicalFitKey(): string {
@@ -1191,7 +1198,12 @@ export class V2Page {
     private readonly overviewRatioByDensity = new Map<string, number>();
     private readonly mostRecentOverviewRatioByView = new Map<string, number>();
     private overviewRatioViewKey(): string {
-        return `${this.cameraKey()}/${this.axes.morphology}/${this.axes.reading}`;
+        // D086-F2 BEGIN: law zoom thresholds belong to that law's own fitted camera.
+        const space = this.topology === 'natural' ? this.cameraKey()
+            : productCameraKey({ ...this.axes, organization: this.axes.organization === 'indra' ? 'indra' : 'natural' },
+                this.topology, this.topologyIndra).key;
+        return `${space}/${this.axes.morphology}/${this.axes.reading}`;
+        // D086-F2 END
     }
     private overviewRatioKey(): string {
         return `${this.overviewRatioViewKey()}/${this.density}`;
@@ -4695,6 +4707,18 @@ export class V2Page {
             this.recordProjectionPhase('preView', performance.now() - preViewBegan);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
             const old = this.view?.readCamera();
+            // D086-F2 BEGIN: a prior law's pose and bounds cannot normalize this layout.
+            // Classic Natural/Indra transitions keep their established camera policy.
+            const priorAxes = this.committedAxes ?? this.axes;
+            const priorSpace = productCameraKey({ ...priorAxes,
+                organization: priorAxes.organization === 'indra' ? 'indra' : 'natural' },
+                this.committedTaxonomy.topology, this.committedTaxonomy.indra).key;
+            const nextSpace = productCameraKey({ ...this.axes, organization },
+                this.topology, this.topologyIndra).key;
+            const topologySpaceChanged = priorSpace !== nextSpace
+                && (this.committedTaxonomy.topology !== 'natural' || this.topology !== 'natural');
+            const returningCamera = topologySpaceChanged ? this.topologyCameras.get(nextSpace) : null;
+            // D086-F2 END
             const disclosureChanged = this.disclosureKey() !== this.lastDisclosureKey
                 || ids.size !== this.positions.size || [...ids].some(id => !this.positions.has(id));
             const indraLayoutMoved = organization === 'indra' && [...next].some(([id, point]) => {
@@ -4807,7 +4831,9 @@ export class V2Page {
             const sceneKey = `${topologySceneKey}|${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
             // D085-S1 END
             const sceneUnchanged = !!old && sceneKey === this.lastSceneKey;
-            const keep = old && arrangement === this.lastArrangement;
+            // D086-F2 BEGIN
+            const keep = old && arrangement === this.lastArrangement && !topologySpaceChanged;
+            // D086-F2 END
             // A disclosure can move a node in any product layout (Natural 3D recalculates its
             // depth volume; Indra repacks recursively). Capture one screen point before replacing
             // the layout, then compensate only if that node actually moved on screen.
@@ -4850,8 +4876,11 @@ export class V2Page {
             // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
             const userMoved = !!old && this.userMovedSinceFit;
             // D082-A-DENSITY BEGIN
-            const cameraAction = this.densitySwitchPending && old && keep ? 'restore'
+            // D086-F2 BEGIN: a fresh law mounts at its own fit; a return uses its own record.
+            const cameraAction = topologySpaceChanged ? 'none'
+                : this.densitySwitchPending && old && keep ? 'restore'
                 : refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
+            // D086-F2 END
             // D082-A-DENSITY END
             // D-072 R1: never destroy the working view before its replacement exists. The new view
             // mounts first; only a mount that succeeds swaps it in, destroys the old one exactly
@@ -5008,6 +5037,11 @@ export class V2Page {
             const previousGuideLayer = this.guideLayer;
             // D082-B2 END
             this.view = mounted;
+            // D086-F2 BEGIN: only an accepted replacement may record and replay cameras.
+            const departingCamera = topologySpaceChanged ? previousView?.readCamera() : null;
+            if (topologySpaceChanged && departingCamera) this.topologyCameras.set(priorSpace,
+                { camera: departingCamera, userMovedSinceFit: this.userMovedSinceFit });
+            // D086-F2 END
             // D085-S1 BEGIN
             this.committedTaxonomy = { topology: this.topology, indra: this.topologyIndra };
             this.committedAxes = { ...this.axes };
@@ -5086,7 +5120,18 @@ export class V2Page {
                     volumeRow.title = VOLUME_READOUT_HELP;
                 }
             }
-            if (cameraAction === "restore" || anchor) {
+            // D086-F2 BEGIN: the replacement already fitted its own coordinates at mount.
+            if (topologySpaceChanged) {
+                if (returningCamera?.camera) {
+                    this.noteCameraIntent();
+                    this.view.restoreCamera(returningCamera.camera);
+                }
+                this.lastFitCamera = this.view.readCamera();
+                this.userMovedSinceFit = returningCamera?.userMovedSinceFit ?? false;
+                this.overviewRatio = null;
+                this.rememberOverviewRatio((this.lastFitCamera as { ratio?: number } | null)?.ratio ?? 1);
+            } else if (cameraAction === "restore" || anchor) {
+            // D086-F2 END
                 try {
                     this.noteCameraIntent();
                     this.view.restoreCamera(old);
