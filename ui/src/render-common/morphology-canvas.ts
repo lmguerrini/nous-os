@@ -88,6 +88,10 @@ export type MorphologyCanvasStyle = {
     // D082-A-NCOMPLETA BEGIN
     readonly denseNeuralHaloById?: ReadonlyMap<string, number> | undefined;
     // D082-A-NCOMPLETA END
+    // D087-LABELS BEGIN: the page's labels axis. True skips the container title pass
+    // (no title measurement, placement or ink) without touching the container geometry itself.
+    readonly hideContainerTitles?: boolean;
+    // D087-LABELS END
   } | undefined;
   readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
@@ -2289,7 +2293,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // the interaction, so a title's reserved rectangle and its ink are the same thing everywhere.
   const titleDiscs: readonly CanvasDisc[] = sharedDiscs ?? pearlDiscs!;
   if (structureOnly) {
-    if (!moving || projection === "2d") drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+    // D087-LABELS BEGIN: the labels axis off means no title ink and no title placement pass.
+    if ((!moving || projection === "2d") && style.interaction?.hideContainerTitles !== true)
+      drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+    // D087-LABELS END
     // D082-B1f BEGIN: native Sigma/GPU nodes were presented before this canvas pass.
     if (canopyDenseNeural) presentCanopySomaFrame(canopyHost, geometry, !moving);
     // D082-B1f END
@@ -2756,7 +2763,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     context.globalAlpha = 1;
   }
   // Names come last, above every pearl and arc, so no label is ever covered by its own drawing.
-  if (!moving || projection === "2d") drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+  // D087-LABELS BEGIN: the labels axis off means no title ink and no title placement pass.
+  if ((!moving || projection === "2d") && style.interaction?.hideContainerTitles !== true)
+    drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+  // D087-LABELS END
   // D082-B1c BEGIN: paired with overlay and restore marks for the browser profile.
   // D082-B1f BEGIN: only the settled draw of this exact geometry can release readiness.
   if (canopyDenseNeural) presentCanopySomaFrame(canopyHost, geometry, !moving && canopySomataPrepared(geometry));

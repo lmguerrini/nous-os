@@ -49,6 +49,7 @@ import {
   projection2dVisibilityKey,
   projection2dRevisionAction,
   mountProjectionLabelOverlay,
+  EMPTY_LABEL_BOUNDS,
   readProjectionStyle,
   typedLabelKind,
   typedLabelTexts,
@@ -1741,7 +1742,8 @@ export function mountProjection2d(
       context.beginPath(); line(a, b); context.stroke();
       visualEdgesPainted++;
       // Every parallel bundle declares the extra relations.
-      if (relation.visualId.startsWith("visual:d081:") && relation.count > 1) {
+      // "D087-LABELS BEGIN": the bundle count is label text; the labels axis hides it too.
+      if (relation.visualId.startsWith("visual:d081:") && relation.count > 1 && scope?.labels !== false) {
         const midpoint = viewport({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
         context.globalAlpha = TYPED_COMPLETE_BUNDLE_LABEL.alpha;
         context.fillStyle = styleColor(record, "#bfc6cc");
@@ -1828,6 +1830,13 @@ export function mountProjection2d(
   const labelPass = (): void => {
     const box = container.getBoundingClientRect();
     if (box.width <= 0 || box.height <= 0) return;
+    // "D087-LABELS BEGIN": with the labels axis off this pass builds no candidate, disc or rim and
+    // measures nothing; the single empty repaint clears whatever the previous on state placed.
+    if (scope?.labels === false) {
+      labels.update({ candidates: [], bounds: EMPTY_LABEL_BOUNDS });
+      return;
+    }
+    // "D087-LABELS END"
     const ratio = sigma.getCamera().getState().ratio;
     if (fittedRatio === null) fittedRatio = ratio;
     const overview = ratio >= fittedRatio * TYPED_LABEL_CAMERA.overviewRatio;

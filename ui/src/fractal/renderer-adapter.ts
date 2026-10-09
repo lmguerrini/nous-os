@@ -830,15 +830,20 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
       : completeScene ? new Set([...layout.positions.values()]
       .filter(row => row.level <= 3).map(row => row.id)) : currentIds;
     // D086-MOT END
-    const candidates = [...canopySemanticCandidates(layout, labelIds, point => view.projectPoint!(point),
+    // D087-LABELS BEGIN: with the labels axis off no candidate is projected or measured at all —
+    // neither the semantic names nor the root title nor the bundle-count badges.
+    const candidates = !showLabels ? [] : [...canopySemanticCandidates(layout, labelIds, point => view.projectPoint!(point),
       projection, reading, label => context.measureText(label).width)];
-    if (root) {
+    if (root && showLabels) {
       const p = view.projectPoint!(projection === '3d' ? root.to3d : root.to);
       candidates.push({ id: 'root', x: p.x, y: p.y, width: 58, height: 21,
         text: 'NousOS', priority: 2000 });
     }
+    // D087-LABELS END
     // D086-MOT BEGIN
-    const badgeCandidates = (overlayMotionIds ? [] : currentMarks).filter(mark => mark.aggregate && mark.memberCount > 1)
+    // D087-LABELS BEGIN: badge boxes are label text too; off means none are measured.
+    const badgeCandidates = (!showLabels || overlayMotionIds ? [] : currentMarks).filter(mark => mark.aggregate && mark.memberCount > 1)
+    // D087-LABELS END
     // D086-MOT END
       .sort((a, b) => b.memberCount - a.memberCount)
       .map(mark => {
@@ -898,7 +903,9 @@ export function mountCanopyRailLayer(host: HTMLElement, layout: CanopyLayout,
     // Collapsed real IDs are shown by one counted representative per exposed
     // branch; badges are skipped where they would collide with labels or peers.
     // D086-MOT BEGIN
-    const counted = (overlayMotionIds ? [] : currentMarks).filter(mark => mark.aggregate && mark.memberCount > 1)
+    // D087-LABELS BEGIN: the bundle-count badge is node text; the labels axis hides it.
+    const counted = (!showLabels || overlayMotionIds ? [] : currentMarks).filter(mark => mark.aggregate && mark.memberCount > 1)
+    // D087-LABELS END
     // D086-MOT END
       .sort((a, b) => (layout.positions.get(a.id)?.level ?? 3) - (layout.positions.get(b.id)?.level ?? 3)
         || b.memberCount - a.memberCount);

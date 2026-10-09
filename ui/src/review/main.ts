@@ -407,7 +407,9 @@ function updateButtons() {
           || (button.dataset.value === "indra-pearls" && axes.organization === "indra" && indraPearlsSelected)
         : button.dataset.value === axes[axis])));
   }
-  get<HTMLButtonElement>("labels").setAttribute("aria-pressed", String(axes.labels));
+  // D087-LABELS BEGIN
+  syncLabelsControl();
+  // D087-LABELS END
   get<HTMLSelectElement>("palette").value = axes.colour;
   const fullscreenPalette = document.getElementById("fullscreen-palette") as HTMLSelectElement | null;
   if (fullscreenPalette) fullscreenPalette.value = axes.colour;
@@ -775,6 +777,11 @@ installTaxonomyControls();
 // executes in its page-less vm: the assignment needs the live document.)
 get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";
 // D084-W6-TOOLBAR END
+// D087-LABELS BEGIN: the labels control must show the resolved axes at first paint. The static
+// markup defaults to ON, so a labels-off reload (hash view2 or stored view) would otherwise keep
+// the stale ON chip until some later committed event syncs the toolbar.
+syncLabelsControl();
+// D087-LABELS END
 const toolbarSections = new Map<HTMLElement, HTMLDetailsElement>();
 function installToolbarSections(): void {
   const labels = new Map<string, string>([
@@ -847,6 +854,16 @@ get<HTMLButtonElement>("toolbar-toggle").addEventListener("click", () => {
   syncToolbarToggle();
   updateInsets();
 });
+// D087-LABELS BEGIN: one place keeps the toolbar control's pressed state and its ON/OFF word
+// equal to the committed axes; every restore path calls this instead of writing aria-pressed alone.
+function syncLabelsControl(): void {
+  const button = document.getElementById("labels") as HTMLButtonElement | null;
+  if (!button) return;
+  button.setAttribute("aria-pressed", String(axes.labels));
+  const state = document.getElementById("labels-state");
+  if (state) state.textContent = axes.labels ? "ON" : "OFF";
+}
+// D087-LABELS END
 function syncBrainControls(): void {
   const available = axes.organization === "natural" && axes.morphology === "neural" && axes.projection === "3d";
   const environment = document.getElementById("environment-control");
@@ -1372,7 +1389,6 @@ function syncCommittedPageGeometry(): void {
   syncTaxonomyControls();
   syncLoadedAxisButtons();
   // D085-S1 BEGIN: restore controls that the axis-button sync does not cover.
-  document.getElementById('labels')?.setAttribute('aria-pressed', String(axes.labels));
   const palette = document.getElementById('palette') as HTMLSelectElement | null;
   if (palette) palette.value = axes.colour;
   const fullscreenPalette = document.getElementById('fullscreen-palette') as HTMLSelectElement | null;
@@ -1569,7 +1585,6 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
       syncTaxonomyControls();
       syncLoadedAxisButtons();
       // D085-S1 BEGIN: location presentation includes the labels and both palettes.
-      document.getElementById('labels')?.setAttribute('aria-pressed', String(axes.labels));
       const palette = document.getElementById('palette') as HTMLSelectElement | null;
       if (palette) palette.value = axes.colour;
       const fullscreenPalette = document.getElementById('fullscreen-palette') as HTMLSelectElement | null;
@@ -1595,7 +1610,13 @@ async function applyGeometryFromLocation(search: string, hash: string): Promise<
 }
 // D085-S1 END
 function restoreGeometryFromLocationSafely(): void {
-  void restoreGeometryFromLocation().catch((error: unknown) => {
+  void restoreGeometryFromLocation().then(() => {
+    // D087-LABELS BEGIN: a live hash/history restore moves the labels axis too; the control
+    // shows the restored axes once the transition has settled (boot and toolbar paths sync it
+    // through their own presentation calls).
+    syncLabelsControl();
+    // D087-LABELS END
+  }).catch((error: unknown) => {
     // D085-S1 BEGIN
     if (error instanceof GeometrySupersededError) return;
     // D085-S1 END
