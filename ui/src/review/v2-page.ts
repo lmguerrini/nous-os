@@ -1250,9 +1250,12 @@ export class V2Page {
         eligibleEdges = fullEligibleEdges;
         // D087-JULIA BEGIN: the atlas only offers the relations routed through
         // the current real pearl glyphs; source totals remain in the budget witness.
+        // The decision travels with the published route: the in-place revision
+        // publish and the fast LOD publishes do not reassign the mounted law
+        // layout, so reading it here could census a phase the drawing already left.
         const atlasCensus = juliaAtlasEdgeCensus(route.drawn.length, eligibleEdges,
             source.edges.length + source.nodes.filter(node => node.parent !== null).length,
-            this.topology === 'julia' && this.topologyIndra && isJuliaAtlasLayout(this.lawLayout));
+            route.atlas === true);
         eligibleEdges = atlasCensus.eligible;
         // D087-JULIA END
         // D081-P6c END.
@@ -4634,7 +4637,34 @@ export class V2Page {
             // D086-F2 BEGIN: hover changes emphasis, not the Canopy evidence set.
             const evidenceFocus = canopy ? this.selected : active;
             // D086-F2 END
-            const projectedArcs = this.density === 'complete' || custom !== null
+            // D087-JULIA BEGIN: the Julia + Indra atlas routes every density —
+            // Essenziale, Bilanciata, Completa, Custom at any amount, overview and
+            // opened pearls, 2D and 3D — through the one pearl-lifted projection rule
+            // of Essenziale/Bilanciata. Completa and Custom must not fall back to the
+            // uncapped completeRelation list (14k relations whose endpoints are mostly
+            // hidden: the census follows the route while the renderer keeps only the
+            // strokes with drawn endpoints, and Custom's direct-endpoint filter is a
+            // second, different rule).
+            const atlasRouting = !canopy && this.topology === 'julia' && this.topologyIndra
+                && isJuliaAtlasLayout(lawResult);
+            // One arc budget for the upper densities of the atlas ladder: the julia
+            // balanced row. The ladder's own rows are not monotone at the atlas
+            // (complete 1200 < balanced 4200) and Custom is unbounded, so the route's
+            // fan and budget would change between densities that admit the same
+            // pearls: Completa ≢ Custom at the maximum, and Bilanciata ⊄ Completa at
+            // detail «Tutti». Essenziale keeps its essential row and Bilanciata keeps
+            // the balanced row it already used, byte-identical.
+            const atlasArcBudget = this.density === 'essential' ? budget.arcs
+                : densityBudget('balanced', this.budgetTopologyOf()).arcs;
+            // D087-JULIA END
+            const projectedArcs = atlasRouting && (this.density === 'complete' || custom !== null)
+                // D087-JULIA BEGIN: the same candidate construction as Essenziale/
+                // Bilanciata — the detail-projected relations over the law disclosure,
+                // lifted onto the drawn pearls by the route below.
+                // D087-JULIA END
+                ? projectRelations(source.nodes, source.edges, ids, this.axes.reading,
+                    organization, this.relationDetail, evidenceFocus)
+                : this.density === 'complete' || custom !== null
                 ? cachedCanopyArcs ?? this.densityRelations(this.axes.reading)
                 : densityPolicy
                 // D082-A-SWITCH BEGIN
@@ -4895,7 +4925,19 @@ export class V2Page {
             const lab = this.topology !== 'natural';
             const canopyDetailInput = lab && canopy && this.relationDetail === 'essential'
                 ? routedInput.slice(0, routedInput.length - canopyBalancedSources.length) : routedInput;
-            const candidateRoute = this.density === 'complete' || custom !== null
+            const candidateRoute = atlasRouting
+                // D087-JULIA BEGIN: one rule for every density of the atlas: the
+                // pearl-lifted projection `routeRelationsAfterLOD` over the phase's
+                // rendered ids («d084-projection»), at the page's detail setting and
+                // the ladder budget above. Essenziale and Bilanciata keep the exact
+                // call they already had (`atlasArcBudget` reproduces their rows, and
+                // the lab cap below never applied to a law topology).
+                // D087-JULIA END
+                ? routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
+                    renderedNodeIds: renderedIds, relations: canopyDetailInput, reading: this.axes.reading,
+                    budget: atlasArcBudget,
+                    focusId: evidenceFocus, pinnedRelationIds: this.pinnedArcIds(tiers) })
+                : this.density === 'complete' || custom !== null
                 ? cachedCanopyRoute ?? completeRoute(custom
                     ? availableArcs.edges.filter(edge => renderedIds.has(edge.source) && renderedIds.has(edge.target))
                     : availableArcs.edges, renderedIds, !!canopy)
@@ -4910,7 +4952,13 @@ export class V2Page {
                             ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                         // D085-S2 END
                         focusId: evidenceFocus, pinnedRelationIds: this.pinnedArcIds(tiers) });
-            const otherArcs = lab && this.density !== 'complete' && !custom
+            const otherArcs = lab && (atlasRouting || this.density !== 'complete' && !custom)
+                // D087-JULIA BEGIN: the atlas also resolves its detail the way
+                // Essenziale/Bilanciata do — both detail settings routed — so
+                // Completa/Custom keep rule «d084-projection» instead of degenerating
+                // into the bounded selector (which drops every attested relation
+                // among the pearls).
+                // D087-JULIA END
                 ? projectRelations(source.nodes, source.edges, ids, this.axes.reading,
                     organization, this.relationDetail === 'essential' ? 'all' : 'essential', evidenceFocus) : null;
             const otherEvidence = otherArcs && canopy ? canopyEvidenceArcs(otherArcs.edges) : otherArcs?.edges;
@@ -4922,7 +4970,12 @@ export class V2Page {
                     source: edge.source, target: edge.target, class: edge.class, type: edge.type,
                     count: edge.count, sourceEdgeIds: edge.underlying.map(item => item.id) })),
                 reading: this.axes.reading,
-                budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs) : budget.arcs,
+                budget: canopy && this.lod === 'far' ? Math.min(300, budget.arcs)
+                    // D087-JULIA BEGIN: the flipped-detail atlas route keeps the
+                    // same ladder budget, or Completa and Custom at the maximum would
+                    // differ at detail «Tutti» again.
+                    // D087-JULIA END
+                    : atlasRouting ? atlasArcBudget : budget.arcs,
                 focusId: evidenceFocus, pinnedRelationIds: this.pinnedArcIds(tiers),
             }) : candidateRoute;
             const allRoute = lab && this.relationDetail === 'essential' ? otherRoute : candidateRoute;
@@ -4951,7 +5004,16 @@ export class V2Page {
             const selectedRouteIds = new Set(route.drawn.map(edge => edge.id));
             const allRelationById = lab && this.relationDetail === 'essential' && otherAvailable
                 ? otherAvailable.byId : relationById;
-            route = { ...route, detailFilteredSourceIds: [...new Set(allRoute.drawn
+            route = { ...route,
+                // D087-JULIA BEGIN: the published route names its own atlas
+                // decision. The census, the LOD `arcs.available` and the witness
+                // `arcs.total` read this stamp — `this.lawLayout` is reassigned
+                // only on the remount path, so it can go stale exactly on the
+                // in-place publishes where the counters must still match the
+                // route (review J1/J2).
+                atlas: atlasRouting,
+                // D087-JULIA END
+                detailFilteredSourceIds: [...new Set(allRoute.drawn
                 .filter(edge => !selectedRouteIds.has(edge.id))
                 .flatMap(edge => edge.sourceRelationIds.flatMap(id =>
                     allRelationById.get(id)?.underlying.map(source => source.id) ?? [])))].sort() };
@@ -5107,18 +5169,18 @@ export class V2Page {
             const pinnedArcsRendered = shown.map(edge => edge.id).filter(id => this.pinnedArcIds(tiers).has(id)).sort();
             const nextLodCounts = {
                 nodes: { rendered: renderedIds.size, available: ids.size, pinned: pinnedRendered.length, pinnedIds: pinnedRendered },
-                // D087-JULIA BEGIN: the atlas LOD offers only phase-visible strokes.
+                // D087-JULIA BEGIN: the atlas LOD offers only phase-visible strokes,
+                // by the decision the published route itself carries.
                 arcs: { rendered: shown.length,
-                    available: this.topology === 'julia' && this.topologyIndra && isJuliaAtlasLayout(lawResult)
-                        ? shown.length : availableArcs.total,
+                    available: route.atlas === true ? shown.length : availableArcs.total,
                     pinned: pinnedArcsRendered.length, pinnedIds: pinnedArcsRendered },
                 // D087-JULIA END
             };
             const nextRenderedRelations = new Map(shown.map(edge => [edge.id, edge]));
             // D081-P7 BEGIN
-            // D087-JULIA BEGIN: witness arcs.total follows the mounted atlas phase.
-            const nextArcTotal = this.topology === 'julia' && this.topologyIndra && isJuliaAtlasLayout(lawResult)
-                ? shown.length : availableArcs.total;
+            // D087-JULIA BEGIN: witness arcs.total follows the mounted atlas phase,
+            // by the same route-carried decision as the status census above.
+            const nextArcTotal = route.atlas === true ? shown.length : availableArcs.total;
             // D087-JULIA END
             // D081-P7 END
             // D082-A-PLUSN BEGIN: suffixes describe every indexed descendant omitted
