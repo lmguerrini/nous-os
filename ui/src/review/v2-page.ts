@@ -19,7 +19,8 @@ import { computeClassicLayout } from './classic-layout-worker.ts';
 import type { LayoutInput, LayoutResult } from './layout-v2.ts';
 import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
 // D086-NAT BEGIN
-import { alignNaturalDensity, animateNaturalDensity, naturalDensityDisplacement, placeNaturalDensity } from './natural-density-transition.ts';
+import { alignNaturalDensity, animateNaturalDensity, naturalDensityDisplacement, placeNaturalDensity,
+    type DensityAlignment } from './natural-density-transition.ts';
 // D086-NAT END
 import { typedNodeViewport } from './typed-node-viewport.ts';
 import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, volumeStats, VOLUME_READOUT_HELP } from './volume.ts';
@@ -1844,6 +1845,10 @@ export class V2Page {
     private densitySwitchPending = false;
     private densityStableKey = '';
     private densityStablePositions = new Map<string, Point3>();
+    // D086-NAT BEGIN: newly admitted marks share the same world transform as
+    // the marks already mounted after a density transition.
+    private densityWorldAlignment: DensityAlignment | null = null;
+    // D086-NAT END
     // D086-NAT BEGIN: the last accepted transition is visible through the page witness.
     private densityTransitionDisplacement: (ReturnType<typeof naturalDensityDisplacement> & {
         from: Density; to: Density; phase: 'animating' | 'complete' | 'superseded';
@@ -4232,7 +4237,7 @@ export class V2Page {
                         expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ }) : overviewPositions;
                     for (const [id, point] of original) expanded.set(id, point);
                 }
-                if (!naturalDensityTransition)
+                if (!naturalDensityTransition && !this.densityWorldAlignment)
                     for (const [id, point] of this.densityStablePositions) if (expanded.has(id)) expanded.set(id, point);
             }
             // Preserve only disclosed shells in the view; their centres and radii
@@ -4745,9 +4750,16 @@ export class V2Page {
                 const before = this.positions.get(id), after = expanded.get(id);
                 if (before && after) { previousShared.set(id, before); targetShared.set(id, after); }
             }
-            const aligned = naturalDensityTransition
-                ? placeNaturalDensity(expanded, alignNaturalDensity(previousShared, targetShared, projection))
-                : expanded;
+            const densityAlignment = naturalDensityTransition
+                ? alignNaturalDensity(previousShared, targetShared, projection) : null;
+            const retainedAlignment = !naturalDensityTransition && densityLayout
+                && organization === 'natural' && this.densityStablePositions.size
+                ? this.densityWorldAlignment : null;
+            const worldAlignment = densityAlignment ?? retainedAlignment;
+            const densityInkScale = worldAlignment?.scale ?? 1;
+            const aligned = worldAlignment ? placeNaturalDensity(expanded, worldAlignment) : expanded;
+            if (retainedAlignment) for (const [id, point] of this.densityStablePositions)
+                if (aligned.has(id)) aligned.set(id, point);
             const next = new Map<string, Point3>();
             for (const n of sceneNodes)
                 next.set(n.id, aligned.get(n.id) ?? { x: 0, y: 0, z: 0 });
@@ -4960,6 +4972,10 @@ export class V2Page {
             const nextHost = document.createElement('div');
             nextHost.className = 'view-host';
             Object.assign(nextHost.style, { position: 'absolute', inset: '0' });
+            // D086-NAT BEGIN: the alignment changes world units; carry that unit to
+            // both product renderers before either prepares geometry or materials.
+            if (densityInkScale !== 1) nextHost.dataset.naturalDensityInkScale = String(densityInkScale);
+            // D086-NAT END
             // D082-B1c BEGIN: the product's first Neural paint needs the Canopy
             // fast path before the rail layer is mounted after createView.
             if (canopy) nextHost.setAttribute('data-fractal-rails-active', '');
@@ -5159,6 +5175,9 @@ export class V2Page {
             this.layoutProjection = projection;
             this.canonicalPositions = nextCanonicalPositions;
             this.positions = next;
+            // D086-NAT BEGIN
+            this.densityWorldAlignment = worldAlignment;
+            // D086-NAT END
             // D082-A-DENSITY BEGIN
             // D082-A-ANCHORB BEGIN: option (b) has no incremental anchor state.
             if (naturalDensityTransition) this.densityStablePositions.clear();

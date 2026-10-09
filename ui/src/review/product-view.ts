@@ -399,6 +399,17 @@ const anchorBaseline = new Map<string, {
   flat: ReadonlyMap<string, Coordinates>; indra: ReadonlyMap<string, Coordinates>;
   depth: ReadonlyMap<string, Coordinates>;
 }>();
+// D086-NAT BEGIN: one unit conversion is shared by the page-mounted host and
+// every product-view spatial ink input. Alpha is deliberately excluded.
+export function naturalDensityInkScale(container: Pick<HTMLElement, 'dataset'>): number {
+  const requested = Number(container.dataset.naturalDensityInkScale);
+  return Number.isFinite(requested) && requested > 0 ? requested : 1;
+}
+
+export function naturalDensityWorldInkSize(size: number, scale: number): number {
+  return size * scale;
+}
+// D086-NAT END
 /** Mount the product renderers while preserving camera and label state across axis changes. */
 /** Pointer travel (CSS px) beyond which a press-and-release is a drag, not a click. */
 const CLICK_DRAG_TOLERANCE_PX = 5;
@@ -672,6 +683,11 @@ export const createProductView: CreateProductView = async (input) => {
     degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
   }
   const container = input.container;
+  // D086-NAT BEGIN: a similarity-aligned Natural scene has larger world units
+  // than its fresh canonical mount. Its ink dimensions must grow by the same
+  // factor so a camera fit restores the approved pixel widths and radii.
+  const densityInkScale = naturalDensityInkScale(container);
+  // D086-NAT END
   if (getComputedStyle(container).position === "static") container.style.position = "relative";
   const layer = document.createElement("div");
   layer.dataset.reviewLabels = "true";
@@ -1989,6 +2005,17 @@ export const createProductView: CreateProductView = async (input) => {
           }),
       ),
     };
+    // D086-NAT BEGIN: scale spatial ink, not alpha, colour or relation identity.
+    // The native 2D model, distinct canvases, and 3D scene all consume these
+    // presentation values; the morphology builder receives the same world unit.
+    if (densityInkScale !== 1) for (const [id, value] of presentation.nodes)
+      presentation.nodes.set(id, {
+        ...value,
+        ...(value.radiusPx === undefined ? {} : { radiusPx: naturalDensityWorldInkSize(value.radiusPx, densityInkScale) }),
+        corePermille: naturalDensityWorldInkSize(value.corePermille, densityInkScale),
+        haloPermille: naturalDensityWorldInkSize(value.haloPermille, densityInkScale),
+      });
+    // D086-NAT END
     const colonyMembers = new Map<string, string[]>();
     for (const node of input.data.nodes) if (state.visible.has(node.id) && anchors.has(node.id)) {
       const parent = (node.v2 as { parent?: string | null } | undefined)?.parent;
@@ -2004,7 +2031,7 @@ export const createProductView: CreateProductView = async (input) => {
       }),
       edges: state.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
         // The drawer applies the presentation width factor; the geometry carries the unit body width.
-        width: 1 })),
+        width: naturalDensityWorldInkSize(1, densityInkScale) })),
       colonies: [...colonyMembers].map(([id, members]) => {
         const positions = members.map(member => anchors.get(member)!).filter(Boolean);
         const center = { x: positions.reduce((s, p) => s + p.x, 0) / positions.length,
@@ -2038,6 +2065,19 @@ export const createProductView: CreateProductView = async (input) => {
       && input.v2Prepared && isReferenceCompleta(input.data.nodes.length, visible.size)
       ? { calibration: canopyCompletaCalibration(DEFAULT_CALIBRATION) } : {}),
     // D082-B1f END
+    // D086-NAT BEGIN: the native filament scene resolves its own material width.
+    // Calibration parameters are canonical integers, so scale the morphology
+    // width multipliers instead of giving the base width a fractional value.
+    ...(densityInkScale !== 1 ? { calibration: {
+      ...DEFAULT_CALIBRATION,
+      morphology: Object.fromEntries(Object.entries(DEFAULT_CALIBRATION.morphology).map(([key, material]) =>
+        [key, { ...material,
+          filamentWidthMultiplierPermille: Math.max(1, Math.round(material.filamentWidthMultiplierPermille * densityInkScale)),
+          sharedSceneFilamentWidthMultiplierPermille:
+            Math.max(1, Math.round(material.sharedSceneFilamentWidthMultiplierPermille * densityInkScale)),
+        }])) as typeof DEFAULT_CALIBRATION.morphology,
+    } } : {}),
+    // D086-NAT END
     morphology: axes.morphology,
     organization: input.v2Prepared ? "natural" as const : axes.organization,
     // D085-S3 BEGIN: preserve the page's Lab law across Natural/Indra renderer organization.
