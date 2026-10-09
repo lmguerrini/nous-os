@@ -57,7 +57,8 @@ export function juliaIndraGateStatus(dimension: TopologyDimension) {
     eligible: metric?.eligible ?? 0, passing: metric?.passing ?? 0, share: metric?.share ?? 0,
     // D087-JULIA BEGIN
     ...(metric ?? {}),
-    reason: juliaIndraGate.get(dimension) === true ? null : metric?.phase
+    reason: juliaIndraGate.get(dimension) === true ? null : !metric
+      ? 'Julia con Indra: verifica in corso.' : metric.phase
       ? `Julia con Indra rifiutata (${metric.phase}): ${metric.closedPearlsDrawn ?? metric.closedPearlsProjected ?? 0} perle, `
         + `${metric.openPassing ?? metric.openPassingProjected ?? 0}/${metric.openEligible ?? 0} carte aperte, `
         + `${metric.shellOverlapCount ?? 0} sovrapposizioni; separazione ${metric.childSeparationMinPx ?? 0} px, `

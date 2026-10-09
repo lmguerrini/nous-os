@@ -46,6 +46,9 @@ function boot(input: { search?: string; hash?: string; storedView?: string; dens
   const context: Record<string, unknown> = {
     location, history, storage, URLSearchParams, readLocal, writeLocal, DEFAULT_AXES, resolveArrangementReadout, paletteName,
     resolveGeometryView2, resolveSupportedGeometryView2, topologySupport, geometryToLegacyAxes, rewriteGeometryUrl, serializeGeometryView2,
+    // D087-JULIA BEGIN: boot defers the Julia admission without rewriting its URL.
+    juliaIndraGateStatus: () => ({ evaluated: false, ok: false, reason: 'Julia con Indra: verifica in corso.' }),
+    // D087-JULIA END
     typedPipelineFlag: new URLSearchParams(url.search).get('projection') === 'natural'
       || new URLSearchParams(url.hash.slice(1)).get('projection') === 'natural',
     experimentalSuspensionNotice: null, experimentalInitialFallback: false, errors: [],
@@ -69,6 +72,20 @@ function boot(input: { search?: string; hash?: string; storedView?: string; dens
 const legacy = (organization: string, extra: Record<string, unknown> = {}) =>
   JSON.stringify({ organization, projection: '2d', morphology: 'stellar', ...extra });
 const hashView = (raw: string, flags = '') => `#${flags}${flags ? '&' : ''}view=${encodeURIComponent(raw)}`;
+
+// D087-JULIA BEGIN
+test('a linked Julia Indra request keeps its ON URL during preflight', () => {
+  const view = { schema: 2 as const, rendering: '2d' as const, topology: 'julia' as const,
+    indra: 'on' as const, morphology: 'stellar' as const, density: 'balanced' as const,
+    reading: 'combined' as const, colour: 'bw' as const, labels: true };
+  const hash = `#experimental=fractal&view2=${encodeURIComponent(serializeGeometryView2(view))}`;
+  const result = boot({ hash });
+  assert.equal(result.location.hash, hash);
+  assert.equal(result.writable, false);
+  assert.equal(result.geometry.indra, 'off');
+  assert.equal(result.notice, null);
+});
+// D087-JULIA END
 
 test('main.ts boot migrates every legacy taxonomy row into page axes and rewrites the URL', () => {
   assert.throws(() => parseSavedAxes(legacy('indra')), /pinned register/);

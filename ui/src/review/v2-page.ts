@@ -107,7 +107,7 @@ import { TOPOLOGY_LAWS, topologySupport } from '../topology/registry.ts';
 // D082-LAB-FIX2 BEGIN
 import { cancelPendingTopologyLayouts, computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
 // D087-JULIA BEGIN
-import { certifyJuliaAtlasDrawing, composeJuliaIndraAtlas, type JuliaAtlasLayout } from '../topology/julia-indra-atlas.ts';
+import { certifyJuliaAtlasDrawing, composeJuliaIndraAtlas, isJuliaAtlasLayout, juliaOverviewPearlQuota, type JuliaAtlasLayout } from '../topology/julia-indra-atlas.ts';
 // D087-JULIA END
 // D085-S1 BEGIN: serialize page axes before any asynchronous renderer refresh reads them.
 import { createGeometryTransitionQueue } from './geometry-view2.ts';
@@ -792,7 +792,7 @@ export class V2Page {
         return null;
     }
     private juliaAtlasCertificate() {
-        if (this.topology !== 'julia' || !this.topologyIndra || !this.lawLayout || !this.view?.projectPoint)
+        if (this.topology !== 'julia' || !this.topologyIndra || !isJuliaAtlasLayout(this.lawLayout) || !this.view?.projectPoint)
             return null;
         const ink = (this.view as ProductView & { readJuliaAtlasInk?: () => {
             shells: readonly { id: string; radiusPx: number }[]; countedShellIds: readonly string[] } }).readJuliaAtlasInk?.();
@@ -805,7 +805,7 @@ export class V2Page {
             ?.viewportPaintedNodeIds ?? [];
         const radii = new Map(ink.shells.map(shell => [shell.id, shell.radiusPx]));
         const host = document.getElementById('render-root');
-        return certifyJuliaAtlasDrawing(this.lawLayout as JuliaAtlasLayout, this.lawSnapshot, {
+        return certifyJuliaAtlasDrawing(this.lawLayout, this.lawSnapshot, {
             nodeIds: new Set(painted), shellIds: new Set(ink.shells.map(shell => shell.id)),
             countedShellIds: new Set(ink.countedShellIds.filter(id =>
                 this.containers.some(shell => shell.id === id && / · \+\d+$/.test(shell.title ?? '')))),
@@ -4315,12 +4315,22 @@ export class V2Page {
             }
             const canopyNodeById = canopy
                 ? new Map(this.canopyDatasetNodes.map(node => [node.id, node])) : null;
+            // D087-JULIA BEGIN: the overview's real eligible parents must be present
+            // before LOD and container filtering, even when their branch is undisclosed.
+            const juliaCandidateIds = new Set<string>();
+            if (this.topology === 'julia' && this.topologyIndra && !juliaFocusIds) {
+                const childCounts = new Map<string, number>();
+                for (const node of this.lawSnapshot.nodes) if (node.parent)
+                    childCounts.set(node.parent, (childCounts.get(node.parent) ?? 0) + 1);
+                for (const [id, count] of childCounts) if (count >= 3) juliaCandidateIds.add(id);
+            }
+            // D087-JULIA END
             const sceneNodes = canopy
                 ? [...new Map([...disclosed.nodes.filter(node => canopy.positions.has(node.id)),
                     ...canopyViewMarks.map(mark => canopyNodeById!.get(mark.id)!)].map(node => [node.id, node])).values()]
                 // D087-JULIA BEGIN: focus discloses all real immediate children.
-                : juliaFocusIds ? [...new Map([...disclosed.nodes,
-                    ...source.nodes.filter(node => juliaFocusIds.has(node.id))]
+                : juliaFocusIds || juliaCandidateIds.size ? [...new Map([...disclosed.nodes,
+                    ...source.nodes.filter(node => juliaFocusIds?.has(node.id) || juliaCandidateIds.has(node.id))]
                     .map(node => [node.id, node])).values()] : disclosed.nodes;
                 // D087-JULIA END
             const ids = new Set(sceneNodes.map(n => n.id));
@@ -4785,7 +4795,9 @@ export class V2Page {
                 const atlas = lawResult as JuliaAtlasLayout;
                 renderedIds = juliaFocusIds
                     ? new Set([...juliaFocusIds].filter(id => visibleById.has(id)))
-                    : new Set([...renderedIds].filter(id => atlas.phaseNodeIds.has(id)));
+                    : new Set([...atlas.phaseNodeIds]
+                        .slice(0, juliaOverviewPearlQuota(this.density, this.customNodes, atlas.phaseNodeIds.size))
+                        .filter(id => visibleById.has(id)));
             }
             // D087-JULIA END
             // D082-B1c BEGIN: Completa uses completeRoute directly, so no second

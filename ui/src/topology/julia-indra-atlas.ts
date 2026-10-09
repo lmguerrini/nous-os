@@ -11,12 +11,28 @@ const distance3 = (a: Point3, b: Point3) => Math.hypot(a.x - b.x, a.y - b.y, a.z
 const REFERENCE_WIDTH = 1200;
 const RIM_PX = 8;
 const GAP_PX = 3;
+// D087-JULIA BEGIN: the measured preview drew 47/49 at an eight-pixel rim
+// and 42/45 at a ten-pixel rim in the reference XY frame.
+const OVERVIEW_MIN_CLOSED = 40;
+const OVERVIEW_MIN_SHARE = 0.8;
+const FOCUS_REFERENCE_RIM_PX = 400;
+// D087-JULIA END
+
+/** Density reveals more real closed parents without changing any Julia address. */
+export function juliaOverviewPearlQuota(density: 'essential' | 'balanced' | 'complete' | 'custom',
+  customNodes: number | undefined, available: number): number {
+  const target = density === 'essential' ? 43 : density === 'balanced' ? 45
+    : density === 'complete' ? available : 43 + Math.floor(Math.max(0, customNodes ?? 0) / 2000);
+  return Math.min(available, Math.max(0, target));
+}
 
 export type JuliaAtlasCertificate = Readonly<{
   snapshotDigest: string; dimension: TopologyDimension; phase: 'overview' | 'opened';
   eligibleParents: number; closedPearlsSubmitted: number; closedPearlsDrawn: number; openPassing: number;
   openEligible: number; childSeparationMinPx: number; insideGuideMaxPx: number;
   shellOverlapCount: number; focusedParent: string | null; ok: boolean;
+  closedPearlsRequired: number; closedPearlShare: number; minimumRimPx: number;
+  focusReferenceRimPx: number;
 }>;
 export type JuliaAtlasLayout = TopologyLayout & Readonly<{
   atlas: JuliaAtlasCertificate;
@@ -24,6 +40,12 @@ export type JuliaAtlasLayout = TopologyLayout & Readonly<{
   phaseNodeIds: ReadonlySet<string>;
   hiddenDescendants: ReadonlyMap<string, number>;
 }>;
+
+/** A pending taxonomy can still expose the previous law layout to status readers. */
+export function isJuliaAtlasLayout(layout: TopologyLayout | null | undefined): layout is JuliaAtlasLayout {
+  return !!layout && 'atlas' in layout && 'phaseNodeIds' in layout
+    && 'hiddenDescendants' in layout;
+}
 
 function clipSegment(a: Point3, b: Point3, center: Point3, radius: number): readonly Point3[] {
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -98,12 +120,26 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
   const px = 0.8 * referenceWidth / (2 * fullExtent);
   const rim = RIM_PX / px;
   const gap = GAP_PX / px;
-  const admitted: string[] = [];
+  let admitted: string[] = [];
   // Stable codepoint order makes the choice independent of snapshot iteration order.
   for (const id of eligible) {
     const point = full.positions.get(id)!;
     if (admitted.every(other => distance(point, full.positions.get(other)!) >= 2 * rim + gap)) admitted.push(id);
   }
+  // D087-JULIA BEGIN: a closed pearl promises a readable open chart. Exclude
+  // candidate rims whose real children fail in the pinned focus reference.
+  if (focusedParent === null) admitted = admitted.filter(id => {
+    const opened = composeJuliaIndraAtlas(snapshot, dimension, id, referenceWidth, full);
+    const shell = opened.containers.find(container => container.id === id)!;
+    const focusPx = FOCUS_REFERENCE_RIM_PX / shell.radius;
+    return certifyJuliaAtlasDrawing(opened, snapshot, {
+      nodeIds: opened.phaseNodeIds, shellIds: new Set([id]), countedShellIds: new Set(),
+      guideIds: new Set(opened.guides.map(guide => guide.id)),
+      project: point => ({ x: point.x * focusPx, y: point.y * focusPx }),
+      shellRadiusPx: container => container.radius * focusPx,
+    }).ok;
+  });
+  // D087-JULIA END
   const containers: LayoutContainer[] = admitted.map(id => ({ id, level: nodes.get(id)!.level,
     center: full.positions.get(id)!, radius: rim, open: false, title: nodes.get(id)!.title }));
   const positions = new Map(full.positions);
@@ -175,7 +211,10 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
   const certificate: JuliaAtlasCertificate = { snapshotDigest: snapshot.digest, dimension, phase,
     eligibleParents: eligible.length, closedPearlsSubmitted: containers.filter(c => !c.open).length,
     closedPearlsDrawn: 0, openPassing: 0, openEligible, childSeparationMinPx: 0,
-    insideGuideMaxPx: 0, shellOverlapCount: overlap, focusedParent, ok: false };
+    insideGuideMaxPx: 0, shellOverlapCount: overlap, focusedParent, ok: false,
+    closedPearlsRequired: Math.min(OVERVIEW_MIN_CLOSED, containers.length),
+    closedPearlShare: 0, minimumRimPx: RIM_PX,
+    focusReferenceRimPx: FOCUS_REFERENCE_RIM_PX };
   const absoluteRadius = Math.max(fullExtent,
     ...containers.map(c => distance3(c.center, { x: 0, y: 0, z: 0 }) + c.radius)) * 1.05;
   containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: 0 },
@@ -211,12 +250,16 @@ export function certifyJuliaAtlasDrawing(layout: JuliaAtlasLayout, snapshot: Top
   const parent = layout.atlas.focusedParent;
   if (parent !== null) {
     const shell = shells.find(c => c.id === parent && c.open);
+    // D087-JULIA BEGIN: distance tests use one pinned fitted focus rim,
+    // so wheel zoom cannot change the admission inequalities.
+    const focusPixels = shell ? FOCUS_REFERENCE_RIM_PX / Math.max(1e-9, drawn.shellRadiusPx(shell)) : 0;
+    // D087-JULIA END
     const ids = snapshot.nodes.filter(n => n.parent === parent && drawn.nodeIds.has(n.id)).map(n => n.id);
     const points = ids.map(id => projected(layout.positions.get(id)!));
     const clearances = points.map((p, i) => Math.min(...points.filter((_, j) => i !== j)
       .map(q => Math.hypot(p.x - q.x, p.y - q.y))));
     childSeparationMinPx = clearances.length >= 3
-      ? [...clearances].sort((a, b) => b - a)[2]! : 0;
+      ? [...clearances].sort((a, b) => b - a)[2]! * focusPixels : 0;
     if (shell) for (const guide of layout.guides) {
       if (!guide.id.startsWith(`atlas:${parent}:`) || !drawn.guideIds.has(guide.id)) continue;
       const a = projected(guide.points[0]!), b = projected(guide.points[1]!);
@@ -226,15 +269,19 @@ export function certifyJuliaAtlasDrawing(layout: JuliaAtlasLayout, snapshot: Top
         && b.x <= drawn.viewport.width && b.y <= drawn.viewport.height)) continue;
       if (Math.hypot(a.x - center.x, a.y - center.y) > radius ||
         Math.hypot(b.x - center.x, b.y - center.y) > radius) continue;
-      insideGuideMaxPx = Math.max(insideGuideMaxPx, Math.hypot(a.x - b.x, a.y - b.y));
+      insideGuideMaxPx = Math.max(insideGuideMaxPx, Math.hypot(a.x - b.x, a.y - b.y) * focusPixels);
     }
     if (shell && drawn.nodeIds.has(parent) && childSeparationMinPx >= 8 && insideGuideMaxPx >= 16)
       openPassing = 1;
   }
+  const required = Math.min(OVERVIEW_MIN_CLOSED, layout.atlas.closedPearlsSubmitted);
+  const share = layout.atlas.closedPearlsSubmitted ? closed / layout.atlas.closedPearlsSubmitted : 0;
   const ok = overlap === 0 && (layout.atlas.phase === 'overview'
-    ? closed >= Math.min(9, layout.atlas.eligibleParents) && layout.atlas.eligibleParents > 0
+    ? closed >= required && share >= OVERVIEW_MIN_SHARE && layout.atlas.closedPearlsSubmitted > 0
     : openPassing === 1);
   return { ...layout.atlas, closedPearlsDrawn: closed, openPassing,
+    closedPearlsRequired: required, closedPearlShare: share, minimumRimPx: RIM_PX,
+    focusReferenceRimPx: FOCUS_REFERENCE_RIM_PX,
     childSeparationMinPx, insideGuideMaxPx, shellOverlapCount: overlap, ok };
 }
 
