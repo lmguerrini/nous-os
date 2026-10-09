@@ -10,6 +10,9 @@ import type { LullInquiry } from './lull-inquiry.ts';
 // D082-LAB-FIX3 END
 import { TOPOLOGY_LAWS } from './registry.ts';
 import { composeIndra } from './indra-compose.ts';
+// D087-JULIA BEGIN
+import { composeJuliaIndraAtlas, preflightJuliaIndraAtlas } from './julia-indra-atlas.ts';
+// D087-JULIA END
 
 export function topologySnapshot(manifest: GraphManifest, index: V2Index): TopologySnapshot {
   const ids = new Set(index.nodes.map(node => node.id));
@@ -38,11 +41,16 @@ export function topologySnapshot(manifest: GraphManifest, index: V2Index): Topol
   return { digest: manifest.digest, nodes, edges };
 }
 export function computeTopologyLayout(id: Exclude<TopologyId, 'natural'>,
-  snapshot: TopologySnapshot, dimension: TopologyDimension, indra: boolean): TopologyLayout {
+  snapshot: TopologySnapshot, dimension: TopologyDimension, indra: boolean,
+  focusedParent: string | null = null): TopologyLayout {
   const law = TOPOLOGY_LAWS[id]!;
   const support = law.supports(dimension);
   if (!support.ok) throw new Error(support.reason);
-  const result = indra ? composeIndra(law, snapshot, dimension) : law.layoutFull(snapshot, dimension);
+  // D087-JULIA BEGIN
+  const result = id === 'julia' && indra
+    ? composeJuliaIndraAtlas(snapshot, dimension, focusedParent)
+    : indra ? composeIndra(law, snapshot, dimension) : law.layoutFull(snapshot, dimension);
+  // D087-JULIA END
   if (result.positions.size !== snapshot.nodes.length || result.witnesses.size !== snapshot.nodes.length)
     throw new Error(`${id}: la legge non ha collocato e spiegato ogni nodo reale`);
   for (const node of snapshot.nodes) {
@@ -71,6 +79,9 @@ type PendingLayout = { resolve(value: TopologyLayout): void; reject(reason: Erro
 // D082-LAB-FIX3 BEGIN: inquiry requests share the existing embedded worker.
 type PendingInquiry = { resolve(value: LullInquiry): void; reject(reason: Error): void };
 const pendingLayouts = new Map<number, PendingLayout>();
+// D087-JULIA BEGIN
+type JuliaAtlasPreflight = ReturnType<typeof preflightJuliaIndraAtlas>;
+// D087-JULIA END
 const pendingInquiries = new Map<number, PendingInquiry>();
 // D082-LAB-FIX3 END
 let topologyWorker: Worker | null = null;
@@ -140,16 +151,51 @@ function embeddedTopologyWorker(): Worker | null {
 }
 
 export function computeTopologyLayoutAsync(id: Exclude<TopologyId, 'natural'>,
-  snapshot: TopologySnapshot, dimension: TopologyDimension, indra: boolean): Promise<TopologyLayout> {
+  snapshot: TopologySnapshot, dimension: TopologyDimension, indra: boolean,
+  focusedParent: string | null = null): Promise<TopologyLayout> {
   const worker = embeddedTopologyWorker();
-  if (!worker) return Promise.resolve().then(() => computeTopologyLayout(id, snapshot, dimension, indra));
+  if (!worker) return Promise.resolve().then(() => computeTopologyLayout(id, snapshot, dimension, indra, focusedParent));
   const requestId = ++nextLayoutRequest;
   return new Promise((resolve, reject) => {
     pendingLayouts.set(requestId, { resolve, reject });
-    try { worker.postMessage({ kind: 'topology-layout', requestId, id, snapshot, dimension, indra }); }
+    // D087-JULIA BEGIN
+    try { worker.postMessage({ kind: 'topology-layout', requestId, id, snapshot, dimension, indra, focusedParent }); }
+    // D087-JULIA END
     catch (error) { pendingLayouts.delete(requestId); reject(error); }
   });
 }
+
+// D087-JULIA BEGIN
+export function preflightJuliaIndraAtlasAsync(snapshot: TopologySnapshot,
+  dimension: TopologyDimension): Promise<JuliaAtlasPreflight> {
+  const source = (globalThis as typeof globalThis & { __PROJECTION_WORKER_SOURCE__?: unknown }).__PROJECTION_WORKER_SOURCE__;
+  if (typeof Worker === 'undefined' || typeof source !== 'string')
+    return Promise.resolve().then(() => preflightJuliaIndraAtlas(snapshot, dimension));
+  return new Promise((resolve, reject) => {
+    let worker: Worker;
+    try {
+      const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+      worker = new Worker(url);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const requestId = ++nextLayoutRequest;
+    worker.onmessage = event => {
+      const message = event.data as { kind?: string; requestId?: number;
+        result?: JuliaAtlasPreflight; message?: string };
+      if (message.requestId !== requestId) return;
+      worker.terminate();
+      if (message.kind === 'julia-atlas-preflight-result' && message.result) resolve(message.result);
+      else reject(new Error(message.message ?? 'Julia atlas preflight failed'));
+    };
+    worker.onerror = event => { worker.terminate(); reject(new Error(event.message || 'Julia atlas preflight failed')); };
+    try { worker.postMessage({ kind: 'julia-atlas-preflight', requestId, snapshot, dimension }); }
+    catch (error) { worker.terminate(); reject(error instanceof Error ? error : new Error(String(error))); }
+  });
+}
+// D087-JULIA END
 
 // D082-LAB-FIX3 BEGIN
 /** Build the Lull inquiry from the shared embedded projection worker. The page

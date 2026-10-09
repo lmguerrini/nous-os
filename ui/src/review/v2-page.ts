@@ -106,6 +106,9 @@ import type { TopologyId, TopologyLayout, TopologySnapshot, TopologyWitness } fr
 import { TOPOLOGY_LAWS, topologySupport } from '../topology/registry.ts';
 // D082-LAB-FIX2 BEGIN
 import { cancelPendingTopologyLayouts, computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
+// D087-JULIA BEGIN
+import { certifyJuliaAtlasDrawing, composeJuliaIndraAtlas, type JuliaAtlasLayout } from '../topology/julia-indra-atlas.ts';
+// D087-JULIA END
 // D085-S1 BEGIN: serialize page axes before any asynchronous renderer refresh reads them.
 import { createGeometryTransitionQueue } from './geometry-view2.ts';
 // D085-S1 END
@@ -737,6 +740,9 @@ export class V2Page {
     private readonly lawSnapshotNodeIds: ReadonlySet<string>;
     // D085-X9 END
     private lawLayout: TopologyLayout | null = null;
+    // D087-JULIA BEGIN
+    private juliaAtlasOverviewCamera: unknown = null;
+    // D087-JULIA END
     private guideLayer: { destroy(): void; invalidate(): void } | null = null;
     // D085-S4 BEGIN: the state of the Llull overview fold.
     // `lullOverviewFolded` starts true — a freshly mounted view sits at its fitted
@@ -771,6 +777,44 @@ export class V2Page {
     // D085-S1 END
     private lawActive(): boolean { return this.topology !== 'natural' &&
         (this.topology !== 'canopy-ifs' || this.topologyIndra); }
+    // D087-JULIA BEGIN
+    private juliaAtlasFocusParent(): string | null {
+        if (this.topology !== 'julia' || !this.topologyIndra || !this.selected) return null;
+        const byId = new Map(this.lawSnapshot.nodes.map(node => [node.id, node]));
+        const counts = new Map<string, number>();
+        for (const node of this.lawSnapshot.nodes) if (node.parent)
+            counts.set(node.parent, (counts.get(node.parent) ?? 0) + 1);
+        let node = byId.get(this.selected);
+        while (node) {
+            if ((counts.get(node.id) ?? 0) >= 3) return node.id;
+            node = node.parent ? byId.get(node.parent) : undefined;
+        }
+        return null;
+    }
+    private juliaAtlasCertificate() {
+        if (this.topology !== 'julia' || !this.topologyIndra || !this.lawLayout || !this.view?.projectPoint)
+            return null;
+        const ink = (this.view as ProductView & { readJuliaAtlasInk?: () => {
+            shells: readonly { id: string; radiusPx: number }[]; countedShellIds: readonly string[] } }).readJuliaAtlasInk?.();
+        if (!ink) return null;
+        const canvases = document.querySelectorAll<HTMLCanvasElement>('#render-root canvas[data-topology-guides]');
+        const canvas = canvases.item(canvases.length - 1);
+        let guideIds: string[] = [];
+        try { guideIds = JSON.parse(canvas?.dataset.atlasDrawnIds ?? '[]') as string[]; } catch { /* no drawn guides */ }
+        const painted = (this.view.gestureWitness?.() as { viewportPaintedNodeIds?: readonly string[] } | undefined)
+            ?.viewportPaintedNodeIds ?? [];
+        const radii = new Map(ink.shells.map(shell => [shell.id, shell.radiusPx]));
+        const host = document.getElementById('render-root');
+        return certifyJuliaAtlasDrawing(this.lawLayout as JuliaAtlasLayout, this.lawSnapshot, {
+            nodeIds: new Set(painted), shellIds: new Set(ink.shells.map(shell => shell.id)),
+            countedShellIds: new Set(ink.countedShellIds.filter(id =>
+                this.containers.some(shell => shell.id === id && / · \+\d+$/.test(shell.title ?? '')))),
+            guideIds: new Set(guideIds), project: point => this.view!.projectPoint!(point),
+            shellRadiusPx: shell => radii.get(shell.id) ?? 0,
+            ...(host ? { viewport: { width: host.clientWidth, height: host.clientHeight } } : {}),
+        });
+    }
+    // D087-JULIA END
     // D085-X9b BEGIN: every law presentation path reads one fixed source.
     private sourceIndex(): V2Index {
         // Prototype-only transition harnesses have no constructor snapshot.
@@ -1013,7 +1057,13 @@ export class V2Page {
         // D086-CUSTOM BEGIN
         const custom = this.customRecord();
         // D086-CUSTOM END
+        // D087-JULIA BEGIN
+        const juliaAtlas = this.juliaAtlasCertificate();
+        // D087-JULIA END
         return { ...this.d081Metrics,
+            // D087-JULIA BEGIN
+            ...(juliaAtlas ? { juliaAtlas } : {}),
+            // D087-JULIA END
             // D086-CUSTOM BEGIN
             ...(custom ? { custom } : {}),
             // D086-CUSTOM END
@@ -4220,6 +4270,12 @@ export class V2Page {
             const source = this.sourceIndex();
             // D085-X9b END
             const disclosed = this.visible();
+            // D087-JULIA BEGIN
+            const juliaFocus = this.juliaAtlasFocusParent();
+            const juliaFocusIds = juliaFocus === null ? null : new Set([
+                juliaFocus, ...this.lawSnapshot.nodes.filter(node => node.parent === juliaFocus).map(node => node.id),
+            ]);
+            // D087-JULIA END
             // D081-P7d BEGIN: the canopy reveal owns its representatives independently of
             // manual disclosure. A fixed graph snapshot excludes later passage fetches.
             const projection = this.axes.projection;
@@ -4262,7 +4318,11 @@ export class V2Page {
             const sceneNodes = canopy
                 ? [...new Map([...disclosed.nodes.filter(node => canopy.positions.has(node.id)),
                     ...canopyViewMarks.map(mark => canopyNodeById!.get(mark.id)!)].map(node => [node.id, node])).values()]
-                : disclosed.nodes;
+                // D087-JULIA BEGIN: focus discloses all real immediate children.
+                : juliaFocusIds ? [...new Map([...disclosed.nodes,
+                    ...source.nodes.filter(node => juliaFocusIds.has(node.id))]
+                    .map(node => [node.id, node])).values()] : disclosed.nodes;
+                // D087-JULIA END
             const ids = new Set(sceneNodes.map(n => n.id));
             const visibleById = new Map(sceneNodes.map(node => [node.id, node]));
             // D081-P7d END.
@@ -4408,7 +4468,10 @@ export class V2Page {
             // D081-FRACTAL-MERGE BEGIN: Canopy has its own immutable layout cache.
             // D082-B2 BEGIN: a law sees the full source snapshot independent of density.
             const law = this.lawActive() ? TOPOLOGY_LAWS[this.topology]! : null;
-            const lawKey = law ? `${this.lawSnapshot.digest}|${law.id}|${law.version}|${projection}|${this.topologyIndra}` : null;
+            // D087-JULIA BEGIN
+            const lawKey = law ? `${this.lawSnapshot.digest}|${law.id}|${law.version}|${projection}|${this.topologyIndra}`
+                + (this.topology === 'julia' && this.topologyIndra ? `|atlas:${juliaFocus ?? 'overview'}` : '') : null;
+            // D087-JULIA END
             const layoutKey = lawKey ? `topology:${lawKey}` : canopy ? `fractal-canopy:${projection}:${this.manifest.digest}:${canopy.digest}:${[...ids].sort().join('|')}`
                 : pageLayoutKey(this.manifest.digest, layoutInput);
             // D082-LAB-MERGE-TRIAL END
@@ -4431,8 +4494,18 @@ export class V2Page {
             // D085-S1 BEGIN: a cancelled worker response cannot populate a cache or reach a host.
             let lawResult: TopologyLayout | null = null;
             try {
-                lawResult = lawKey ? this.lawCache.get(lawKey) ?? await computeTopologyLayoutAsync(
-                    this.topology as Exclude<TopologyId, 'natural'>, this.lawSnapshot, projection, this.topologyIndra) : null;
+                // D087-JULIA BEGIN: focus reuses the already resident global
+                // Julia positions and guide field; only its active chart is composed.
+                const overviewKey = this.topology === 'julia' && this.topologyIndra
+                    ? `${this.lawSnapshot.digest}|${law!.id}|${law!.version}|${projection}|true|atlas:overview` : null;
+                const overview = overviewKey ? this.lawCache.get(overviewKey) : null;
+                lawResult = lawKey && juliaFocus && overview
+                    ? this.lawCache.get(lawKey) ?? composeJuliaIndraAtlas(this.lawSnapshot,
+                        projection, juliaFocus, undefined, overview)
+                    : lawKey ? this.lawCache.get(lawKey) ?? await computeTopologyLayoutAsync(
+                    this.topology as Exclude<TopologyId, 'natural'>, this.lawSnapshot, projection, this.topologyIndra,
+                    juliaFocus) : null;
+                // D087-JULIA END
             } catch (error) {
                 if (projectionEpoch !== this.projectionEpoch && error instanceof Error && error.name === 'AbortError') return;
                 throw error;
@@ -4707,6 +4780,14 @@ export class V2Page {
                 const allowed = source.edges.filter(edge => relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading));
                 renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
             } else if (this.density !== 'complete' && !custom && this.restoreNeighbourhood && this.neighbourhoodBefore && !canopy) renderedIds = new Set(this.neighbourhoodBefore.nodes);
+            // D087-JULIA BEGIN: one semantic glyph per real id in the active atlas phase.
+            if (this.topology === 'julia' && this.topologyIndra && lawResult) {
+                const atlas = lawResult as JuliaAtlasLayout;
+                renderedIds = juliaFocusIds
+                    ? new Set([...juliaFocusIds].filter(id => visibleById.has(id)))
+                    : new Set([...renderedIds].filter(id => atlas.phaseNodeIds.has(id)));
+            }
+            // D087-JULIA END
             // D082-B1c BEGIN: Completa uses completeRoute directly, so no second
             // 15,800-element RouteRelation list is needed for Canopy.
             const routedInput: RouteRelation[] = canopy && this.density === 'complete' ? [] : availableArcs.edges.map(edge => ({
@@ -5013,7 +5094,12 @@ export class V2Page {
             // This is the view's container snapshot. The geometry memo uses its array identity,
             // so freeze the array, each record and each centre before either renderer sees it.
             // D082-A-DENSITY BEGIN
-            const nextContainers = Object.freeze(positionedContainers.map(c => {
+            const nextContainers = Object.freeze(positionedContainers
+                // D087-JULIA BEGIN
+                .filter(c => this.topology !== 'julia' || !this.topologyIndra ||
+                    (c.id === ABSOLUTE_CONTAINER_ID ? juliaFocus === null : renderedIds.has(c.id)))
+                // D087-JULIA END
+                .map(c => {
                 const node = visibleById.get(c.id);
                 const title = node && displayLabel(node);
                 // D082-A-PLUSN BEGIN
@@ -5313,7 +5399,11 @@ export class V2Page {
                                 this.why(this.selected, target.id);
                             }
                             else
-                                this.selectPicked(target.id);
+                                // D087-JULIA BEGIN
+                                if (this.topology === 'julia' && this.topologyIndra)
+                                    this.ownDisplayedFailure(this.select(target.id, false));
+                                else this.selectPicked(target.id);
+                                // D087-JULIA END
                         // D085-S5 BEGIN
                         } else this.ownDisplayedFailure(this.exitFocus()); }, onDoublePick: target => { if (target)
                             this.ownDisplayedFailure(this.expand(target.id).then(() => this.select(target.id, false))); },
@@ -5795,6 +5885,10 @@ export class V2Page {
     }
     async select(id: string, toggleExisting = true) {
         if (this.selected === id) { if (toggleExisting) await this.exitFocus(); return; }
+        // D087-JULIA BEGIN
+        if (this.topology === 'julia' && this.topologyIndra && !this.selected)
+            this.juliaAtlasOverviewCamera = this.view?.readCamera() ?? null;
+        // D087-JULIA END
         this.noteCameraIntent();
         this.suppressZoomUntil = performance.now() + 900;
         this.selected = id;
@@ -5856,6 +5950,11 @@ export class V2Page {
         if (this.typedActive()) this.typedSelection = null;
         this.view?.select(null);
         await this.refresh();
+        // D087-JULIA BEGIN
+        if (this.topology === 'julia' && this.topologyIndra && this.juliaAtlasOverviewCamera)
+            this.view?.restoreCamera(this.juliaAtlasOverviewCamera);
+        this.juliaAtlasOverviewCamera = null;
+        // D087-JULIA END
         if (restoreCamera) this.view?.restoreCamera(restoreCamera);
         this.neighbourhoodBefore = null;
         this.neighbourhoodCamera = null;
@@ -6966,6 +7065,9 @@ export class V2Page {
                 this.projectionHost?.getBoundingClientRect() ?? { left: 0, top: 0 })
             : {};
         const viewWitness = this.view?.witness();
+        // D087-JULIA BEGIN
+        const juliaAtlas = this.juliaAtlasCertificate();
+        // D087-JULIA END
         const productVisibility = (viewWitness as typeof viewWitness & { visibility?: { stars: { drawn: number }; labels: { drawn: number } } })?.visibility;
         const drawnSourceIds = new Set([...this.renderedRelations.values()].flatMap(edge =>
             [edge.id, ...edge.underlying.map(source => source.id)]));
@@ -7081,6 +7183,9 @@ export class V2Page {
         // D082-A-READINGS END
         return {
             ...viewWitness,
+            // D087-JULIA BEGIN
+            ...(juliaAtlas ? { juliaAtlas } : {}),
+            // D087-JULIA END
             // D085-S1 BEGIN: this is the mounted topology, not a later queued click.
             taxonomy: this.taxonomyWitness(),
             // D086-NAT BEGIN
@@ -7143,6 +7248,9 @@ export class V2Page {
             })),
         };
     }
+    // D087-JULIA BEGIN
+    atlasStatus() { return this.juliaAtlasCertificate(); }
+    // D087-JULIA END
     get selectedId() { return this.selected; }
     private holographicSelect(id: string, label: string, options: readonly { readonly value: string; readonly label: string }[],
         current: string | null, choose: (value: string) => void): HTMLElement {

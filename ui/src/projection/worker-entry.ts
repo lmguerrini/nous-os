@@ -19,6 +19,9 @@ import { unpackGeometry, type PackedClassicGeometry } from "../render-common/geo
 // D081-P3c END
 // D082-LAB-FIX2 BEGIN
 import { computeTopologyLayout } from "../topology/page-bridge.ts";
+// D087-JULIA BEGIN
+import { preflightJuliaIndraAtlas } from '../topology/julia-indra-atlas.ts';
+// D087-JULIA END
 import type { TopologyDimension, TopologyId, TopologySnapshot } from "../topology/contract.ts";
 // D082-LAB-FIX3 BEGIN
 import { buildLullInquiry } from "../topology/lull-inquiry.ts";
@@ -46,7 +49,21 @@ export function installProjectionWorkerEntry(
     const message = event.data as { kind?: string; requestId?: number; input?: LayoutInput;
       geometryArgs?: Parameters<typeof buildMorphologyGeometry>; geometryPacked?: PackedClassicGeometry;
       id?: Exclude<TopologyId, 'natural'>; snapshot?: TopologySnapshot;
-      dimension?: TopologyDimension; indra?: boolean } | null;
+      dimension?: TopologyDimension; indra?: boolean;
+      // D087-JULIA BEGIN
+      focusedParent?: string | null;
+      // D087-JULIA END
+    } | null;
+    // D087-JULIA BEGIN
+    if (message?.kind === 'julia-atlas-preflight' && typeof message.requestId === 'number'
+      && message.snapshot && message.dimension) {
+      try { scope.postMessage({ kind: 'julia-atlas-preflight-result', requestId: message.requestId,
+        result: preflightJuliaIndraAtlas(message.snapshot, message.dimension) }); }
+      catch (error) { scope.postMessage({ kind: 'julia-atlas-preflight-error', requestId: message.requestId,
+        message: String(error) }); }
+      return;
+    }
+    // D087-JULIA END
     // D082-A-PERF END
     // D082-LAB-FIX3 BEGIN: inquiry work shares the topology/projection worker bundle.
     const inquiryMessage = event.data as { kind?: string; requestId?: number; snapshot?: TopologySnapshot;
@@ -68,7 +85,10 @@ export function installProjectionWorkerEntry(
     if (message?.kind === 'topology-layout' && typeof message.requestId === 'number'
       && message.id && message.snapshot && message.dimension && typeof message.indra === 'boolean') {
       try { scope.postMessage({ kind: 'topology-layout-result', requestId: message.requestId,
-        result: computeTopologyLayout(message.id, message.snapshot, message.dimension, message.indra) }); }
+        // D087-JULIA BEGIN
+        result: computeTopologyLayout(message.id, message.snapshot, message.dimension, message.indra,
+          typeof message.focusedParent === 'string' ? message.focusedParent : null) }); }
+        // D087-JULIA END
       catch (error) { scope.postMessage({ kind: 'topology-layout-error', requestId: message.requestId,
         message: String(error) }); }
       return;

@@ -168,6 +168,9 @@ function circleTable(segments: number): CircleTable {
 
 /** Selection state the container layer needs: a focused or hovered pearl shows its sphere. */
 export type ContainerInteraction = {
+  // D087-JULIA BEGIN
+  readonly forceJuliaAtlasRims?: boolean;
+  // D087-JULIA END
   readonly hoverId?: string | null;
   readonly focusIds?: ReadonlySet<string> | null;
   readonly dimFocus?: { readonly members: ReadonlySet<string> } | null;
@@ -787,7 +790,9 @@ export function drawContainers(
     const selected = containerSelected(container, interaction);
     // True projected radius, measured on the projection itself (world radius × px per world unit).
     const limbRadius = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
-    if (!containerSphereLOD(container.level, open, selected, limbRadius)) return;
+    // D087-JULIA BEGIN
+    if (!interaction?.forceJuliaAtlasRims && !containerSphereLOD(container.level, open, selected, limbRadius)) return;
+    // D087-JULIA END
     context.globalAlpha *= deepZoomShellOpacity(limbRadius, bounds);
     if (context.globalAlpha <= 0) return;
     // The moving pass keeps only the limbs of the spheres that carry the structure: the absolute

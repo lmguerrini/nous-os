@@ -189,9 +189,13 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
     // D085-S5 BEGIN: route hints have no eligibility token at this surface; never
     // paint them. Fine guide volume is capped deterministically during interaction.
     let drawn = 0, suppressed = guides.length - drawableGuides.length;
+    // D087-JULIA BEGIN
+    const atlasDrawnIds: string[] = [];
+    // D087-JULIA END
     // D085-S5 BEGIN: standalone Lab views keep their complete D-084 guide
     // field at rest; only Indra compositions use density sampling then.
-    const composed = drawableGuides.some(guide => guide.id.startsWith('indra:') || guide.id.startsWith('indra-root:'))
+    const composed = drawableGuides.some(guide => guide.id.startsWith('indra:') || guide.id.startsWith('indra-root:')
+      || guide.id.startsWith('atlas:'))
       || guides.some(guide => guide.kind === 'indra-real-edge-route');
     const density = document.querySelector<HTMLButtonElement>('#density-control button[data-density][aria-pressed="true"]')?.dataset.density ?? 'balanced';
     const budget = interacting ? Math.min(450, drawableGuides.length)
@@ -202,7 +206,7 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       // D085-S5 BEGIN: root Figure A guides always survive density and motion LOD.
       const selected = budget >= drawableGuides.length
         || Math.floor((index + 1) * budget / drawableGuides.length) > Math.floor(index * budget / drawableGuides.length);
-      if (!selected && !guide.id.startsWith('indra-root:')) { suppressed++; continue; }
+      if (!selected && !guide.id.startsWith('indra-root:') && !guide.id.startsWith('atlas:')) { suppressed++; continue; }
       // D085-S4 BEGIN: zero active source IDs means no bundle is drawn. The
       // full-snapshot guide remains a geometry/provenance template only.
       if (guide.kind === 'lull-pair-bundle' && activeLullPairs
@@ -292,10 +296,16 @@ export function mountTopologyGuides(host: HTMLElement, view: ProductView,
       // chords are dashed.
       context.setLineDash([]);
       // D085-S4 END
+      // D087-JULIA BEGIN
+      if (segments && guide.id.startsWith('atlas:')) atlasDrawnIds.push(guide.id);
+      // D087-JULIA END
     }
     // D085-S5 BEGIN
     canvas.dataset.guideDrawn = String(drawn);
     canvas.dataset.guideSuppressed = String(suppressed);
+    // D087-JULIA BEGIN
+    canvas.dataset.atlasDrawnIds = JSON.stringify(atlasDrawnIds);
+    // D087-JULIA END
     // D085-S5 END
   };
   const schedule = (motion = false) => {

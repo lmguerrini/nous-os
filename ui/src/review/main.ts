@@ -69,8 +69,10 @@ import { LAB_CONTAINER_DESCRIPTION, TOPOLOGY_IDS, topologyLabel, topologyRowStat
 // D084-W3-LABELS END
 import type { TopologyId } from '../topology/contract.ts';
 // D085-S5 BEGIN: certify Julia's fitted atlas from the loaded read-only snapshot.
-import { topologySnapshot, computeTopologyLayoutAsync } from '../topology/page-bridge.ts';
-import { assessJuliaIndraLegibility } from '../topology/indra-compose.ts';
+import { topologySnapshot } from '../topology/page-bridge.ts';
+// D087-JULIA BEGIN
+import { preflightJuliaIndraAtlasAsync } from '../topology/page-bridge.ts';
+// D087-JULIA END
 import { juliaIndraGateStatus, setJuliaIndraLegibility } from '../topology/registry.ts';
 // D085-S5 END
 // D082-B2 END
@@ -1082,10 +1084,29 @@ function readD081Status(): D081GraphStatus | null {
 // D085-S5 BEGIN: page-owned status sources can change after a taxonomy switch.
 let indraStatusSource: (() => D081GraphStatus) | undefined;
 let indraStatusWrapper: (() => D081GraphStatus) | undefined;
+// D087-JULIA BEGIN
+let lastJuliaAtlasGateKey = '';
+// D087-JULIA END
 // D085-S5 END
 function syncContractGraphStatus(): void {
   const contract = readD081Status();
   if (!contract) return;
+  // D087-JULIA BEGIN: once a settled renderer reports its own phase, it
+  // supersedes the source-only preflight for selector admission and refusal text.
+  if (contract.juliaAtlas && contract.quality === 'completa' && !('mode' in geometry)
+    && geometry.topology === 'julia' && geometry.indra === 'on') {
+    const metric = contract.juliaAtlas;
+    const key = JSON.stringify(metric);
+    if (key !== lastJuliaAtlasGateKey) {
+      lastJuliaAtlasGateKey = key;
+      const eligible = metric.phase === 'overview' ? Math.min(9, metric.eligibleParents) : metric.openEligible;
+      const passing = metric.phase === 'overview' ? Math.min(eligible, metric.closedPearlsDrawn) : metric.openPassing;
+      setJuliaIndraLegibility(axes.projection, metric.ok, { ...metric,
+        eligible, passing, share: eligible ? passing / eligible : 0 });
+      syncTaxonomyControls();
+    }
+  }
+  // D087-JULIA END
   const formatted = formatD081GraphStatus(contract);
   // D082-A-HUD BEGIN: avoid identical human-status mutations that can retrigger observers.
   const statusLine = get<HTMLElement>('human-status');
@@ -2549,14 +2570,31 @@ async function load() {
           ? { useDefaultPipeline: true } : {}),
         // D082-B2 END
       });
+    // D087-JULIA BEGIN: the renderer readiness hook carries the same observed
+    // atlas phase as the page witness and graph status, without changing its ladder.
+    const d082 = (window as Window & { __d082?: { render?: () => object | null } }).__d082;
+    if (d082?.render) {
+      const render = d082.render;
+      d082.render = () => {
+        const readiness = render();
+        const atlas = v2?.atlasStatus();
+        return readiness && atlas ? { ...readiness, juliaAtlas: atlas } : readiness;
+      };
+    }
+    // D087-JULIA END
     // D085-S5 BEGIN: assess both Julia dimensions once from the fixed source
     // snapshot. A failed or interrupted assessment leaves the control refused.
     const juliaSnapshot = topologySnapshot(manifest, v2.index);
     void Promise.all((['2d', '3d'] as const).map(async dimension => {
       try {
-        const layout = await computeTopologyLayoutAsync('julia', juliaSnapshot, dimension, true);
-        const metric = assessJuliaIndraLegibility(juliaSnapshot, layout);
-        setJuliaIndraLegibility(dimension, metric.ok, metric);
+        // D087-JULIA BEGIN: source preflight is explicit; the mounted page
+        // publishes the observed phase certificate through its witness/status.
+        const metric = await preflightJuliaIndraAtlasAsync(juliaSnapshot, dimension);
+        setJuliaIndraLegibility(dimension, metric.ok, {
+          ...metric, eligible: metric.openEligible, passing: metric.openPassingProjected,
+          share: metric.openEligible ? metric.openPassingProjected / metric.openEligible : 0,
+        });
+        // D087-JULIA END
       } catch { setJuliaIndraLegibility(dimension, false); }
       syncTaxonomyControls();
       syncContractGraphStatus();

@@ -1,5 +1,8 @@
 // D085-S7 BEGIN
 import type { RelationDetailCounts } from './relation-routing.ts';
+// D087-JULIA BEGIN
+import type { JuliaAtlasCertificate } from '../topology/julia-indra-atlas.ts';
+// D087-JULIA END
 // D085-S7 END
 export type GraphToolbarCounts = {
   visibleNodes: number; totalNodes: number; levels: string | null; cap: string;
@@ -19,6 +22,9 @@ export type D081GraphStatus = {
     guidesSuppressed: number; eligibleRealEdgeRoutes: number }>;
   juliaIndraGate?: Readonly<{ evaluated: boolean; ok: boolean; eligible: number;
     passing: number; share: number; reason: string | null }>;
+  // D087-JULIA BEGIN
+  juliaAtlas?: JuliaAtlasCertificate;
+  // D087-JULIA END
   // D085-S5 END
   nodes: { visible: number; represented: number; total: number; eligible: number; aggregated: number; aggregates: number };
   // D085-S7 BEGIN
@@ -120,7 +126,11 @@ export function formatD081GraphStatus(status: D081GraphStatus): { line: string; 
     `Qualità: ${{ movimento: "Movimento", recupero: "Recupero", completa: "Completa" }[quality]}.`,
     limit ? `Limite attivo: ${limit.kind} · ${count(limit.value)} · ${sentence(limit.reason)}` : "Limite attivo: nessuno.",
     // D085-S5 BEGIN: the expanded graph status names counted, non-semantic ink.
-    custom
+    // D087-JULIA BEGIN
+    status.juliaAtlas
+      ? `Julia con Indra · ${status.juliaAtlas.phase} ${status.juliaAtlas.ok ? 'leggibile' : 'rifiutata'}: ${count(status.juliaAtlas.closedPearlsDrawn)} perle chiuse disegnate su ${count(status.juliaAtlas.eligibleParents)} genitori eleggibili; ${count(status.juliaAtlas.openPassing)}/${count(status.juliaAtlas.openEligible)} carte aperte leggibili; separazione ${status.juliaAtlas.childSeparationMinPx.toFixed(1)} px, guida interna ${status.juliaAtlas.insideGuideMaxPx.toFixed(1)} px, sovrapposizioni ${count(status.juliaAtlas.shellOverlapCount)}. Le guide non sono relazioni.`
+      : custom
+    // D087-JULIA END
       ? `Custom: ${count(custom.selected)} nodi selezionati, ${count(custom.contextIncluded)} di contesto compresi nei richiesti; ${count(custom.submitted)} inviati al renderer, ${count(custom.drawn)} disegnati, ${count(custom.viewportDrawn)} nella porzione visibile. ${custom.clampedFrom === undefined ? '' : `Richiesta adattata da ${count(custom.clampedFrom)}. `}Fase ${custom.phase}. Le guide strutturali non sono relazioni.`
       : status.indraComposition
       ? `Indra: ${count(status.indraComposition.pearlShellsSubmitted)} perle richieste, ${count(status.indraComposition.pearlShellsDrawn)} ammesse dal LOD, ${count(status.indraComposition.pearlShellsLodSuppressed)} soppresse; ${count(status.indraComposition.guidesDrawn)} guide disegnate / ${count(status.indraComposition.guidesRequested)} richieste, ${count(status.indraComposition.guidesSuppressed)} soppresse; ${count(status.indraComposition.eligibleRealEdgeRoutes)} percorsi guida di archi reali eleggibili. Le guide non sono relazioni.`
