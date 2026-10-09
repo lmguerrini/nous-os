@@ -82,7 +82,10 @@ import { neural3dCompletaPointFloorCssPx } from "#render3f/neural-point-floor.ts
 // D082-B-GPUFLOOR END
 import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
 // D085-S3 BEGIN
-import { QualityLadder, labAnchorInstanceIndices, labDenseInteraction, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, mainRelation, nativeLabSkeleton, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+import { QualityLadder, labAnchorInstanceIndices, labDenseInteraction, labDrawPolicy, labInteractionEnabled, labMainSegmentRanges, labPixelRatio, mainRelation, nativeLabSkeleton, nativeSubsetCounts, presentRenderReadiness } from "#render-common/quality-ladder.ts";
+// D086-BURST BEGIN
+import { renderReadinessHost } from "#render-common/render-readiness-producer.ts";
+// D086-BURST END
 import type { NativeAnchorRules, NativeRelationRank } from "#render-common/quality-ladder.ts";
 // D085-S3 END
 
@@ -106,6 +109,9 @@ export type PreparedCanopyNeural3dMount = {
 export type Render3fOptions = {
   readonly morphology: Morphology;
   readonly organization: Organization;
+  // D086-BURST BEGIN
+  readonly readinessView?: string;
+  // D086-BURST END
   // D085-S3 BEGIN: page-committed Geometry Lab topology, independent of renderer organization.
   readonly labTopology?: 'natural' | 'canopy-ifs' | 'julia' | 'sierpinski' | 'lull';
   readonly labIndra?: boolean;
@@ -338,6 +344,9 @@ export function mount(
   preparedCanopy?: PreparedCanopyNeural3dMount,
   // D082-B-CANOPYN END
 ): Render3fRendererHandle {
+  // D086-BURST BEGIN
+  const readinessHost = renderReadinessHost(container);
+  // D086-BURST END
   const dimensions = containerDimensions(container);
   const devicePixelRatio = requiredDevicePixelRatio();
   const previousPositionStyle = container.style.position;
@@ -693,6 +702,17 @@ export function mount(
   let requestedMainEdges = live.buffers.filaments.edgeIds.length;
   let requestedSemanticEdges = live.buffers.filaments.edgeIds.length;
   let requestedVisualEdges = 0;
+  // D086-BURST BEGIN: an in-place legacy subset has its own presented census.
+  let subsetReadiness: { view: string; nodes: number; edges: number; main: number } | null = null;
+  let activeLegacySubset: DistinctSubsetUpdate | null = null;
+  const legacySubsetCensus = (update: DistinctSubsetUpdate) => {
+    const counts = nativeSubsetCounts(update.input.nodes, update.input.edges,
+      new Map(live.scene.nodes.map(node => [node.id, node.kind])), emphasisIds);
+    return { view: update.readinessView ?? options.readinessView ??
+      `${options.organization}/3d/${derivedMorphology}/${options.lodBand}`,
+      nodes: counts.nodes, edges: counts.allEdges, main: counts.mainEdges };
+  };
+  // D086-BURST END
   const refreshPresentedCounts = (): void => {
     if (typedPicker) {
       const styled = currentStyled;
@@ -732,6 +752,16 @@ export function mount(
       requestedMainEdges = nativeMainIds.size;
       // D085-S3 END
     }
+    // D086-BURST BEGIN: a focus rebuild replaces native buffers, but the drawn
+    // distinct subset and its key remain the accepted page state.
+    if (activeLegacySubset && !typedPicker) {
+      subsetReadiness = legacySubsetCensus(activeLegacySubset);
+      requestedNodes = subsetReadiness.nodes;
+      requestedSemanticEdges = subsetReadiness.edges;
+      requestedMainEdges = subsetReadiness.main;
+      requestedVisualEdges = 0;
+    }
+    // D086-BURST END
   };
   refreshPresentedCounts();
   // D082-A-PERF END
@@ -1116,25 +1146,35 @@ export function mount(
       : nativeProxyActive && stage === 1 ? nativeProxyNodes : 0;
     const skeletonMainRelations = proxyActive ? labProxyEdges : nativeProxyActive ? nativeProxyEdges : 0;
     const drawnNodes = submitted ? submitted.nodes + (proxyActive && stage === 1 ? labProxyNodes : 0)
-      : nativeProxyActive ? stage === 1 ? nativeProxyNodes : requestedNodes
+      : nativeProxyActive ? stage === 1 ? Math.min(requestedNodes, nativeProxyNodes) : requestedNodes
       : world.visible && (nodeResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedNodes, nodeResources.mesh.visible ? nodeResources.geometry.instanceCount : requestedNodes) : 0;
     const drawnSemantic = submitted ? submitted.semanticEdges + (proxyActive ? labProxyEdges : 0)
-      : nativeProxyActive ? nativeProxyEdges
+      : nativeProxyActive ? Math.min(requestedSemanticEdges, nativeProxyEdges)
       : world.visible && (filamentResources.mesh.visible || (distinct !== null && live.scene.nodes.length < DENSE_SCENE_THRESHOLD))
         ? Math.min(requestedSemanticEdges, filamentResources.mesh.visible ? filamentResources.geometry.instanceCount : requestedSemanticEdges) : 0;
     // D085-S3 END
     const drawnVisual = submitted?.visualEdges ?? 0;
     const scope = currentStyled ? readProjectionStyle(currentStyled) : null;
+    // D086-BURST BEGIN: typed readiness follows the displayed projection, including reading.
+    const typedAlgorithm = currentStyled?.projection.determinism.algorithmId;
+    const typedOwner = options.labTopology && options.labTopology !== 'natural'
+      ? `lab/${options.labTopology}${options.labIndra ? '+indra' : ''}`
+      : typedAlgorithm === 'indras-pearls' ? 'indra' : typedAlgorithm === 'natural'
+        ? 'natural' : typedAlgorithm ?? options.organization;
+    // D086-BURST END
     // D085-S3 BEGIN: the phase is complete only after all requested resident ranges and decor draw.
     const activePixelRatio = renderer.getPixelRatio();
     const allDrawn = drawnNodes >= requestedNodes && drawnSemantic >= requestedSemanticEdges
       && drawnVisual >= requestedVisualEdges && labelTimer === undefined
       && activePixelRatio === fullRenderDpr;
     return {
-      view: `${options.labTopology && options.labTopology !== 'natural'
+      // D086-BURST BEGIN
+      view: typedPicker && scope ? `${typedOwner}/3d/${derivedMorphology}/${scope.density}/${scope.reading ?? 'combined'}`
+        : subsetReadiness?.view ?? options.readinessView ?? `${options.labTopology && options.labTopology !== 'natural'
         ? `lab/${options.labTopology}${options.labIndra ? '+indra' : ''}`
         : options.organization}/3d/${derivedMorphology}/${scope?.density ?? options.lodBand}`,
+      // D086-BURST END
       quality: ladder.state.moving ? 'movimento' : stage === 4 && allDrawn ? 'completa' : 'recupero',
       ladder: stage,
       pixelRatio: activePixelRatio,
@@ -1169,7 +1209,10 @@ export function mount(
     // both completed before this callback. One presentation tick avoids an
     // extra GPU-bound frame on the path to the complete witness.
     const publish = () => {
-      if (!destroyed && revision === presentationRevision) presentRenderReadiness(snapshot);
+      // D086-BURST BEGIN
+      if (!destroyed && revision === presentationRevision)
+        presentRenderReadiness(snapshot, typeof readinessHost === 'undefined' ? undefined : readinessHost);
+      // D086-BURST END
     };
     if (snapshot.ladder === 4 && snapshot.quality === 'completa') requestAnimationFrame(publish);
     else requestAnimationFrame(() => requestAnimationFrame(publish));
@@ -1553,8 +1596,10 @@ export function mount(
       // A morphology mutation invalidates the previously complete visual state immediately.
       // This remains a renderer-side estimate, not compositor presentation evidence.
       const snapshot = readinessSnapshot();
+      // D086-BURST BEGIN
       presentRenderReadiness({ ...snapshot, quality: 'recupero', ladder: snapshot.ladder === 4 ? 3 : snapshot.ladder,
-        decor: { ...snapshot.decor, background: false } });
+        decor: { ...snapshot.decor, background: false } }, readinessHost);
+      // D086-BURST END
       renderFrame();
       // D082-A-STALE END
     },
@@ -1562,6 +1607,14 @@ export function mount(
       if (!("styled" in update)) {
         if (typedPicker) throw new TypeError("Legacy subset cannot replace typed 3D visibility");
         distinct?.updateVisibleSubset(update);
+        activeLegacySubset = update;
+        // D086-BURST BEGIN: count the accepted overlay, never the mounted full buffers.
+        subsetReadiness = legacySubsetCensus(update);
+        requestedNodes = subsetReadiness.nodes;
+        requestedSemanticEdges = subsetReadiness.edges;
+        requestedMainEdges = subsetReadiness.main;
+        requestedVisualEdges = 0;
+        // D086-BURST END
         // D085-S3 BEGIN: reuse the existing node-attribute update decision when
         // deciding whether this revision will rebuild the native proxy below.
         // D086-CUSTOM BEGIN: entering or leaving dense policy refreshes resident GPU and proxy radii.
@@ -1637,6 +1690,14 @@ export function mount(
         liveUsesDenseDrawingPolicy = update.usesDenseDrawingPolicy === true;
         // D086-CUSTOM END
         // D082-A-NODES END
+        // D086-BURST BEGIN: a pure visibility revision still owns a new certificate.
+        subsetReadiness = legacySubsetCensus(update);
+        requestedNodes = subsetReadiness.nodes;
+        requestedSemanticEdges = subsetReadiness.edges;
+        requestedMainEdges = subsetReadiness.main;
+        requestedVisualEdges = 0;
+        renderFrame();
+        // D086-BURST END
         return;
       }
       if (typedPicker === null) {

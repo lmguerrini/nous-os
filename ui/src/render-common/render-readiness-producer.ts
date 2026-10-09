@@ -27,6 +27,24 @@ export type PresentedRenderReadiness = {
 let frame = 0;
 let sink: ((next: PresentedRenderReadiness) => void) | null = null;
 let latest: PresentedRenderReadiness | null = null;
+// D086-BURST BEGIN: a presentation belongs to its mounted view, not to a page-wide clock.
+let activeHost: Element | null = null;
+const hostPresentations = new WeakMap<Element, Omit<PresentedRenderReadiness, 'frame' | 'origin'>>();
+
+export function renderReadinessHost(container: Element): Element {
+  return typeof container.closest === 'function' ? container.closest('.view-host') ?? container : container;
+}
+
+/** Commit the view that actually owns the displayed drawing and replay its last frame. */
+export function activateRenderReadinessHost(host: Element, expectedView?: string): PresentedRenderReadiness | null {
+  activeHost = host;
+  const presented = hostPresentations.get(host);
+  // D086-BURST BEGIN: an unchanged commit may replay only its own visible state.
+  return presented && (expectedView === undefined || presented.view === expectedView)
+    ? presentRenderReadiness(presented, host) : null;
+  // D086-BURST END
+}
+// D086-BURST END
 
 /** A-HUD installs its contract function once; this keeps renderers independent of review UI. */
 export function installRenderReadinessSink(next: (value: PresentedRenderReadiness) => void): () => void {
@@ -36,7 +54,13 @@ export function installRenderReadinessSink(next: (value: PresentedRenderReadines
   return () => { if (sink === next) sink = previous; };
 }
 
-export function presentRenderReadiness(value: Omit<PresentedRenderReadiness, 'frame' | 'origin'>): PresentedRenderReadiness {
+export function presentRenderReadiness(value: Omit<PresentedRenderReadiness, 'frame' | 'origin'>,
+  host?: Element): PresentedRenderReadiness {
+  // D086-BURST BEGIN: late frames from a retired host cannot become the HUD's frame.
+  if (host) hostPresentations.set(host, value);
+  if (host && activeHost !== null && host !== activeHost)
+    return { ...value, frame, origin: 'renderer' };
+  // D086-BURST END
   // D085-S3 BEGIN
   const next = { ...value, frame: ++frame, origin: 'renderer' as const };
   // D085-S3 END
@@ -48,7 +72,11 @@ export function presentRenderReadiness(value: Omit<PresentedRenderReadiness, 'fr
 // D082-A-PERF BEGIN: during a new-scene preparation the resident old frame is
 // still displayed. Report only buffers actually prepared and zero drawn for the
 // requested scene; a renderer presentation supersedes this transient state.
-export function reportPreparationReadiness(value: Omit<PresentedRenderReadiness, 'frame' | 'origin'>): void {
+export function reportPreparationReadiness(value: Omit<PresentedRenderReadiness, 'frame' | 'origin'>,
+  host?: Element): void {
+  // D086-BURST BEGIN: preparation of a candidate host never replaces a committed drawing.
+  if (host && activeHost !== null && host !== activeHost) return;
+  // D086-BURST END
   // D085-S3 BEGIN: preparation never carries a presented-frame certificate.
   sink?.({ ...value, frame: ++frame, origin: 'preparation' });
   // D085-S3 END

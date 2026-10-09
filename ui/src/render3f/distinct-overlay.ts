@@ -50,7 +50,10 @@ export function mountDistinctOverlay(
   // scene (whose edges are the ones mounted at mount time), so an in-place subset change stores
   // its entries here and `updateStyles` re-merges them after every rebuild — drawn edges that
   // were never part of the mounted scene keep their resolved presentation.
-  let subsetNodeEntries = new Map<string, { glyph: NodeGlyph | undefined; radiusPx: number | undefined }>();
+  // D086-BURST BEGIN: retained overlays need complete revised node paint.
+  let subsetNodeEntries = new Map<string, { glyph: NodeGlyph | undefined; radiusPx: number | undefined;
+    tintSrgb: readonly [number, number, number] | undefined; opacityPermille: number | undefined }>();
+  // D086-BURST END
   let subsetEdgeEntries = new Map<string, { color: string; presentation: EdgePresentation | undefined }>();
   const updateStyles = () => {
     nodeStyles = new Map(scene.nodes.map((node) => [node.id, {
@@ -63,7 +66,12 @@ export function mountDistinctOverlay(
     }]));
     for (const [id, entry] of subsetNodeEntries) {
       const current = nodeStyles.get(id);
-      if (current) nodeStyles.set(id, { ...current, glyph: entry.glyph, radiusPx: entry.radiusPx });
+      if (current) nodeStyles.set(id, { ...current, glyph: entry.glyph, radiusPx: entry.radiusPx,
+        // D086-BURST BEGIN
+        color: entry.tintSrgb ? `rgb(${entry.tintSrgb.map(value => Math.round(value * 255)).join(', ')})` : current.color,
+        opacity: entry.opacityPermille === undefined ? current.opacity : entry.opacityPermille / SCENE_PERMILLE_SCALE,
+        // D086-BURST END
+      });
     }
     for (const [id, entry] of subsetEdgeEntries) edgeStyles.set(id, entry);
   };
@@ -113,7 +121,8 @@ export function mountDistinctOverlay(
       // an in-place subset change has ever made.
       subsetNodeEntries = new Map(subsetNodeEntries);
       for (const [id, entry] of update.nodeEntries)
-        subsetNodeEntries.set(id, { glyph: entry.glyph, radiusPx: entry.radiusPx });
+        subsetNodeEntries.set(id, { glyph: entry.glyph, radiusPx: entry.radiusPx,
+          tintSrgb: entry.tintSrgb, opacityPermille: entry.opacityPermille });
       subsetEdgeEntries = new Map(subsetEdgeEntries);
       for (const [id, entry] of update.edgeEntries)
         subsetEdgeEntries.set(id, { color: entry.color, presentation: entry.presentation });

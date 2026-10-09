@@ -119,6 +119,9 @@ export function focusArcOpacity(
 export type DistinctSubsetUpdate = {
   readonly input: MorphologyInput;
   readonly geometry: MorphologyGeometry;
+  // D086-BURST BEGIN: the canvas subset and its certificate share one revision.
+  readonly readinessView?: string;
+  // D086-BURST END
   // D086-CUSTOM BEGIN
   readonly usesDenseDrawingPolicy?: boolean;
   readonly denseNativeRadiusOnly?: boolean;
@@ -130,7 +133,9 @@ export type DistinctSubsetUpdate = {
   // D085-S3 END
   // D082-A-NODES BEGIN
   readonly nodeEntries: ReadonlyMap<string, { readonly glyph?: NodeGlyph | undefined;
-    readonly radiusPx?: number | undefined; readonly haloRadiusPx?: number | undefined }>;
+    readonly radiusPx?: number | undefined; readonly haloRadiusPx?: number | undefined;
+    readonly tintSrgb?: readonly [number, number, number] | undefined;
+    readonly opacityPermille?: number | undefined }>;
   // D082-A-NODES END
   readonly edgeEntries: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
   // D086-F1 BEGIN: whether the revised subset is a Lab scene whose native discs follow the canvas core.

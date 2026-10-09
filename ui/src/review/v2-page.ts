@@ -131,6 +131,9 @@ import { showLabNotice } from './lab-notice.ts';
 // D082-B-NOTICE END
 // D082-A-HUD BEGIN: page-owned readiness until renderers publish presented-frame counts.
 import { currentRenderReadiness, reportRenderReadiness, renderPercent } from './render-readiness.ts';
+// D086-BURST BEGIN
+import { activateRenderReadinessHost } from '../render-common/render-readiness-producer.ts';
+// D086-BURST END
 import type { RenderReadiness, StageCounts } from './render-readiness.ts';
 import { withRenderProgress } from './toolbar-status.ts';
 // D082-A-HUD END
@@ -1104,7 +1107,10 @@ export class V2Page {
         };
         const next: RenderReadiness = {
             frame: this.d082Frame + 1,
-            view: `${this.axes.organization}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`,
+            // D086-BURST BEGIN: preparation names the active Lab law, not its native renderer organization.
+            view: `${this.topology !== 'natural' ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}`
+                : this.axes.organization}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`,
+            // D086-BURST END
             quality,
             ladder: visible === 0 ? 0 : full ? 4 : quality === 'recupero' ? 2 : 1,
             nodes: counts(nodeRequired, visible, visible),
@@ -1124,12 +1130,16 @@ export class V2Page {
         this.d082ReadinessKey = key;
         this.d082Frame++;
         reportRenderReadiness(next);
-        const percent = renderPercent(next);
+        // D086-BURST BEGIN: a rejected page estimate cannot repaint the HUD's
+        // progress after the resident renderer's replay restored its real frame.
+        const accepted = currentRenderReadiness();
+        const percent = renderPercent(accepted ?? next);
+        // D086-BURST END
         if (percent !== this.d082StatusPercent) {
             this.d082StatusPercent = percent;
             const statusLine = typeof document !== 'undefined' ? document.getElementById('human-status') : null;
             if (!statusLine) return;
-            statusLine.textContent = withRenderProgress(statusLine.textContent ?? '', renderPercent(next));
+            statusLine.textContent = withRenderProgress(statusLine.textContent ?? '', percent);
             // D085-S3 BEGIN: follow the header's live custom-tooltip contract.
             statusLine.dataset.tooltip = statusLine.textContent ?? '';
             statusLine.removeAttribute('title');
@@ -2572,6 +2582,9 @@ export class V2Page {
             this.projectionHost?.remove();
             this.projectionRenderer = renderer;
             this.projectionHost = host;
+            // D086-BURST BEGIN
+            activateRenderReadinessHost(host);
+            // D086-BURST END
             this.mountedCameraKey = cameraKey;
             this.overviewRatio = null;
             this.programmaticCamera();
@@ -2639,6 +2652,12 @@ export class V2Page {
         // D082-A-DENSITY BEGIN
         this.densitySwitchPending = false;
         // D082-A-DENSITY END
+        // D086-BURST BEGIN: an identical typed drawing may accept no new renderer frame.
+        const readinessOwner = this.topology !== 'natural'
+            ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
+        const expectedView = `${readinessOwner}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`;
+        if (this.projectionHost) activateRenderReadinessHost(this.projectionHost, expectedView);
+        // D086-BURST END
     }
     /** A selection that did not come from a canvas pick (a search result, a list, a programmatic call)
      * reaches the typed explanation the way a pick does: a selected node the result draws becomes the
@@ -4143,10 +4162,13 @@ export class V2Page {
             // renderer's hovered ID still belongs to the new law. The next
             // pointer event can establish a new focus. Natural/Indra keep their
             // established pin path.
-            if (this.lawActive()) {
+            // D086-BURST BEGIN: classic canvas hover is transient emphasis.
+            // Typed views also use hover as an explicit pinned projection focus.
+            if (!this.typedActive()) {
                 this.hovered = null;
                 this.hoveredEdge = null;
             }
+            // D086-BURST END
             // D086-F2 END
             this.lastRefreshSettingKey = settingKey;
         }
@@ -5154,6 +5176,16 @@ export class V2Page {
                     // D082-A-DENSITY BEGIN
                     this.densitySwitchPending = false;
                     // D082-A-DENSITY END
+                    // D086-BURST BEGIN: the accepted in-place drawing owns the
+                    // resident host. Replay its matching frame after page status;
+                    // a newly presented subset frame replaces this certificate.
+                    if (this.viewHost) {
+                        const readinessOwner = this.topology !== 'natural'
+                            ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
+                        const expectedView = `${readinessOwner}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`;
+                        activateRenderReadinessHost(this.viewHost, expectedView);
+                    }
+                    // D086-BURST END
                     return;
                 }
                 // The view could not take the update in place: fall through and remount as before.
@@ -5406,6 +5438,9 @@ export class V2Page {
             // D085-S5 END
             // D085-S1 END
             this.viewHost = nextHost;
+            // D086-BURST BEGIN: replay the committed mount's own submitted frame.
+            activateRenderReadinessHost(nextHost);
+            // D086-BURST END
             this.canopyRailLayer = nextRailLayer;
             // D082-B2 BEGIN
             this.guideLayer = nextGuideLayer;
@@ -5617,12 +5652,13 @@ export class V2Page {
                 } finally {
                     if (this.densityAnimationAbort === animationAbort) this.densityAnimationAbort = null;
                 }
-                this.densityTransitionDisplacement = { ...this.densityTransitionDisplacement,
-                    phase: projectionEpoch === this.projectionEpoch && densityTransitionIntent === this.geometryIntent
-                        ? 'complete' : 'superseded' };
-                if (this.densityTransitionDisplacement.phase === 'complete' && !this.d081LastInteraction)
-                    this.d081Quality = 'completa';
-                this.d081Emit();
+                // D086-BURST BEGIN: a cancelled transition has no publication lease.
+                if (projectionEpoch === this.projectionEpoch && densityTransitionIntent === this.geometryIntent) {
+                    this.densityTransitionDisplacement = { ...this.densityTransitionDisplacement, phase: 'complete' };
+                    if (!this.d081LastInteraction) this.d081Quality = 'completa';
+                    this.d081Emit();
+                }
+                // D086-BURST END
             }
             // D086-NAT END
         }).finally(() => {
@@ -5633,12 +5669,40 @@ export class V2Page {
             }
             // D085-S7 END
             this.refreshPending--;
-            if (this.d081Quality === 'recupero' && this.refreshPending === 0) {
+            // D086-BURST BEGIN: a superseded job may release the last pending
+            // count after the current commit. In that case reconcile only the
+            // committed drawing, never its superseded preparation.
+            const committedView = this.density === this.committedDensity
+                && this.topology === this.committedTaxonomy.topology
+                && this.topologyIndra === this.committedTaxonomy.indra;
+            const reconcile = projectionEpoch === this.projectionEpoch
+                || this.refreshPending === 0 && committedView && !this.geometryTransitionActive;
+            if (reconcile && this.d081Quality === 'recupero' && this.refreshPending === 0) {
                 this.d081FinishIfReady();
             }
             // D082-A-HUD BEGIN: publish after the pending scene count changes, including refusal paths.
-            this.d081Emit();
+            if (reconcile) this.d081Emit();
             // D082-A-HUD END
+            // D086-BURST END
+            // D086-BURST BEGIN: an accepted return to a resident drawing has no new frame.
+            // Replay only when that drawing already certifies this committed state.
+            if (reconcile && committedView) {
+                const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
+                const readinessOwner = this.topology !== 'natural'
+                    ? `lab/${this.topology}${this.topologyIndra ? '+indra' : ''}` : this.axes.organization;
+                const expectedView = `${readinessOwner}/${this.axes.projection}/${this.axes.morphology}/${this.density}/${this.axes.reading}`;
+                const presented = liveHost ? activateRenderReadinessHost(liveHost, expectedView) : null;
+                if (presented?.quality === 'completa' && this.d081Quality === 'recupero') {
+                    this.d081Quality = 'completa';
+                    // A superseded refresh can still be draining. Its count is
+                    // preparation only and must not clear this renderer frame.
+                    if (this.refreshPending === 0) {
+                        this.d081Emit();
+                        if (liveHost) activateRenderReadinessHost(liveHost, expectedView);
+                    }
+                }
+            }
+            // D086-BURST END
         });
     }
     async expand(id: string) {
@@ -5857,6 +5921,31 @@ export class V2Page {
         await this.refresh(false, true);
     }
     // D085-S7 END
+    // D086-BURST BEGIN: a cancelled transition may restore page truth without
+    // committing another drawing. Hand readiness back to the mounted renderer.
+    private replayRestoredRenderer(): void {
+        const axes = this.committedAxes;
+        const density = this.committedDensity;
+        if (!axes || !density) return;
+        const topology = this.committedTaxonomy;
+        const owner = topology.topology !== 'natural'
+            ? `lab/${topology.topology}${topology.indra ? '+indra' : ''}` : axes.organization;
+        const expectedView = `${owner}/${axes.projection}/${axes.morphology}/${density}/${axes.reading}`;
+        const host = this.typedActive() ? this.projectionHost : this.viewHost;
+        if (host && activateRenderReadinessHost(host, expectedView)) return;
+        // A host with no certificate must produce a real frame. Join the tail
+        // of the lane so a newer queued commit can present first.
+        void this.transitions.enqueue(async () => {
+            if (this.committedAxes !== axes || this.committedDensity !== density
+                || this.committedTaxonomy.topology !== topology.topology
+                || this.committedTaxonomy.indra !== topology.indra
+                || !(this.view || this.projectionRenderer)) return;
+            const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
+            if (liveHost && activateRenderReadinessHost(liveHost, expectedView)) return;
+            this.ownDisplayedFailure(this.refresh());
+        });
+    }
+    // D086-BURST END
     /** Change density; Natural aligns a fresh canonical layout while zoom keeps its coordinates. */
     // D086-CUSTOM BEGIN
     async setDensityIntent(intent: CustomDensityIntent): Promise<CustomCommitFact | 'superseded'> {
@@ -5937,6 +6026,9 @@ export class V2Page {
                         this.d081Quality = previousQuality;
                         this.d081Metrics = previousMetrics;
                         if (previousMetrics?.nodes && previousMetrics?.edges) this.d081Emit();
+                        // D086-BURST BEGIN
+                        this.replayRestoredRenderer();
+                        // D086-BURST END
                         // D086-F2 END
                     }
                     return 'superseded' as const;
@@ -5961,8 +6053,21 @@ export class V2Page {
     private async applyDensity(value: Density, inheritedOrganization: PageAxes['organization'] | null = null,
         intent = this.geometryIntent) {
         const next = normalizeDensity(value);
-        if (next === this.density && !inheritedOrganization && !this.customDirty)
+        // D086-BURST BEGIN: a return to the resident density still ends the recovery lease.
+        if (next === this.density && next === this.committedDensity
+            && !inheritedOrganization && !this.customDirty) {
+            const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
+            if (liveHost) {
+                const presented = activateRenderReadinessHost(liveHost);
+                if (presented?.quality === 'completa' && this.refreshPending === 0
+                    && this.d081Quality === 'recupero') {
+                    this.d081Quality = 'completa';
+                    this.d081Emit();
+                }
+            }
             return;
+        }
+        // D086-BURST END
         // D082-A-DENSITY BEGIN: a density switch is a filter change, never a fit intent.
         this.densitySwitchPending = true;
         // D082-A-DENSITY END
@@ -6266,10 +6371,18 @@ export class V2Page {
         const committedBefore = this.committedAxes;
         // D085-S1 END
         // D085-S1 BEGIN: a cancelled provisional taxonomy cannot outlive its task.
-        const restore = () => {
+        // D086-BURST BEGIN: the same cancellation is observed in try and catch.
+        let restored = false;
+        const restore = (superseded = false) => {
+            if (restored) return;
+            restored = true;
+            // D086-BURST END
             this.axes = previousAxes; this.topology = previous.topology; this.topologyIndra = previous.indra;
             this.legacyIndra = previous.legacyIndra; this.taxonomyExplicit = previous.explicit;
             this.restoreAxisState(priorAxisState);
+            // D086-BURST BEGIN
+            if (superseded) this.replayRestoredRenderer();
+            // D086-BURST END
         };
         // D085-S1 END
         this.topology = topology;
@@ -6297,7 +6410,7 @@ export class V2Page {
             // D085-S1 BEGIN: cancellation can resolve refresh() before a mount commits.
             if (intent !== this.geometryIntent) {
                 if (this.committedAxes === committedBefore &&
-                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore();
+                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore(true);
                 throw new GeometrySupersededError();
             }
             // D085-S1 END
@@ -6311,7 +6424,7 @@ export class V2Page {
             // D085-S1 BEGIN
             if (intent !== this.geometryIntent) {
                 if (this.committedAxes === committedBefore &&
-                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore();
+                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore(true);
                 throw new GeometrySupersededError();
             }
             // D085-S1 BEGIN: a post-commit error must not put old state over a mounted law.
@@ -6371,7 +6484,12 @@ export class V2Page {
             try {
                 await this.applyAxes(value);
                 if (intent !== this.geometryIntent) {
-                    if (this.committedAxes === committedBefore) this.restoreAxisState(previousState);
+                    if (this.committedAxes === committedBefore) {
+                        this.restoreAxisState(previousState);
+                        // D086-BURST BEGIN
+                        this.replayRestoredRenderer();
+                        // D086-BURST END
+                    }
                     return 'superseded' as const;
                 }
                 // D085-S1 BEGIN: a protected mount may resolve while keeping the old dimension.

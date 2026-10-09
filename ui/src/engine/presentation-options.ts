@@ -189,3 +189,11 @@ export function mixTowardField(color: string, field: string, permille: number): 
   const channel = (value: number, background: number) => Math.round(background + (value - background) * keep);
   return `rgba(${channel(from.r, to.r)}, ${channel(from.g, to.g)}, ${channel(from.b, to.b)}, ${from.a})`;
 }
+
+// D086-BURST BEGIN: retained morphology canvases use the fresh scene's tint law.
+export function revisedCanvasNodeColor(current: string, field: string,
+  tint: readonly [number, number, number] | undefined, opacityPermille: number | undefined): string {
+  return tint && opacityPermille !== undefined
+    ? mixTowardField(tintRgba(current, tint, 1000), field, opacityPermille) : current;
+}
+// D086-BURST END

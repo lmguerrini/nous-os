@@ -9,6 +9,21 @@ export const MODEL_PREP_SLICE_MS = 24;
 // D082-A-PERF END
 export { presentRenderReadiness } from './render-readiness-producer.ts';
 
+// D086-BURST BEGIN: a retained native scene can present a different real subset.
+export function nativeSubsetCounts(
+  nodes: readonly { readonly id: string }[],
+  edges: readonly { readonly id: string; readonly source: string; readonly target: string }[],
+  residentKinds: ReadonlyMap<string, string>, emphasis: ReadonlySet<string> | null,
+): { nodes: number; mainEdges: number; allEdges: number } {
+  const mainEdges = edges.filter(edge => mainRelation({ attested: true,
+    selectedIncident: !!(emphasis?.has(edge.source) || emphasis?.has(edge.target)),
+    sourceHub: residentKinds.get(edge.source) === 'hub', targetHub: residentKinds.get(edge.target) === 'hub',
+    sourceDomain: residentKinds.get(edge.source) === 'domain',
+    targetDomain: residentKinds.get(edge.target) === 'domain' })).length;
+  return { nodes: nodes.length, mainEdges, allEdges: edges.length };
+}
+// D086-BURST END
+
 /** The last input restarts this clock. Stage 4 is reached 320 ms after that input. */
 export const QUALITY_RESTORE_MS = [0, 80, 160, 320] as const;
 
