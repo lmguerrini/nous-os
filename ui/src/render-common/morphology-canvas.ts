@@ -2283,9 +2283,13 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // The disc set the titles avoid: the review label pass's shared set when present, otherwise the
   // pearls about to be drawn — built lazily so a shared label set skips that whole pass.
   const sharedDiscs = style.interaction?.labelDiscs;
+  // D087-LABELS BEGIN: the discs exist only so container titles can avoid pearls. While the labels
+  // axis hides the titles there is no placement pass to feed, so no node is projected for it.
+  const titlesHidden = style.interaction?.hideContainerTitles === true;
   // D082-B1c BEGIN: Canopy labels are an overlay and need no per-frame disc pass.
-  const pearlDiscs = sharedDiscs ? null : canopyDenseNeural ? [] : pearlDiscsFor(geometry, style, project, contract, appearance);
+  const pearlDiscs = sharedDiscs ? null : canopyDenseNeural || titlesHidden ? [] : pearlDiscsFor(geometry, style, project, contract, appearance);
   // D082-B1c END.
+  // D087-LABELS END
   // One projection → limb-radius memo per frame keeps each sphere's outline geometry single-pass.
   const frameCache = createContainerFrameCache();
   drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, frameCache);

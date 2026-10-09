@@ -810,6 +810,10 @@ export const createProductView: CreateProductView = async (input) => {
     // D087-LABELS END
   } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate",
     hideContainerTitles: !input.axes.labels };
+  // D087-LABELS BEGIN: the labels-off pass reads anchors only for the marks it can still draw, and
+  // whether the dataset holds any dynamic-origin node is a property of the mounted data itself.
+  const dynamicOriginsPresent = input.data.nodes.some((node) => node.origin === "dynamic");
+  // D087-LABELS END
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
   // D085-X8 BEGIN: this view owns the measured shell LOD counters. They change
@@ -845,6 +849,10 @@ export const createProductView: CreateProductView = async (input) => {
   // D085-X8 END
   let placed: LabelWitness[] = [];
   let visibleTitleCount = 0;
+  // D087-LABELS BEGIN: true while the label ink of an on period is still on the page, so the
+  // labels-off pass clears it exactly once per transition instead of on every settle.
+  let labelsOnOutput = input.axes.labels;
+  // D087-LABELS END
   let frameId = 0;
   let hoverFrame = 0;
   let movingLabelFrame = 0;
@@ -1225,17 +1233,34 @@ export const createProductView: CreateProductView = async (input) => {
     // The selected node's own label is hidden with the rest: the drawn selection mark, the panel
     // and the drawer still identify it, and re-enabling runs the untouched pass from scratch.
     if (!axes.labels) {
-      placed = [];
-      visibleTitleCount = 0;
-      layer.replaceChildren();
-      appendDynamicRings(moving && three !== null && visible.size >= DENSE_SCENE_THRESHOLD);
-      appendSelectionMarkers(visibleWitnesses(handle.readWorldAnchorWitnesses()));
-      // The container titles live on the morphology canvas; one repaint drops their ink.
-      if (!moving && drawnGeometry?.containers.length) redrawMorphology();
+      // The clear of the previous on period runs once per transition, not on every settle: the
+      // placed labels, the shared discs and the layer go, and one morphology repaint drops the
+      // container titles' ink. A labels-off boot starts with nothing to clear.
+      if (labelsOnOutput) {
+        labelsOnOutput = false;
+        placed = [];
+        visibleTitleCount = 0;
+        layer.replaceChildren();
+        morphologyInteraction.labelDiscs = null;
+        // The container titles live on the morphology canvas; one repaint drops their ink.
+        if (!moving && drawnGeometry?.containers.length) redrawMorphology();
+      }
+      // While off only the non-label marks track the camera, and only when one can draw: with no
+      // dynamic origin in the data and no custom-palette selection or node hover to ring, no
+      // anchor witness is read and the layer is left untouched.
+      const marksDenseMotion = moving && three !== null && visible.size >= DENSE_SCENE_THRESHOLD;
+      const ringsDraw = dynamicOriginsPresent && !marksDenseMotion;
+      const markersDraw = axes.colour === "custom" && (selected != null || hover?.kind === "node");
+      if (ringsDraw || markersDraw) {
+        layer.replaceChildren();
+        appendDynamicRings(marksDenseMotion);
+        appendSelectionMarkers(markersDraw ? visibleWitnesses(handle.readWorldAnchorWitnesses()) : []);
+      } else if (layer.childElementCount > 0) layer.replaceChildren();
       scheduleMarks.record("label-pass-off", performance.now(), 0);
       if (!moving) window.dispatchEvent(new CustomEvent("d081:labels-settled"));
       return;
     }
+    labelsOnOutput = true;
     // D087-LABELS END
     const movingIndra3d = moving && three !== null && axes.organization === "indra";
     // D081-P3e BEGIN: dense Natural 3D projects only nodes that can actually earn a moving label.

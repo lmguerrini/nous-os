@@ -1827,15 +1827,23 @@ export function mountProjection2d(
   // The DOM label overlay: one placement pass per rendered frame, no timers, zero when idle.
   const labels = mountProjectionLabelOverlay(container);
   let fittedRatio: number | null = null;
+  // "D087-LABELS BEGIN": the off clear is one-shot per transition — the first suppressed pass
+  // empties the overlay once; every later suppressed pass (each redraw while off) does nothing.
+  let labelsOffCleared = scope?.labels === false;
+  // "D087-LABELS END"
   const labelPass = (): void => {
     const box = container.getBoundingClientRect();
     if (box.width <= 0 || box.height <= 0) return;
     // "D087-LABELS BEGIN": with the labels axis off this pass builds no candidate, disc or rim and
     // measures nothing; the single empty repaint clears whatever the previous on state placed.
     if (scope?.labels === false) {
-      labels.update({ candidates: [], bounds: EMPTY_LABEL_BOUNDS });
+      if (!labelsOffCleared) {
+        labelsOffCleared = true;
+        labels.update({ candidates: [], bounds: EMPTY_LABEL_BOUNDS });
+      }
       return;
     }
+    labelsOffCleared = false;
     // "D087-LABELS END"
     const ratio = sigma.getCamera().getState().ratio;
     if (fittedRatio === null) fittedRatio = ratio;

@@ -662,6 +662,10 @@ export function mount(
   let derivedMorphology: ProjectionVisualsMorphology = initialScope?.morphology ?? "stellar";
   let typedLabelBudget: number | undefined = initialScope?.labelBudget;
   let typedLabelOverlay: ProjectionLabelOverlay | null = null;
+  // D087-LABELS BEGIN: the off clear is one-shot per transition — the first suppressed update
+  // empties the overlay once; every later suppressed update (each camera settle) does nothing.
+  let typedLabelsOffCleared = typedLabelsSuppressed();
+  // D087-LABELS END
   let typedFittedCameraDistance: number | null = null;
   // D085-S3 BEGIN: an empty derived layer needs no full-viewport compositor
   // surface. Stellar's starfield counts as content even without guides.
@@ -1022,20 +1026,25 @@ export function mount(
         nodeSizeScale: () => 1,
       });
       if (typedLabelOverlay === null) typedLabelOverlay = mountProjectionLabelOverlay(container);
+      // D087-LABELS BEGIN: labels off — one empty repaint clears the layer; no candidate, disc,
+      // rim or measurement work runs and no bundle count text is produced for this frame. The
+      // clear runs once per transition, so a settled off frame repeats none of it.
+      if (typedLabelsSuppressed()) {
+        if (!typedLabelsOffCleared) {
+          typedLabelsOffCleared = true;
+          typedLabelOverlay.update({ candidates: [], bounds: EMPTY_LABEL_BOUNDS });
+        }
+        finishLabels();
+        return;
+      }
+      typedLabelsOffCleared = false;
+      // D087-LABELS END
       const box = container.getBoundingClientRect();
       if (box.width <= 0 || box.height <= 0) {
         typedLabelOverlay.update({ candidates: [], bounds: EMPTY_LABEL_BOUNDS });
         finishLabels();
         return;
       }
-      // D087-LABELS BEGIN: labels off — one empty repaint clears the layer; no candidate, disc,
-      // rim or measurement work runs and no bundle count text is produced for this frame.
-      if (typedLabelsSuppressed()) {
-        typedLabelOverlay.update({ candidates: [], bounds: { left: 0, top: 0, width: box.width, height: box.height } });
-        finishLabels();
-        return;
-      }
-      // D087-LABELS END
       const distance = rig.camera.position.length();
       if (typedFittedCameraDistance === null) typedFittedCameraDistance = distance;
       const overview = distance >= typedFittedCameraDistance * TYPED_LABEL_CAMERA.overviewRatio;
