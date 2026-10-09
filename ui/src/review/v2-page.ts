@@ -5921,6 +5921,31 @@ export class V2Page {
         await this.refresh(false, true);
     }
     // D085-S7 END
+    // D086-BURST BEGIN: a cancelled transition may restore page truth without
+    // committing another drawing. Hand readiness back to the mounted renderer.
+    private replayRestoredRenderer(): void {
+        const axes = this.committedAxes;
+        const density = this.committedDensity;
+        if (!axes || !density) return;
+        const topology = this.committedTaxonomy;
+        const owner = topology.topology !== 'natural'
+            ? `lab/${topology.topology}${topology.indra ? '+indra' : ''}` : axes.organization;
+        const expectedView = `${owner}/${axes.projection}/${axes.morphology}/${density}/${axes.reading}`;
+        const host = this.typedActive() ? this.projectionHost : this.viewHost;
+        if (host && activateRenderReadinessHost(host, expectedView)) return;
+        // A host with no certificate must produce a real frame. Join the tail
+        // of the lane so a newer queued commit can present first.
+        void this.transitions.enqueue(async () => {
+            if (this.committedAxes !== axes || this.committedDensity !== density
+                || this.committedTaxonomy.topology !== topology.topology
+                || this.committedTaxonomy.indra !== topology.indra
+                || !(this.view || this.projectionRenderer)) return;
+            const liveHost = this.typedActive() ? this.projectionHost : this.viewHost;
+            if (liveHost && activateRenderReadinessHost(liveHost, expectedView)) return;
+            this.ownDisplayedFailure(this.refresh());
+        });
+    }
+    // D086-BURST END
     /** Change density; Natural aligns a fresh canonical layout while zoom keeps its coordinates. */
     // D086-CUSTOM BEGIN
     async setDensityIntent(intent: CustomDensityIntent): Promise<CustomCommitFact | 'superseded'> {
@@ -6001,6 +6026,9 @@ export class V2Page {
                         this.d081Quality = previousQuality;
                         this.d081Metrics = previousMetrics;
                         if (previousMetrics?.nodes && previousMetrics?.edges) this.d081Emit();
+                        // D086-BURST BEGIN
+                        this.replayRestoredRenderer();
+                        // D086-BURST END
                         // D086-F2 END
                     }
                     return 'superseded' as const;
@@ -6343,10 +6371,18 @@ export class V2Page {
         const committedBefore = this.committedAxes;
         // D085-S1 END
         // D085-S1 BEGIN: a cancelled provisional taxonomy cannot outlive its task.
-        const restore = () => {
+        // D086-BURST BEGIN: the same cancellation is observed in try and catch.
+        let restored = false;
+        const restore = (superseded = false) => {
+            if (restored) return;
+            restored = true;
+            // D086-BURST END
             this.axes = previousAxes; this.topology = previous.topology; this.topologyIndra = previous.indra;
             this.legacyIndra = previous.legacyIndra; this.taxonomyExplicit = previous.explicit;
             this.restoreAxisState(priorAxisState);
+            // D086-BURST BEGIN
+            if (superseded) this.replayRestoredRenderer();
+            // D086-BURST END
         };
         // D085-S1 END
         this.topology = topology;
@@ -6374,7 +6410,7 @@ export class V2Page {
             // D085-S1 BEGIN: cancellation can resolve refresh() before a mount commits.
             if (intent !== this.geometryIntent) {
                 if (this.committedAxes === committedBefore &&
-                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore();
+                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore(true);
                 throw new GeometrySupersededError();
             }
             // D085-S1 END
@@ -6388,7 +6424,7 @@ export class V2Page {
             // D085-S1 BEGIN
             if (intent !== this.geometryIntent) {
                 if (this.committedAxes === committedBefore &&
-                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore();
+                    (this.committedTaxonomy?.topology !== topology || this.committedTaxonomy?.indra !== indra)) restore(true);
                 throw new GeometrySupersededError();
             }
             // D085-S1 BEGIN: a post-commit error must not put old state over a mounted law.
@@ -6448,7 +6484,12 @@ export class V2Page {
             try {
                 await this.applyAxes(value);
                 if (intent !== this.geometryIntent) {
-                    if (this.committedAxes === committedBefore) this.restoreAxisState(previousState);
+                    if (this.committedAxes === committedBefore) {
+                        this.restoreAxisState(previousState);
+                        // D086-BURST BEGIN
+                        this.replayRestoredRenderer();
+                        // D086-BURST END
+                    }
                     return 'superseded' as const;
                 }
                 // D085-S1 BEGIN: a protected mount may resolve while keeping the old dimension.
