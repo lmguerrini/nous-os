@@ -15,9 +15,13 @@
 export type LodLevel = "far" | "intermediate" | "near";
 
 /** How many nodes, arcs and labels each density admits in the lower-density LOD. */
-export type Density = "essential" | "balanced" | "complete";
+// D086-CUSTOM BEGIN
+export type Density = "essential" | "balanced" | "complete" | "custom";
+// D086-CUSTOM END
 
-export const DENSITIES: readonly Density[] = ["essential", "balanced", "complete"];
+// D086-CUSTOM BEGIN
+export const DENSITIES: readonly Exclude<Density, 'custom'>[] = ["essential", "balanced", "complete"];
+// D086-CUSTOM END
 
 export type LodBudget = {
   readonly nodes: number;
@@ -31,6 +35,9 @@ export const DENSITY_BUDGETS: Readonly<Record<Density, LodBudget>> = {
   essential: { nodes: 80, arcs: 100, labels: 20 },
   balanced: { nodes: 400, arcs: 450, labels: 40 },
   complete: { nodes: 850, arcs: 1200, labels: 60 },
+  // D086-CUSTOM BEGIN: the page replaces this placeholder with its exact request.
+  custom: { nodes: 400, arcs: 450, labels: 40 },
+  // D086-CUSTOM END
 };
 
 // D085-S2 BEGIN: Bilanciata realmente intermedia. One budget per topology:
@@ -46,31 +53,37 @@ const DENSITY_TOPOLOGY_BUDGETS: Readonly<Record<BudgetTopology, Readonly<Record<
     essential: { nodes: 80, arcs: 100, labels: 20 },
     balanced: { nodes: 400, arcs: 450, labels: 40 },
     complete: { nodes: 850, arcs: 1200, labels: 60 },
+    custom: { nodes: 400, arcs: 450, labels: 40 },
   },
   indra: {
     essential: { nodes: 80, arcs: 100, labels: 20 },
     balanced: { nodes: 400, arcs: 450, labels: 40 },
     complete: { nodes: 850, arcs: 1200, labels: 60 },
+    custom: { nodes: 400, arcs: 450, labels: 40 },
   },
   canopy: {
     essential: { nodes: 150, arcs: 160, labels: 20 },
     balanced: { nodes: 2500, arcs: 2600, labels: 40 },
     complete: { nodes: 850, arcs: 1200, labels: 60 },
+    custom: { nodes: 400, arcs: 450, labels: 40 },
   },
   julia: {
     essential: { nodes: 80, arcs: 100, labels: 20 },
     balanced: { nodes: 4000, arcs: 4200, labels: 40 },
     complete: { nodes: 850, arcs: 1200, labels: 60 },
+    custom: { nodes: 400, arcs: 450, labels: 40 },
   },
   sierpinski: {
     essential: { nodes: 80, arcs: 100, labels: 20 },
     balanced: { nodes: 2500, arcs: 2600, labels: 40 },
     complete: { nodes: 850, arcs: 1200, labels: 60 },
+    custom: { nodes: 400, arcs: 450, labels: 40 },
   },
   lull: {
     essential: { nodes: 80, arcs: 100, labels: 20 },
     balanced: { nodes: 4000, arcs: 4200, labels: 40 },
     complete: { nodes: 850, arcs: 1200, labels: 60 },
+    custom: { nodes: 400, arcs: 450, labels: 40 },
   },
 };
 
@@ -367,7 +380,7 @@ export function lawSelectionScores(
 // D085-S2 END
 
 export function normalizeDensity(value: unknown, fallback: Density = "balanced"): Density {
-  return typeof value === "string" && (DENSITIES as readonly string[]).includes(value)
+  return typeof value === "string" && (value === 'custom' || (DENSITIES as readonly string[]).includes(value))
     ? (value as Density)
     : fallback;
 }

@@ -2,7 +2,7 @@ import { styleProjection } from '../render-common/projection-style.ts';
 import { cameraRevealZoom, emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
 import type { RevealDecision, RevealState } from './reveal-controller.ts';
 // D085-S7 BEGIN
-import { buildRevealWitness, resolveLabRelationDetail, routeRelationsAfterLOD, selectRelationDetail } from './relation-routing.ts';
+import { buildRevealWitness, checkRouteInvariant, resolveLabRelationDetail, routeRelationsAfterLOD, selectRelationDetail } from './relation-routing.ts';
 // D085-S7 END
 import { COMPLETE_IDLE_MS, completeQuality, completeRelations, completeRoute, completeVisible } from './completa.ts';
 import { completeIndraOverlay } from './completa-indra.ts';
@@ -88,6 +88,11 @@ import { fractalDateRuleCounts } from '../fractal/date-adapter.ts';
 // D081-P7b BEGIN: Fractal-only ink and status contracts.
 import { canopyBandForZoom, canopyDensityMarks, canopyZoomStep, rankedCanopyEvidence,
     type CanopyEvidenceCandidate, type CanopyMark } from '../fractal/canopy-reveal.ts';
+// D086-CUSTOM BEGIN
+import { canopyFitAnchorIds } from '../fractal/canopy-layout.ts';
+import { customOrder, selectCustom, type CustomNode, type CustomSelection } from './custom-density.ts';
+import type { CustomAvailability, CustomCommitFact, CustomDensityIntent } from './custom-density-types.ts';
+// D086-CUSTOM END
 import { canopyGraphStatus, canopyRelationDenominators } from '../fractal/canopy-status.ts';
 // D081-P7 BEGIN
 import { canopyEvidenceArcs } from '../fractal/evidence-edges.ts';
@@ -124,7 +129,7 @@ import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
 import { showLabNotice } from './lab-notice.ts';
 // D082-B-NOTICE END
 // D082-A-HUD BEGIN: page-owned readiness until renderers publish presented-frame counts.
-import { reportRenderReadiness, renderPercent } from './render-readiness.ts';
+import { currentRenderReadiness, reportRenderReadiness, renderPercent } from './render-readiness.ts';
 import type { RenderReadiness, StageCounts } from './render-readiness.ts';
 import { withRenderProgress } from './toolbar-status.ts';
 // D082-A-HUD END
@@ -662,6 +667,17 @@ export class V2Page {
     private committedAxes: PageAxes | null = null;
     // D085-S5 BEGIN: a failed remount restores the density of the displayed view.
     private committedDensity: Density | null = null;
+    // D086-CUSTOM BEGIN
+    private customNodes = 400;
+    private customSerial = 0;
+    private customSelection: CustomSelection | null = null;
+    private presentedCustomSelection: CustomSelection | null = null;
+    private customClampedFrom: number | undefined;
+    private customDirty = false;
+    private customSource: { source: readonly V2Node[]; nodes: readonly CustomNode[] } | null = null;
+    private readonly customDatasetNodes: readonly V2Node[];
+    private readonly customDatasetIds: ReadonlySet<string>;
+    // D086-CUSTOM END
     // D085-S5 END
     get committedViewAxes(): PageAxes { return { ...(this.committedAxes ?? this.view?.witness?.().axes ?? this.axes) }; }
     get committedViewTaxonomy() { return { ...this.committedTaxonomy }; }
@@ -680,7 +696,8 @@ export class V2Page {
     private geometryIntent = 0;
     // D086-F2 BEGIN: page callers share the same last-requested taxonomy contract.
     private pendingTaxonomyIntent: { topology: TopologyId; indra: boolean;
-        targetAxes: AxesInput | undefined; targetDensity: Density | undefined } | null = null;
+        targetAxes: AxesInput | undefined; targetDensity: Density | undefined;
+        customIntent?: CustomDensityIntent } | null = null;
     // D086-F2 END
     // D085-S1 BEGIN: unrelated refreshes wait for the accepted geometry mount.
     private geometryTransitionActive = false;
@@ -769,8 +786,51 @@ export class V2Page {
         return this.axes.organization === 'indra' ? 'indra' : 'natural';
     }
     private densityBudgetFor(): ReturnType<typeof densityBudget> {
+        // D086-CUSTOM BEGIN
+        if (this.density === 'custom') return { nodes: this.customNodes, arcs: Number.MAX_SAFE_INTEGER,
+            labels: this.customNodes >= this.customAvailability().available ? 60
+                : 40 + Math.round(20 * this.customNodes / Math.max(1, this.customAvailability().available)) };
+        // D086-CUSTOM END
         return densityBudget(this.density, this.budgetTopologyOf());
     }
+    // D086-CUSTOM BEGIN
+    private customOrder(lawPositions?: ReadonlyMap<string, Point3>) {
+        const source = this.lawActive() ? this.lawIndex.nodes : this.customDatasetNodes;
+        if (this.customSource?.source !== source) this.customSource = { source,
+            nodes: source.map(node => ({ id: node.id, parent: node.parent, level: node.level,
+                importance: node.importance.value })) };
+        const anchors = this.canopyActive() && this.canopy
+            ? [...canopyFitAnchorIds(this.canopy, this.axes.projection)] : [];
+        const evidence = this.canopyActive()
+            ? [...source.filter(node => node.level <= 3)
+                .sort((a, b) => a.level - b.level || b.importance.value - a.importance.value || a.id.localeCompare(b.id))
+                .map(node => node.id),
+                ...rankedCanopyEvidence(this.canopyDatasetNodes, this.canopyEvidenceCandidates)
+                    .flatMap(edge => [edge.source, edge.target])] : [];
+        const rank = lawPositions ? lawSelectionScores(source.map(node => ({ id: node.id,
+            importance: node.importance.value })), lawPositions) : undefined;
+        return customOrder({ nodes: this.customSource.nodes, topology: `${this.topology}/${this.topologyIndra}`,
+            sourceIdentity: this.manifest.digest, anchors, focusId: this.selected,
+            ...(rank ? { rank } : {}),
+            ...(evidence.length ? { rankedIds: evidence } : {}) });
+    }
+    customAvailability(): CustomAvailability {
+        const order = this.customOrder();
+        const available = this.typedActive() && !this.indraPearlsView()
+            ? Math.min(V2_CAP, order.ids.length) : order.ids.length;
+        return { available, minimum: Math.min(available, order.minimum), sourceDigest: order.sourceDigest };
+    }
+    private selectCustomNow(lawPositions?: ReadonlyMap<string, Point3>): CustomSelection {
+        const order = this.customOrder(lawPositions);
+        const available = this.customAvailability().available;
+        const bounded = available < order.ids.length ? { ...order, ids: order.ids.slice(0, available),
+            minimum: Math.min(available, order.minimum) } : order;
+        return selectCustom(bounded, this.customNodes);
+    }
+    private customAtMaximum(): boolean {
+        return this.density === 'custom' && this.customNodes >= this.customAvailability().available;
+    }
+    // D086-CUSTOM END
     // D085-S2 END
     topologyWitness(id: string): { witness: TopologyWitness; path: readonly string[] } | null {
         // D085-X9b BEGIN
@@ -943,7 +1003,13 @@ export class V2Page {
             readIndraComposition?: () => D081GraphStatus['indraComposition'] } | null)
             ?.readIndraComposition?.();
         // D085-X8 END
+        // D086-CUSTOM BEGIN
+        const custom = this.customRecord();
+        // D086-CUSTOM END
         return { ...this.d081Metrics,
+            // D086-CUSTOM BEGIN
+            ...(custom ? { custom } : {}),
+            // D086-CUSTOM END
             // D086-NAT BEGIN
             ...(this.densityTransitionDisplacement ? { densityTransition: this.densityTransitionDisplacement } : {}),
             // D086-NAT END
@@ -960,6 +1026,41 @@ export class V2Page {
             msToFullQuality: this.d081LastFullMs };
         // D081-P3b END
     }
+    // D086-CUSTOM BEGIN
+    private customRecord() {
+        const selection = this.committedDensity === 'custom' ? this.presentedCustomSelection : null;
+        if (!selection) return null;
+        const gesture = this.view?.gestureWitness?.() as (ReturnType<NonNullable<ProductView['gestureWitness']>> & {
+            paintedNodeIds?: readonly string[]; viewportPaintedNodeIds?: readonly string[] }) | undefined;
+        const typedDrawn = this.projectionVisibility?.nodeIds.size ?? 0;
+        const readiness = this.typedActive() ? currentRenderReadiness() : null;
+        const typedPainted = readiness?.origin === 'renderer' && readiness.nodes.required === typedDrawn
+            && readiness.view.includes(`/${this.axes.projection}/`)
+            ? readiness.nodes.drawn : typedDrawn;
+        const drawn = gesture?.paintedNodeIds?.length ?? (this.typedActive() ? typedPainted : 0);
+        let typedViewport = typedDrawn;
+        if (this.typedActive() && this.projectionRenderer?.projectNode && this.projectionResult && this.projectionHost) {
+            const rect = this.projectionHost.getBoundingClientRect();
+            const positions = (this.axes.projection === '2d' ? this.projectionResult.positions2
+                : this.projectionResult.positions3) ?? {};
+            const projected = typedNodeViewport(positions, this.rendered,
+                point => this.projectionRenderer!.projectNode!(point), rect);
+            typedViewport = Object.values(projected).filter(point =>
+                point.x >= rect.left + this.insets.left && point.x <= rect.left + rect.width - this.insets.right
+                && point.y >= rect.top + this.insets.top && point.y <= rect.top + rect.height - this.insets.bottom).length;
+        }
+        const viewportDrawn = gesture?.viewportPaintedNodeIds?.length ??
+            (this.typedActive() ? Math.min(typedViewport, drawn) : 0);
+        return { requested: selection.requested, available: selection.available,
+            minimum: selection.minimum, selected: selection.selectedIds.size,
+            contextIncluded: selection.contextIds.size, submitted: this.rendered.size,
+            drawn, viewportDrawn, manualOpened: [...this.rendered].filter(id => !selection.selectedIds.has(id)).length,
+            sourceDigest: selection.sourceDigest, orderDigest: selection.orderDigest,
+            ...(this.customClampedFrom === undefined ? {} : { clampedFrom: this.customClampedFrom }),
+            phase: this.geometryTransitionActive || this.refreshPending ? 'preparazione' : this.d081Quality,
+            serial: this.customSerial };
+    }
+    // D086-CUSTOM END
     private d081Emit() {
         // D081-FRACTAL-MERGE BEGIN: the canopy owns the public status contract while active.
         if (this.canopyActive()) { this.publishCanopyStatus(); return; }
@@ -1117,6 +1218,7 @@ export class V2Page {
         // D082-A-DENSITY BEGIN: expose exact exclusion classes for the mounted lower
         // density. The full eligible denominator continues to follow the reading.
         if (this.density !== 'complete' && source.nodes.length > V2_CAP &&
+            this.density !== 'custom' &&
             (this.axes.organization === 'natural' || this.axes.organization === 'indra')) {
             const pool = this.visible().nodes.length;
             // D082-A-SWITCH BEGIN: reuse the same immutable source projection as routing.
@@ -1136,6 +1238,21 @@ export class V2Page {
                 reason: `${label}: selezione semantica e budget per leggibilità.` };
         }
         // D082-A-DENSITY END
+        // D086-CUSTOM BEGIN: the projection cap is named only on the flagged typed path.
+        if (this.density === 'custom') {
+            const custom = this.presentedCustomSelection ?? this.customSelection;
+            const maximum = this.customAvailability().available;
+            this.d081Metrics.limit = this.typedActive() && !this.indraPearlsView() && source.nodes.length > maximum
+                ? { kind: 'proiezione', value: maximum,
+                    reason: `Massimo della proiezione tipizzata: ${maximum}; dataset: ${source.nodes.length}.` }
+                : null;
+            this.d081Metrics.hint = custom
+                ? `Custom: richiesti ${custom.requested} · disponibili ${maximum} · rappresentati ${this.rendered.size}. `
+                    + `Nodi di contesto inclusi nel richiesto: ${custom.contextIds.size}; `
+                    + `aperti a mano fuori dal richiesto: ${[...this.rendered].filter(id => !custom.selectedIds.has(id)).length}.`
+                : null;
+        }
+        // D086-CUSTOM END
         const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
         // D085-S4 BEGIN: at the Llull overview the folded strokes are named as
         // such — «in fasci» — instead of silently disappearing from the drawn count.
@@ -1266,8 +1383,14 @@ export class V2Page {
     private canopyCompleteRoutes = new Map<string, RouteResult>();
     // D082-B1c END.
     private readonly coreStatusGetter = () => this.d081Status();
-    private readonly canopyStatusGetter = () => this.canopyStatus && ({ ...this.canopyStatus,
-        msSinceInteraction: Math.max(0, performance.now() - this.canopyStatusAt) });
+    private readonly canopyStatusGetter = () => {
+        // D086-CUSTOM BEGIN
+        const custom = this.customRecord();
+        return this.canopyStatus && { ...this.canopyStatus,
+            msSinceInteraction: Math.max(0, performance.now() - this.canopyStatusAt),
+            ...(custom ? { custom } : {}) };
+        // D086-CUSTOM END
+    };
     // D086-F2 BEGIN: the shell decorates the public getter, so identity cannot
     // decide whether an old Canopy source needs replacing.
     private restoreCoreStatus(): void {
@@ -1302,18 +1425,22 @@ export class V2Page {
                 ? stats.paintedFull ? stats.submittedEdges : 0 : stats.evidenceDrawn,
             evidenceBundles: stats.evidenceBundles, evidenceBundled: stats.evidenceBundled,
             eligibleEdges: denominators.eligible, totalEdges: denominators.total,
-            density: this.density, lod: this.lod,
+            density: this.density === 'custom' ? 'balanced' : this.density, lod: this.lod,
             // D085-S2 BEGIN: the canopy arc budget is the topology-aware one. The former
             // far-LOD 300-arc cap never bound anything at 55926c1 — both lower densities
             // drew 13 evidence arcs because the mark selection was the binding constraint.
-            ...(this.density === 'complete' ? {} : { edgeBudget: densityBudget(this.density, 'canopy').arcs }),
+            ...(this.density === 'complete' || this.density === 'custom' ? {} : { edgeBudget: densityBudget(this.density, 'canopy').arcs }),
             // D085-S2 END
             // D086-F2 BEGIN: structural motion remains visible even if the native
             // product correctly retains every drawn node ID.
             motion: stats.overlayMotion, ready: stats.paintedFull,
             // D086-F2 END
             msSinceInteraction: elapsed, msToFullQuality: this.canopyLastQualityMs });
-        const status = { ...baseStatus, edges: { ...baseStatus.edges,
+        const status = { ...baseStatus,
+            // D086-CUSTOM BEGIN
+            ...(this.customRecord() ? { custom: this.customRecord()!, hint: 'Custom: il contesto è incluso nella quantità richiesta; i nodi aperti a mano sono contati separatamente.' } : {}),
+            // D086-CUSTOM END
+            edges: { ...baseStatus.edges,
             ...(this.revealRoute?.detail ? { detail: this.revealRoute.detail } : {}) } };
         // D085-S7 END
         // D081-P7d END.
@@ -1514,6 +1641,10 @@ export class V2Page {
         // D082-B2 BEGIN
         // D085-X9 BEGIN
         this.lawIndex = { ...index, nodes: [...index.nodes], edges: [...index.edges] };
+        // D086-CUSTOM BEGIN: later drawer passage loads never increase the slider's M.
+        this.customDatasetNodes = [...index.nodes];
+        this.customDatasetIds = new Set(index.nodes.map(node => node.id));
+        // D086-CUSTOM END
         this.lawSnapshot = topologySnapshot(manifest, this.lawIndex);
         this.lawSnapshotNodeIds = new Set(this.lawSnapshot.nodes.map(node => node.id));
         // D085-X9 END
@@ -1763,6 +1894,20 @@ export class V2Page {
     // D085-X9 END
         // D085-X9 BEGIN: selection reads the fixed law domain before any budget is applied.
         const source = this.sourceIndex();
+        // D086-CUSTOM BEGIN: full source before LOD; the flagged typed Natural path
+        // retains its explicit projection maximum.
+        if (this.density === 'custom') {
+            if (this.typedActive() && !this.indraPearlsView()) {
+                const selected = this.selectCustomNow().selectedIds;
+                const nodes = source.nodes.filter(node => selected.has(node.id));
+                const counts: Record<number, number> = {};
+                for (const node of nodes) counts[node.level] = (counts[node.level] ?? 0) + 1;
+                return { nodes, edges: source.edges.filter(edge => selected.has(edge.source) && selected.has(edge.target)),
+                    hidden: new Map<string, number>(), capped: source.nodes.length > nodes.length, counts };
+            }
+            return completeVisible(source);
+        }
+        // D086-CUSTOM END
         // D085-X9 END
         // D082-B1 BEGIN: Canopy Completa uses the immutable full dataset, never V2_CAP.
         if (this.canopyActive() && this.density === 'complete') {
@@ -2414,6 +2559,9 @@ export class V2Page {
         this.committedAxes = { ...this.axes };
         // D085-S5 BEGIN
         this.committedDensity = this.density;
+        // D086-CUSTOM BEGIN
+        this.presentedCustomSelection = this.density === 'custom' ? this.selectCustomNow() : null;
+        // D086-CUSTOM END
         this.clearPageErrorAfterCommit();
         // D085-S5 END
         // D085-S1 END
@@ -3110,7 +3258,9 @@ export class V2Page {
         // D081-P3b BEGIN: full Indra is a resident typed scene. Its source edges and
         // containment links are routed once, with parallel links counted on the line.
         // The ordinary typed LOD below is untouched for Essenziale and Bilanciata.
-        if (this.density === 'complete' && this.indraPearlsView()) {
+        // D086-CUSTOM BEGIN: at the full source, Pearls shares Complete's overlay.
+        if ((this.density === 'complete' || this.customAtMaximum()) && this.indraPearlsView()) {
+        // D086-CUSTOM END
             const { rendered, relations, route, visuals: synthetic, displayResult } =
                 completeIndraOverlay(this.index, this.axes.reading, result, this.lod === 'near');
             const extraStyle = this.styleTypedProjection(displayResult, snapshot).visualStyle;
@@ -3141,14 +3291,18 @@ export class V2Page {
         // D081-P3b END
         // D082-A-DENSITY BEGIN: typed Natural and Indra use the same source-relation
         // prefix as the classic renderer. Projection coordinates are reused verbatim.
-        if (this.density !== 'complete' && this.index.nodes.length > V2_CAP &&
+        if (this.density !== 'complete' && (this.density === 'custom' || this.index.nodes.length > V2_CAP) &&
             (this.axes.organization === 'natural' || this.axes.organization === 'indra')) {
             // D085-S2 BEGIN: the typed pipeline keeps its fixed density ladder. Its analytical
             // domain is separately capped at 850 by the D-081 contract (`selectAnalyticalDomain`,
             // outside this stream's ceiling) and its Essenziale/Bilanciata counts are pinned by
             // d081-completa-counts and d082-typed-density-required; the topology-aware D085-S2
             // budgets apply to the classic renderer only. The record below says exactly that.
-            const budget = DENSITY_BUDGETS[this.density];
+            // D086-CUSTOM BEGIN
+            const budget = this.density === 'custom' ? { nodes: this.customNodes,
+                arcs: Number.MAX_SAFE_INTEGER, labels: this.densityBudgetFor().labels }
+                : DENSITY_BUDGETS[this.density];
+            // D086-CUSTOM END
             // D085-S2 END
             const communityOf = communityResolver(this.index.nodes);
             const infos = allDisclosed.map(node => ({ id: node.id, level: node.level, parent: node.parent,
@@ -3166,7 +3320,9 @@ export class V2Page {
             const input = { nodes: infos, level: this.lod, pinned, focus: active, priority, adjacency, communityOf,
                 reserveStructure: true };
             // D085-S7 BEGIN
-            const selection = this.relationDetailSwitchPending && this.relationDetailSwitchEpoch === this.projectionEpoch && this.lastNodeSelection
+            const selection = this.density === 'custom'
+                ? { rendered: [...this.selectCustomNow().selectedIds], dropped: [] }
+                : this.relationDetailSwitchPending && this.relationDetailSwitchEpoch === this.projectionEpoch && this.lastNodeSelection
                 ? this.lastNodeSelection : this.selectLod({ ...input, budget: budget.nodes }, this.lastNodeSelection);
             // D085-S7 END
             // Node admission is one shared union-graph plan; only relation selection varies by reading.
@@ -3182,7 +3338,8 @@ export class V2Page {
             const originalEssential = new Set(essentialSeed);
             const balancedSeed = [...essential,
                 ...selection.rendered.filter(id => !originalEssential.has(id) && !essential.has(id))];
-            const rendered = this.density === 'essential' ? essential : new Set(densityConnectedNodes(
+            const rendered = this.density === 'custom' ? new Set(selection.rendered)
+                : this.density === 'essential' ? essential : new Set(densityConnectedNodes(
                 balancedSeed, infos, relations.edges, budget.nodes,
                 [...new Set([...essential, ...requiredDensityIds])]));
             const importance = new Map(this.index.nodes.map(node => [node.id, node.importance.value]));
@@ -3196,9 +3353,12 @@ export class V2Page {
             const essentialEdges = densityRelationsByReading(relations.edges, this.axes.reading, essential,
                 DENSITY_BUDGETS.essential.arcs, importance).drawn;
             const balancedEdges = balancedSelection.drawn;
-            const edges = this.density === 'essential' ? essentialEdges : balancedEdges;
+            const edges = this.density === 'custom'
+                ? completeRelations(this.index, this.axes.reading).edges.filter(edge =>
+                    rendered.has(edge.source) && rendered.has(edge.target))
+                : this.density === 'essential' ? essentialEdges : balancedEdges;
             // D085-S7 BEGIN
-            const candidateRoute = completeRoute(edges, rendered, true);
+            const candidateRoute = completeRoute(edges, rendered, this.density !== 'custom');
             const selectedRoute = selectRelationDetail(candidateRoute, this.relationDetail);
             const keptIds = new Set(selectedRoute.drawn.map(item => item.id));
             const route = { ...selectedRoute,
@@ -3242,16 +3402,20 @@ export class V2Page {
             // the D-082 ladder over the D-081 domain cap — distinct from the topology-aware
             // budgets of the classic renderer.
             this.densityBudgetRecord = {
-                policy: 'd085-s2-typed-verified-domain',
+                policy: this.density === 'custom' ? 'd086-custom-typed-projection-max' : 'd085-s2-typed-verified-domain',
                 topology: this.axes.organization === 'indra' ? 'indra' : 'natural',
                 dimension: this.axes.projection, density: this.density,
                 nodes: { requested: budget.nodes, visible: rendered.size, aggregated: 0,
                     excluded: Math.max(0, this.index.nodes.length - rendered.size),
-                    reason: 'Dominio analitico tipizzato (contratti D-081/D-082): ladder verificata 80/400 nodi sotto il cap di dominio di 850; i budget per topologia D085-S2 valgono per il percorso classico.' },
+                    reason: this.density === 'custom'
+                        ? `Massimo della proiezione tipizzata: ${V2_CAP}; dataset: ${this.customDatasetNodes.length}. I nodi di contesto sono inclusi nel richiesto.`
+                        : 'Dominio analitico tipizzato (contratti D-081/D-082): ladder verificata 80/400 nodi sotto il cap di dominio di 850; i budget per topologia D085-S2 valgono per il percorso classico.' },
                 edges: { requested: budget.arcs, drawn: visuals.length,
                     aggregated: route.aggregates.length,
                     excluded: Math.max(0, relations.total - visuals.length),
-                    reason: 'Le relazioni coprono prima i nodi selezionati, poi il resto per classe e importanza, entro il budget condiviso.' },
+                    reason: this.density === 'custom'
+                        ? 'Relazioni sorgente con entrambe le estremità selezionate; il contenimento è una guida strutturale.'
+                        : 'Le relazioni coprono prima i nodi selezionati, poi il resto per classe e importanza, entro il budget condiviso.' },
             };
             // D085-S2 END
             return { visibility, counts, selection, route, displayStyled, pickMap };
@@ -3800,7 +3964,7 @@ export class V2Page {
     private styleTypedProjection(result: ProjectionResult, snapshot: SemanticGraphSnapshot): StyledProjection {
         return styleProjection(result, snapshot, {
             morphology: this.axes.morphology,
-            density: this.density,
+            density: this.density === 'custom' ? (this.customAtMaximum() ? 'complete' : 'balanced') : this.density,
             lodLevel: this.lod,
             focus: this.selected ? this.focusMembers(this.selected) : null,
             palette: this.palette,
@@ -4010,13 +4174,21 @@ export class V2Page {
                     && previousAxes.projection === projection;
                 // D082-B1 BEGIN: all marks are real IDs. E/B are nested stable semantic
                 // selections; Completa includes every immutable dataset ID.
-                canopyViewMarks = canopyDensityMarks(canopy, this.canopyDatasetNodes,
+                // D086-CUSTOM BEGIN
+                canopyViewMarks = this.density === 'custom'
+                    ? this.customAtMaximum()
+                        ? canopyDensityMarks(canopy, this.canopyDatasetNodes, 'complete', band, focusId,
+                            pixelsPerUnit, projection, undefined, this.canopyEvidenceCandidates)
+                        : [...this.selectCustomNow().selectedIds].map(id => ({ id, memberCount: 1,
+                            memberIds: [id], aggregate: false }))
+                    : canopyDensityMarks(canopy, this.canopyDatasetNodes,
                     this.density, band, focusId, pixelsPerUnit, projection,
                     sameCanopyCamera && this.view?.projectPoint
                         ? point => this.view!.projectPoint!(point) : undefined,
                     // D085-S2 BEGIN: the real evidence relations continue the Bilanciata
                     // mark sequence after the structural scaffold.
                     this.canopyEvidenceCandidates);
+                // D086-CUSTOM END
                 // D085-S2 END
                 // D082-B1 END.
             }
@@ -4039,7 +4211,7 @@ export class V2Page {
             // D082-A-ANCHORB3 BEGIN: the default lower-density geometry uses the union graph;
             // option (b) replays each active reading's D-081 Completa geometry.
             const layoutReading = source.nodes.length > V2_CAP &&
-                (organization === 'natural' || organization === 'indra') && this.density !== 'complete' &&
+                (organization === 'natural' || organization === 'indra') && this.density !== 'complete' && !this.customAtMaximum() &&
                 !(this.naturalCompletaAnchor && organization === 'natural')
                 ? 'combined' : this.axes.reading;
             // D082-A-ANCHORB3 END
@@ -4251,26 +4423,30 @@ export class V2Page {
             // D086-NAT END
             // D085-S2 BEGIN: the budget of the topology being drawn.
             const budget = this.densityBudgetFor();
+            // D086-CUSTOM BEGIN
+            const custom = this.density === 'custom' ? this.selectCustomNow(lawResult?.positions) : null;
+            if (custom) { this.customSelection = custom; this.customNodes = custom.requested; }
+            // D086-CUSTOM END
             // D085-S2 END
             const routingBegan = performance.now();
             // D081-FRACTAL-MERGE BEGIN: Completa remains the core route only off Fractal.
             // D082-B1c BEGIN: morphology/projection switches reuse the immutable
             // complete source relation set. Reading remains part of the cache key.
-            let cachedCanopyArcs = canopy && this.density === 'complete'
+            let cachedCanopyArcs = canopy && (this.density === 'complete' || this.density === 'custom')
                 ? this.canopyCompleteRelations.get(this.axes.reading) : undefined;
-            if (canopy && this.density === 'complete' && !cachedCanopyArcs) {
+            if (canopy && (this.density === 'complete' || this.density === 'custom') && !cachedCanopyArcs) {
                 cachedCanopyArcs = completeRelations(
                     { ...this.index, nodes: [...this.canopyDatasetNodes] }, this.axes.reading);
                 this.canopyCompleteRelations.set(this.axes.reading, cachedCanopyArcs);
             }
             // D082-A-DENSITY BEGIN: rank original eligible source relations once for both
             // lower levels. Direct endpoints give every retained relation a stable identity.
-            const densityPolicy = !canopy && !this.lawActive() && this.density !== 'complete' && source.nodes.length > V2_CAP &&
+            const densityPolicy = !canopy && !this.lawActive() && this.density !== 'complete' && this.density !== 'custom' && source.nodes.length > V2_CAP &&
                 (organization === 'natural' || organization === 'indra');
             // D086-F2 BEGIN: hover changes emphasis, not the Canopy evidence set.
             const evidenceFocus = canopy ? this.selected : active;
             // D086-F2 END
-            const projectedArcs = this.density === 'complete'
+            const projectedArcs = this.density === 'complete' || custom !== null
                 ? cachedCanopyArcs ?? this.densityRelations(this.axes.reading)
                 : densityPolicy
                 // D082-A-SWITCH BEGIN
@@ -4285,8 +4461,11 @@ export class V2Page {
             const canopyArcs = canopy ? this.density === 'complete'
                 ? projectedArcs.edges : canopyEvidenceArcs(projectedArcs.edges) : null;
             // D085-S7 END
-            const availableArcs = canopyArcs ? { ...projectedArcs,
-                edges: canopyArcs, total: canopyArcs.length } : projectedArcs;
+            // D086-CUSTOM BEGIN: Custom uses the full source candidate universe.
+            const selectedCanopyArcs = canopy && custom ? projectedArcs.edges : canopyArcs;
+            const availableArcs = selectedCanopyArcs ? { ...projectedArcs,
+                edges: selectedCanopyArcs, total: selectedCanopyArcs.length } : projectedArcs;
+            // D086-CUSTOM END
             // D082-A-DENSITY END
             const communityOf = communityResolver(source.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, source.edges);
@@ -4325,7 +4504,7 @@ export class V2Page {
             // D086-F2 END
             // D082-A-DENSITY END
             // D085-S7 BEGIN
-            const selection = this.density === 'complete'
+            const selection = this.density === 'complete' || custom !== null
                 ? { rendered: disclosed.nodes.map(node => node.id), dropped: [] }
                 : this.relationDetailSwitchPending && this.lastNodeSelection
                     ? this.lastNodeSelection : this.selectLod({
@@ -4341,8 +4520,28 @@ export class V2Page {
             }, this.lastNodeSelection);
             // D085-S7 END
             let renderedIds = new Set(selection.rendered);
+            // D086-CUSTOM BEGIN: exact ancestor-closed prefix, independent of zoom LOD.
+            if (custom) {
+                renderedIds = custom.requested === custom.available
+                    ? new Set(disclosed.nodes.map(node => node.id)) : new Set(custom.selectedIds);
+                if (!this.lawActive() && !canopy) {
+                    const byId = new Map(source.nodes.map(node => [node.id, node]));
+                    for (const node of source.nodes) {
+                        if (this.customDatasetIds.has(node.id) || !node.parent ||
+                            !this.history.state.expanded.has(node.parent)) continue;
+                        let cursor: V2Node | undefined = node;
+                        const seen = new Set<string>();
+                        while (cursor && !renderedIds.has(cursor.id) && !seen.has(cursor.id)) {
+                            renderedIds.add(cursor.id);
+                            seen.add(cursor.id);
+                            cursor = cursor.parent ? byId.get(cursor.parent) : undefined;
+                        }
+                    }
+                }
+            }
+            // D086-CUSTOM END
             // D081-FRACTAL-MERGE BEGIN: canopy representatives win over the core density set.
-            if (canopy) {
+            if (canopy && !custom) {
                 renderedIds = new Set(canopyViewMarks.map(mark => mark.id));
                 if (this.selected && visibleById.has(this.selected)) renderedIds.add(this.selected);
             }
@@ -4420,11 +4619,11 @@ export class V2Page {
                 renderedIds = new Set([...seed, ...stratified.filter(id => !seedSet.has(id))]);
             }
             // D085-S2 END
-            if (this.density !== 'complete' && this.neighbourhoodDepth && focusPriority && !canopy) {
+            if (this.density !== 'complete' && !custom && this.neighbourhoodDepth && focusPriority && !canopy) {
                 // D-079 reading contract: focus traverses exactly the selected semantic class.
                 const allowed = source.edges.filter(edge => relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading));
                 renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
-            } else if (this.density !== 'complete' && this.restoreNeighbourhood && this.neighbourhoodBefore && !canopy) renderedIds = new Set(this.neighbourhoodBefore.nodes);
+            } else if (this.density !== 'complete' && !custom && this.restoreNeighbourhood && this.neighbourhoodBefore && !canopy) renderedIds = new Set(this.neighbourhoodBefore.nodes);
             // D082-B1c BEGIN: Completa uses completeRoute directly, so no second
             // 15,800-element RouteRelation list is needed for Canopy.
             const routedInput: RouteRelation[] = canopy && this.density === 'complete' ? [] : availableArcs.edges.map(edge => ({
@@ -4489,15 +4688,17 @@ export class V2Page {
             }).drawn;
             const densityEdges = this.density === 'essential' ? essentialEdges
                 : densityPolicy && this.density === 'balanced' ? balancedEdges : [];
-            const cachedCanopyRoute = canopy && this.density === 'complete'
+            const cachedCanopyRoute = canopy && (this.density === 'complete' || custom !== null)
                 && renderedIds.size === this.canopyDatasetNodes.length
                 ? this.canopyCompleteRoutes.get(this.axes.reading) : undefined;
             // D085-S7 BEGIN
             const lab = this.topology !== 'natural';
             const canopyDetailInput = lab && canopy && this.relationDetail === 'essential'
                 ? routedInput.slice(0, routedInput.length - canopyBalancedSources.length) : routedInput;
-            const candidateRoute = this.density === 'complete'
-                ? cachedCanopyRoute ?? completeRoute(availableArcs.edges, renderedIds, !!canopy)
+            const candidateRoute = this.density === 'complete' || custom !== null
+                ? cachedCanopyRoute ?? completeRoute(custom
+                    ? availableArcs.edges.filter(edge => renderedIds.has(edge.source) && renderedIds.has(edge.target))
+                    : availableArcs.edges, renderedIds, !!canopy)
                 : densityPolicy ? completeRoute(densityEdges, renderedIds, true)
                     : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
                         renderedNodeIds: renderedIds, relations: canopyDetailInput, reading: this.axes.reading,
@@ -4509,7 +4710,7 @@ export class V2Page {
                             ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                         // D085-S2 END
                         focusId: evidenceFocus, pinnedRelationIds: this.pinnedArcIds(tiers) });
-            const otherArcs = lab && this.density !== 'complete'
+            const otherArcs = lab && this.density !== 'complete' && !custom
                 ? projectRelations(source.nodes, source.edges, ids, this.axes.reading,
                     organization, this.relationDetail === 'essential' ? 'all' : 'essential', evidenceFocus) : null;
             const otherEvidence = otherArcs && canopy ? canopyEvidenceArcs(otherArcs.edges) : otherArcs?.edges;
@@ -4540,7 +4741,7 @@ export class V2Page {
             // D082-B1c END.
             this.recordProjectionPhase('relationRouting', performance.now() - routingBegan);
             // D082-B1c BEGIN: reuse completeRelations' source-ID map.
-            const relationById = canopy && this.density === 'complete'
+            const relationById = canopy && (this.density === 'complete' || custom !== null)
                 ? availableArcs.byId
                 // D085-S2 BEGIN: the Canopy Bilanciata candidates the route admits are raw
                 // snapshot relations; they resolve through their wrapped single-source lifts.
@@ -4623,6 +4824,13 @@ export class V2Page {
             }
             // D086-F4 END
             // D085-S4 END
+            // D086-CUSTOM BEGIN: detail and Llull folding may only leave mounted endpoints.
+            if (custom) {
+                const invariant = checkRouteInvariant(route.drawn, renderedIds, route.aggregates);
+                if (!invariant.ok || shown.some(edge => !renderedIds.has(edge.source) || !renderedIds.has(edge.target)))
+                    throw new Error('Custom relation endpoint is absent from the selected scene');
+            }
+            // D086-CUSTOM END
             this.restoreNeighbourhood = false;
             // D085-S2 BEGIN: the per-topology, per-dimension budget record —
             // requested, visible, aggregated, excluded and the reason, for nodes and edges —
@@ -4646,7 +4854,9 @@ export class V2Page {
                 }
                 // D085-S2 END
                 // D085-S2 BEGIN: describe the density actually drawn, including Complete.
-                const nodeReason = this.density === 'complete'
+                const nodeReason = this.density === 'custom'
+                    ? `Custom seleziona esattamente ${custom?.requested ?? this.customNodes} ID reali; gli antenati di contesto occupano posti nella stessa quantità. Le aperture manuali sono separate.`
+                    : this.density === 'complete'
                     ? 'Completa richiede tutti i nodi reali dello snapshot immutabile.'
                     : this.density === 'essential'
                     ? 'Essenziale seleziona il prefisso semantico; nelle leggi include le ammissioni dello zoom corrente.'
@@ -4655,7 +4865,9 @@ export class V2Page {
                     : isLaw
                         ? `Bilanciata include il seme Essenziale (fino a ${densityBudget('essential', budgetTopology).nodes} nodi) e campiona altre posizioni per bande radiali; gli ID sovrapposti al seme non sono contati due volte, quindi il visibile può essere inferiore al richiesto.`
                         : 'Bilanciata estende il pool semantico condiviso: scaffold strutturale, percorsi dei focali, resto per importanza.';
-                const edgeReason = this.density === 'complete'
+                const edgeReason = this.density === 'custom'
+                    ? 'Custom instrada solo relazioni sorgente con entrambe le estremità selezionate; il contenimento è una guida strutturale, non una relazione semantica.'
+                    : this.density === 'complete'
                     ? 'Completa richiede tutte le relazioni eleggibili per la lettura corrente.'
                     : this.density === 'essential'
                     ? 'Essenziale disegna le relazioni eleggibili tra i nodi scelti entro il budget.'
@@ -4666,7 +4878,7 @@ export class V2Page {
                         : 'Le relazioni coprono prima i nodi selezionati, poi il resto per classe e importanza, entro il budget condiviso.';
                 // D085-S2 END
                 this.densityBudgetRecord = {
-                    policy: 'd085-s2-topology-budgets', topology: budgetTopology,
+                    policy: this.density === 'custom' ? 'd086-custom-exact-prefix' : 'd085-s2-topology-budgets', topology: budgetTopology,
                     dimension: projection, density: this.density,
                     // D085-S2 BEGIN: Completa requests the full scene, not the legacy
                     // bounded-path budget entry retained for other callers.
@@ -4679,10 +4891,10 @@ export class V2Page {
                     // D085-S4 BEGIN: Llull partitions eligible source IDs into individual, visibly bundled
                     // and excluded relations; every other view keeps the D085-S2 uniform basis.
                     edges: this.lullOverviewRecord
-                        ? { requested: this.density === 'complete' ? availableArcs.total : budget.arcs,
+                        ? { requested: this.density === 'complete' || custom !== null ? availableArcs.total : budget.arcs,
                             ...lullOverviewBudget(eligibleRelations, shown, this.lullOverviewFold),
                             reason: `${edgeReason} I fasci Llull aggregano relazioni reali per coppia; i conteggi dei tratti visivi sono separati. Base esclusi: ${eligibleRelations} relazioni eleggibili dello snapshot completo per questa lettura; esclusi = base − disegnate − aggregate.` }
-                        : { requested: this.density === 'complete' ? availableArcs.total : budget.arcs, drawn: shown.length,
+                        : { requested: this.density === 'complete' || custom !== null ? availableArcs.total : budget.arcs, drawn: shown.length,
                             aggregated: route.aggregates.length,
                             excluded: Math.max(0, eligibleRelations - shown.length),
                             reason: `${edgeReason} Base esclusi: ${eligibleRelations} relazioni eleggibili dello snapshot completo per questa lettura; esclusi = base − disegnati. Aggregati è un conteggio separato.` },
@@ -4796,7 +5008,10 @@ export class V2Page {
                 this.axes.reading, this.axes.colour, this.axes.labels, this.axes.brain === true, this.relationDetail,
                 JSON.stringify(this.appearance), JSON.stringify(this.palette), JSON.stringify(this.v2Colours),
                 [...ids].sort().join('|')].join('\u00B7');
-            if (this.view && this.view.updateVisibleSubset && lodKey === this.lastLodKey && !indraLayoutMoved) {
+            if (this.view && this.view.updateVisibleSubset && lodKey === this.lastLodKey && !indraLayoutMoved
+                // D086-CUSTOM BEGIN: Natural Custom Applies use the canonical alignment path.
+                && !(naturalDensityTransition && this.density === 'custom')) {
+                // D086-CUSTOM END
                 let applied = false;
                 // D082-A-PLUSN BEGIN
                 const previousHiddenCounts = this.indraLabelHiddenCounts;
@@ -4805,6 +5020,9 @@ export class V2Page {
                 try {
                     applied = this.view.updateVisibleSubset({
                         visibleNodeIds: renderedIds,
+                        // D086-CUSTOM BEGIN
+                        ...({ density: this.density } as object),
+                        // D086-CUSTOM END
                         // D081-P7b BEGIN: Fractal edges and titles have one camera-following pass.
                         edges: canopy ? [] : shown,
                         containers: nextContainers,
@@ -4833,6 +5051,9 @@ export class V2Page {
                     this.committedAxes = { ...this.axes };
                     // D085-S5 BEGIN
                     this.committedDensity = this.density;
+                    // D086-CUSTOM BEGIN
+                    this.presentedCustomSelection = custom;
+                    // D086-CUSTOM END
                     this.clearPageErrorAfterCommit();
                     // D085-S5 END
                     // D085-S1 END
@@ -4994,7 +5215,7 @@ export class V2Page {
                 // D085-S3 BEGIN: this topology is the one prepared for the mount and committed on success.
                 const labTopology = this.topology;
                 const labIndra = this.topologyIndra;
-                const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, labTopology, labIndra, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, labTopology, labIndra, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels, ...({ density: this.density } as object), text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -5049,7 +5270,7 @@ export class V2Page {
                     // D081-P7d BEGIN: morphology changes the canopy ink, never its positions.
                     nextRailLayer = mountCanopyRailLayer(nextHost, canopy, mounted, renderedIds, this.axes.reading,
                         projection, this.axes.morphology, this.selected,
-                        this.density === 'complete' ? 1500 : 30000,
+                        this.density === 'complete' || this.customAtMaximum() ? 1500 : 30000,
                         this.insets, canopyViewMarks, this.axes.labels,
                         () => { if (this.canopyActive() && this.canopyRailLayer) this.renderPanel(); },
                         shown as CanopyEvidenceStroke[],
@@ -5128,6 +5349,9 @@ export class V2Page {
             this.committedAxes = { ...this.axes };
             // D085-S5 BEGIN
             this.committedDensity = this.density;
+            // D086-CUSTOM BEGIN
+            this.presentedCustomSelection = custom;
+            // D086-CUSTOM END
             this.clearPageErrorAfterCommit();
             // D085-S5 END
             // D085-S1 END
@@ -5576,12 +5800,30 @@ export class V2Page {
     }
     // D085-S7 END
     /** Change density; Natural aligns a fresh canonical layout while zoom keeps its coordinates. */
+    // D086-CUSTOM BEGIN
+    async setDensityIntent(intent: CustomDensityIntent): Promise<CustomCommitFact | 'superseded'> {
+        if (intent.serial < this.customSerial) return 'superseded';
+        if (!Number.isSafeInteger(intent.requestedNodes) || intent.requestedNodes < 0)
+            throw new Error('Invalid Custom node request');
+        this.customSerial = intent.serial;
+        const availability = this.customAvailability();
+        this.customClampedFrom = intent.requestedNodes < availability.minimum || intent.requestedNodes > availability.available
+            ? intent.requestedNodes : undefined;
+        this.customNodes = Math.min(availability.available, Math.max(availability.minimum, intent.requestedNodes));
+        this.customDirty = true;
+        const result = await this.setDensity('custom');
+        if (result === 'superseded' || intent.serial !== this.customSerial) return 'superseded';
+        this.customDirty = false;
+        return { committed: true, requestedNodes: this.customNodes, available: availability.available,
+            ...(this.customClampedFrom === undefined ? {} : { clampedFrom: this.customClampedFrom }) };
+    }
+    // D086-CUSTOM END
     // D085-S1 BEGIN: density participates in the same page transition lane.
     setDensity(value: Density): Promise<void | 'superseded'> {
         // D086-F2 BEGIN: a direct page density request carries an unfinished law.
         const taxonomy = this.pendingTaxonomyIntent;
         if (taxonomy) return this.setTaxonomy(taxonomy.topology, taxonomy.indra, false,
-            taxonomy.targetAxes, value);
+            taxonomy.targetAxes, value).then(result => result === 'superseded' ? 'superseded' : undefined);
         // D086-F2 END
         // D085-S1 BEGIN: direct page callers may change density during a provisional axis mount.
         const inheritedOrganization = this.geometryTransitionActive
@@ -5638,12 +5880,15 @@ export class V2Page {
     private async applyDensity(value: Density, inheritedOrganization: PageAxes['organization'] | null = null,
         intent = this.geometryIntent) {
         const next = normalizeDensity(value);
-        if (next === this.density && !inheritedOrganization)
+        if (next === this.density && !inheritedOrganization && !this.customDirty)
             return;
         // D082-A-DENSITY BEGIN: a density switch is a filter change, never a fit intent.
         this.densitySwitchPending = true;
         // D082-A-DENSITY END
         this.density = next;
+        // D086-CUSTOM BEGIN
+        this.customDirty = false;
+        // D086-CUSTOM END
         // D081-P3b BEGIN: the resident lower-density view remains visible while
         // the worker prepares the full Indra domain; disclose that recovery state.
         if (next === 'complete' && !this.canopyActive()) {
@@ -5879,9 +6124,11 @@ export class V2Page {
     // D082-B2 BEGIN: validate the requested row before changing either taxonomy axis.
     // D085-S1 BEGIN: queue the whole mutation/refresh/commit, not merely the worker response.
     setTaxonomy(topology: TopologyId, indra: boolean, requirePresentation = false,
-        targetAxes?: AxesInput, targetDensity?: Density): Promise<void> {
+        targetAxes?: AxesInput, targetDensity?: Density,
+        customIntent?: CustomDensityIntent): Promise<void | CustomCommitFact | 'superseded'> {
         // D086-F2 BEGIN
-        const taxonomyIntent = { topology, indra, targetAxes, targetDensity };
+        const taxonomyIntent = { topology, indra, targetAxes, targetDensity,
+            ...(customIntent ? { customIntent } : {}) };
         this.pendingTaxonomyIntent = taxonomyIntent;
         // D086-F2 END
         this.supersedeGeometry();
@@ -5893,7 +6140,20 @@ export class V2Page {
         return this.transitions.enqueue(async () => {
             if (intent !== this.geometryIntent) throw new GeometrySupersededError();
             this.geometryTransitionActive = true;
-            try { await this.applyTaxonomy(topology, indra, intent, targetAxes, targetDensity); }
+            try {
+                await this.applyTaxonomy(topology, indra, intent, targetAxes,
+                    customIntent ? 'custom' : targetDensity, customIntent);
+                // D086-CUSTOM BEGIN
+                if (customIntent) {
+                    if (intent !== this.geometryIntent || customIntent.serial !== this.customSerial)
+                        return 'superseded' as const;
+                    const selection = this.presentedCustomSelection ?? this.selectCustomNow();
+                    return { committed: true as const, requestedNodes: selection.requested,
+                        available: selection.available,
+                        ...(this.customClampedFrom === undefined ? {} : { clampedFrom: this.customClampedFrom }) };
+                }
+                // D086-CUSTOM END
+            }
             catch (error) {
                 if (intent === this.geometryIntent) this.taxonomyPresentationPending = false;
                 throw error;
@@ -5909,7 +6169,8 @@ export class V2Page {
         // D085-S1 END
     }
     private async applyTaxonomy(topology: TopologyId, indra: boolean, intent: number,
-        targetAxes?: AxesInput, targetDensity?: Density): Promise<void> {
+        targetAxes?: AxesInput, targetDensity?: Density,
+        customIntent?: CustomDensityIntent): Promise<void> {
         const support = topologySupport(topology, targetAxes?.projection ?? this.axes.projection, indra);
         if (!support.ok) throw new Error(support.reason);
         const previousAxes = this.axes;
@@ -5931,6 +6192,18 @@ export class V2Page {
         this.taxonomyExplicit = true;
         if (topology === 'natural') this.legacyIndra = true;
         if (targetDensity !== undefined) this.density = targetDensity;
+        // D086-CUSTOM BEGIN: amount and density enter the one pending taxonomy mount.
+        if (customIntent) {
+            if (!Number.isSafeInteger(customIntent.requestedNodes) || customIntent.requestedNodes < 0)
+                throw new Error('Invalid Custom node request');
+            this.customSerial = customIntent.serial;
+            const availability = this.customAvailability();
+            this.customClampedFrom = customIntent.requestedNodes < availability.minimum ||
+                customIntent.requestedNodes > availability.available ? customIntent.requestedNodes : undefined;
+            this.customNodes = Math.min(availability.available,
+                Math.max(availability.minimum, customIntent.requestedNodes));
+        }
+        // D086-CUSTOM END
         // D085-S1 BEGIN: compose the selected law inside Indra in this single mount.
         const organization = indra ? 'indra' : topology === 'canopy-ifs' ? 'fractal' : 'natural';
         // D085-S1 END
@@ -6485,15 +6758,41 @@ export class V2Page {
         const represented = countAggregateRepresentation(witnessNodes, this.rendered);
         // D085-X9 END
         const canopyRailStats = this.canopyActive() ? this.canopyRailLayer?.stats() : undefined;
-        let visibility: (ReturnType<typeof buildVisibilityWitness> & { zeroDegreeReasons?: { reading: string[] } }) | undefined = this.view ? buildVisibilityWitness({
+        // D086-CUSTOM BEGIN: flagged typed Custom also publishes the visibility record.
+        const customWitness = this.customRecord();
+        const typedRelationById = new Map((this.projectionResult?.visualRelations ?? [])
+            .map(relation => [relation.visualId, relation]));
+        const rawEdgeById = new Map(source.edges.map(edge => [edge.id, edge]));
+        const typedSubmitted = this.typedActive() && this.density === 'custom' && this.projectionVisibility
+            ? [
+                ...[...this.projectionVisibility.semanticEdgeIds].flatMap(id => {
+                    const edge = rawEdgeById.get(id);
+                    return edge ? [{ id, source: edge.source, target: edge.target,
+                        class: edge.type === 'classified_in' ? 'structural' as const : edge.class }] : [];
+                }),
+                ...[...this.projectionVisibility.visualRelationIds].flatMap(id => {
+                    const relation = typedRelationById.get(id);
+                    if (!relation) return [];
+                    const first = rawEdgeById.get(relation.underlyingEdgeIds[0] ?? '');
+                    return [{ id, source: relation.source, target: relation.target,
+                        class: first ? first.type === 'classified_in' ? 'structural' as const : first.class
+                            : 'structural' as const }];
+                }),
+            ] : [];
+        // D086-CUSTOM END
+        let visibility: (ReturnType<typeof buildVisibilityWitness> & { zeroDegreeReasons?: { reading: string[] } }) | undefined = (this.view || (customWitness && this.typedActive())) ? buildVisibilityWitness({
             axes: this.axes as Axes, relationDetail: this.relationDetail, density: this.density,
+            // D086-CUSTOM BEGIN
+            ...(customWitness ? { custom: customWitness } : {}),
+            // D086-CUSTOM END
             // D085-X9 BEGIN
             nodes: witnessNodes, renderedNodeIds: this.rendered,
             // D085-X9 END
-            submittedEdges: [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
-                source: edge.source, target: edge.target, class: edge.class })),
-            sourceEdges: [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
-                source: edge.source, target: edge.target, class: edge.class })),
+            submittedEdges: this.view ? [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
+                source: edge.source, target: edge.target, class: edge.class }))
+                : typedSubmitted,
+            sourceEdges: this.view ? [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
+                source: edge.source, target: edge.target, class: edge.class })) : typedSubmitted,
             // D081-P7b BEGIN: the product title layer is suppressed in Fractal.
             labels: this.canopyActive() ? this.labelCount()
                 : productVisibility?.labels.drawn ?? this.labelCount(),
@@ -6584,7 +6883,8 @@ export class V2Page {
                 density: this.density,
                 nodes: { ...this.lodCounts.nodes },
                 arcs: { ...this.lodCounts.arcs },
-                labels: { rendered: this.labelCount(), available: labelBudgetOf(this.density) },
+                labels: { rendered: this.labelCount(), available: this.density === 'custom'
+                    ? this.densityBudgetFor().labels : labelBudgetOf(this.density) },
             },
             dataset: this.dataset(),
             disclosure: this.disclosure(),
@@ -6747,7 +7047,7 @@ export class V2Page {
         if (detail) line(controls, 'Relazioni', `${detail.setting === 'essential' ? 'Essenziali' : 'Tutte'} · Essenziali ${formatCount(detail.essentialDrawn)} tracciati${this.lullOverviewFold?.foldedEdges ? ' prima del raggruppamento Llull' : ''} / ${formatCount(detail.essentialRepresented)} relazioni · Tutte ${formatCount(detail.availableDrawn)} tracciati${this.lullOverviewFold?.foldedEdges ? ' prima del raggruppamento Llull' : ''} / ${formatCount(detail.availableRepresented)} relazioni · ${formatCount(detail.guideDrawn)} guide ora`);
         // D085-S7 END
         // D081-FRACTAL-MERGE BEGIN: the canvas canopy owns 44 title slots.
-        line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), this.canopyActive() ? 44 : labelBudgetOf(this.density)));
+        line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), this.canopyActive() ? 44 : this.density === 'custom' ? this.densityBudgetFor().labels : labelBudgetOf(this.density)));
         // D081-FRACTAL-MERGE END.
         // D086-F4 BEGIN: expose the honest class step and placement in graph status.
         if (this.topology === 'lull' && this.topologyIndra && this.axes.projection === '3d' && this.lawLayout) {
@@ -6755,7 +7055,11 @@ export class V2Page {
             line(controls, 'Llull + Indra', `Perle della gerarchia primaria · XY: impacchettamento Indra · quota: classe d’offset dello snapshot completo · intervallo tavole ${Number(step ?? 0).toFixed(2)}`);
         }
         // D086-F4 END
-        line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa' }[this.density]);
+        line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa', custom: 'Custom' }[this.density]);
+        // D086-CUSTOM BEGIN
+        const customStatus = this.customRecord();
+        if (customStatus) line(controls, 'Custom', `richiesti ${formatCount(customStatus.requested)} · disponibili ${formatCount(customStatus.available)} · disegnati ${formatCount(customStatus.drawn)} (porzione visibile ${formatCount(customStatus.viewportDrawn)}) · rappresentati ${formatCount(customStatus.submitted)} · contesto incluso ${formatCount(customStatus.contextIncluded)} · aperti a mano ${formatCount(customStatus.manualOpened)}${this.typedActive() && !this.indraPearlsView() && source.nodes.length > V2_CAP ? ` · massimo della proiezione tipizzata: ${formatCount(V2_CAP)}; dataset: ${formatCount(source.nodes.length)}` : ''}`);
+        // D086-CUSTOM END
         // D081-P3 BEGIN complete graph metric; P5 owns the surrounding panel rows.
         line(controls, 'Grafo', this.density === 'complete'
             ? this.typedActive() && !this.indraPearlsView()
