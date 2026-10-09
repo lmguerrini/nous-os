@@ -2056,6 +2056,9 @@ export const createProductView: CreateProductView = async (input) => {
       morphologyInteraction, morphologyGeometry: scene.geometry },
   });
   // D082-A-PERF END
+  // D086-NAT BEGIN: retained mount contract also serves a later density subset.
+  let mountOpeningCamera: VisualStateCamera | null = null;
+  let mountOpeningPoints: (() => Coordinates[]) | null = null;
   function mount() {
     const began = performance.now();
     // D082-B-CANOPYN BEGIN
@@ -2207,6 +2210,8 @@ export const createProductView: CreateProductView = async (input) => {
       if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
       return points;
     };
+    mountOpeningCamera = openingCamera;
+    mountOpeningPoints = openingPoints;
     if (container.hasAttribute('data-fractal-rails-active')) {
       canopyOpeningCamera = openingCamera;
       canopyOpeningPoints = openingPoints;
@@ -3092,6 +3097,16 @@ export const createProductView: CreateProductView = async (input) => {
     frame: (ids) => frameIds(ids, true),
     frameFocus: (ids) => frameIds(ids, false, 60, 0.78),
     fit: () => frameIds([...visible], false, 32, 0.9, true),
+    solveMountFit() {
+      if (!handle || !mountOpeningCamera || !mountOpeningPoints) return null;
+      const before = handle.readCameraState();
+      try {
+        handle.restoreCameraState(mountOpeningCamera);
+        return solveFraming(handle, { points: mountOpeningPoints(), rect: localRect(),
+          marginPx: 24, anchorFirst: false, fill: 0.92 }).camera;
+      } finally { handle.restoreCameraState(before); }
+    },
+  // D086-NAT END
     projectPoint: (point) => project(point),
     // D082-A-PERF BEGIN
     gestureWitness() {

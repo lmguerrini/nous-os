@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { alignNaturalDensity, animateNaturalDensity, naturalDensityDisplacement,
+  placeNaturalDensity } from '../src/review/natural-density-transition.ts';
+
+// D086-NAT BEGIN
+for (const dimension of ['2d', '3d'] as const) test(`${dimension} uses a positive uniform fit over shared IDs`, () => {
+  const canonical = new Map([
+    ['a', { x: 0, y: 0, z: 0 }], ['b', { x: 2, y: 0, z: 1 }],
+    ['c', { x: 0, y: 2, z: 2 }], ['new', { x: 5, y: 6, z: 3 }],
+  ]);
+  const prior = new Map([...canonical].filter(([id]) => id !== 'new').map(([id, point]) =>
+    [id, { x: 3 * point.x + 7, y: 3 * point.y - 4,
+      z: dimension === '3d' ? 3 * point.z + 9 : 0 }] as const));
+  const alignment = alignNaturalDensity(prior, canonical, dimension);
+  assert.equal(alignment.shared, 3);
+  assert.ok(Math.abs(alignment.scale - 3) < 1e-12);
+  const placed = placeNaturalDensity(canonical, alignment);
+  for (const [id, point] of prior) {
+    const actual = placed.get(id)!;
+    assert.ok(Math.hypot(actual.x - point.x, actual.y - point.y,
+      dimension === '3d' ? actual.z - point.z : 0) < 1e-12);
+  }
+  assert.equal(placed.size, canonical.size);
+  assert.deepEqual(alignNaturalDensity(new Map([...prior].slice(0, 2)), canonical, dimension),
+    { scale: 1, x: 0, y: 0, z: 0, shared: 2 });
+});
+
+test('an opposing cloud never reflects the target', () => {
+  const target = new Map([['a', { x: 0, y: 0, z: 0 }], ['b', { x: 1, y: 0, z: 0 }],
+    ['c', { x: 0, y: 1, z: 0 }]]);
+  const prior = new Map([...target].map(([id, point]) => [id, { x: -point.x, y: -point.y, z: 0 }] as const));
+  assert.ok(alignNaturalDensity(prior, target, '2d').scale > 0);
+});
+
+test('transition witness measures only persisting marks in screen pixels', () => {
+  assert.deepEqual(naturalDensityDisplacement({ a: { x: 0, y: 0 }, b: { x: 1, y: 0 },
+    gone: { x: 0, y: 0 } }, { a: { x: 3, y: 4 }, b: { x: 1, y: 10 },
+    new: { x: 2, y: 2 } }), { shared: 2, added: 1, removed: 1, medianPx: 7.5, p95Px: 9.75 });
+});
+
+test('a superseded animation releases its host even when frames pause', async () => {
+  const original = { document: globalThis.document, window: globalThis.window,
+    frame: globalThis.requestAnimationFrame };
+  let removed = false;
+  const canvas = { style: {} as Record<string, string>, width: 0, height: 0,
+    getContext: () => ({ setTransform() {}, clearRect() {}, beginPath() {}, arc() {}, fill() {},
+      set fillStyle(_value: string) {}, set globalAlpha(_value: number) {} }),
+    remove() { removed = true; } };
+  const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    append() {} } as unknown as HTMLElement;
+  const host = { style: { opacity: '1' } } as unknown as HTMLElement;
+  globalThis.document = { createElement: () => canvas } as unknown as Document;
+  globalThis.window = { devicePixelRatio: 1 } as Window & typeof globalThis;
+  globalThis.requestAnimationFrame = (() => 1) as typeof requestAnimationFrame;
+  try {
+    const controller = new AbortController();
+    const motion = animateNaturalDensity(root, host, { a: { x: 0, y: 0 } },
+      { a: { x: 10, y: 10 } }, () => true, false, controller.signal);
+    controller.abort();
+    await motion;
+    assert.equal(host.style.opacity, '1');
+    assert.equal(removed, true);
+  } finally {
+    globalThis.document = original.document;
+    globalThis.window = original.window;
+    globalThis.requestAnimationFrame = original.frame;
+  }
+});
+// D086-NAT END
