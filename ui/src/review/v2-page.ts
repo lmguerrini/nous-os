@@ -5046,6 +5046,10 @@ export class V2Page {
             const previousGuideLayer = this.guideLayer;
             // D082-B2 END
             this.view = mounted;
+            // D086-F2 BEGIN: this accepted mount has already solved its opening fit.
+            // Read it before a returning topology replays its last navigated pose.
+            const openingFitCamera = mounted.readCamera();
+            // D086-F2 END
             // D086-F2 BEGIN: only an accepted replacement may record and replay cameras.
             const departingCamera = topologySpaceChanged ? previousView?.readCamera() : null;
             if (topologySpaceChanged && departingCamera) this.topologyCameras.set(priorSpace,
@@ -5118,6 +5122,12 @@ export class V2Page {
             this.lastLodKey = lodKey;
             this.lastBoundsKey = boundsKey;
             this.lastSceneKey = sceneKey;
+            // D086-F2 BEGIN: a prior view makes the `!old` opening-fit branch below
+            // unreachable on a topology switch. Record the new law's actual mount fit
+            // for the same scene key that a fresh page records. A later refit uses it too.
+            if (openingFitCamera && (topologySpaceChanged || this.topology !== 'natural'))
+                this.canonicalFitCameras.set(this.canonicalFitKey(), openingFitCamera);
+            // D086-F2 END
             this.lastArrangement = arrangement;
             this.lastMorphology = this.axes.morphology;
             const volume = volumeStats(this.positions);
@@ -5177,7 +5187,13 @@ export class V2Page {
             } else if (cameraAction === "refit") {
                 this.noteCameraIntent();
                 const fitEpoch = this.cameraIntentEpoch;
-                this.programmaticCamera(); await this.view.fit();
+                // D086-F2 BEGIN: the replacement already solved the current bounds
+                // with the fresh-page mount contract. Keep the classic Natural path.
+                this.programmaticCamera();
+                if (this.topology !== 'natural' && openingFitCamera)
+                    this.view.restoreCamera(openingFitCamera);
+                else await this.view.fit();
+                // D086-F2 END
                 if (fitEpoch === this.cameraIntentEpoch) {
                     this.programmaticCamera();
                     this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
