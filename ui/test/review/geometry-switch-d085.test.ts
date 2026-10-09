@@ -336,6 +336,7 @@ test('Lab with Indra and Julia 3D complete each mount once and present matching 
       view2WriteAllowed: false, taxonomyErrorShown: false,
       // D086-F2 BEGIN
       pendingDensityIntent: null,
+      pendingTopologyIntent: null,
       // D086-F2 END
       topologySupport: () => ({ ok: true }),
       appliedAxes(partial: Record<string, unknown>) { return { ...state.axes, ...partial }; },

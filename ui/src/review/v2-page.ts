@@ -675,6 +675,10 @@ export class V2Page {
     // D085-S1 BEGIN
     private readonly transitions = createGeometryTransitionQueue();
     private geometryIntent = 0;
+    // D086-F2 BEGIN: page callers share the same last-requested taxonomy contract.
+    private pendingTaxonomyIntent: { topology: TopologyId; indra: boolean;
+        targetAxes: AxesInput | undefined; targetDensity: Density | undefined } | null = null;
+    // D086-F2 END
     // D085-S1 BEGIN: unrelated refreshes wait for the accepted geometry mount.
     private geometryTransitionActive = false;
     // D085-S1 END
@@ -1344,6 +1348,13 @@ export class V2Page {
             && (this.topology === 'canopy-ifs' || enabledExperimentalOrganizations().has('fractal'));
         // D082-B2 END
     }
+    // D086-F2 BEGIN: explicit selection, settled reveal and manual disclosure
+    // are the three approved sources of a real Canopy focus mark.
+    private canopyMarkFocusId(): string | null {
+        return this.selected ?? this.revealState.focusClusterId
+            ?? this.history.state.manualOrder.at(-1) ?? null;
+    }
+    // D086-F2 END
     private async prepareCanopy(): Promise<CanopyLayout> {
         // D081-P7d BEGIN: build the canopy from the immutable dataset snapshot.
         if (this.canopy && this.canopyNodeCount === this.canopyDatasetNodes.length) return this.canopy;
@@ -3970,10 +3981,9 @@ export class V2Page {
             const projection = this.axes.projection;
             let canopyViewMarks: CanopyMark[] = [];
             if (canopy) {
-                // D086-F2 BEGIN: the fixed Canopy evidence prefix has one
-                // explicit focus input. A prior reveal cluster must not add a
-                // mark after Escape.
-                const focusId = this.selected;
+                // D086-F2 BEGIN: preserve the real reveal/manual focus mark when
+                // no selection owns the mark. Escape retires selection focus below.
+                const focusId = this.canopyMarkFocusId();
                 // D086-F2 END
                 const rootWidth = Math.max(1, canopy.bounds.x[1] - canopy.bounds.x[0]);
                 const clearWidth = Math.max(1, (element('render-root').clientWidth || 1000)
@@ -5387,6 +5397,11 @@ export class V2Page {
         this.syncFocusControls();
         // D086-F2 END
         this.sampleReveal(this.revealCamera.zoom, true);
+        // D086-F2 BEGIN: the settled sample may retain the picked cluster through
+        // its cursor. Escape releases that focus; the next zoom may establish a new one.
+        this.revealState = { ...this.revealState, focusClusterId: null,
+            focusSource: null, pendingFocusClusterId: null };
+        // D086-F2 END
         if (this.typedActive()) this.typedSelection = null;
         this.view?.select(null);
         await this.refresh();
@@ -5475,6 +5490,11 @@ export class V2Page {
      * recomputed on the next refresh and the coordinates never move. */
     // D085-S1 BEGIN: density participates in the same page transition lane.
     setDensity(value: Density): Promise<void | 'superseded'> {
+        // D086-F2 BEGIN: a direct page density request carries an unfinished law.
+        const taxonomy = this.pendingTaxonomyIntent;
+        if (taxonomy) return this.setTaxonomy(taxonomy.topology, taxonomy.indra, false,
+            taxonomy.targetAxes, value);
+        // D086-F2 END
         // D085-S1 BEGIN: direct page callers may change density during a provisional axis mount.
         const inheritedOrganization = this.geometryTransitionActive
             && this.axes.organization !== (this.committedAxes?.organization ?? this.axes.organization)
@@ -5772,6 +5792,10 @@ export class V2Page {
     // D085-S1 BEGIN: queue the whole mutation/refresh/commit, not merely the worker response.
     setTaxonomy(topology: TopologyId, indra: boolean, requirePresentation = false,
         targetAxes?: AxesInput, targetDensity?: Density): Promise<void> {
+        // D086-F2 BEGIN
+        const taxonomyIntent = { topology, indra, targetAxes, targetDensity };
+        this.pendingTaxonomyIntent = taxonomyIntent;
+        // D086-F2 END
         this.supersedeGeometry();
         const intent = this.geometryIntent;
         // D085-S1 BEGIN: keep the witness in transition until main updates URL and controls.
@@ -5786,7 +5810,13 @@ export class V2Page {
                 if (intent === this.geometryIntent) this.taxonomyPresentationPending = false;
                 throw error;
             }
-            finally { this.geometryTransitionActive = false; }
+            finally {
+                this.geometryTransitionActive = false;
+                // D086-F2 BEGIN: only the owner retires the pending request.
+                if (intent === this.geometryIntent && this.pendingTaxonomyIntent === taxonomyIntent)
+                    this.pendingTaxonomyIntent = null;
+                // D086-F2 END
+            }
         });
         // D085-S1 END
     }
@@ -5880,6 +5910,10 @@ export class V2Page {
     }
     // D085-S1 END
     setAxes(value: AxesInput): Promise<void | 'superseded'> {
+        // D086-F2 BEGIN: a direct page axis request replaces, rather than carries,
+        // a provisional taxonomy; its later density click must not revive that law.
+        this.pendingTaxonomyIntent = null;
+        // D086-F2 END
         this.supersedeGeometry();
         const intent = this.geometryIntent;
         return this.transitions.enqueue(async () => {
