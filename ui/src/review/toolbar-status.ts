@@ -7,6 +7,12 @@ export type GraphToolbarCounts = {
 };
 
 export type D081GraphStatus = {
+  // D086-CUSTOM BEGIN: renderer and page witnesses own these counts.
+  custom?: Readonly<{ requested: number; available: number; minimum: number; selected: number;
+    contextIncluded: number; submitted: number; drawn: number; viewportDrawn: number;
+    sourceDigest: string; orderDigest: string; clampedFrom?: number;
+    phase: string; serial: number }>;
+  // D086-CUSTOM END
   // D085-S5 BEGIN: visual composition counts remain outside real node/edge totals.
   indraComposition?: Readonly<{ pearlShellsSubmitted: number; pearlShellsDrawn: number;
     pearlShellsLodSuppressed: number; guidesRequested: number; guidesDrawn: number;
@@ -98,7 +104,11 @@ export function formatD081GraphStatus(status: D081GraphStatus): { line: string; 
   const foldQualifier = (edges.aggregatedIntoBundles ?? 0) > 0 ? ' prima del raggruppamento Llull' : '';
   // D085-X2 END
   const detailText = detail ? ` · Rel. Essenziali: ${count(detail.essentialRepresented)}; Tutte: ${count(detail.availableRepresented)}` : '';
-  const line = `Nodi ${count(nodes.visible)} visibili · ${count(nodes.represented)} rappresentati / ${count(nodes.total)} totali; Archi ${count(edges.drawn)} disegnati / ${count(edges.eligible)} eleggibili / ${count(edges.total)} totali${detailText}`;
+  // D086-CUSTOM BEGIN
+  const custom = status.custom;
+  const customLine = custom ? `Custom: richiesti ${count(custom.requested)} · disponibili ${count(custom.available)} · disegnati ${count(custom.drawn)} (porzione visibile ${count(custom.viewportDrawn)}); ` : '';
+  const line = `${customLine}Nodi ${count(nodes.visible)} visibili · ${count(nodes.represented)} rappresentati / ${count(nodes.total)} totali; Archi ${count(edges.drawn)} disegnati / ${count(edges.eligible)} eleggibili / ${count(edges.total)} totali${detailText}`;
+  // D086-CUSTOM END
   // D085-S7 END
   const details: [string, string, string, string, string, string, string] = [
     `Nodi: ${count(nodes.visible)} visibili, ${count(nodes.represented)} rappresentati su ${count(nodes.total)} totali (${count(nodes.eligible)} eleggibili).`,
@@ -110,7 +120,9 @@ export function formatD081GraphStatus(status: D081GraphStatus): { line: string; 
     `Qualità: ${{ movimento: "Movimento", recupero: "Recupero", completa: "Completa" }[quality]}.`,
     limit ? `Limite attivo: ${limit.kind} · ${count(limit.value)} · ${sentence(limit.reason)}` : "Limite attivo: nessuno.",
     // D085-S5 BEGIN: the expanded graph status names counted, non-semantic ink.
-    status.indraComposition
+    custom
+      ? `Custom: ${count(custom.selected)} nodi selezionati, ${count(custom.contextIncluded)} di contesto compresi nei richiesti; ${count(custom.submitted)} inviati al renderer, ${count(custom.drawn)} disegnati, ${count(custom.viewportDrawn)} nella porzione visibile. ${custom.clampedFrom === undefined ? '' : `Richiesta adattata da ${count(custom.clampedFrom)}. `}Fase ${custom.phase}. Le guide strutturali non sono relazioni.`
+      : status.indraComposition
       ? `Indra: ${count(status.indraComposition.pearlShellsSubmitted)} perle richieste, ${count(status.indraComposition.pearlShellsDrawn)} ammesse dal LOD, ${count(status.indraComposition.pearlShellsLodSuppressed)} soppresse; ${count(status.indraComposition.guidesDrawn)} guide disegnate / ${count(status.indraComposition.guidesRequested)} richieste, ${count(status.indraComposition.guidesSuppressed)} soppresse; ${count(status.indraComposition.eligibleRealEdgeRoutes)} percorsi guida di archi reali eleggibili. Le guide non sono relazioni.`
       : status.juliaIndraGate && !status.juliaIndraGate.ok
         ? sentence(`Julia con Indra: ${status.juliaIndraGate.evaluated ? `${count(status.juliaIndraGate.passing)} su ${count(status.juliaIndraGate.eligible)} carte leggibili` : 'verifica in attesa'}. ${status.juliaIndraGate.reason ?? ''}`)

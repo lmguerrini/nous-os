@@ -5,6 +5,20 @@ import { normalizeDensity } from './lod.ts';
 import type { Density } from './lod.ts';
 import type { TopologyId, TopologySupport } from '../topology/contract.ts';
 import { defaultNaturalArrangement } from '../projection/natural-bridge.ts';
+// D086-CUSTOM BEGIN
+import type { CustomAvailability, CustomCommitFact, CustomDensityIntent } from './custom-density-types.ts';
+/** Validate the draft before a page task is enqueued. */
+export function parseCustomDraft(raw: string, availability: CustomAvailability): number | null {
+  if (!raw.trim() || availability.available <= 0 || availability.minimum > availability.available) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? Math.max(availability.minimum, Math.min(availability.available, value)) : null;
+}
+/** The pending object, not its amount, owns publication after an asynchronous mount. */
+export function currentCustomCommit(intent: CustomDensityIntent, pending: CustomDensityIntent | null,
+  result: CustomCommitFact | 'superseded'): result is CustomCommitFact {
+  return pending === intent && result !== 'superseded' && result.committed;
+}
+// D086-CUSTOM END
 
 // D085-S1 BEGIN: commit each requested geometry transition before the next reads its axes.
 // A failed transition releases the lane while its own caller still receives the error.
@@ -22,15 +36,18 @@ export type Compatibility = 'd081-natural' | 'typed-natural-v1' | 'd081-indra-re
 export type WireTopology = Exclude<TopologyId, 'lull'> | 'circular-combinatorial';
 export const lawTopology = (id: WireTopology): TopologyId => id === 'circular-combinatorial' ? 'lull' : id;
 export const wireTopology = (id: TopologyId): WireTopology => id === 'lull' ? 'circular-combinatorial' : id;
+// D086-CUSTOM BEGIN: Custom is a portable view choice; the legacy LOD table stays three-state.
+export type ViewDensity = Density | 'custom';
 export type GeometryView2 = Readonly<{ schema: 2; rendering: '2d' | '3d'; topology: WireTopology; indra: 'off' | 'on';
-  morphology: PageAxes['morphology']; density: Density; reading: PageAxes['reading']; colour: PageAxes['colour'];
+  morphology: PageAxes['morphology']; density: ViewDensity; customNodes?: number; reading: PageAxes['reading']; colour: PageAxes['colour'];
   labels: boolean; brain?: boolean; naturalArrangement?: NonNullable<PageAxes['arrangement']>;
   compatibility?: Compatibility; suspendedIntent?: 'fractal' | 'holographic' }>;
 export type LegacyHolographicView2 = Readonly<{ schema: 2; mode: 'legacy-holographic'; rendering: '2d' | '3d';
-  morphology: PageAxes['morphology']; density: Density; reading: PageAxes['reading']; colour: PageAxes['colour'];
+  morphology: PageAxes['morphology']; density: Density; customNodes?: number; reading: PageAxes['reading']; colour: PageAxes['colour'];
   labels: boolean; brain?: boolean; experimental: true }>;
 export type SavedGeometryView2 = GeometryView2 | LegacyHolographicView2;
 export type ResolvedGeometryView2 = Readonly<{ value: SavedGeometryView2; source: 'query-view2' | 'hash-view2' | 'query-view' | 'hash-view' | 'storage' | 'default'; error?: string }>;
+// D086-CUSTOM END
 // D082-LAB-FIX4 BEGIN
 export type SupportedGeometryView2 = Readonly<{ value: SavedGeometryView2; notice?: string }>;
 
@@ -69,12 +86,16 @@ export function parseGeometryView2(raw: string): SavedGeometryView2 {
   if (r.schema !== 2) throw new TypeError('view2.schema deve essere 2');
   const analytical = r.mode === 'legacy-holographic';
   const allowed = new Set(analytical
-    ? ['schema','mode','rendering','morphology','density','reading','colour','labels','brain','experimental']
-    : ['schema','rendering','topology','indra','morphology','density','reading','colour','labels','brain','naturalArrangement','compatibility','suspendedIntent']);
+    ? ['schema','mode','rendering','morphology','density','customNodes','reading','colour','labels','brain','experimental']
+    : ['schema','rendering','topology','indra','morphology','density','customNodes','reading','colour','labels','brain','naturalArrangement','compatibility','suspendedIntent']);
   for (const key of Object.keys(r)) if (!allowed.has(key)) throw new TypeError(`view2.${key} sconosciuto`);
   vocabulary(r.rendering, ['2d','3d'], 'rendering');
   vocabulary(r.morphology, ['stellar','neural','mycelium'], 'morphology');
-  vocabulary(r.density, ['essential','balanced','complete'], 'density');
+  // D086-CUSTOM BEGIN
+  vocabulary(r.density, analytical ? ['essential','balanced','complete'] : ['essential','balanced','complete','custom'], 'density');
+  if (own(r, 'customNodes') && (!Number.isSafeInteger(r.customNodes) || (r.customNodes as number) <= 0))
+    throw new TypeError('view2.customNodes deve essere un intero positivo sicuro');
+  // D086-CUSTOM END
   vocabulary(r.reading, ['attested','exploratory','combined'], 'reading');
   vocabulary(r.colour, COLOURS, 'colour');
   if (typeof r.labels !== 'boolean') throw new TypeError('view2.labels deve essere booleano');
@@ -104,10 +125,10 @@ export function parseGeometryView2(raw: string): SavedGeometryView2 {
 export function serializeGeometryView2(value: SavedGeometryView2): string {
   const v = parseGeometryView2(JSON.stringify(value));
   if ('mode' in v) return JSON.stringify({ schema: 2, mode: v.mode, rendering: v.rendering, morphology: v.morphology,
-    density: v.density, reading: v.reading, colour: v.colour, labels: v.labels,
+    density: v.density, ...(v.customNodes !== undefined ? { customNodes: v.customNodes } : {}), reading: v.reading, colour: v.colour, labels: v.labels,
     ...(v.brain !== undefined ? { brain: v.brain } : {}), experimental: true });
   return JSON.stringify({ schema: 2, rendering: v.rendering, topology: v.topology, indra: v.indra,
-    morphology: v.morphology, density: v.density, reading: v.reading, colour: v.colour, labels: v.labels,
+    morphology: v.morphology, density: v.density, ...(v.customNodes !== undefined ? { customNodes: v.customNodes } : {}), reading: v.reading, colour: v.colour, labels: v.labels,
     ...(v.brain !== undefined ? { brain: v.brain } : {}),
     ...(v.naturalArrangement !== undefined ? { naturalArrangement: v.naturalArrangement } : {}),
     ...(v.compatibility !== undefined ? { compatibility: v.compatibility } : {}),
@@ -153,20 +174,32 @@ export function defaultGeometryView2(density: Density = 'balanced'): GeometryVie
 export function resolveGeometryView2(search: string, hash: string, storedView: string | null, storedDensity: string | null): ResolvedGeometryView2 {
   const query = new URLSearchParams(search), fragment = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
   const density = normalizeDensity(storedDensity);
+  // D086-CUSTOM BEGIN: an explicit URL amount wins; an omitted amount inherits the last saved choice.
+  let storedCustomNodes: number | undefined;
+  if (storedView) {
+    try {
+      const saved = parseGeometryView2(storedView);
+      storedCustomNodes = saved.customNodes;
+    } catch { /* a bad saved view cannot invalidate a valid URL */ }
+  }
+  const inheritCustomNodes = (value: SavedGeometryView2): SavedGeometryView2 =>
+    value.customNodes === undefined && storedCustomNodes !== undefined
+      ? { ...value, customNodes: storedCustomNodes } : value;
   for (const [source, raw] of [['query-view2',query.get('view2')],['hash-view2',fragment.get('view2')]] as const) {
     if (raw !== null) {
-      try { return { value: parseGeometryView2(raw), source }; }
+      try { return { value: inheritCustomNodes(parseGeometryView2(raw)), source }; }
       catch (error) { return { value: defaultGeometryView2(density), source, error: String(error) }; }
     }
   }
   for (const [source, raw] of [['query-view',query.get('view')],['hash-view',fragment.get('view')],['storage',storedView]] as const) {
     if (raw !== null) {
-      try { return { value: source === 'storage' && JSON.parse(raw)?.schema === 2
-        ? parseGeometryView2(raw) : migrateLegacyView(raw, density, search, hash), source }; }
+      try { return { value: inheritCustomNodes(source === 'storage' && JSON.parse(raw)?.schema === 2
+        ? parseGeometryView2(raw) : migrateLegacyView(raw, density, search, hash)), source }; }
       catch (error) { return { value: defaultGeometryView2(density), source, error: String(error) }; }
     }
   }
   return { value: defaultGeometryView2(density), source: 'default' };
+  // D086-CUSTOM END
 }
 export function geometryToLegacyAxes(value: SavedGeometryView2): PageAxes {
   // D085-S5 BEGIN: a Lab law keeps Indra's approved shell renderer when Indra is on.

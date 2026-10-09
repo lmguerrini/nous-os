@@ -313,6 +313,19 @@
     #review-toolbar.toolbar-left #toolbar-controls .toolbar-section:has(> #appearance-group) {order:initial}
   </style>
 <style>/* D082-B2 BEGIN: preserve existing toolbar geometry for the two new axes. */
+/* D086-CUSTOM BEGIN: the row occupies its final height from first paint. */
+#toolbar-controls .axis#density-control {flex-wrap:wrap}
+#custom-density-row {display:flex;align-items:center;gap:5px;flex:1 0 100%;height:36px;min-width:0;white-space:nowrap}
+#custom-density-row[aria-hidden="true"] {visibility:hidden}
+#custom-density-range {min-width:75px;flex:1 1 120px;padding:0}
+#custom-density-number {width:72px;min-width:0}
+#custom-density-available {font-size:11px;color:var(--muted)}
+#custom-density-message {font-size:11px;color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis}
+#review-toolbar.toolbar-left #toolbar-controls #custom-density-row {display:grid;grid-template-columns:minmax(0,1fr) 72px auto;min-height:75px;height:auto;white-space:normal}
+#review-toolbar.toolbar-left #toolbar-controls #custom-density-range {grid-column:1/-1;width:100%}
+#review-toolbar.toolbar-left #toolbar-controls #custom-density-number {width:72px}
+#review-toolbar.toolbar-left #toolbar-controls #custom-density-message {grid-column:1/-1}
+/* D086-CUSTOM END */
 #toolbar-controls .toolbar-section:has(> .axis[data-axis="topology"]) {order:2}
 #toolbar-controls .toolbar-section:has(> .axis[data-axis="indra"]) {order:3}
 #toolbar-controls .axis[data-axis="topology"] button:disabled,
@@ -342,7 +355,9 @@
     toolbar (disabled until the distilled graph loads) so installing them can no longer change
     the toolbar height after the first camera fit. -->
     <div class="axis" id="v2-relation-control"><strong>Relazioni</strong><label class="relation-detail-label" title="Filtro di dettaglio delle relazioni; non cambia la modalità epistemica"><span>Dettaglio</span><select id="v2-relation-detail" aria-label="Dettaglio delle relazioni" disabled><option value="essential">Essenziali</option><option value="all">Tutte</option></select></label></div>
-    <div class="axis" id="density-control"><strong>Densità</strong><button data-density="essential" aria-pressed="false" disabled title="Mostra meno elementi per dare priorità alla leggibilità">Essenziale</button><button data-density="balanced" aria-pressed="true" disabled title="Equilibrio fra leggibilità e dettaglio">Bilanciata</button><button data-density="complete" aria-pressed="false" disabled title="Mostra più elementi mantenendo il limite di dettaglio">Completa</button></div>
+    <!-- D086-CUSTOM BEGIN -->
+    <div class="axis" id="density-control"><strong>Densità</strong><button data-density="essential" aria-pressed="false" disabled title="Mostra meno elementi per dare priorità alla leggibilità">Essenziale</button><button data-density="balanced" aria-pressed="true" disabled title="Equilibrio fra leggibilità e dettaglio">Bilanciata</button><button data-density="complete" aria-pressed="false" disabled title="Mostra più elementi mantenendo il limite di dettaglio">Completa</button><button data-density="custom" aria-pressed="false" disabled title="Scegli il numero di nodi da mostrare">Custom</button><div id="custom-density-row" aria-hidden="true"><input id="custom-density-range" type="range" min="1" max="1" value="1" disabled aria-label="Nodi Custom: 1"><input id="custom-density-number" type="number" min="1" max="1" step="1" value="1" disabled aria-label="Numero di nodi Custom"><span id="custom-density-available">disponibili 0</span><button id="custom-density-apply" disabled>Applica</button><span id="custom-density-message" role="status" aria-live="polite"></span></div></div>
+    <!-- D086-CUSTOM END -->
     <!-- D084-W6-TOOLBAR END -->
   </div>
   <div class="axis" id="environment-control" hidden><strong>Ambiente</strong><button id="brain" aria-pressed="false" title="Mostra il cervello di vetro attorno al grafo Neural — decorativo, non selezionabile">Cervello</button></div>
