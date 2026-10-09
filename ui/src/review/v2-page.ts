@@ -5329,7 +5329,8 @@ export class V2Page {
                 const labIndra = this.topologyIndra;
                 const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, labTopology, labIndra, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels,
                     // D087-SIZE BEGIN
-                    fullGraphStructuralIds: this.fullGraphStructuralIds(),
+                    ...(this.axes.projection === '3d'
+                        ? { fullGraphStructuralIds: this.fullGraphStructuralIds() } : {}),
                     // D087-SIZE END
                     ...({ density: this.density } as object), text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {

@@ -76,9 +76,7 @@ import { createPresentedPublisher } from "#render-common/presented-publisher.ts"
 import { renderReadinessHost } from "#render-common/render-readiness-producer.ts";
 // "D086-BURST END"
 // Size-fix BEGIN
-import { canvasNodeFloorPx, canvasNodeHaloRadiusPx, canvasNodeRadiusPx, createNativeSizeLaw, geometryDegrees } from "#render-common/native-node-law.ts";
-// "D087-SIZE BEGIN"
-// "D087-SIZE END"
+import { canvasNodeFloorPx, createNativeSizeLaw, geometryDegrees } from "#render-common/native-node-law.ts";
 // Size-fix END
 // "D082-A-NODES BEGIN"
 import { denseNativeEdgeAlpha } from "#render-common/dense-node-scale.ts";
@@ -352,7 +350,6 @@ export function mount(
   // The distinct morphology canvas covers the WebGL tiers. Keep the compatibility picking
   // buffer for renderer witnesses while suppressing the invisible full-DPR screen pass.
   const screenPaint = { enabled: true };
-  const nodeScreenPaint = { enabled: true };
   const nativeLabelsUsed = activeOptions.presentation?.nativeLabels !== false;
   const edgeProgramClasses = {
     filament: createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings, screenPaint),
@@ -360,7 +357,7 @@ export function mount(
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
     edgeProgramClasses,
-    nodeProgramClasses: { circle: createPickingCapableNodeProgram(nodeScreenPaint) },
+    nodeProgramClasses: { circle: createPickingCapableNodeProgram(screenPaint) },
     renderLabels: nativeLabelsUsed && model.material.node.includes("label"),
     renderEdgeLabels: false,
     labelSize: calibration.labels.nodeLabelSizePx,
@@ -469,33 +466,14 @@ export function mount(
   // BELOW the windows: atmosphere does not occlude structure.
   const windows = mountAggregateWindows(sigma, model, options.calibration);
   const distinctLanguage = activeOptions.presentation?.morphologyLanguage === "distinct";
-  let handlePickGeometry = activeOptions.presentation?.morphologyGeometry;
-  let glowAppearance = activeOptions.presentation?.appearance ?? DEFAULT_APPEARANCE;
-  // "D087-SIZE BEGIN"
-  const leafMarkIds = new Set([...baseNodeAttributes].flatMap(([id]) =>
-    activeOptions.presentation?.nodes?.get(id)?.leafMark ? [id] : []));
-  const encodedNodeRadii = new Map([...baseNodeAttributes].map(([id, attributes]) => [id, attributes.size] as const));
-  // "D087-SIZE END"
-  const distinctGlow = distinctLanguage ? {
-    morphology: activeOptions.morphology,
-    geometry: () => handlePickGeometry,
-    appearance: () => glowAppearance,
-    nativeTier: model.graph.order >= DENSE_SCENE_THRESHOLD,
-    // "D087-SIZE BEGIN"
-    leafIds: () => leafMarkIds,
-    encodedRadii: () => encodedNodeRadii,
-    // "D087-SIZE END"
-  } : undefined;
-  // "D087-SIZE BEGIN"
-  // Dense GPU cores keep the structural glow pass; sparse canvas owns its own halos.
-  // "D087-SIZE END"
-  const glow = model.material.node.includes("halo")
-    ? mountNodeGlow(sigma, model, options.calibration, !distinctLanguage || !!distinctGlow?.nativeTier, distinctGlow)
+  const glow = model.material.node.includes("halo") && !(distinctLanguage && model.graph.order >= DENSE_SCENE_THRESHOLD)
+    ? mountNodeGlow(sigma, model, options.calibration, !distinctLanguage)
     : noGlowLayer();
   const distinct = distinctLanguage
-    ? mountDistinctCanvas(sigma, model, activeOptions, screenPaint, nodeScreenPaint)
+    ? mountDistinctCanvas(sigma, model, activeOptions, screenPaint)
     : null;
   sigma.refresh();
+  let handlePickGeometry = activeOptions.presentation?.morphologyGeometry;
   let handlePickIndex: ScreenPickIndex;
   let handlePickFrame = '';
   let handlePickSettleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -508,9 +486,6 @@ export function mount(
       active: activeOptions.presentation?.nativeNodeSizeLaw === true,
       given: new Map([...baseNodeAttributes].map(([id, attributes]) => [id, attributes.size] as const)),
       degree: geometryDegrees(activeOptions.presentation?.morphologyGeometry),
-      // "D087-SIZE BEGIN"
-      leafIds: leafMarkIds,
-      // "D087-SIZE END"
       projectedScale: () => sigma.scaleSize(1),
       floorPx: () => canvasNodeFloorPx(activeOptions.morphology, sigma.getContainer().closest('[data-fractal-rails-active]') !== null),
       write: sizes => {
@@ -562,7 +537,6 @@ export function mount(
   return {
     model,
     setAppearance(appearance: AppearanceOptions): void {
-      glowAppearance = appearance;
       model.filamentMaterial.neuralWidthPx = appearance.edgeWidth;
       if (model.graph.order >= DENSE_SCENE_THRESHOLD) sigma.refresh();
       distinct?.setAppearance(appearance);
@@ -570,13 +544,6 @@ export function mount(
     },
     updateVisibleSubset(update: DistinctSubsetUpdate): void {
       distinct?.updateVisibleSubset(update);
-      // "D087-SIZE BEGIN"
-      for (const [id, entry] of update.nodeEntries) {
-        if (entry.leafMark) leafMarkIds.add(id);
-        else leafMarkIds.delete(id);
-        if (entry.radiusPx !== undefined) encodedNodeRadii.set(id, entry.radiusPx);
-      }
-      // "D087-SIZE END"
       // Size-fix BEGIN
       nativeSizeLaw?.retarget(update.nativeNodeSizeLaw === true, new Map([...update.nodeEntries].flatMap(([id, entry]) =>
         entry.radiusPx === undefined ? [] : [[id, entry.radiusPx] as const])), geometryDegrees(update.geometry));
@@ -587,7 +554,7 @@ export function mount(
       let nativeNodeStyleChanged = false;
       // "D082-A-VEIL2 BEGIN: A-INT12 leaves the native Stellar/Mycelium tier"
       // untouched on a subset refresh. Only Neural needs its post-fit soma settle.
-      for (const [id, entry] of update.nodeEntries) {
+      if (activeOptions.morphology === "neural") for (const [id, entry] of update.nodeEntries) {
         const base = baseNodeAttributes.get(id);
         if (!base || entry.radiusPx === undefined) continue;
         // "D086-F1 BEGIN": retain the settled native law size while updating Neural's halo.
@@ -822,9 +789,6 @@ function mountDistinctCanvas(
   model: RenderModel,
   options: RenderOptions,
   screenPaint: ScreenPaintControl,
-  // "D087-SIZE BEGIN"
-  nodeScreenPaint: ScreenPaintControl,
-  // "D087-SIZE END"
 ): {
   setAppearance(options: AppearanceOptions): void;
   updateVisibleSubset(update: DistinctSubsetUpdate): void;
@@ -890,9 +854,6 @@ function mountDistinctCanvas(
   sigma.on("resize", collapseLayer);
   if (!nativeTier) {
     screenPaint.enabled = false;
-    // "D087-SIZE BEGIN": below the threshold the canvas owns edges and nodes alike.
-    nodeScreenPaint.enabled = false;
-    // "D087-SIZE END"
     for (const item of detached) item.style.display = "none";
   }
   let appearance = options.presentation?.appearance ?? DEFAULT_APPEARANCE;
@@ -903,9 +864,6 @@ function mountDistinctCanvas(
     color: graph.getNodeAttributes(id).color,
     glyph: options.presentation?.nodes?.get(id)?.glyph,
     radiusPx: options.presentation?.nodes?.get(id)?.radiusPx,
-    // "D087-SIZE BEGIN"
-    leafMark: options.presentation?.nodes?.get(id)?.leafMark,
-    // "D087-SIZE END"
   }]));
   let edgeStyles = new Map<string, { color: string; presentation: import("#engine/presentation-options.ts").EdgePresentation | undefined }>(graph.edges().map((id) => [id, {
     color: graph.getEdgeAttributes(id).color,
@@ -948,7 +906,7 @@ function mountDistinctCanvas(
     const nativeEdgesCanvas = sigma.getCanvases().edges;
     if (nativeTier && nativeCountDirty) {
       nativeNodeIdsDrawn = graph.nodes().filter(id => { const data = sigma.getNodeDisplayData(id);
-        return data !== undefined && !data.hidden && data.size > 0; }).length;
+        return data !== undefined && !data.hidden; }).length;
       nativeEdgeIdsDrawn = graph.edges().filter(id => { const data = sigma.getEdgeDisplayData(id);
         return data !== undefined && !data.hidden; });
       nativeCountDirty = nativeNodeIdsDrawn === 0 && graph.order > 0;
@@ -956,9 +914,8 @@ function mountDistinctCanvas(
     const nativeNodesDrawn = nativeTier && nativeNodesCanvas?.style.display !== 'none' ? nativeNodeIdsDrawn : 0;
     const nativeDrawnIds = nativeTier && nativeEdgesCanvas?.style.display !== 'none' ? nativeEdgeIdsDrawn : [];
     const nativeEdgesDrawn = nativeDrawnIds.length;
-    const canvasDrawn = canvas.style.visibility !== 'hidden' && context !== null;
-    const nodesDrawn = nativeTier ? nativeNodesDrawn : canvasDrawn
-      ? geometry.nodes.filter(node => (nodeStyles.get(node.id)?.radiusPx ?? node.radius) > 0).length : 0;
+    const canvasDrawn = !nativeTier && canvas.style.visibility !== 'hidden' && context !== null;
+    const nodesDrawn = nativeTier ? nativeNodesDrawn : canvasDrawn ? geometry.nodes.length : 0;
     const edgesDrawn = nativeTier ? nativeEdgesDrawn : canvasDrawn ? geometry.edges.length : 0;
     const mainDrawn = nativeTier ? nativeDrawnIds.filter(id => mainEdgeIds.has(id)).length
       : canvasDrawn ? geometry.edges.filter(edge => mainEdgeIds.has(edge.id)).length : 0;
@@ -978,9 +935,7 @@ function mountDistinctCanvas(
   const ladder = new QualityLadder(({ stage, moving }) => {
     if (nativeTier) canvas.style.visibility = stage === FULL_QUALITY_STAGE ? '' : 'hidden';
     if (!moving && stage === FULL_QUALITY_STAGE) draw();
-    // "D087-SIZE BEGIN": one transition publishes motion; camera frames have no changed census.
-    else publishPresented();
-    // "D087-SIZE END"
+    else if (!moving) publishPresented();
   });
   const draw = (): void => {
     if (!context) return;
@@ -989,9 +944,7 @@ function mountDistinctCanvas(
       lastMorphologyCamera = cameraFrame;
       ladder.touch();
     }
-    // "D087-SIZE BEGIN": the ladder already published the moving stage once.
-    if (nativeTier && ladder.state.stage !== FULL_QUALITY_STAGE) return;
-    // "D087-SIZE END"
+    if (nativeTier && ladder.state.stage !== FULL_QUALITY_STAGE) { publishPresented(); return; }
     if (perfMarksEnabled) performance.mark("d082:render2d:canvas:start");
     const box = canvas.getBoundingClientRect();
     const width = Math.max(1, Math.round(box.width * devicePixelRatio));
@@ -1011,9 +964,7 @@ function mountDistinctCanvas(
       interaction: options.presentation?.morphologyInteraction,
       nodes: nodeStyles,
       edges: edgeStyles,
-    // "D087-SIZE BEGIN": dense cores and edges stay on the GPU; canvas draws structure only.
     }, appearance, undefined, "2d", nativeTier);
-    // "D087-SIZE END"
     publishPresented();
     if (perfMarksEnabled) { performance.mark("d082:render2d:canvas:end"); performance.measure("d082:render2d:canvas", "d082:render2d:canvas:start", "d082:render2d:canvas:end"); }
   };
@@ -1042,9 +993,6 @@ function mountDistinctCanvas(
         const current = nodeStyles.get(id);
         // "D086-BURST BEGIN": a retained canvas must consume the revised color as well as radius.
         if (current) nodeStyles.set(id, { ...current, glyph: entry.glyph, radiusPx: entry.radiusPx,
-          // "D087-SIZE BEGIN"
-          leafMark: entry.leafMark,
-          // "D087-SIZE END"
           color: revisedCanvasNodeColor(current.color, model.fieldColor,
             entry.tintSrgb, entry.opacityPermille) });
         // "D086-BURST END"
@@ -1082,7 +1030,6 @@ function mountDistinctCanvas(
         if (backing) { item.width = backing[0]; item.height = backing[1]; }
       });
       screenPaint.enabled = true;
-      nodeScreenPaint.enabled = true;
       detached.forEach((item, index) => { item.style.display = previousDetachedDisplay[index] ?? ""; });
       // Polish-III haze repair BEGIN: invalidate pending settled-glow redraws before unmount.
       delete (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw;
@@ -1210,13 +1157,12 @@ function mountNodeGlow(
   model: RenderModel,
   calibration: CalibrationProfile | undefined,
   paint = true,
-  distinct?: DistinctGlowMark,
 ): GlowLayer {
   const profile = calibration ?? DEFAULT_CALIBRATION;
   if (!paint) {
     // The distinct path covers the glow with its own canvas and keeps only the footprints the
     // DOM label pass collides against: no layer, no afterRender draw, witnesses unchanged.
-    return witnessesOnlyGlowLayer(sigma, model, profile, distinct);
+    return witnessesOnlyGlowLayer(sigma, model, profile);
   }
   sigma.createCanvasContext("node-glow");
   const canvas = requiredCanvas(sigma, "node-glow");
@@ -1224,11 +1170,8 @@ function mountNodeGlow(
   requiredCanvas(sigma, "aggregate-windows").before(canvas);
   sigma.resize(true);
   const context = canvas.getContext("2d");
-  // "D087-SIZE BEGIN": the settled structural glow is hidden and idle through a camera gesture.
-  let glowVisible = true;
-  // "D087-SIZE END"
   const draw = (): void => {
-    if (context === null || !glowVisible) {
+    if (context === null) {
       return;
     }
     // Sigma reports viewport coordinates and scaled radii in CSS pixels, while
@@ -1244,27 +1187,22 @@ function mountNodeGlow(
     context.setTransform(scaleX, 0, 0, scaleY, 0, 0);
     context.clearRect(0, 0, box.width, box.height);
     for (const id of model.graph.nodes()) {
-      // "D087-SIZE BEGIN": leaves are GPU cores only; no leaf gradient is allocated.
-      if (distinct?.leafIds().has(id)) continue;
-      // "D087-SIZE END"
       const attributes = model.graph.getNodeAttributes(id);
       const center = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
       const coreRadius = sigma.scaleSize(attributes.size);
-      const haloRadius = distinct ? distinctGlowHaloRadius(coreRadius, distinct, id)
-        : resolvedGlowHaloRadius(coreRadius, sigma.scaleSize(attributes.haloRadiusPx), profile,
-          model.filamentMaterial.neuralProfile ?? false);
-      if (haloRadius <= coreRadius || center.x + haloRadius < 0 || center.y + haloRadius < 0
-        || center.x - haloRadius > box.width || center.y - haloRadius > box.height) {
+      const haloRadius = resolvedGlowHaloRadius(
+        coreRadius,
+        sigma.scaleSize(attributes.haloRadiusPx),
+        profile,
+        model.filamentMaterial.neuralProfile ?? false,
+      );
+      if (haloRadius <= coreRadius) {
         continue;
       }
       const gradient = context.createRadialGradient(center.x, center.y, coreRadius, center.x, center.y, haloRadius);
       const color = parseColor(attributes.color);
-      const baseAlpha = distinct
-        ? MORPHOLOGY_CONTRACT[distinct.morphology].glow.strength * distinct.appearance().glow * color.a
-        : (boundedPermille(attributes.haloIntensityPermille, profile) / permilleScale(profile)) * color.a;
-      const requestedAlpha = baseAlpha;
-      const peakAlpha = model.filamentMaterial.neuralProfile
-        ? Math.min(requestedAlpha, NEURAL_HALO_MAX_ALPHA) : requestedAlpha;
+      const requestedAlpha = (boundedPermille(attributes.haloIntensityPermille, profile) / permilleScale(profile)) * color.a;
+      const peakAlpha = model.filamentMaterial.neuralProfile ? Math.min(requestedAlpha, NEURAL_HALO_MAX_ALPHA) : requestedAlpha;
       for (const stop of haloAlphaStops(profile, peakAlpha)) {
         gradient.addColorStop(stop.offset, `rgba(${color.r}, ${color.g}, ${color.b}, ${stop.alpha})`);
       }
@@ -1279,14 +1217,9 @@ function mountNodeGlow(
   draw();
   return {
     readWitnesses(): readonly RenderNodeGlowWitness[] {
-      return glowWitnesses(sigma, model, profile, distinct);
+      return glowWitnesses(sigma, model, profile);
     },
     setVisible(visible: boolean): void {
-      // "D087-SIZE BEGIN"
-      const restored = visible && !glowVisible;
-      glowVisible = visible;
-      if (restored) draw();
-      // "D087-SIZE END"
       canvas.style.visibility = visible ? "visible" : "hidden";
     },
     destroy(): void {
@@ -1297,56 +1230,30 @@ function mountNodeGlow(
 }
 
 /** This reports the live core and halo footprints with or without a painted canvas. */
-type DistinctGlowMark = {
-  readonly morphology: Morphology;
-  readonly geometry: () => MorphologyGeometry | undefined;
-  readonly appearance: () => AppearanceOptions;
-  readonly nativeTier: boolean;
-  // "D087-SIZE BEGIN"
-  readonly leafIds: () => ReadonlySet<string>;
-  readonly encodedRadii: () => ReadonlyMap<string, number>;
-  // "D087-SIZE END"
-};
-
-function distinctGlowHaloRadius(coreRadiusPx: number, mark: DistinctGlowMark, id: string): number {
-  // "D087-SIZE BEGIN"
-  return mark.leafIds().has(id) ? coreRadiusPx
-    : canvasNodeHaloRadiusPx(mark.morphology, coreRadiusPx, mark.appearance().glow);
-  // "D087-SIZE END"
-}
-
-function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationProfile,
-  distinct?: DistinctGlowMark): readonly RenderNodeGlowWitness[] {
-  const degrees = distinct ? geometryDegrees(distinct.geometry()) : undefined;
+function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationProfile): readonly RenderNodeGlowWitness[] {
   return model.graph.nodes().map((id) => {
     const attributes = model.graph.getNodeAttributes(id);
-    // "D087-SIZE BEGIN": native attributes are already settled CSS-law radii divided by
-    // scale. Sparse canvas reads the original encoded radius. Never apply the law twice.
-    const encoded = distinct?.encodedRadii().get(id) ?? attributes.size;
-    const coreRadiusPx = encoded <= 0 ? 0 : distinct?.nativeTier
-      ? sigma.scaleSize(attributes.size)
-      : distinct
-        ? canvasNodeRadiusPx(distinct.morphology, encoded, sigma.scaleSize(1),
-          degrees?.get(id) ?? 0, canvasNodeFloorPx(distinct.morphology, false), distinct.leafIds().has(id))
-        : sigma.scaleSize(attributes.size);
+    const coreRadiusPx = sigma.scaleSize(attributes.size);
     const viewportCenter = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
     return {
       id,
       viewportCenter,
       coreRadiusPx,
-      haloRadiusPx: coreRadiusPx === 0 ? 0 : distinct ? distinctGlowHaloRadius(coreRadiusPx, distinct, id)
-        : resolvedGlowHaloRadius(coreRadiusPx, sigma.scaleSize(attributes.haloRadiusPx), profile,
-          model.filamentMaterial.neuralProfile ?? false),
+      haloRadiusPx: resolvedGlowHaloRadius(
+        coreRadiusPx,
+        sigma.scaleSize(attributes.haloRadiusPx),
+        profile,
+        model.filamentMaterial.neuralProfile ?? false,
+      ),
     };
   });
 }
 
 /** This answers the footprint witnesses the label pass collides against without a layer of its own. */
-function witnessesOnlyGlowLayer(sigma: Sigma, model: RenderModel, profile: CalibrationProfile,
-  distinct?: DistinctGlowMark): GlowLayer {
+function witnessesOnlyGlowLayer(sigma: Sigma, model: RenderModel, profile: CalibrationProfile): GlowLayer {
   return {
     readWitnesses(): readonly RenderNodeGlowWitness[] {
-      return glowWitnesses(sigma, model, profile, distinct);
+      return glowWitnesses(sigma, model, profile);
     },
     setVisible(): void {},
     destroy(): void {},

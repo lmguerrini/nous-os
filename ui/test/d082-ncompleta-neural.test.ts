@@ -27,8 +27,8 @@ function recordProfile(factor?: number, somaAlpha = 0.9) {
     part: {} as MorphologyEdgePaint["part"], edgeId: "relation", category: "attested", neural: true,
     points: [{ x: 0, y: 0, scale: 1 }, { x: 80, y: 0, scale: 1 }], cumulative: [0, 80], totalPx: 80,
     color: "rgb(120, 120, 120)", alpha: 0.4 * (factor ?? 1),
-    // D087-SIZE BEGIN: the same relation retains its stroke when corridor alpha changes.
-    widthAt: () => 4,
+    // D087-SIZE BEGIN: the 2D canvas retains its D-086 ribbon taper.
+    widthAt: () => 4 * neuralDenseRibbonWidthFactor(factor ?? 1),
     // D087-SIZE END
     rootStart: { outlinePx: 0, radiusPx: 8, lengthPx: 24, ratio: 1.8, degree: 2,
       trunkWidthPx: 4, somaColor: "rgb(230, 230, 230)", somaAlpha },
@@ -38,14 +38,14 @@ function recordProfile(factor?: number, somaAlpha = 0.9) {
   return fills;
 }
 
-test("measured Completa overlap dims the edge without narrowing its stroke or overriding soma alpha", () => {
+test("measured 2D Completa overlap narrows the root and dims the edge without overriding soma alpha", () => {
   const denseAlpha = denseEdgeScreenAlphaPermille(720, 500, 0);
   const factor = denseEdgeVeilFactor(denseAlpha, 720);
   assert.ok(factor < 0.1);
   const base = recordProfile();
   const dense = recordProfile(factor);
   // D087-SIZE BEGIN
-  assert.equal(dense[0]!.width, base[0]!.width);
+  assert.ok(dense[0]!.width < base[0]!.width * 0.5);
   // D087-SIZE END
   // D084-W7-DENSE BEGIN: the edge's measured Completa veil dims its root too —
   // a factor below zero point one must cut the root alpha below a tenth of base.
@@ -136,8 +136,8 @@ test('first 2D Completa scene has density factors before a renderer or gesture e
   // D082-A-VEIL END
   const source = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   assert.match(source, /firstNeuralScreen\?\.edgeDensities[\s\S]*?const presentation = \{/);
-  // D087-SIZE BEGIN: initial Stellar geometry carries full-graph incidence.
-  assert.match(source, /initialScene = \{ \.\.\.draft, geometry: semanticMarkGeometry\(geometry, degree\) \}/);
+  // D087-SIZE BEGIN: initial 2D geometry keeps D-086 incidence; 3D uses the full graph.
+  assert.match(source, /initialScene = \{ \.\.\.draft, geometry: axes\.projection === "3d" \? semanticMarkGeometry\(geometry, degree\) : geometry \}/);
   // D087-SIZE END
   const shader = readFileSync(new URL('../src/render2d/filament-program.ts', import.meta.url), 'utf8');
   // D084-W7-DENSE BEGIN: the dense veil factor multiplies the root alpha in the dense

@@ -102,7 +102,7 @@ export type MorphologyCanvasStyle = {
 // same page-owned policy; the latter is the path used by the mounted 2D and 3D canvases.
 const denseDrawingPolicy = (style: MorphologyCanvasStyle): boolean =>
   // D087-SIZE BEGIN: the semantic mark policy overrides the density-only veil flag.
-  style.interaction?.usesDenseDrawingPolicy ?? style.usesDenseDrawingPolicy ?? false;
+  style.usesDenseDrawingPolicy ?? style.interaction?.usesDenseDrawingPolicy ?? false;
   // D087-SIZE END
 const denseNativeRadiusOnly = (style: MorphologyCanvasStyle): boolean =>
   style.denseNativeRadiusOnly ?? style.interaction?.denseNativeRadiusOnly ?? false;
@@ -1116,10 +1116,11 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
     // D082-A-NODES BEGIN
     // D086-CUSTOM BEGIN
     // D087-SIZE BEGIN
-    if (given === 0) continue;
+    if (projection === "3d" ? given === 0 : denseDrawingPolicy(style) && given === 0) continue;
     // D087-SIZE END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      style.nodes.get(node.id)?.leafMark ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+      projection === "3d" ? (style.nodes.get(node.id)?.leafMark ? 0.5 : 2)
+        : denseDrawingPolicy(style) ? 0.5 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
     // D082-A-NODES END
     const axis = node.axis ?? { x: 1, y: 0, z: 0 };
@@ -1445,7 +1446,7 @@ function fillUnitGradient(
  * approach the small star, not the old big disc. */
 function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
   project: (point: Coordinates) => ProjectedPoint, contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT],
-  appearance: AppearanceOptions): CanvasDisc[] {
+  appearance: AppearanceOptions, projection: "2d" | "3d" = "2d"): CanvasDisc[] {
   const discs: CanvasDisc[] = [];
   for (const node of geometry.nodes) {
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
@@ -1458,11 +1459,14 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
     // D082-A-NODES BEGIN
     // D086-CUSTOM BEGIN
     // D087-SIZE BEGIN
-    if (given === 0) continue;
+    if (projection === "3d" ? given === 0 : denseDrawingPolicy(style) && given === 0) continue;
     // D087-SIZE END
     // D082-A-NODES END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      visual?.leafMark ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+      projection === "3d" ? (visual?.leafMark ? 0.5
+        : geometry.morphology === "mycelium" ? 1.3 : 2)
+        : denseDrawingPolicy(style) ? 0.5
+          : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
     const drawn = geometry.morphology === "stellar" && radius > 1
       ? stellarStarCoreRadiusPx(radius, node.degree) : radius;
@@ -1931,7 +1935,9 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       if (cached !== undefined) return cached;
       // D087-SIZE BEGIN: screen density changes alpha only.
       const width = screenSpaceEdgeWidthPx(projectedWidthAt(i),
-        projection === "3d" ? presentation?.minimumScreenWidthPx : 0);
+        projection === "3d" ? presentation?.minimumScreenWidthPx : 0)
+        * (projection === "2d" && neuralTaper && presentation?.neuralDenseFactor !== undefined
+          ? neuralDenseRibbonWidthFactor(presentation.neuralDenseFactor) : 1);
       // D087-SIZE END
       // D082-A-N3D BEGIN: keep the projected canvas outline continuous at device resolution.
       // D087-SIZE BEGIN
@@ -2307,7 +2313,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // pearls about to be drawn — built lazily so a shared label set skips that whole pass.
   const sharedDiscs = style.interaction?.labelDiscs;
   // D082-B1c BEGIN: Canopy labels are an overlay and need no per-frame disc pass.
-  const pearlDiscs = sharedDiscs ? null : canopyDenseNeural ? [] : pearlDiscsFor(geometry, style, project, contract, appearance);
+  const pearlDiscs = sharedDiscs ? null : canopyDenseNeural ? [] : pearlDiscsFor(geometry, style, project, contract, appearance, projection);
   // D082-B1c END.
   // One projection → limb-radius memo per frame keeps each sphere's outline geometry single-pass.
   const frameCache = createContainerFrameCache();
@@ -2431,8 +2437,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   const canTransform = canComposeTransform(context);
   // D-071 G9: Neural halos dim where many somata overlap, so hub cores stop merging into a single
   // luminous mass that invades the dendrites. Built once per frame, only when halos are drawn.
-  // D087-SIZE BEGIN: neighbouring admission never changes the same soma's glow.
-  // The settled glow uses the node's own morphology contract.
+  // D087-SIZE BEGIN: 2D retains the D-086 local halo attenuation.
+  const haloDensity = projection === "2d" && geometry.morphology === "neural" && !simplified
+    && appearance.glow > 0 && !testHook()?.hideEdges && !moving
+    ? neuralHaloNeighbourCounts(geometry.nodes) : null;
   // D087-SIZE END
   // D084-W2-NEURAL-R6: Neural keeps its own node opacity; Stellar and Mycelium retain their floors.
   const coreFloor = morphologyCoreAlphaFloor(geometry.morphology);
@@ -2440,7 +2448,8 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
     const visual = style.nodes.get(node.id);
     // D087-SIZE BEGIN: a real node keeps its full or small profile across admissions.
-    const simplifiedNode = visual?.leafMark === undefined ? simplified : visual.leafMark;
+    const simplifiedNode = projection === "2d" ? simplified
+      : visual?.leafMark === undefined ? simplified : visual.leafMark;
     // D087-SIZE END
     const p = project(node.position);
     const emphasis = style.interaction?.hoverId === node.id ? contract.hover
@@ -2450,12 +2459,15 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // D082-A-NODES BEGIN: hidden core members have no glyph in the full source scene.
     // D086-CUSTOM BEGIN
     // D087-SIZE BEGIN
-    if (given === 0) continue;
+    if (projection === "3d" ? given === 0 : !canopyHost && denseDrawingPolicy(style) && given === 0) continue;
     // D087-SIZE END
     // D082-A-NODES END
     const basis = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       // D087-SIZE BEGIN
-      visual?.leafMark ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+      projection === "3d" ? (visual?.leafMark ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2)
+        : canopyHost && geometry.nodes.length >= DENSE_SCENE_THRESHOLD ? 0.5
+          : denseDrawingPolicy(style) ? 0.5
+            : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
       // D087-SIZE END
     // D086-CUSTOM END
     // D082-B1f END
@@ -2481,7 +2493,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
     // D082-A-NODES END
     // A pearl wholly outside the canvas (with its glow halo) draws nothing a viewer could see.
-    const haloRatio = visual?.leafMark ? 1
+    const haloRatio = projection === "3d" && visual?.leafMark ? 1
       : geometry.morphology === "neural"
         ? Math.min(contract.glow.maximumCoreRatio, NEURAL_HALO_MAX_RADIUS_RATIO) : contract.glow.maximumCoreRatio;
     const haloExtent = appearance.glow > 0 ? radius * haloRatio : radius;
@@ -2492,7 +2504,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const baseOpacity = visual?.opacity ?? 1;
     // The effective halo strength carries the Neural density falloff; other morphologies keep theirs.
     // D087-SIZE BEGIN
-    const requestedGlowStrength = contract.glow.strength;
+    const requestedGlowStrength = haloDensity
+      ? contract.glow.strength * neuralHaloAlphaFactor(haloDensity.get(node.id) ?? 1)
+      : contract.glow.strength;
     // D087-SIZE END
     const glowStrength = geometry.morphology === "neural"
       ? Math.min(requestedGlowStrength, NEURAL_HALO_MAX_ALPHA / Math.max(1, appearance.glow)) : requestedGlowStrength;
@@ -2523,7 +2537,8 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         : clamp(Math.max(0.48, baseOpacity) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
     // D084-W2-NEURAL-R6 END
     // D087-SIZE BEGIN
-    if (!simplifiedNode && !visual?.leafMark && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
+    if (!simplifiedNode && !(projection === "3d" && visual?.leafMark)
+      && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
     // D087-SIZE END
       const halo = radius * haloRatio;
       if (paint?.glow && canTransform) {

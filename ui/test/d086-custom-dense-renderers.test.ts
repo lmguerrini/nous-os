@@ -28,7 +28,7 @@ const styles = (dense: boolean, native = false): MorphologyCanvasStyle => ({
 });
 const project = (point: { x: number; y: number; z: number }) => ({ x: point.x, y: point.y, scale: 1 });
 
-test('Custom canvas omits represented zero-radius members and keeps the structural floor across densities', () => {
+test('Custom canvas omits represented zero-radius members and uses the dense half-pixel floor', () => {
   const custom = styles(true, true);
   const sparse = styles(false);
   const customFrames = neuralSomaFrames(geometry, project, custom, MORPHOLOGY_CONTRACT.neural,
@@ -36,35 +36,24 @@ test('Custom canvas omits represented zero-radius members and keeps the structur
   const sparseFrames = neuralSomaFrames(geometry, project, sparse, MORPHOLOGY_CONTRACT.neural,
     appearance, '2d', true);
   assert.deepEqual([...customFrames.keys()], ['represented']);
-  // D087-SIZE BEGIN: a structural mark keeps the Essenziale floor in Custom.
-  assert.equal(customFrames.get('represented')?.radius, sparseFrames.get('represented')?.radius);
-  // D087-SIZE END
-  // D087-SIZE BEGIN: an explicitly unpainted member does not regain ink from a floor.
-  assert.equal(sparseFrames.size, 1);
-  // D087-SIZE END
+  assert.equal(customFrames.get('represented')?.radius, 0.5);
+  assert.equal(sparseFrames.size, 2);
   assert.equal(sparseFrames.get('represented')?.radius, 2);
 
   const arcs: [number, number, number][] = [];
-  const pathPoints: [number, number][] = [];
   const context = { canvas: { width: 200, height: 100, getBoundingClientRect: () => ({ width: 200, height: 100 }) },
     fillStyle: '', strokeStyle: '', globalAlpha: 1, globalCompositeOperation: 'source-over',
-    setTransform() {}, clearRect() {}, beginPath() {}, closePath() {},
-    moveTo(x: number, y: number) { pathPoints.push([x, y]); },
-    lineTo(x: number, y: number) { pathPoints.push([x, y]); },
+    setTransform() {}, clearRect() {}, beginPath() {}, closePath() {}, moveTo() {}, lineTo() {},
     arc(x: number, y: number, radius: number) { arcs.push([x, y, radius]); },
     ellipse() {}, fill() {}, stroke() {}, setLineDash() {}, measureText: () => ({ width: 0 }), fillText() {},
   } as unknown as CanvasRenderingContext2D;
   drawMorphologyCanvas(context, geometry, project, custom, appearance, [], '2d');
-  // D087-SIZE BEGIN: a larger Neural soma uses an outline path, not a point arc.
-  assert.ok(pathPoints.some(([x, y]) => Math.hypot(x - 20, y - 20) < 5));
-  assert.ok(pathPoints.every(([x, y]) => Math.hypot(x - 70, y - 20) > 5));
-  // D087-SIZE END
+  assert.ok(arcs.some(([x, y, radius]) => x === 20 && y === 20 && radius === 0.5));
   assert.ok(arcs.every(([x, y]) => x !== 70 || y !== 20));
   const paintedIds = [...custom.nodes].filter(([, value]) => (value.radiusPx ?? 0) > 0)
     .map(([id]) => id);
-  const drawnIds = [...new Set([...arcs.map(([x, y]) => [x, y] as const), ...pathPoints]
-    .flatMap(([x, y]) => Math.hypot(x - 20, y - 20) < 5
-      ? ['represented'] : Math.hypot(x - 70, y - 20) < 5 ? ['hidden'] : []))];
+  const drawnIds = [...new Set(arcs.flatMap(([x, y]) => x === 20 && y === 20
+    ? ['represented'] : x === 70 && y === 20 ? ['hidden'] : []))];
   assert.deepEqual(drawnIds, paintedIds, 'the positive-radius witness matches canvas marks');
 });
 

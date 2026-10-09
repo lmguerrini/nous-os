@@ -48,12 +48,10 @@ test('one camera gives shared nodes equal native sizes in Essenziale and Bilanci
   }
 });
 
-test('Neural uses the same native size law in Natural and Lab views', () => {
-  // D087-SIZE BEGIN
-  assert.equal(labNativeSizeLawApplies('canopy-ifs', totalCount, totalCount), true);
-  // D087-SIZE END
-  assert.equal(labNativeSizeLawApplies('natural', totalCount, balancedCount), true);
-  assert.equal(labNativeSizeLawApplies(undefined, totalCount, balancedCount), true);
+test('Neural keeps its raw-radius post-fit policy when the Lab law is inactive', () => {
+  assert.equal(labNativeSizeLawApplies('canopy-ifs', totalCount, totalCount), false);
+  assert.equal(labNativeSizeLawApplies('natural', totalCount, balancedCount), false);
+  assert.equal(labNativeSizeLawApplies(undefined, totalCount, balancedCount), false);
   const base = { size: 4, haloRadiusPx: 20, color: '#fff' } as RenderNodeAttributes;
   const presented = nativeNodePresentationBase(base, { radiusPx: 15.47, haloRadiusPx: 7 }, false);
   assert.equal(presented.size, 15.47);

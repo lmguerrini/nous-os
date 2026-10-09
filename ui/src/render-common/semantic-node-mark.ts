@@ -1,7 +1,20 @@
 // D087-SIZE BEGIN
+import type { MorphologyGeometry } from "#engine/morphology-geometry.ts";
+
+/** Stable Stellar incidence for the 3D mark policy. */
+export function semanticMarkGeometry(geometry: MorphologyGeometry, fullDegree: ReadonlyMap<string, number>): MorphologyGeometry {
+  if (geometry.morphology !== "stellar") return geometry;
+  if (geometry.nodes.every(node => node.degree === (fullDegree.get(node.id) ?? node.degree))) return geometry;
+  return { ...geometry, nodes: geometry.nodes.map(node => ({
+    ...node, degree: fullDegree.get(node.id) ?? node.degree,
+  })) };
+}
 /** The D-086 Natural Neural point law reaches this fitted CSS radius in the 2D witness. */
 export const NATURAL_NEURAL_FITTED_LEAF_CORE_PX = 1.8;
 export const DENSE_LEAF_MIN_CORE_PX = 0.5;
+/** Julia 3D Completa's round-six bright area was 1.09%, versus D-086's 0.70%.
+ * Radius is reduced by sqrt(0.70 / 1.09), rounded to a stable one-decimal factor. */
+export const STELLAR_3D_LEAF_RADIUS_FACTOR = 0.8;
 /** D-086 fit kept real dots whose centres were at least one CSS pixel apart. */
 export const DENSE_FIT_POINT_SEPARATION_PX = 1.001;
 
@@ -12,6 +25,9 @@ export function calibratedLeafCorePx(radii: readonly number[], morphology: strin
   projection: '2d' | '3d'): number {
   const drawn = radii.filter(radius => radius > 0 && Number.isFinite(radius)).sort((a, b) => a - b);
   const median = drawn[Math.floor(drawn.length / 2)] ?? DENSE_LEAF_MIN_CORE_PX;
+  if (morphology === 'stellar' && projection === '3d')
+    return Math.max(DENSE_LEAF_MIN_CORE_PX * STELLAR_3D_LEAF_RADIUS_FACTOR,
+      median * STELLAR_3D_LEAF_RADIUS_FACTOR);
   return morphology === 'neural' && projection === '2d'
     ? Math.max(NATURAL_NEURAL_FITTED_LEAF_CORE_PX, median)
     : Math.max(DENSE_LEAF_MIN_CORE_PX, median);
