@@ -87,7 +87,7 @@ import { labNativeSizeLawApplies } from "../render-common/native-node-law.ts";
 import { calibratedLeafCorePx, coLocatedRepresentatives, semanticMarkGeometry } from "../render-common/semantic-node-mark.ts";
 // D087-SIZE END
 // D086-F1 END
-import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
+import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseDrawingDensity, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
 import type { DenseEdgeScreenSegment } from '../render-common/dense-node-scale.ts';
 // D082-A-VEIL BEGIN
 import { fittedDenseEdgeScreenDensities } from "../render-common/dense-node-scale.ts";
@@ -758,6 +758,15 @@ export const createProductView: CreateProductView = async (input) => {
   // D086-CUSTOM BEGIN
   let witnessDensity = (input as typeof input & { density?: string }).density ?? 'complete';
   // D086-CUSTOM END
+  // D087-JULIA BEGIN: the page states whether the mounted Custom amount is the maximum. In the
+  // atlas the reference visible-count test cannot see the maximum (the atlas draws its pearl
+  // phase), so the flag rides beside the density through the mount and every in-place revision.
+  let witnessCustomAtMaximum = (input as typeof input & { customAtMaximum?: boolean }).customAtMaximum === true;
+  /** The density the drawing branches on: in the Julia + Indra atlas, Custom at its maximum
+   * takes exactly Completa's decisions. The witness density keeps saying «custom». */
+  const drawingDensityOf = (density: string | undefined, customAtMaximum?: boolean): string =>
+    denseDrawingDensity(density ?? witnessDensity, juliaAtlas && customAtMaximum === true);
+  // D087-JULIA END
   let drawnEdges: readonly ReviewEdge[];
   let drawnEdgeIds: ReadonlySet<string>;
   const readingAllows = (edge: ReviewEdge): boolean => {
@@ -1773,7 +1782,8 @@ export const createProductView: CreateProductView = async (input) => {
         // D086-CUSTOM BEGIN: a zoom revision preserves Custom's native radius law.
         const scales = await denseNodeScalesDeferred(denseFitSamples,
           { zoomProgress: current / 6, screenDistanceNorm: denseFitDistanceNorm,
-            nativeRadiusOnly: witnessDensity === 'custom'
+            // D087-JULIA BEGIN: atlas Custom at its maximum keeps Completa's radius law here too.
+            nativeRadiusOnly: drawingDensityOf(witnessDensity, witnessCustomAtMaximum) === 'custom'
               && !isReferenceCompleta(input.data.nodes.length, visible.size) });
         // D086-CUSTOM END
         if (destroyed || morphologyInteraction.quality !== "full" || revision !== denseRefreshRevision
@@ -1934,7 +1944,9 @@ export const createProductView: CreateProductView = async (input) => {
   function buildDrawnSceneD0862d(anchors: ReadonlyMap<string, Coordinates>, state: {
     visible: ReadonlySet<string>; containers: typeof layoutContainers; edges: readonly ReviewEdge[];
     density?: string;
-  } = { visible, containers: layoutContainers, edges: drawnEdges, density: witnessDensity }, deferGeometry = false,
+    customAtMaximum?: boolean;
+  } = { visible, containers: layoutContainers, edges: drawnEdges, density: witnessDensity,
+    customAtMaximum: witnessCustomAtMaximum }, deferGeometry = false,
   // D082-A-PERF BEGIN: a subset revision can reuse the committed geometry.
   previous?: { readonly morphologyInput: MorphologyInput;
     readonly geometry: import("../engine/morphology-geometry.ts").MorphologyGeometry },
@@ -1959,9 +1971,13 @@ export const createProductView: CreateProductView = async (input) => {
     // D086-CUSTOM BEGIN: Custom uses the drawing safeguards at every amount. At the
     // reference maximum it takes the original Completa arithmetic and cache path exactly.
     const referenceCompleta = isReferenceCompleta(input.data.nodes.length, state.visible.size);
-    const customDense = state.density === 'custom' && !referenceCompleta;
+    // D087-JULIA BEGIN: atlas Custom at its maximum draws as Completa; the pearl phase is
+    // visible, so the reference visible-count test alone cannot say which law applies.
+    const drawingDensity = drawingDensityOf(state.density, state.customAtMaximum ?? witnessCustomAtMaximum);
+    const customDense = drawingDensity === 'custom' && !referenceCompleta;
     const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
-      state.visible.size, state.density ?? witnessDensity);
+      state.visible.size, drawingDensity);
+    // D087-JULIA END
     morphologyInteraction.usesDenseDrawingPolicy = denseDrawingPolicy;
     morphologyInteraction.denseNativeRadiusOnly = customDense;
     // D086-CUSTOM END
@@ -2241,7 +2257,9 @@ export const createProductView: CreateProductView = async (input) => {
   function buildDrawnScene(anchors: ReadonlyMap<string, Coordinates>, state: {
     visible: ReadonlySet<string>; containers: typeof layoutContainers; edges: readonly ReviewEdge[];
     density?: string;
-  } = { visible, containers: layoutContainers, edges: drawnEdges, density: witnessDensity }, deferGeometry = false,
+    customAtMaximum?: boolean;
+  } = { visible, containers: layoutContainers, edges: drawnEdges, density: witnessDensity,
+    customAtMaximum: witnessCustomAtMaximum }, deferGeometry = false,
   // D082-A-PERF BEGIN: a subset revision can reuse the committed geometry.
   previous?: { readonly morphologyInput: MorphologyInput;
     readonly geometry: import("../engine/morphology-geometry.ts").MorphologyGeometry },
@@ -2270,9 +2288,13 @@ export const createProductView: CreateProductView = async (input) => {
     // D086-CUSTOM BEGIN: Custom uses the drawing safeguards at every amount. At the
     // reference maximum it takes the original Completa arithmetic and cache path exactly.
     const referenceCompleta = isReferenceCompleta(input.data.nodes.length, state.visible.size);
-    const customDense = state.density === 'custom' && !referenceCompleta;
+    // D087-JULIA BEGIN: atlas Custom at its maximum draws as Completa; the pearl phase is
+    // visible, so the reference visible-count test alone cannot say which law applies.
+    const drawingDensity = drawingDensityOf(state.density, state.customAtMaximum ?? witnessCustomAtMaximum);
+    const customDense = drawingDensity === 'custom' && !referenceCompleta;
     const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
-      state.visible.size, state.density ?? witnessDensity);
+      state.visible.size, drawingDensity);
+    // D087-JULIA END
     // D087-SIZE BEGIN: density controls admission and opacity; drawing keeps the sparse mark law.
     morphologyInteraction.usesDenseDrawingPolicy = false;
     morphologyInteraction.denseNativeRadiusOnly = true;
@@ -3049,10 +3071,15 @@ export const createProductView: CreateProductView = async (input) => {
     // a Canopy restore reuses its cached full scene (D082-B1c).
     // D086-CUSTOM BEGIN: derive from the requested density before committing its witness.
     const nextDensity = (update as typeof update & { density?: string }).density ?? witnessDensity;
+    // D087-JULIA BEGIN
+    const nextCustomAtMaximum = (update as typeof update & { customAtMaximum?: boolean }).customAtMaximum
+      ?? witnessCustomAtMaximum;
     const nextScene = restoreCanopy ? canopyFullScene!.scene
       : requireGeometry(buildDrawnScene(anchors,
-        { visible: nextVisible, containers: nextContainers, edges: nextEdges, density: nextDensity }, false, oldScene,
+        { visible: nextVisible, containers: nextContainers, edges: nextEdges,
+          customAtMaximum: nextCustomAtMaximum, density: nextDensity }, false, oldScene,
         reuseDenseFit, preparedDenseScales, nextBudget));
+    // D087-JULIA END
     // D086-CUSTOM END
     // D082-A-PERF END
     // D082-B1f BEGIN: the restored Canopy scene also restores the density metadata used
@@ -3267,6 +3294,9 @@ export const createProductView: CreateProductView = async (input) => {
     visible = nextVisible;
     // D086-CUSTOM BEGIN: an accepted in-place density revision owns the witness.
     witnessDensity = nextDensity;
+    // D087-JULIA BEGIN
+    witnessCustomAtMaximum = nextCustomAtMaximum;
+    // D087-JULIA END
     // D086-CUSTOM END
     if (restoreCanopy) canopyFullScene = null;
     layoutContainers = nextContainers;

@@ -32,6 +32,16 @@ export function usesDenseDrawingPolicy(nodeCount: number, visibleCount: number, 
 }
 // D086-CUSTOM END
 
+// D087-JULIA BEGIN
+/** The density the builders branch on for drawing. In the Julia + Indra atlas the pearl phase,
+ * not the full 11,199-id set, is visible, so the reference visible-count test cannot recognise the
+ * Custom maximum: the page states it, and Custom at its maximum takes Completa's drawing
+ * decisions. The page witness and the UI density keep saying «custom». */
+export function denseDrawingDensity(density: string, juliaAtlasCustomAtMaximum: boolean): string {
+  return juliaAtlasCustomAtMaximum && density === 'custom' ? 'complete' : density;
+}
+// D087-JULIA END
+
 export const MIN_SCREEN_RADIUS_PX = 0.5;
 const MIN_SCALE = 0.32;
 const MAX_SCALE = 0.78;

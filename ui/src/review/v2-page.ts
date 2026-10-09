@@ -5378,7 +5378,9 @@ export class V2Page {
                     applied = this.view.updateVisibleSubset({
                         visibleNodeIds: renderedIds,
                         // D086-CUSTOM BEGIN
-                        ...({ density: this.density } as object),
+                        ...({ density: this.density,
+                            // D087-JULIA BEGIN: the atlas view learns whether Custom is at its maximum.
+                            customAtMaximum: this.density === 'custom' && this.customAtMaximum() } as object),
                         // D086-CUSTOM END
                         // D081-P7b BEGIN: Fractal edges and titles have one camera-following pass.
                         edges: canopy ? [] : shown,
@@ -5588,7 +5590,9 @@ export class V2Page {
                     ...(this.axes.projection === '3d'
                         ? { fullGraphStructuralIds: this.fullGraphStructuralIds() } : {}),
                     // D087-SIZE END
-                    ...({ density: this.density } as object), text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                    ...({ density: this.density,
+                        // D087-JULIA BEGIN: the atlas view learns whether Custom is at its maximum.
+                        customAtMaximum: this.density === 'custom' && this.customAtMaximum() } as object), text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
