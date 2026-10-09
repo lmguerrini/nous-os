@@ -29,7 +29,7 @@ const bundled = await build({
     resolveDir: dirname(fileURLToPath(source)),
     sourcefile: "d073-c6-camera-entry.ts",
     loader: "ts",
-    contents: `export { assertNaturalArrangementAxis, brainRendererEnabled, commitProductCamera, forgetProductCamera, nativeSubsetRequiresRemount, productCameraKey, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement } from ${JSON.stringify(fileURLToPath(source))};`,
+    contents: `export { assertNaturalArrangementAxis, brainRendererEnabled, commitProductCamera, forgetProductCamera, nativeSubsetRequiresRemount, preparationHostLive, productCameraKey, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement } from ${JSON.stringify(fileURLToPath(source))};`,
   },
 });
 writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
@@ -39,7 +39,7 @@ Object.assign(globalThis, {
 });
 const {
   assertNaturalArrangementAxis, brainRendererEnabled, commitProductCamera, forgetProductCamera, productCameraKey,
-  nativeSubsetRequiresRemount, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement,
+  nativeSubsetRequiresRemount, preparationHostLive, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement,
 } = await import(pathToFileURL(bundlePath).href) as typeof import("../../src/review/product-view.ts");
 
 // D086-F2 BEGIN: the native tier cannot present a new edge or node ID through
@@ -54,6 +54,14 @@ test("native scene identity includes drawn node and edge IDs", () => {
   assert.equal(nativeSubsetRequiresRemount(11_199, nodes, balanced, new Set(["a", "c"]), balanced), true);
   assert.equal(nativeSubsetRequiresRemount(11_199, nodes, balanced, nodes, balanced), false);
   assert.equal(nativeSubsetRequiresRemount(100, nodes, balanced, nodes, complete), false);
+});
+// D086-F2 END
+
+// D086-F2 BEGIN: a removed async host must stop reporting preparation for an
+// obsolete scene, even though its worker may still finish in the background.
+test("superseded preparation loses its presentation lease", () => {
+  assert.equal(preparationHostLive({ isConnected: true } as HTMLElement), true);
+  assert.equal(preparationHostLive({ isConnected: false } as HTMLElement), false);
 });
 // D086-F2 END
 

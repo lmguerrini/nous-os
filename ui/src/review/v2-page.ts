@@ -1243,6 +1243,15 @@ export class V2Page {
     private readonly coreStatusGetter = () => this.d081Status();
     private readonly canopyStatusGetter = () => this.canopyStatus && ({ ...this.canopyStatus,
         msSinceInteraction: Math.max(0, performance.now() - this.canopyStatusAt) });
+    // D086-F2 BEGIN: the shell decorates the public getter, so identity cannot
+    // decide whether an old Canopy source needs replacing.
+    private restoreCoreStatus(): void {
+        this.canopyStatus = null;
+        this.canopyStatusSignature = '';
+        const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
+        if (owner.__d081) owner.__d081.status = this.coreStatusGetter;
+    }
+    // D086-F2 END
     private publishCanopyStatus(): void {
         if (!this.canopyActive() || !this.canopyRailLayer) return;
         const stats = this.canopyRailLayer.stats();
@@ -1255,7 +1264,7 @@ export class V2Page {
         }
         // D082-B1c END.
         const elapsed = Math.max(0, performance.now() - this.canopyStatusAt);
-        if (elapsed >= 400 && stats.paintedFull && stats.motionNodes === null && !this.canopyQualityRecorded) {
+        if (elapsed >= 400 && stats.paintedFull && !stats.overlayMotion && !this.canopyQualityRecorded) {
             this.canopyLastQualityMs = elapsed;
             this.canopyQualityRecorded = true;
         }
@@ -1264,7 +1273,7 @@ export class V2Page {
         const baseStatus = canopyGraphStatus({ marks: this.canopyMarksShown,
             visible: stats.motionNodes ?? this.rendered.size,
             totalNodes: this.canopyDatasetNodes.length,
-            evidenceDrawn: this.density === 'complete' && stats.motionNodes === null
+            evidenceDrawn: this.density === 'complete' && !stats.overlayMotion
                 ? stats.paintedFull ? stats.submittedEdges : 0 : stats.evidenceDrawn,
             evidenceBundles: stats.evidenceBundles, evidenceBundled: stats.evidenceBundled,
             eligibleEdges: denominators.eligible, totalEdges: denominators.total,
@@ -1274,7 +1283,10 @@ export class V2Page {
             // drew 13 evidence arcs because the mark selection was the binding constraint.
             ...(this.density === 'complete' ? {} : { edgeBudget: densityBudget(this.density, 'canopy').arcs }),
             // D085-S2 END
-            motion: stats.motionNodes !== null, ready: stats.paintedFull,
+            // D086-F2 BEGIN: structural motion remains visible even if the native
+            // product correctly retains every drawn node ID.
+            motion: stats.overlayMotion, ready: stats.paintedFull,
+            // D086-F2 END
             msSinceInteraction: elapsed, msToFullQuality: this.canopyLastQualityMs });
         const status = { ...baseStatus, edges: { ...baseStatus.edges,
             ...(this.revealRoute?.detail ? { detail: this.revealRoute.detail } : {}) } };
@@ -1285,7 +1297,7 @@ export class V2Page {
         // D082-B1 BEGIN: a static complete scene has no RAF after the full pass.
         // Publish its settled readiness once without keeping the renderer alive.
         if (this.canopyStatusTimer) clearTimeout(this.canopyStatusTimer);
-        this.canopyStatusTimer = status.quality !== 'completa' && stats.paintedFull && stats.motionNodes === null
+        this.canopyStatusTimer = status.quality !== 'completa' && stats.paintedFull && !stats.overlayMotion
             ? setTimeout(() => { this.canopyStatusTimer = null; this.publishCanopyStatus(); },
                 Math.max(1, 401 - elapsed)) : null;
         // D082-B1 END.
@@ -2920,10 +2932,9 @@ export class V2Page {
         this.guideLayer?.destroy(); this.guideLayer = null;
         // D082-B2 END
         // D081-P7b BEGIN: a retired Fractal view cannot keep serving stale counts.
-        this.canopyStatus = null;
-        this.canopyStatusSignature = '';
-        const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
-        if (owner.__d081?.status === this.canopyStatusGetter) owner.__d081.status = this.coreStatusGetter;
+        // D086-F2 BEGIN
+        this.restoreCoreStatus();
+        // D086-F2 END
         // D081-P7b END.
         this.view = null;
         this.viewHost = null;
@@ -3900,9 +3911,11 @@ export class V2Page {
         ]);
         if (settingKey !== this.lastRefreshSettingKey) {
             // D086-F2 BEGIN: law routing must not inherit a focus from a prior
-            // toolbar view after the pointer has left the graph. Keep live
-            // pointer focus, including the established Natural/Indra pin path.
-            if (this.lawActive() && this.cursor === null) {
+            // toolbar view. A retained cursor is not proof that the old
+            // renderer's hovered ID still belongs to the new law. The next
+            // pointer event can establish a new focus. Natural/Indra keep their
+            // established pin path.
+            if (this.lawActive()) {
                 this.hovered = null;
                 this.hoveredEdge = null;
             }
@@ -5014,10 +5027,9 @@ export class V2Page {
                 this.canopyQualityRecorded = false;
                 this.publishCanopyStatus();
             } else {
-                this.canopyStatus = null;
-                this.canopyStatusSignature = '';
-                const owner = window as Window & { __d081?: { status?: () => D081GraphStatus | null } };
-                if (owner.__d081?.status === this.canopyStatusGetter) owner.__d081.status = this.coreStatusGetter;
+                // D086-F2 BEGIN
+                this.restoreCoreStatus();
+                // D086-F2 END
             }
             this.installProjectionPerfHook();
             try { previousView?.destroy(); }
@@ -5298,6 +5310,11 @@ export class V2Page {
         if (this.neighbourhoodBefore) this.restoreNeighbourhood = true;
         this.neighbourhoodDepth = null;
         this.selected = null;
+        // D086-F2 BEGIN: selection is committed here; retire its panel immediately.
+        // A following refresh can be superseded by another toolbar request.
+        this.renderPanel();
+        this.syncFocusControls();
+        // D086-F2 END
         this.sampleReveal(this.revealCamera.zoom, true);
         if (this.typedActive()) this.typedSelection = null;
         this.view?.select(null);
@@ -5900,7 +5917,7 @@ export class V2Page {
         this.lastRevealSampleKey = '';
         // D086-F2 BEGIN: Adatta can refresh without changing the settings key,
         // so invalidate an off-graph law hover before routing the far scene.
-        if (this.lawActive() && this.cursor === null) {
+        if (this.lawActive()) {
             this.hovered = null;
             this.hoveredEdge = null;
         }

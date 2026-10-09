@@ -353,6 +353,13 @@ export function nativeSubsetRequiresRemount(
 }
 // D086-F2 END
 
+// D086-F2 BEGIN: a superseded async mount keeps computing after its host is
+// removed. It must not publish preparation over a later renderer's full frame.
+export function preparationHostLive(host: Pick<HTMLElement, 'isConnected'>): boolean {
+  return host.isConnected !== false;
+}
+// D086-F2 END
+
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
 const INDRA_CONTAINER_MARKER_PX = 2.5;
 
@@ -2716,6 +2723,9 @@ export const createProductView: CreateProductView = async (input) => {
         const subset = { ...full, edges: full.edges.filter(edge => drawnEdgeIds.has(edge.id)) };
         initialRenderModel = await prepareRenderModelInSlices(subset,
           renderOptionsForScene(initialScene), undefined, anchors, progress => {
+            // D086-F2 BEGIN
+            if (!preparationHostLive(container)) return;
+            // D086-F2 END
             reportPreparationReadiness({
               view: `${axes.organization}/2d/${axes.morphology}/complete/${axes.reading}`,
               quality: 'recupero', ladder: 0,
@@ -2734,6 +2744,10 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-PERF END
     }
     // D081-P3c END
+    // D086-F2 BEGIN: a canceled host can finish worker preparation after the
+    // successor has already presented. Do not mount or publish its old scene.
+    if (!preparationHostLive(container)) throw new DOMException('Mount superseded', 'AbortError');
+    // D086-F2 END
     mount();
   }
   catch (error) {

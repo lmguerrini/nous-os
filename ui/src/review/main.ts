@@ -114,15 +114,20 @@ function showNodeDrawer(id: string): void {
 }
 const drawerSelectionObserver = new MutationObserver(() => {
   const selected = details.querySelector<HTMLElement>(".selection-card[data-node-id]")?.dataset.nodeId ?? null;
+  // D086-F2 BEGIN: selection removal always closes the external drawer, even
+  // after the initial canvas-pick observation window has elapsed.
+  if (!selected && drawerSelectionId) {
+    drawerSelectionId = null;
+    nodeDrawer.close();
+    return;
+  }
+  // D086-F2 END
   if (!canvasPickPending) return;
   canvasPickPending = false;
   if (selected && (selected !== drawerSelectionId || nodeDrawerHost.hidden)) {
     drawerSelectionId = selected;
     nodeDrawer.setDisplayTitle(drawerTitle(selected));
     void nodeDrawer.open(selected);
-  } else if (!selected && drawerSelectionId) {
-    drawerSelectionId = null;
-    nodeDrawer.close();
   }
 });
 drawerSelectionObserver.observe(details, { childList: true, subtree: true });
