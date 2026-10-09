@@ -49,4 +49,13 @@ test('focus raises the minimum; empty sources and independent ordering stay hone
   assert.equal(empty.requested, 0);
   assert.equal(empty.selectedIds.size, 0);
 });
+// D086-CUSTOM BEGIN: rank values are part of a cached order's identity.
+test('changing only rank values on the same source changes the Custom order', () => {
+  const input = { nodes, topology: 'lull/false', sourceIdentity: 'fixed-snapshot' };
+  const first = customOrder({ ...input, rank: new Map([['a-leaf', 0], ['b-leaf', 1]]) });
+  const second = customOrder({ ...input, rank: new Map([['a-leaf', 1], ['b-leaf', 0]]) });
+  assert.notDeepEqual(first.ids, second.ids);
+  assert.notEqual(first.orderDigest, second.orderDigest);
+});
+// D086-CUSTOM END
 // D086-CUSTOM END

@@ -45,6 +45,16 @@ test('Custom storage and neighboring palette controls identify their separate pu
   assert.match(html, /id="palette"[^>]*aria-label="Preset colori"[^>]*>[\s\S]*?<option value="custom">Colori personalizzati<\/option>/);
   assert.match(html, /id="fullscreen-palette"[^>]*aria-label="Preset colori fullscreen"[^>]*>[\s\S]*?<option value="custom">Colori personalizzati<\/option>/);
 });
+// D086-CUSTOM BEGIN: the shell gives the initial scene its Custom request before publication.
+test('Custom boot uses one direct mount and accepts its initial intent afterward', () => {
+  const boot = main.slice(main.indexOf('async function load()'), main.indexOf('// D080-A3 END', main.indexOf('async function load()')));
+  assert.match(boot, /const initialCustomIntent = geometry\.density === 'custom'/);
+  assert.match(boot, /V2Page\.load\(manifest, axes, appearance, customPalette, v2Colours,\s*density,/);
+  assert.match(boot, /initialCustomNodes: initialCustomIntent\.requestedNodes/);
+  assert.match(boot, /setDensityIntent\(initialCustomIntent\)/);
+  assert.ok(boot.indexOf('V2Page.load') < boot.indexOf('setDensityIntent(initialCustomIntent)'));
+});
+// D086-CUSTOM END
 
 test('pending Custom intent is captured by topology and axis transitions', () => {
   assert.match(main, /const densityIntent = pendingDensityIntent/);

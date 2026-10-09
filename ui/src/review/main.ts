@@ -2534,9 +2534,13 @@ async function load() {
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
     // V2Page.load(..., { onNodePicked: showNodeDrawer }) keeps the shell's pick callback contract;
     // the same deps object now also carries the measured initial insets for its first fit.
+    // D086-CUSTOM BEGIN: prepare one request for the first mount and its later publication.
+    const initialCustomIntent = geometry.density === 'custom' && !('mode' in geometry)
+      ? makeCustomIntent(geometry.customNodes, lawTopology(geometry.topology), geometry.indra === 'on') : null;
     v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours,
-      density === 'custom' ? 'balanced' : density,
+      density,
       { onNodePicked: showNodeDrawer, insets: reviewInsets(),
+        ...(initialCustomIntent ? { initialCustomNodes: initialCustomIntent.requestedNodes } : {}),
         // D082-B2 BEGIN
         ...(!('mode' in geometry) ? { taxonomy: { topology: lawTopology(geometry.topology), indra: geometry.indra === 'on' } } : {}),
         ...(!('mode' in geometry) && geometry.topology === 'natural' && geometry.indra === 'on'
@@ -2562,11 +2566,10 @@ async function load() {
     axes = { ...axes, brain: v2.brainEnabled };
     syncBrainControls();
     // D086-CUSTOM BEGIN: initial Custom URL/storage is published only after the page accepts it.
-    if (geometry.density === 'custom' && !('mode' in geometry)) {
+    if (initialCustomIntent) {
       const capability = customCapability();
       if (capability) {
-        const result = await capability.setDensityIntent(makeCustomIntent(geometry.customNodes,
-          lawTopology(geometry.topology), geometry.indra === 'on'));
+        const result = await capability.setDensityIntent(initialCustomIntent);
         if (result !== 'superseded' && result.committed) {
           acceptCustomCommit(result);
           density = 'custom';
