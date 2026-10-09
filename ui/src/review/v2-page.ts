@@ -806,6 +806,11 @@ export class V2Page {
         try { guideIds = JSON.parse(canvas?.dataset.atlasDrawnIds ?? '[]') as string[]; } catch { /* no drawn guides */ }
         const painted = (this.view.gestureWitness?.() as { viewportPaintedNodeIds?: readonly string[] } | undefined)
             ?.viewportPaintedNodeIds ?? [];
+        // D087-JULIA-PROBE (temporary)
+        console.log('[J87cert]', { shells: ink.shells.length, counted: ink.countedShellIds.length,
+          countedSample: ink.countedShellIds.slice(0, 3), painted: painted.length,
+          guides: guideIds.length, containers: this.containers.length,
+          shellsSample: ink.shells.slice(0, 2) });
         const radii = new Map(ink.shells.map(shell => [shell.id, shell.radiusPx]));
         const host = document.getElementById('render-root');
         return certifyJuliaAtlasDrawing(this.lawLayout, this.lawSnapshot, {

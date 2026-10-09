@@ -1264,7 +1264,14 @@ export const createProductView: CreateProductView = async (input) => {
     // placement puts it, and the DOM label pass suppresses the same container's node label in
     // exactly those cases (and allows it otherwise), so a pearl never carries two names. The
     // interaction must be the same object state the canvas layer uses, so both agree on the LOD.
-    const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds, dimFocus: focusStyle };
+    // D087-JULIA BEGIN
+    const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds, dimFocus: focusStyle,
+      // Without the atlas flag this placement never takes the badge branch, the
+      // counted ink stays empty of closed pearls and the observed certificate
+      // reports zero drawn pearls while the canvas still draws them.
+      ...(morphologyInteraction.forceJuliaAtlasRims === undefined ? {}
+        : { forceJuliaAtlasRims: morphologyInteraction.forceJuliaAtlasRims }) };
+    // D087-JULIA END
     const pathById = new Map<string, MorphologyContainerPath>();
     if (!movingIndra3d && axes.organization === "indra" && labelContainers) {
       for (const path of buildContainerGeometry(axes.morphology, labelContainers)) pathById.set(path.id, path);
@@ -1301,6 +1308,10 @@ export const createProductView: CreateProductView = async (input) => {
     visibleTitleCount = titlePlacements.length;
     const titledContainerIds = new Set(titlePlacements.map(placement => placement.id));
     if (juliaAtlas) juliaAtlasTitledIds = titledContainerIds;
+    // D087-JULIA-PROBE (temporary)
+    if (juliaAtlas) console.log('[J87label]', { paths: pathById.size, placed: titlePlacements.length,
+      labelContainers: labelContainers?.length ?? -1, rims: morphologyInteraction.forceJuliaAtlasRims,
+      titles: [...titledContainerIds].slice(0, 3), bounds: titleBounds });
     const footprintRadius = new Map(footprints.map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
     const fullText = new Map<string, string>();
@@ -2287,10 +2298,17 @@ export const createProductView: CreateProductView = async (input) => {
     mountOpeningCamera = openingCamera;
     mountOpeningPoints = openingPoints;
     const saved = restoreSavedCamera();
+    // D087-JULIA-PROBE (temporary)
+    if (juliaAtlas) console.log('[J87fit]', { restored: Boolean(saved && validCamera(saved)),
+      org: axes.organization, containers: layoutContainers?.length ?? -1, visible: visible.size });
     if (saved && validCamera(saved)) handle.restoreCameraState(saved);
     else {
       handle.restoreCameraState(openingCamera);
       const initialPoints = openingPoints();
+      // D087-JULIA-PROBE (temporary)
+      if (juliaAtlas) console.log('[J87solve]', { points: initialPoints.length,
+        spread: initialPoints.length ? { x: Math.max(...initialPoints.map(p => Math.abs(p.x))),
+          y: Math.max(...initialPoints.map(p => Math.abs(p.y))) } : null });
       solveFraming(handle, {
         points: initialPoints,
         rect: localRect(),

@@ -809,12 +809,18 @@ export function drawContainers(
     const limbRadius = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
     // D087-JULIA BEGIN
     if (!interaction?.forceJuliaAtlasRims && !containerSphereLOD(container.level, open, selected, limbRadius)) return;
+    // A closed atlas pearl is an overview pearl: it draws like its own 2D ring —
+    // one legible stroke at the 2D width and alpha with the same faint fill —
+    // instead of the distance-simplified thin faint limb the bright Julia bands
+    // swallow, and it stays drawn through the moving pass so approaching or
+    // wheeling over the overview never blanks the rims.
+    const atlasPearl = interaction?.forceJuliaAtlasRims === true && !open && container.level > 0;
     // D087-JULIA END
     context.globalAlpha *= deepZoomShellOpacity(limbRadius, bounds);
     if (context.globalAlpha <= 0) return;
     // The moving pass keeps only the limbs of the spheres that carry the structure: the absolute
     // shell and the domains always, any other pearl only while open or selected.
-    if (moving && container.level > 1 && !open && !selected) return;
+    if (moving && container.level > 1 && !open && !selected && !atlasPearl) return;
     // A sphere wholly outside the canvas draws nothing a viewer could see; the NousOS shell keeps its
     // witness (the framing checks read it) even while panned out.
     if (container.level > 0 && (center.x + limbRadius < -2 || center.x - limbRadius > bounds.width + 2
@@ -826,7 +832,16 @@ export function drawContainers(
     const segments = sphereSegmentsForQuality(limbRadius, moving ? "moving" : "full");
     const table = circleTable(segments);
     const fillFade = deepZoomShellFillOpacity(limbRadius, bounds);
-    if (!tiny && !moving && fillFade > 0) {
+    // D087-JULIA BEGIN: the atlas pearl carries the 2D ring's faint interior
+    // fill, not the glass shading a larger sphere earns.
+    if (atlasPearl && !moving && fillFade > 0 && typeof context.fill === "function") {
+      context.fillStyle = `rgba(${ink}, 0.014)`;
+      context.beginPath();
+      context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2);
+      context.fill();
+    }
+    // D087-JULIA END
+    if (!atlasPearl && !tiny && !moving && fillFade > 0) {
       const shellAlpha = context.globalAlpha;
       context.globalAlpha *= fillFade;
       // Subtle radial gradient fill: a translucent glass sphere with the light gathered off-centre, and
@@ -895,8 +910,16 @@ export function drawContainers(
       limbStyle = `rgba(${ink}, ${limbAlpha})`;
       limbStyles.set(container.level, limbStyle);
     }
-    context.strokeStyle = limbStyle;
-    context.lineWidth = tiny ? 0.5 : container.level === 0 ? 1.1 : 0.75;
+    // D087-JULIA BEGIN: the closed atlas pearl's rim uses the 2D ring formula,
+    // so the pearl reads over the Julia bands exactly as it does in 2D.
+    if (atlasPearl) {
+      context.strokeStyle = `rgba(${ink}, ${clamp(0.95 - container.level * 0.1, 0.3, 0.8)})`;
+      context.lineWidth = 0.85 + Math.max(0, 4 - container.level) * 0.18;
+    } else {
+      context.strokeStyle = limbStyle;
+      context.lineWidth = tiny ? 0.5 : container.level === 0 ? 1.1 : 0.75;
+    }
+    // D087-JULIA END
     setDash(context, []);
     context.beginPath();
     context.moveTo(center.x + table.cos[0]! * limbRadius, center.y + table.sin[0]! * limbRadius);
