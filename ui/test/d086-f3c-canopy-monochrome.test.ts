@@ -44,8 +44,10 @@ function mount() {
     querySelector() { return null; },
     getBoundingClientRect() { return { left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 }; } };
   Object.assign(globalThis, {
+    // D086-MOT BEGIN: the mounted layer also watches outside-canvas release.
     document: { createElement: (tag: string) => tag === 'canvas' ? canvas : element(),
-      getElementById: () => null },
+      getElementById: () => null, addEventListener() {}, removeEventListener() {} },
+    // D086-MOT END
     window: { devicePixelRatio: 1 },
     ResizeObserver: class { observe() {} disconnect() {} },
     requestAnimationFrame(callback: FrameRequestCallback) { const id = ++frameId; callbacks.set(id, callback); return id; },

@@ -2278,6 +2278,16 @@ export const createProductView: CreateProductView = async (input) => {
   // D082-B1 BEGIN: a Canopy motion subset restores its worker-prepared full scene.
   // This cache exists only on the Fractal host and only for one camera gesture.
   let canopyFullScene: { ids: ReadonlySet<string>; scene: FullScene } | null = null;
+  // D086-MOT BEGIN: an interrupted gesture cannot retain an orphan restore snapshot.
+  const discardCanopyGesture = (event: Event) => {
+    if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return;
+    if (event.type === 'pointerup' && event.target && container.contains(event.target as Node)) return;
+    canopyFullScene = null;
+  };
+  container.addEventListener('keydown', discardCanopyGesture);
+  container.addEventListener('pointercancel', discardCanopyGesture);
+  document.addEventListener('pointerup', discardCanopyGesture);
+  // D086-MOT END
   // D082-B1 END.
   // D082-A-NODES BEGIN
   function applyVisibleSubset(update: VisibleSubsetUpdate, reuseDenseFit = false,
@@ -2329,7 +2339,12 @@ export const createProductView: CreateProductView = async (input) => {
     // D086-F2 BEGIN: a native Sigma/Three scene cannot replace its mounted edge
     // buffer through the distinct canvas update. Let the page remount this scene.
     if (nativeSubsetRequiresRemount(mountedIds.size, visible, drawnEdgeIds,
-      nextVisible, nextEdgeIds)) return false;
+      nextVisible, nextEdgeIds)) {
+      // D086-MOT BEGIN
+      canopyFullScene = null;
+      // D086-MOT END
+      return false;
+    }
     // D086-F2 END
     const nextSelection = selected && (nextVisible.has(selected) || nextEdgeIds.has(selected)) ? selected : null;
     const anchors = restrictAnchors(fullAnchor(axes), mountedIds);
@@ -2791,6 +2806,12 @@ export const createProductView: CreateProductView = async (input) => {
   }
   catch (error) {
     destroyed = true;
+    // D086-MOT BEGIN
+    canopyFullScene = null;
+    container.removeEventListener('keydown', discardCanopyGesture);
+    container.removeEventListener('pointercancel', discardCanopyGesture);
+    document.removeEventListener('pointerup', discardCanopyGesture);
+    // D086-MOT END
     qualityController.destroy();
     removeWheelMotion();
     resizeLabelObserver.disconnect();
@@ -3181,6 +3202,12 @@ export const createProductView: CreateProductView = async (input) => {
     },
     destroy() {
       destroyed = true;
+      // D086-MOT BEGIN
+      canopyFullScene = null;
+      container.removeEventListener('keydown', discardCanopyGesture);
+      container.removeEventListener('pointercancel', discardCanopyGesture);
+      document.removeEventListener('pointerup', discardCanopyGesture);
+      // D086-MOT END
       // D082-A-NODES BEGIN
       if (denseRefreshTimer !== undefined) clearTimeout(denseRefreshTimer);
       denseRefreshRevision++;
