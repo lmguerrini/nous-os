@@ -21,7 +21,12 @@ const CHILD_GAP_3D_PX = 16;
 
 /** Density reveals more real closed parents without changing any Julia address. */
 export function juliaOverviewPearlQuota(density: 'essential' | 'balanced' | 'complete' | 'custom',
-  customNodes: number | undefined, available: number): number {
+  customNodes: number | undefined, available: number, customAvailableNodes?: number): number {
+  // D087-JULIA BEGIN: the Custom endpoint is the same atlas phase as Completa.
+  // The available node count is distinct from the admitted pearl count.
+  if (density === 'custom' && customAvailableNodes !== undefined
+    && customNodes !== undefined && customNodes >= customAvailableNodes) return available;
+  // D087-JULIA END
   // D087-JULIA BEGIN: the oblique 3D admission has forty available pearls.
   // Give its density steps distinct deterministic prefixes as in 2D.
   if (available >= 20 && available <= 40) {
@@ -34,6 +39,14 @@ export function juliaOverviewPearlQuota(density: 'essential' | 'balanced' | 'com
     : density === 'complete' ? available : 43 + Math.floor(Math.max(0, customNodes ?? 0) / 2000);
   return Math.min(available, Math.max(0, target));
 }
+
+// D087-JULIA BEGIN: the atlas census names strokes in the active phase. The
+// full snapshot remains available in the source and density-budget witnesses.
+export function juliaAtlasEdgeCensus(drawn: number, eligible: number, total: number,
+  atlasActive: boolean): { drawn: number; eligible: number; total: number } {
+  return atlasActive ? { drawn, eligible: drawn, total: drawn } : { drawn, eligible, total };
+}
+// D087-JULIA END
 
 export type JuliaAtlasCertificate = Readonly<{
   snapshotDigest: string; dimension: TopologyDimension; phase: 'overview' | 'opened';
