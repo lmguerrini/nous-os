@@ -848,7 +848,7 @@ export class V2Page {
      * the first mount at a new window size, or a resize. Each recomposition
      * admits pearls for a scale at or under the solved fit, so the buckets
      * move monotonically down and settle; three per scene is the backstop. */
-    private async settleJuliaAtlasAdmission(): Promise<void> {
+    private async settleJuliaAtlasAdmission(ownedByGeometry = false): Promise<void> {
         const scene = `${this.topology}|${this.topologyIndra}|${this.axes.projection}|${this.density}`;
         if (scene !== this.juliaAtlasAdmissionScene) {
             this.juliaAtlasAdmissionScene = scene;
@@ -859,7 +859,16 @@ export class V2Page {
         if (bucket === null || bucket === this.juliaAtlasAdmissionPx) return;
         this.juliaAtlasAdmissionPx = bucket;
         this.juliaAtlasAdmissionRecomposes++;
-        await this.refresh().catch(() => { /* the resident view stays; the next refresh re-settles */ });
+        // D087-JULIA BEGIN: the settle also concludes the owned refresh of a
+        // geometry transition (a Custom Apply, a density change). That
+        // transition is still awaiting this settle, so a plain refresh here
+        // would enqueue behind the transition's own lane and neither the
+        // recomposition nor the transition would ever settle — the phase
+        // stayed «preparazione» and later Applies were never taken. The
+        // recomposition inherits the ownership of the refresh it concludes;
+        // the resize observer keeps the unowned lane and waits its turn.
+        await this.refresh(ownedByGeometry).catch(() => { /* the resident view stays; the next refresh re-settles */ });
+        // D087-JULIA END
     }
     // D087-JULIA9 END
     // D087-JULIA END
@@ -6025,7 +6034,11 @@ export class V2Page {
             // first mount after the reference-scale preflight). The settle
             // recomposes through a guarded refresh, so the buckets converge
             // instead of looping.
-            .then(() => (presentationOnly ? undefined : this.settleJuliaAtlasAdmission()));
+            // D087-JULIA BEGIN: inside a geometry transition (an owned
+            // refresh) the settle's recomposition must stay owned too, or it
+            // would enqueue behind the transition that is awaiting it.
+            .then(() => (presentationOnly ? undefined : this.settleJuliaAtlasAdmission(ownedByGeometry)));
+            // D087-JULIA END
     }
     async expand(id: string) {
         this.suppressZoomUntil = performance.now() + 900;
