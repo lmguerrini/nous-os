@@ -1,7 +1,10 @@
 // D087-SIZE10 BEGIN
-import { denseNodeScales } from '../render-common/dense-node-scale.ts';
+import { denseEdgeScreenDensities, denseNodeScales } from '../render-common/dense-node-scale.ts';
 import type { DenseNodeSample } from '../render-common/dense-node-scale.ts';
 import { calibratedLeafCorePx } from '../render-common/semantic-node-mark.ts';
+// D087-SIZE11 BEGIN
+import { canopyCompleteNodeScales } from '../fractal/canopy-node-policy.ts';
+// D087-SIZE11 END
 import type { Point3 } from './layout-v2.ts';
 import type { V2Node } from './v2-core.ts';
 import { v2Encoding } from './v2-adapter.ts';
@@ -11,11 +14,22 @@ export type FullGraphLeafSource = Readonly<{
   layoutKey: string;
   nodes: readonly V2Node[];
   anchors: ReadonlyMap<string, Point3>;
+  // D087-SIZE11 BEGIN: only real, reading-admitted source relations enter the fixed veil.
+  edges?: readonly Readonly<{ id: string; source: string; target: string }>[];
+  edgeKey?: string;
+  // D087-SIZE11 END
   /** Share of the reference frame occupied by nodes when topology guides own the outer fit. */
   fitShare?: number;
+  // D087-SIZE11 BEGIN: D-086 Canopy keeps every real vertex at its own point.
+  allNodesRepresented?: boolean;
+  // D087-SIZE11 END
 }>;
 
-export type FullGraphLeafBase = Readonly<{ given: number; targetPx: number; fullGraphNodes: number }>;
+// D087-SIZE11 BEGIN
+export type FullGraphLeafBase = Readonly<{ given: number; targetPx: number; fullGraphNodes: number;
+  radiusById: ReadonlyMap<string, number>; localDensityById: ReadonlyMap<string, number>;
+  projectionScale: number; edgeScreenDensityById: ReadonlyMap<string, number> }>;
+// D087-SIZE11 END
 
 type ScreenTree = Readonly<{ sample: DenseNodeSample; left: ScreenTree | null; right: ScreenTree | null }>;
 type WorldTree = Readonly<{ sample: DenseNodeSample; left: WorldTree | null; right: WorldTree | null }>;
@@ -109,20 +123,36 @@ export function calculateFullGraphLeafBase(source: FullGraphLeafSource,
     importance: node.importance.value, baseRadiusPx: v2Encoding(node, nodeScale).radiusPx,
     projectionScale: sizeScale,
   }));
-  const dense = denseNodeScales(samples, { zoomProgress: 0, screenDistanceNorm: distance,
+  const measured = denseNodeScales(samples, { zoomProgress: 0, screenDistanceNorm: distance,
     closestScreen: nearestRepresentedScreens, nearestWorld: nearestWorldDistances });
+  const dense = source.allNodesRepresented ? canopyCompleteNodeScales(measured) : measured;
+  // D087-SIZE11 BEGIN: use the same complete reference frame for relation widths.
+  const screenById = new Map(samples.map(sample => [sample.id, sample]));
+  const edgeScreenDensityById = denseEdgeScreenDensities((source.edges ?? []).flatMap(edge => {
+    const from = screenById.get(edge.source), to = screenById.get(edge.target);
+    return from && to ? [{ id: edge.id, sourceScreenX: from.screenX!, sourceScreenY: from.screenY!,
+      targetScreenX: to.screenX!, targetScreenY: to.screenY! }] : [];
+  }));
+  // D087-SIZE11 END
   const leafRadii = points.flatMap(({ node }) => {
     const radius = dense.get(node.id)?.radiusPx ?? 0;
     return !structuralIds.has(node.id) && radius > 0 ? [radius * sizeScale] : [];
   });
   const targetPx = calibratedLeafCorePx(leafRadii, morphology, '3d');
-  return { given: targetPx / sizeScale, targetPx, fullGraphNodes: source.nodes.length };
+  // D087-SIZE11 BEGIN: retain every D-086 Completa dense-law result, including its
+  // hub bonus and nearest-centre cap, instead of replacing the graph with one median.
+  return { given: targetPx / sizeScale, targetPx, fullGraphNodes: source.nodes.length,
+    radiusById: new Map([...dense].map(([id, value]) => [id, value.radiusPx])),
+    localDensityById: new Map([...dense].map(([id, value]) => [id, value.localDensity])),
+    projectionScale: sizeScale, edgeScreenDensityById };
+  // D087-SIZE11 END
 }
 
 const bases = new Map<string, FullGraphLeafBase>();
 export function fullGraphLeafBase(source: FullGraphLeafSource,
   structuralIds: ReadonlySet<string>, morphology: string, nodeScale: number): FullGraphLeafBase {
-  const key = [source.digest, source.layoutKey, source.fitShare ?? 1, morphology, nodeScale].join('|');
+  const key = [source.digest, source.layoutKey, source.fitShare ?? 1, source.allNodesRepresented ?? false,
+    source.edgeKey ?? '', morphology, nodeScale].join('|');
   const hit = bases.get(key);
   if (hit) return hit;
   const base = calculateFullGraphLeafBase(source, structuralIds, morphology, nodeScale);

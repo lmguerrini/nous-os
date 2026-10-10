@@ -23,7 +23,7 @@ test("Neural 3D Completa floors represented points without revealing hidden memb
   assert.match(NODE_FRAGMENT_SHADER, /v_denseNeuralPoint > 0\.5/);
 });
 
-test("Neural 3D Completa keeps density in alpha without changing projected ribbon width", () => {
+test("Neural 3D Completa applies the fixed dense width with a device-pixel floor", () => {
   assert.equal(neuralCompleta3dRibbonWidthPx(0.15, 1), 1.5);
   assert.equal(neuralCompleta3dRibbonWidthPx(0.15, 2), 0.75);
   assert.equal(neuralCompleta3dRibbonWidthPx(2.5, 2), 2.5);
@@ -32,6 +32,10 @@ test("Neural 3D Completa keeps density in alpha without changing projected ribbo
   // D087-SIZE BEGIN: the compatibility helper remains available, but the live shader does not apply it.
   assert.doesNotMatch(FILAMENT_FRAGMENT_SHADER, /v_neuralProfile\.w >= 3\.0 && bodyHalfWidth < 0\.75/);
   assert.doesNotMatch(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth \*= max\(0\.22, sqrt\(denseFactor\)\)/);
+  // D087-SIZE11 BEGIN
+  assert.match(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth = max\(bodyHalfWidth \* sqrt\(denseFactor\)/);
+  assert.match(FILAMENT_FRAGMENT_SHADER, /denseWidthFloorActive = v_neuralProfile\.w >= 3\.0/);
+  // D087-SIZE11 END
   // D087-SIZE END
   assert.match(FILAMENT_FRAGMENT_SHADER, /v_opacity \* radial \* longitudinal/);
 });

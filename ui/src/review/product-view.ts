@@ -807,6 +807,10 @@ export const createProductView: CreateProductView = async (input) => {
   // Retain the fit-state projection: pan and orbit leave point grouping and radii alone.
   let denseFitSamples: readonly import("../render-common/dense-node-scale.ts").DenseNodeSample[] = [];
   let denseFitDistanceNorm: ReadonlyMap<string, number> = new Map();
+  // D087-SIZE11 BEGIN
+  let referenceEdgeScreenDensityById: ReadonlyMap<string, number> = new Map();
+  let completeSizeReferenceWitness: { nodes: number; edges: number; layoutKey: string } | null = null;
+  // D087-SIZE11 END
   // D087-SIZE BEGIN: retained by the D-086 2D scene branch.
   let denseFitProjectionScaleById: ReadonlyMap<string, number> = new Map();
   // D087-SIZE END
@@ -1778,22 +1782,29 @@ export const createProductView: CreateProductView = async (input) => {
         structural ? 'structural' : exploratory ? 'exploratory' : 'attested', opacityPermille, widthPermille, floorProjection)
       : { opacityPermille, widthPermille };
     // D082-A-NODES BEGIN
-    const screenDensity = denseEdgeScreenDensityById.get(edge.id);
+    // D087-SIZE11 BEGIN: 3D relation ink reads the complete graph's stationary field.
+    const referenceScreenDensity = axes.projection === '3d' && input.v2Prepared
+      ? referenceEdgeScreenDensityById.get(edge.id) ?? 1 : undefined;
+    const screenDensity = referenceScreenDensity ?? denseEdgeScreenDensityById.get(edge.id);
+    const fixedReferenceEdge = referenceScreenDensity !== undefined;
+    const denseEdgeAvailable = denseScaleById.size > 0 || fixedReferenceEdge;
+    const edgeZoomProgress = fixedReferenceEdge ? 0 : denseZoomProgress;
+    // D087-SIZE11 END
     // Screen-space density is the actual overlap measure for the visible edge bundle. Do not
     // stack the older endpoint/node-density penalty on a measured screen cell: doing so would
     // undercut the calibrated per-pixel veil. Keep that fallback only when a segment is unmeasured.
-    const denseOpacityPermille = denseScaleById.size && screenDensity === undefined && !customDense
+    const denseOpacityPermille = denseEdgeAvailable && screenDensity === undefined && !customDense
       ? denseEdgeAlphaPermille(legible.opacityPermille,
         denseScaleById.get(edge.source)?.localDensity ?? 1, denseScaleById.get(edge.target)?.localDensity ?? 1)
       : legible.opacityPermille;
     // Full D-081 alpha under the 23-edge tolerance, then calibrated proportional attenuation,
     // blended back to the original presentation on zoom.
     const veilOpacityPermille = screenDensity === undefined ? denseOpacityPermille
-      : denseEdgeScreenAlphaPermille(denseOpacityPermille, screenDensity, denseZoomProgress);
+      : denseEdgeScreenAlphaPermille(denseOpacityPermille, screenDensity, edgeZoomProgress);
     // D082-A-NCOMPLETA BEGIN: Neural roots use the same measured screen-cell veil as their shafts.
-    const neuralDenseFactor = axes.morphology === 'neural' && denseScaleById.size
+    const neuralDenseFactor = axes.morphology === 'neural' && denseEdgeAvailable
       ? neuralCompletaVeilFactor(denseEdgeVeilFactor(veilOpacityPermille, legible.opacityPermille),
-        axes.projection, denseZoomProgress) : undefined;
+        axes.projection, edgeZoomProgress) : undefined;
     // D082-A-NCOMPLETA2 BEGIN: feed the same raised alpha to the native tier and
     // canvas so the root, shaft and point field remain legible at Completa fit.
     const neuralOpacityPermille = neuralDenseFactor === undefined ? veilOpacityPermille
@@ -1806,9 +1817,9 @@ export const createProductView: CreateProductView = async (input) => {
       // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
       ...legible,
       // D082-A-NODES BEGIN
-      ...(denseScaleById.size ? { opacityPermille: neuralOpacityPermille } : {}),
-      ...(denseScaleById.size ? { denseVeilBaseOpacityPermille: legible.opacityPermille } : {}),
-      ...(denseScaleById.size ? { denseVeilFactor: denseEdgeVeilFactor(neuralOpacityPermille, legible.opacityPermille) } : {}),
+      ...(denseEdgeAvailable ? { opacityPermille: neuralOpacityPermille } : {}),
+      ...(denseEdgeAvailable ? { denseVeilBaseOpacityPermille: legible.opacityPermille } : {}),
+      ...(denseEdgeAvailable ? { denseVeilFactor: denseEdgeVeilFactor(neuralOpacityPermille, legible.opacityPermille) } : {}),
       // D082-A-NCOMPLETA BEGIN
       ...(neuralDenseFactor === undefined ? {} : { neuralDenseFactor }),
       // D082-A-NCOMPLETA END
@@ -2167,10 +2178,22 @@ export const createProductView: CreateProductView = async (input) => {
     const customDense = state.density === 'custom' && !referenceCompleta;
     const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
       state.visible.size, state.density ?? witnessDensity);
-    // D087-SIZE BEGIN: density controls admission and opacity; drawing keeps the sparse mark law.
-    morphologyInteraction.usesDenseDrawingPolicy = false;
-    morphologyInteraction.denseNativeRadiusOnly = true;
-    // D087-SIZE END
+    // D087-SIZE11 BEGIN: all 3D densities use the D-086 Completa mark grammar.
+    // The fixed complete solve replaces the mounted 3D dense solve.
+    if (input.v2Prepared && !input.fullGraphLeafSource)
+      throw new Error('The complete canonical 3D size source is required before mount');
+    const completeReference = input.v2Prepared && input.fullGraphLeafSource
+      ? fullGraphLeafBase(input.fullGraphLeafSource, structuralIds,
+        axes.morphology, appearance.nodeScale) : undefined;
+    if (completeReference && input.fullGraphLeafSource) {
+      referenceEdgeScreenDensityById = completeReference.edgeScreenDensityById;
+      completeSizeReferenceWitness = { nodes: completeReference.radiusById.size,
+        edges: completeReference.edgeScreenDensityById.size,
+        layoutKey: input.fullGraphLeafSource.layoutKey };
+    }
+    morphologyInteraction.usesDenseDrawingPolicy = true;
+    morphologyInteraction.denseNativeRadiusOnly = false;
+    // D087-SIZE11 END
     // D086-CUSTOM END
     denseScaleById = new Map();
     denseMembersByRepresentative = new Map();
@@ -2185,7 +2208,7 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NCOMPLETA END
     // D082-A-NCOMPLETA BEGIN
     // D082-A-NCOMPLETA END
-    if (input.v2Prepared && denseDrawingPolicy) {
+    if (input.v2Prepared && denseDrawingPolicy && !completeReference) {
       const canopyComplete = container.hasAttribute('data-fractal-rails-active');
       const current = handle?.readCameraState().ratio;
       const fit = canopyComplete ? fitRatio.get(cameraKeys().key)
@@ -2318,9 +2341,9 @@ export const createProductView: CreateProductView = async (input) => {
       }
       for (const members of denseMembersByRepresentative.values()) members.sort();
       // D082-A-NCOMPLETA BEGIN: 2D canvas glow and native 3D halo share these local factors.
-      // D087-SIZE BEGIN: local crowding never changes a node's glow.
+      // D087-SIZE11 BEGIN: the fixed full-graph halo field is installed below.
       morphologyInteraction.denseNeuralHaloById = undefined;
-      // D087-SIZE END
+      // D087-SIZE11 END
       // D082-A-NCOMPLETA END
     }
     // D082-A-NODES END
@@ -2348,16 +2371,13 @@ export const createProductView: CreateProductView = async (input) => {
       && (axes.projection === '2d' ? sigma !== null : three !== null);
     // D087-SIZE10 BEGIN: 3D uses the page's complete canonical source before its first frame.
     // The fixed result is shared by every density and never reads a live camera or dense map.
-    if (axes.projection === '3d' && input.v2Prepared && !input.fullGraphLeafSource)
-      throw new Error('The complete canonical 3D leaf source is required before mount');
-    if (axes.projection === '3d' && input.v2Prepared && input.fullGraphLeafSource) {
-      const base = fullGraphLeafBase(input.fullGraphLeafSource, structuralIds,
-        axes.morphology, appearance.nodeScale);
-      leafCalibration = { given: base.given, targetPx: base.targetPx, exactFit: true };
+    // D087-SIZE11 BEGIN
+    if (completeReference) {
+      leafCalibration = { given: completeReference.given, targetPx: completeReference.targetPx, exactFit: true };
       fullGraphLeafBases.set(leafKey, leafCalibration);
     } else if (axes.projection === '2d' && input.v2Prepared
       && (!leafCalibration || (exactFit && !leafCalibration.exactFit))) {
-    // D087-SIZE10 END
+    // D087-SIZE11 END
       const fitScales = input.data.nodes.flatMap(node => {
         const point = completeAnchors.get(node.id);
         return point && !structuralIds.has(node.id) ? [markScale(point)] : [];
@@ -2419,6 +2439,9 @@ export const createProductView: CreateProductView = async (input) => {
     }
     // D087-SIZE BEGIN: the calibration is one full-graph value; the per-node arguments were unused.
     const leafGiven = leafCalibration?.given ?? 0;
+    if (axes.morphology === 'neural' && completeReference)
+      morphologyInteraction.denseNeuralHaloById = new Map([...completeReference.localDensityById]
+        .map(([id, density]) => [id, neuralCompletaHaloFactor(density, '3d', 0)]));
     // D087-SIZE END
     // D087-SIZE END
     const markCoordinates = (point: Coordinates) => handle?.graphToViewport(point)
@@ -2426,21 +2449,26 @@ export const createProductView: CreateProductView = async (input) => {
     const markCandidates = markNodes.map(node => {
       const point = anchors.get(node.id)!;
       const structural = !input.v2Prepared || structuralIds.has(node.id);
-      const given = structural ? input.v2Prepared
+      // D087-SIZE11 BEGIN
+      const given = completeReference?.radiusById.get(node.id) ?? (structural ? input.v2Prepared
         ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale).radiusPx
         : encodingOf(node, input.data).corePermille * 8 / SCENE_PERMILLE_SCALE
-        : leafGiven;
+        : leafGiven);
+      // D087-SIZE11 END
       const scale = markScale(point);
       // D087-SIZE BEGIN: co-location uses the final 3D core, after morphology policy.
-      const coreRadiusPx = (structural && axes.morphology === 'stellar' && axes.organization === 'indra'
-          ? stellarIndra3dNodeRadiusPx(given, axes.morphology, axes.organization, axes.projection)
-          : structural && axes.morphology === 'neural' && input.v2Prepared
-            ? given * ((node.v2 as import('./v2-core.ts').V2Node).level >= 3 ? 0.62
+      const coreRadiusPx = (completeReference && axes.morphology === 'neural' && input.v2Prepared
+          ? given === 0 ? 0 : neuralCompletaPointRadius(given, completeReference.projectionScale, 0)
+            * ((node.v2 as import('./v2-core.ts').V2Node).level >= 3 ? 0.62
               : (node.v2 as import('./v2-core.ts').V2Node).level === 2 ? 0.8 : 1)
+          : structural && axes.morphology === 'stellar' && axes.organization === 'indra'
+          ? completeReference ? given : stellarIndra3dNodeRadiusPx(given, axes.morphology, axes.organization, axes.projection)
             : given) * scale;
       // D087-SIZE END
       return { id: node.id, ...markCoordinates(point), coreRadiusPx, structural };
-    });
+    // D087-SIZE11 BEGIN: a reference-covered member cannot suppress a visible real mark.
+    }).filter(mark => mark.coreRadiusPx > 0);
+    // D087-SIZE11 END
     coLocatedById = coLocatedRepresentatives(markCandidates);
     denseMembersByRepresentative = new Map();
     for (const [id, representative] of coLocatedById) {
@@ -2454,10 +2482,10 @@ export const createProductView: CreateProductView = async (input) => {
     const presentation = {
       morphologyLanguage: "distinct" as const,
       // D086-CUSTOM BEGIN: the same scene policy reaches scene construction and native rendering.
-      usesDenseDrawingPolicy: denseDrawingPolicy,
-      // D087-SIZE BEGIN
-      denseNativeRadiusOnly: true,
-      // D087-SIZE END
+      // D087-SIZE11 BEGIN
+      usesDenseDrawingPolicy: true,
+      denseNativeRadiusOnly: false,
+      // D087-SIZE11 END
       // D086-CUSTOM END
       nativeLabels: false,
       windowGeometryFromAnchors: true,
@@ -2483,11 +2511,15 @@ export const createProductView: CreateProductView = async (input) => {
             // D082-A-NODES BEGIN
             // The dense map remains an edge-opacity source; co-location owns node ink.
             // D087-SIZE BEGIN: only covered members lose ink; a represented id keeps its native size.
-            const hiddenDenseMember = coLocatedById.get(node.id) !== node.id;
+            // D087-SIZE11 BEGIN
+            const referenceRadius = completeReference?.radiusById.get(node.id);
+            const hiddenDenseMember = referenceRadius === 0
+              || coLocatedById.get(node.id) !== node.id;
             const leafMark = !!input.v2Prepared && !structuralIds.has(node.id);
-            const leafRadius = leafMark ? leafGiven : 0;
+            const leafRadius = leafMark ? referenceRadius ?? leafGiven : 0;
+            // D087-SIZE11 END
             const canonicalHalo = canonicalHaloById.get(node.id);
-            const haloPermille = hiddenDenseMember ? 0 : node.origin === "dynamic"
+            const haloPermille = hiddenDenseMember || completeReference ? 0 : node.origin === "dynamic"
               ? Math.round(encoding.haloPermille * 0.55) : encoding.haloPermille;
             // D087-SIZE END
             // D082-A-NODES END
@@ -2501,7 +2533,7 @@ export const createProductView: CreateProductView = async (input) => {
               // D087-SIZE BEGIN: every V2 structural input is explicit. Otherwise the
               // renderer multiplies corePermille by a subset-dependent material size.
               ...(hiddenDenseMember ? { radiusPx: 0, corePermille: 0 } : leafMark
-                ? { radiusPx: leafRadius } : v2Encoded ? { radiusPx: v2Encoded.radiusPx } : {}),
+                ? { radiusPx: leafRadius } : v2Encoded ? { radiusPx: referenceRadius ?? v2Encoded.radiusPx } : {}),
               // D087-SIZE END
               // D087-SIZE END
               // D082-A-NODES END
@@ -2523,15 +2555,18 @@ export const createProductView: CreateProductView = async (input) => {
               // D087-SIZE END
               // D082-A-NCOMPLETA END
               // D087-SIZE BEGIN
-              ...(v2Encoded && !leafMark && axes.morphology === "neural" ? { radiusPx: hiddenDenseMember ? 0
-                : v2Encoded.radiusPx * ((node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
+              // D087-SIZE11 BEGIN
+              ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: hiddenDenseMember ? 0
+                : referenceRadius === 0 ? 0 : neuralCompletaPointRadius(referenceRadius ?? v2Encoded.radiusPx,
+                  completeReference?.projectionScale ?? 1, 0)
+                  * ((node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
                   : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1) } : {}),
-              // D087-SIZE END
+              // D087-SIZE11 END
               // D082-A-NODES END
               // D087-SIZE BEGIN: an Indra pearl keeps its semantic glyph and radius whether
               // its children are currently admitted or folded into the same real container.
               ...(axes.morphology === "stellar" && axes.organization === "indra" && axes.projection === "3d" && !leafMark
-                ? { radiusPx: hiddenDenseMember ? 0 : stellarIndra3dNodeRadiusPx(v2Encoded?.radiusPx
+                ? { radiusPx: hiddenDenseMember ? 0 : referenceRadius ?? stellarIndra3dNodeRadiusPx(v2Encoded?.radiusPx
                   ?? encoding.corePermille * 8 / SCENE_PERMILLE_SCALE,
                   axes.morphology, axes.organization, axes.projection) } : {}),
               // D087-SIZE END
@@ -3920,6 +3955,10 @@ export const createProductView: CreateProductView = async (input) => {
             // D087-SIZE10 BEGIN: witness the source index, never the admitted subset.
             fullGraphNodes: input.fullGraphLeafSource?.nodes.length ?? input.data.nodes.length } } : {}),
             // D087-SIZE10 END
+        // D087-SIZE11 BEGIN: expose the fixed reference census through the existing render witness.
+        ...(axes.projection === '3d' && completeSizeReferenceWitness
+          ? { completeSizeReference: completeSizeReferenceWitness } : {}),
+        // D087-SIZE11 END
         // D087-SIZE END
         // D087-SIZE BEGIN: a sparse 3D mounted settle that kept its mounted sizes is visible here.
         ...(axes.projection === "3d" ? { sparse3dMountSettleFailed } : {}),

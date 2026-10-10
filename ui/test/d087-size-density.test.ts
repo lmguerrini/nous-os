@@ -92,7 +92,9 @@ test('D-086 2D Neural taper remains; 3D relation width stays density independent
     if (projection === '2d') assert.ok(widths[2]! < widths[0]!);
     else assert.deepEqual(widths, Array.from({ length: 4 }, () => widths[0]));
   }
-  assert.doesNotMatch(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth \*= max\(0\.22, sqrt\(denseFactor\)\)/);
+  // D087-SIZE11 BEGIN: the fixed complete veil narrows the 3D Neural footprint.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth = max\(bodyHalfWidth \* sqrt\(denseFactor\)/);
+  // D087-SIZE11 END
 });
 
 test('Indra 3D scene keeps a shared native core and halo through four density revisions', () => {
@@ -124,7 +126,12 @@ test('product keeps D-086 2D scene branch and 3D semantic witness', () => {
   assert.match(product, /buildDrawnSceneD0862d\(anchors, state/);
   assert.match(product, /const denseSize = denseScaleById\.get\(node\.id\)/);
   assert.match(product, /openContainers\.has\(node\.id\)/);
-  assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = false/);
+  // D087-SIZE11 BEGIN
+  assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = true/);
+  assert.match(product, /referenceRadius = completeReference\?\.radiusById\.get\(node\.id\)/);
+  assert.match(product, /referenceEdgeScreenDensityById = completeReference\.edgeScreenDensityById/);
+  assert.match(product, /completeSizeReference: completeSizeReferenceWitness/);
+  // D087-SIZE11 END
   assert.match(product, /haloRadius: footprint\.haloRadiusPx/);
   assert.match(product, /stellarIndra3dNodeRadiusPx\(given/);
   assert.match(product, /morphologyEdgeStrokeWidths\(/);

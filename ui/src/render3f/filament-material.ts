@@ -398,8 +398,12 @@ void main() {
     // D084-W7-DENSE BEGIN: keep the decoded veil available to the root alpha.
     denseRootFactor = denseFactor;
     // D084-W7-DENSE END
-    // D087-SIZE BEGIN: the decoded factor belongs to alpha, not the stroke footprint.
-    // D087-SIZE END
+    // D087-SIZE11 BEGIN: restore the D-086 Completa Neural footprint with a
+    // stationary full-graph factor, while keeping its device-pixel continuity floor.
+    bodyHalfWidth = max(bodyHalfWidth * sqrt(denseFactor),
+      v_neuralProfile.w >= 3.0 ? 0.75 : 0.0);
+    denseWidthFloorActive = v_neuralProfile.w >= 3.0 ? 1.0 : 0.0;
+    // D087-SIZE11 END
     // D082-A-NCOMPLETA END
     // D082-A-NEURAL END
   }
