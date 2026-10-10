@@ -52,3 +52,6 @@ test-results/
 # travel with a clone, so a fresh checkout would have tracked whatever they later contain.
 .claude/
 .codex/
+
+# synthetic demo datasets, regenerated from demo/src
+demo/out/
