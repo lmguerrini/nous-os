@@ -129,12 +129,19 @@ test('product keeps D-086 2D scene branch and 3D semantic witness', () => {
   assert.match(product, /buildDrawnSceneD0862d\(anchors, state/);
   assert.match(product, /const denseSize = denseScaleById\.get\(node\.id\)/);
   assert.match(product, /openContainers\.has\(node\.id\)/);
-  // D087-SIZE11 BEGIN
-  assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = true/);
+  // D087-SIZE13 BEGIN: the reference, scene, GPU flags and witness switch together.
+  assert.match(product, /const completeReference = axes\.morphology === 'neural' && input\.v2Prepared/);
+  assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = !!completeReference/);
+  assert.match(product, /usesDenseDrawingPolicy: completeReference \? true : denseDrawingPolicy/);
+  assert.match(product, /denseNativeRadiusOnly: !completeReference/);
+  assert.match(product, /referenceEdgeScreenDensityById = completeReference\?\.edgeScreenDensityById \?\? new Map\(\)/);
+  assert.match(product, /completeSizeReferenceWitness = null/);
+  assert.match(product, /else if \(axes\.projection === '3d' && input\.v2Prepared && input\.fullGraphLeafSource\)/);
+  // D087-SIZE13 END
   assert.match(product, /referenceRadius = completeReference\?\.radiusById\.get\(node\.id\)/);
-  assert.match(product, /referenceEdgeScreenDensityById = completeReference\.edgeScreenDensityById/);
   assert.match(product, /completeSizeReference: completeSizeReferenceWitness/);
-  // D087-SIZE11 END
+  const canvas = readFileSync(new URL('../src/render-common/morphology-canvas.ts', import.meta.url), 'utf8');
+  assert.equal((canvas.match(/geometry\.morphology === "neural" && denseDrawingPolicy\(style\) \? 0\.5/g) ?? []).length, 2);
   assert.match(product, /haloRadius: footprint\.haloRadiusPx/);
   assert.match(product, /stellarIndra3dNodeRadiusPx\(given/);
   assert.match(product, /morphologyEdgeStrokeWidths\(/);

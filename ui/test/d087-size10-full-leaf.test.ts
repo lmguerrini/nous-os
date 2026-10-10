@@ -65,6 +65,24 @@ test('only Neural builds the full relation screen-density raster', () => {
 });
 // D087-SIZE12 END
 
+// D087-SIZE13 BEGIN
+test('Canopy complete representation changes only Neural reference radii', () => {
+  const overlapping = { ...full, layoutKey: 'canopy/overlap',
+    anchors: new Map(anchors).set('n1', anchors.get('n0')!) };
+  for (const morphology of ['stellar', 'mycelium']) {
+    const raw = calculateFullGraphLeafBase(overlapping, structural, morphology, 1);
+    const represented = calculateFullGraphLeafBase({ ...overlapping, allNodesRepresented: true },
+      structural, morphology, 1);
+    assert.deepEqual(represented.radiusById, raw.radiusById, morphology);
+    assert.equal(represented.given, raw.given, morphology);
+  }
+  const neural = calculateFullGraphLeafBase(overlapping, structural, 'neural', 1);
+  const representedNeural = calculateFullGraphLeafBase({ ...overlapping, allNodesRepresented: true },
+    structural, 'neural', 1);
+  assert.notDeepEqual(representedNeural.radiusById, neural.radiusById);
+});
+// D087-SIZE13 END
+
 test('each admitted 3D ID and relation retains its whole-graph Completa mark', () => {
   const reference = fullGraphLeafBase(full, structural, 'neural', 1);
   const subsets = [new Set(nodes.filter((_, index) => index % 8 === 0).map(node => node.id)),

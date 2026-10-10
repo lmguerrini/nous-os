@@ -1463,10 +1463,10 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
     // D087-SIZE END
     // D082-A-NODES END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      // D087-SIZE11 BEGIN
-      projection === "3d" ? (denseDrawingPolicy(style) ? 0.5 : visual?.leafMark ? 0.5
+      // D087-SIZE13 BEGIN: only Neural keeps the round-eleven dense floor in 3D.
+      projection === "3d" ? (geometry.morphology === "neural" && denseDrawingPolicy(style) ? 0.5 : visual?.leafMark ? 0.5
         : geometry.morphology === "mycelium" ? 1.3 : 2)
-      // D087-SIZE11 END
+      // D087-SIZE13 END
         : denseDrawingPolicy(style) ? 0.5
           : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
@@ -2466,10 +2466,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // D082-A-NODES END
     const basis = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       // D087-SIZE BEGIN
-      // D087-SIZE11 BEGIN
-      projection === "3d" ? (denseDrawingPolicy(style) ? 0.5 : visual?.leafMark ? 0.5
+      // D087-SIZE13 BEGIN: Stellar and Mycelium retain the round-ten mark floor.
+      projection === "3d" ? (geometry.morphology === "neural" && denseDrawingPolicy(style) ? 0.5 : visual?.leafMark ? 0.5
         : geometry.morphology === "mycelium" ? 1.3 : 2)
-      // D087-SIZE11 END
+      // D087-SIZE13 END
         : canopyHost && geometry.nodes.length >= DENSE_SCENE_THRESHOLD ? 0.5
           : denseDrawingPolicy(style) ? 0.5
             : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);

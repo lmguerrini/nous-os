@@ -125,7 +125,10 @@ export function calculateFullGraphLeafBase(source: FullGraphLeafSource,
   }));
   const measured = denseNodeScales(samples, { zoomProgress: 0, screenDistanceNorm: distance,
     closestScreen: nearestRepresentedScreens, nearestWorld: nearestWorldDistances });
-  const dense = source.allNodesRepresented ? canopyCompleteNodeScales(measured) : measured;
+  // D087-SIZE13 BEGIN: round ten's Stellar/Mycelium leaf base used the raw dense solve.
+  const dense = morphology === 'neural' && source.allNodesRepresented
+    ? canopyCompleteNodeScales(measured) : measured;
+  // D087-SIZE13 END
   // D087-SIZE11 BEGIN: use the same complete reference frame for relation widths.
   const screenById = new Map(samples.map(sample => [sample.id, sample]));
   // D087-SIZE12 BEGIN: only Neural consumes this edge field. Avoid the full

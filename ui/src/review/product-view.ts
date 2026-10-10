@@ -2182,15 +2182,16 @@ export const createProductView: CreateProductView = async (input) => {
     const customDense = state.density === 'custom' && !referenceCompleta;
     const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
       state.visible.size, state.density ?? witnessDensity);
-    // D087-SIZE11 BEGIN: all 3D densities use the D-086 Completa mark grammar.
-    // The fixed complete solve replaces the mounted 3D dense solve.
+    // D087-SIZE13 BEGIN: only Neural uses the per-ID Completa reference.
+    // Stellar and Mycelium retain the round-ten leaf and presentation law.
     if (input.v2Prepared && !input.fullGraphLeafSource)
       throw new Error('The complete canonical 3D size source is required before mount');
-    const completeReference = input.v2Prepared && input.fullGraphLeafSource
+    const completeReference = axes.morphology === 'neural' && input.v2Prepared && input.fullGraphLeafSource
       ? fullGraphLeafBase(input.fullGraphLeafSource, structuralIds,
         axes.morphology, appearance.nodeScale) : undefined;
+    referenceEdgeScreenDensityById = completeReference?.edgeScreenDensityById ?? new Map();
+    completeSizeReferenceWitness = null;
     if (completeReference && input.fullGraphLeafSource) {
-      referenceEdgeScreenDensityById = completeReference.edgeScreenDensityById;
       completeSizeReferenceWitness = { nodes: completeReference.radiusById.size,
         // D087-SIZE12 BEGIN: the source census stays visible when its unused
         // non-Neural screen-density raster is skipped.
@@ -2198,9 +2199,9 @@ export const createProductView: CreateProductView = async (input) => {
         // D087-SIZE12 END
         layoutKey: input.fullGraphLeafSource.layoutKey };
     }
-    morphologyInteraction.usesDenseDrawingPolicy = true;
-    morphologyInteraction.denseNativeRadiusOnly = false;
-    // D087-SIZE11 END
+    morphologyInteraction.usesDenseDrawingPolicy = !!completeReference;
+    morphologyInteraction.denseNativeRadiusOnly = !completeReference;
+    // D087-SIZE13 END
     // D086-CUSTOM END
     denseScaleById = new Map();
     denseMembersByRepresentative = new Map();
@@ -2382,6 +2383,13 @@ export const createProductView: CreateProductView = async (input) => {
     if (completeReference) {
       leafCalibration = { given: completeReference.given, targetPx: completeReference.targetPx, exactFit: true };
       fullGraphLeafBases.set(leafKey, leafCalibration);
+    } else if (axes.projection === '3d' && input.v2Prepared && input.fullGraphLeafSource) {
+      // D087-SIZE13 BEGIN: restore the round-ten full leaf base for non-Neural 3D.
+      const base = fullGraphLeafBase(input.fullGraphLeafSource, structuralIds,
+        axes.morphology, appearance.nodeScale);
+      leafCalibration = { given: base.given, targetPx: base.targetPx, exactFit: true };
+      fullGraphLeafBases.set(leafKey, leafCalibration);
+      // D087-SIZE13 END
     } else if (axes.projection === '2d' && input.v2Prepared
       && (!leafCalibration || (exactFit && !leafCalibration.exactFit))) {
     // D087-SIZE11 END
@@ -2474,7 +2482,7 @@ export const createProductView: CreateProductView = async (input) => {
       // D087-SIZE END
       return { id: node.id, ...markCoordinates(point), coreRadiusPx, structural };
     // D087-SIZE11 BEGIN: a reference-covered member cannot suppress a visible real mark.
-    }).filter(mark => mark.coreRadiusPx > 0);
+    }).filter(mark => !completeReference || mark.coreRadiusPx > 0);
     // D087-SIZE11 END
     coLocatedById = coLocatedRepresentatives(markCandidates);
     denseMembersByRepresentative = new Map();
@@ -2489,10 +2497,10 @@ export const createProductView: CreateProductView = async (input) => {
     const presentation = {
       morphologyLanguage: "distinct" as const,
       // D086-CUSTOM BEGIN: the same scene policy reaches scene construction and native rendering.
-      // D087-SIZE11 BEGIN
-      usesDenseDrawingPolicy: true,
-      denseNativeRadiusOnly: false,
-      // D087-SIZE11 END
+      // D087-SIZE13 BEGIN: the GPU receives the same morphology law as the scene.
+      usesDenseDrawingPolicy: completeReference ? true : denseDrawingPolicy,
+      denseNativeRadiusOnly: !completeReference,
+      // D087-SIZE13 END
       // D086-CUSTOM END
       nativeLabels: false,
       windowGeometryFromAnchors: true,
