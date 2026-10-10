@@ -110,7 +110,7 @@ import { TOPOLOGY_LAWS, topologySupport } from '../topology/registry.ts';
 // D082-LAB-FIX2 BEGIN
 import { cancelPendingTopologyLayouts, computeTopologyLayoutAsync, topologyLayoutResult, topologySnapshot } from '../topology/page-bridge.ts';
 // D087-JULIA BEGIN
-import { certifyJuliaAtlasDrawing, composeJuliaIndraAtlas, isJuliaAtlasLayout, juliaAtlasEdgeCensus, juliaOverviewPearlQuota, type JuliaAtlasLayout } from '../topology/julia-indra-atlas.ts';
+import { certifyJuliaAtlasDrawing, composeJuliaIndraAtlas, isJuliaAtlasLayout, juliaAtlasEdgeCensus, juliaOverviewPearlQuota, limitJuliaAtlasOverview, type JuliaAtlasLayout } from '../topology/julia-indra-atlas.ts';
 // D087-JULIA END
 // D085-S1 BEGIN: serialize page axes before any asynchronous renderer refresh reads them.
 import { createGeometryTransitionQueue } from './geometry-view2.ts';
@@ -4674,6 +4674,20 @@ export class V2Page {
             // D085-S1 END
             // D082-LAB-FIX2 END
             if (lawKey && lawResult) this.lawCache.set(lawKey, lawResult);
+            // D087-JULIA13 BEGIN: the density's admission is the mounted layout
+            // itself. The cached composition stays density-agnostic; each
+            // refresh derives its phase — the admission's stable prefix the
+            // density quota draws — so an admitted closed pearl is always
+            // submitted for drawing with its rim and «+N», or it is not
+            // admitted at this density. The certificate then requires every
+            // submitted pearl counted, with no majority share to hide a gap.
+            if (this.topology === 'julia' && this.topologyIndra && !juliaFocus
+                && isJuliaAtlasLayout(lawResult) && lawResult.atlas.phase === 'overview') {
+                lawResult = limitJuliaAtlasOverview(lawResult, juliaOverviewPearlQuota(this.density,
+                    this.customNodes, lawResult.phaseNodeIds.size,
+                    this.density === 'custom' ? this.customAvailability().available : undefined));
+            }
+            // D087-JULIA13 END
             const result: LayoutResult = reused ?? (lawResult ? topologyLayoutResult(lawResult) : canopy
                 ? { positions: canopyRenderPositions(canopy, sceneNodes.map(node => node.id), projection),
                     containers: [], source: 'fractal-canopy' }
@@ -5027,15 +5041,14 @@ export class V2Page {
                 renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
             } else if (this.density !== 'complete' && !custom && this.restoreNeighbourhood && this.neighbourhoodBefore && !canopy) renderedIds = new Set(this.neighbourhoodBefore.nodes);
             // D087-JULIA BEGIN: one semantic glyph per real id in the active atlas phase.
+            // D087-JULIA13 BEGIN: the mounted layout already carries the density
+            // phase (`limitJuliaAtlasOverview` above), so the phase ids are drawn
+            // as admitted — no second quota slice can drop submitted ink here.
             if (this.topology === 'julia' && this.topologyIndra && lawResult) {
                 const atlas = lawResult as JuliaAtlasLayout;
                 renderedIds = juliaFocusIds
                     ? new Set([...juliaFocusIds].filter(id => visibleById.has(id)))
-                    : new Set([...atlas.phaseNodeIds]
-                        .slice(0, juliaOverviewPearlQuota(this.density, this.customNodes,
-                            atlas.phaseNodeIds.size,
-                            this.density === 'custom' ? this.customAvailability().available : undefined))
-                        .filter(id => visibleById.has(id)));
+                    : new Set([...atlas.phaseNodeIds].filter(id => visibleById.has(id)));
             }
             // D087-JULIA END
             // D082-B1c BEGIN: Completa uses completeRoute directly, so no second
@@ -5311,7 +5324,13 @@ export class V2Page {
                     : isLaw
                         ? `Bilanciata include il seme Essenziale (fino a ${densityBudget('essential', budgetTopology).nodes} nodi) e campiona altre posizioni per bande radiali; gli ID sovrapposti al seme non sono contati due volte, quindi il visibile può essere inferiore al richiesto.`
                         : 'Bilanciata estende il pool semantico condiviso: scaffold strutturale, percorsi dei focali, resto per importanza.';
-                const edgeReason = this.density === 'custom'
+                // D087-JULIA13 BEGIN: the atlas route has one truth in every
+                // density — the pearl-lifted relations at the density's bounded
+                // budget — so the witness must not explain Custom or Completa
+                // with the old direct-endpoint / all-relations semantics.
+                const edgeReason = atlasRouting
+                    ? 'L\'atlante solleva le relazioni sorgente sulle perle ammesse della fase e le instrada con una stessa regola in ogni densità, entro il budget d\'archi di densità e dettaglio; «totali» resta il denominatore fisso delle relazioni sorgente, non i tratti disegnati. Il contenimento è una guida strutturale, non una relazione semantica.'
+                    : this.density === 'custom'
                     ? 'Custom instrada solo relazioni sorgente con entrambe le estremità selezionate; il contenimento è una guida strutturale, non una relazione semantica.'
                     : this.density === 'complete'
                     ? 'Completa richiede tutte le relazioni eleggibili per la lettura corrente.'
