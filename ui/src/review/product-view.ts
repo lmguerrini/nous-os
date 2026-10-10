@@ -1782,9 +1782,13 @@ export const createProductView: CreateProductView = async (input) => {
         structural ? 'structural' : exploratory ? 'exploratory' : 'attested', opacityPermille, widthPermille, floorProjection)
       : { opacityPermille, widthPermille };
     // D082-A-NODES BEGIN
-    // D087-SIZE11 BEGIN: 3D relation ink reads the complete graph's stationary field.
+    // D087-SIZE12 BEGIN: the complete reference is the Neural ribbon veil only.
+    // Stellar and Mycelium keep the round-ten presentation alpha and width
+    // in every 3D admission; round ten's measured Stellar ink matched D-086.
     const referenceScreenDensity = axes.projection === '3d' && input.v2Prepared
+      && axes.morphology === 'neural'
       ? referenceEdgeScreenDensityById.get(edge.id) ?? 1 : undefined;
+    // D087-SIZE12 END
     const screenDensity = referenceScreenDensity ?? denseEdgeScreenDensityById.get(edge.id);
     const fixedReferenceEdge = referenceScreenDensity !== undefined;
     const denseEdgeAvailable = denseScaleById.size > 0 || fixedReferenceEdge;
@@ -2188,7 +2192,10 @@ export const createProductView: CreateProductView = async (input) => {
     if (completeReference && input.fullGraphLeafSource) {
       referenceEdgeScreenDensityById = completeReference.edgeScreenDensityById;
       completeSizeReferenceWitness = { nodes: completeReference.radiusById.size,
-        edges: completeReference.edgeScreenDensityById.size,
+        // D087-SIZE12 BEGIN: the source census stays visible when its unused
+        // non-Neural screen-density raster is skipped.
+        edges: input.fullGraphLeafSource.edges?.length ?? 0,
+        // D087-SIZE12 END
         layoutKey: input.fullGraphLeafSource.layoutKey };
     }
     morphologyInteraction.usesDenseDrawingPolicy = true;

@@ -128,11 +128,14 @@ export function calculateFullGraphLeafBase(source: FullGraphLeafSource,
   const dense = source.allNodesRepresented ? canopyCompleteNodeScales(measured) : measured;
   // D087-SIZE11 BEGIN: use the same complete reference frame for relation widths.
   const screenById = new Map(samples.map(sample => [sample.id, sample]));
-  const edgeScreenDensityById = denseEdgeScreenDensities((source.edges ?? []).flatMap(edge => {
+  // D087-SIZE12 BEGIN: only Neural consumes this edge field. Avoid the full
+  // relation raster for Stellar and Mycelium on every cold reference mount.
+  const edgeScreenDensityById = morphology === 'neural' ? denseEdgeScreenDensities((source.edges ?? []).flatMap(edge => {
     const from = screenById.get(edge.source), to = screenById.get(edge.target);
     return from && to ? [{ id: edge.id, sourceScreenX: from.screenX!, sourceScreenY: from.screenY!,
       targetScreenX: to.screenX!, targetScreenY: to.screenY! }] : [];
-  }));
+  })) : new Map<string, number>();
+  // D087-SIZE12 END
   // D087-SIZE11 END
   const leafRadii = points.flatMap(({ node }) => {
     const radius = dense.get(node.id)?.radiusPx ?? 0;

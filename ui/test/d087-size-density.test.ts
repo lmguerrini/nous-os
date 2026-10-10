@@ -81,6 +81,9 @@ test('D-086 2D Neural taper remains; 3D relation width stays density independent
   for (const [morphology, projection, containers] of [
     ['neural', '2d', []],
     ['stellar', '3d', [{ id: 'pearl', level: 1, center: { x: 50, y: 50, z: 0 }, radius: 160 }]],
+    // D087-SIZE12 BEGIN: Mycelium shares the unchanged non-Neural edge width path.
+    ['mycelium', '3d', []],
+    // D087-SIZE12 END
   ] as const) {
     const geometry = buildMorphologyGeometry(morphology, nodes, edges, [], 1, containers);
     const widths = Object.keys(totals).map((density) => {
@@ -138,6 +141,16 @@ test('product keeps D-086 2D scene branch and 3D semantic witness', () => {
   assert.match(contract, /readonly haloRadius\?: number/);
   assert.match(contract, /readonly edgeViewport\?/);
 });
+
+// D087-SIZE12 BEGIN
+test('the fixed 3D edge-density veil applies only to Neural relations', () => {
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const edgeLaw = product.slice(product.indexOf('const referenceScreenDensity ='),
+    product.indexOf('const screenDensity =', product.indexOf('const referenceScreenDensity =')));
+  assert.match(edgeLaw, /axes\.projection === '3d' && input\.v2Prepared\s*&& axes\.morphology === 'neural'/);
+  assert.match(edgeLaw, /referenceEdgeScreenDensityById\.get\(edge\.id\)/);
+});
+// D087-SIZE12 END
 
 test('thirty co-located leaves produce exactly one mark with structural and id priority', () => {
   const leaves = Array.from({ length: 30 }, (_, index) => ({

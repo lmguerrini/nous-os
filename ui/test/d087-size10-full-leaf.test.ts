@@ -52,6 +52,19 @@ test('staged Canopy obtains a complete base before any dense mounted solve', () 
 // D087-SIZE10 END
 
 // D087-SIZE11 BEGIN
+// D087-SIZE12 BEGIN
+test('only Neural builds the full relation screen-density raster', () => {
+  for (const morphology of ['stellar', 'mycelium']) {
+    const reference = calculateFullGraphLeafBase(full, structural, morphology, 1);
+    const withoutEdges = calculateFullGraphLeafBase({ ...full, edges: [] }, structural, morphology, 1);
+    assert.equal(reference.edgeScreenDensityById.size, 0);
+    assert.deepEqual(reference.radiusById, withoutEdges.radiusById);
+  }
+  assert.equal(calculateFullGraphLeafBase(full, structural, 'neural', 1)
+    .edgeScreenDensityById.size, edges.length);
+});
+// D087-SIZE12 END
+
 test('each admitted 3D ID and relation retains its whole-graph Completa mark', () => {
   const reference = fullGraphLeafBase(full, structural, 'neural', 1);
   const subsets = [new Set(nodes.filter((_, index) => index % 8 === 0).map(node => node.id)),
