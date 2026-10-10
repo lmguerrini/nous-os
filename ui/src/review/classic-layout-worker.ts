@@ -96,3 +96,33 @@ export function computeClassicLayout(input: LayoutInput, signal?: AbortSignal): 
       pending.delete(requestId); reject(error as Error); }
   });
 }
+
+// D087-SIZE11 BEGIN
+/** The complete 3D size reference is independent of the admitted Natural layout.
+ * Give it its own worker so the existing superseding lane can still paint the
+ * sparse layout while the exact complete coordinates are being solved. */
+export function computeClassicLayoutParallel(input: LayoutInput): Promise<LayoutResult> {
+  const source = (globalThis as { __PROJECTION_WORKER_SOURCE__?: string }).__PROJECTION_WORKER_SOURCE__;
+  if (typeof Worker === 'undefined' || typeof source !== 'string')
+    return Promise.resolve().then(() => computeLayout(input));
+  const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+  let parallel: Worker;
+  try { parallel = new Worker(url); }
+  catch { return Promise.resolve().then(() => computeLayout(input)); }
+  finally { URL.revokeObjectURL(url); }
+  return new Promise((resolve, reject) => {
+    const finish = () => { parallel.onmessage = null; parallel.onerror = null; parallel.terminate(); };
+    parallel.onmessage = event => {
+      const message = event.data as { kind?: string; requestId?: number;
+        result?: LayoutResult; message?: string };
+      if (message.requestId !== 1) return;
+      finish();
+      if (message.kind === 'classic-layout-result' && message.result) resolve(message.result);
+      else reject(new Error(message.message ?? 'Parallel complete layout failed'));
+    };
+    parallel.onerror = event => { finish(); reject(new Error(event.message)); };
+    try { parallel.postMessage({ kind: 'classic-layout', requestId: 1, input }); }
+    catch (error) { finish(); reject(error as Error); }
+  });
+}
+// D087-SIZE11 END

@@ -81,6 +81,9 @@ test('D-086 2D Neural taper remains; 3D relation width stays density independent
   for (const [morphology, projection, containers] of [
     ['neural', '2d', []],
     ['stellar', '3d', [{ id: 'pearl', level: 1, center: { x: 50, y: 50, z: 0 }, radius: 160 }]],
+    // D087-SIZE12 BEGIN: Mycelium shares the unchanged non-Neural edge width path.
+    ['mycelium', '3d', []],
+    // D087-SIZE12 END
   ] as const) {
     const geometry = buildMorphologyGeometry(morphology, nodes, edges, [], 1, containers);
     const widths = Object.keys(totals).map((density) => {
@@ -92,7 +95,9 @@ test('D-086 2D Neural taper remains; 3D relation width stays density independent
     if (projection === '2d') assert.ok(widths[2]! < widths[0]!);
     else assert.deepEqual(widths, Array.from({ length: 4 }, () => widths[0]));
   }
-  assert.doesNotMatch(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth \*= max\(0\.22, sqrt\(denseFactor\)\)/);
+  // D087-SIZE11 BEGIN: the fixed complete veil narrows the 3D Neural footprint.
+  assert.match(FILAMENT_FRAGMENT_SHADER, /bodyHalfWidth = max\(bodyHalfWidth \* sqrt\(denseFactor\)/);
+  // D087-SIZE11 END
 });
 
 test('Indra 3D scene keeps a shared native core and halo through four density revisions', () => {
@@ -124,13 +129,35 @@ test('product keeps D-086 2D scene branch and 3D semantic witness', () => {
   assert.match(product, /buildDrawnSceneD0862d\(anchors, state/);
   assert.match(product, /const denseSize = denseScaleById\.get\(node\.id\)/);
   assert.match(product, /openContainers\.has\(node\.id\)/);
-  assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = false/);
+  // D087-SIZE13 BEGIN: the reference, scene, GPU flags and witness switch together.
+  assert.match(product, /const completeReference = axes\.morphology === 'neural' && input\.v2Prepared/);
+  assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = !!completeReference/);
+  assert.match(product, /usesDenseDrawingPolicy: completeReference \? true : denseDrawingPolicy/);
+  assert.match(product, /denseNativeRadiusOnly: !completeReference/);
+  assert.match(product, /referenceEdgeScreenDensityById = completeReference\?\.edgeScreenDensityById \?\? new Map\(\)/);
+  assert.match(product, /completeSizeReferenceWitness = null/);
+  assert.match(product, /else if \(axes\.projection === '3d' && input\.v2Prepared && input\.fullGraphLeafSource\)/);
+  // D087-SIZE13 END
+  assert.match(product, /referenceRadius = completeReference\?\.radiusById\.get\(node\.id\)/);
+  assert.match(product, /completeSizeReference: completeSizeReferenceWitness/);
+  const canvas = readFileSync(new URL('../src/render-common/morphology-canvas.ts', import.meta.url), 'utf8');
+  assert.equal((canvas.match(/geometry\.morphology === "neural" && denseDrawingPolicy\(style\) \? 0\.5/g) ?? []).length, 2);
   assert.match(product, /haloRadius: footprint\.haloRadiusPx/);
   assert.match(product, /stellarIndra3dNodeRadiusPx\(given/);
   assert.match(product, /morphologyEdgeStrokeWidths\(/);
   assert.match(contract, /readonly haloRadius\?: number/);
   assert.match(contract, /readonly edgeViewport\?/);
 });
+
+// D087-SIZE12 BEGIN
+test('the fixed 3D edge-density veil applies only to Neural relations', () => {
+  const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  const edgeLaw = product.slice(product.indexOf('const referenceScreenDensity ='),
+    product.indexOf('const screenDensity =', product.indexOf('const referenceScreenDensity =')));
+  assert.match(edgeLaw, /axes\.projection === '3d' && input\.v2Prepared\s*&& axes\.morphology === 'neural'/);
+  assert.match(edgeLaw, /referenceEdgeScreenDensityById\.get\(edge\.id\)/);
+});
+// D087-SIZE12 END
 
 test('thirty co-located leaves produce exactly one mark with structural and id priority', () => {
   const leaves = Array.from({ length: 30 }, (_, index) => ({

@@ -1121,7 +1121,9 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
     if (projection === "3d" ? given === 0 : denseDrawingPolicy(style) && given === 0) continue;
     // D087-SIZE END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      projection === "3d" ? (style.nodes.get(node.id)?.leafMark ? 0.5 : 2)
+      // D087-SIZE11 BEGIN: restore the D-086 Completa floor for every 3D density.
+      projection === "3d" ? (denseDrawingPolicy(style) ? 0.5 : style.nodes.get(node.id)?.leafMark ? 0.5 : 2)
+      // D087-SIZE11 END
         : denseDrawingPolicy(style) ? 0.5 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
     // D082-A-NODES END
@@ -1465,8 +1467,10 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
     // D087-SIZE END
     // D082-A-NODES END
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      projection === "3d" ? (visual?.leafMark ? 0.5
+      // D087-SIZE13 BEGIN: only Neural keeps the round-eleven dense floor in 3D.
+      projection === "3d" ? (geometry.morphology === "neural" && denseDrawingPolicy(style) ? 0.5 : visual?.leafMark ? 0.5
         : geometry.morphology === "mycelium" ? 1.3 : 2)
+      // D087-SIZE13 END
         : denseDrawingPolicy(style) ? 0.5
           : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
     // D086-CUSTOM END
@@ -1935,12 +1939,12 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     const widthAt = (i: number) => {
       const cached = projectedWidths.get(i);
       if (cached !== undefined) return cached;
-      // D087-SIZE BEGIN: screen density changes alpha only.
+      // D087-SIZE11 BEGIN: the fixed reference veil owns Neural ribbon width in 3D.
       const width = screenSpaceEdgeWidthPx(projectedWidthAt(i),
         projection === "3d" ? presentation?.minimumScreenWidthPx : 0)
-        * (projection === "2d" && neuralTaper && presentation?.neuralDenseFactor !== undefined
+        * (neuralTaper && presentation?.neuralDenseFactor !== undefined
           ? neuralDenseRibbonWidthFactor(presentation.neuralDenseFactor) : 1);
-      // D087-SIZE END
+      // D087-SIZE11 END
       // D082-A-N3D BEGIN: keep the projected canvas outline continuous at device resolution.
       // D087-SIZE BEGIN
       const continuousWidth = width;
@@ -2473,7 +2477,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // D082-A-NODES END
     const basis = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       // D087-SIZE BEGIN
-      projection === "3d" ? (visual?.leafMark ? 0.5 : geometry.morphology === "mycelium" ? 1.3 : 2)
+      // D087-SIZE13 BEGIN: Stellar and Mycelium retain the round-ten mark floor.
+      projection === "3d" ? (geometry.morphology === "neural" && denseDrawingPolicy(style) ? 0.5 : visual?.leafMark ? 0.5
+        : geometry.morphology === "mycelium" ? 1.3 : 2)
+      // D087-SIZE13 END
         : canopyHost && geometry.nodes.length >= DENSE_SCENE_THRESHOLD ? 0.5
           : denseDrawingPolicy(style) ? 0.5
             : geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
