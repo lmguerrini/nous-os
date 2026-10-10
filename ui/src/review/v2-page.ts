@@ -806,6 +806,23 @@ export class V2Page {
         }
         return null;
     }
+    // D087-JULIA14 BEGIN
+    /** Commit the law layout a successful drawing mounted — the remount and the
+     * in-place revision alike — so the certificate describes the phase the view
+     * actually displays. Only the overview's promised pearls can open: a
+     * pathological parent excluded by admission cannot fail a later search
+     * selection or replace the mounted topology. */
+    private commitLawLayout(lawResult: TopologyLayout | null, projection: '2d' | '3d') {
+        this.lawLayout = lawResult;
+        if (isJuliaAtlasLayout(lawResult) && lawResult.atlas.phase === 'overview') {
+            this.juliaAtlasAdmitted = new Set(lawResult.phaseNodeIds);
+            this.juliaAtlasAdmittedDimension = projection;
+        } else if (!isJuliaAtlasLayout(lawResult)) {
+            this.juliaAtlasAdmitted.clear();
+            this.juliaAtlasAdmittedDimension = null;
+        }
+    }
+    // D087-JULIA14 END
     private juliaAtlasCertificate() {
         if (this.topology !== 'julia' || !this.topologyIndra || !isJuliaAtlasLayout(this.lawLayout) || !this.view?.projectPoint)
             return null;
@@ -4600,7 +4617,19 @@ export class V2Page {
             const lawKey = law ? `${this.lawSnapshot.digest}|${law.id}|${law.version}|${projection}|${this.topologyIndra}`
                 + (this.topology === 'julia' && this.topologyIndra ? `|atlas:${juliaFocus ?? 'overview'}${juliaAdmissionTag}` : '') : null;
             // D087-JULIA END
-            const layoutKey = lawKey ? `topology:${lawKey}` : canopy ? `fractal-canopy:${projection}:${this.manifest.digest}:${canopy.digest}:${[...ids].sort().join('|')}`
+            // D087-JULIA14 BEGIN: the overview's density phase is part of the
+            // mounted result, not only of the law layout. One density-agnostic
+            // law composition serves every density, and the derived result's
+            // containers are exactly the phase that density draws — so the
+            // result cache must key the phase too. Without it an in-place
+            // Essenziale → Bilanciata switch reuses the cached 43-pearl
+            // Essenziale result while the page mounts the 45-pearl phase: two
+            // admitted pearls draw no rim and no «+N» and the certificate fails
+            // 43 of 45. The focus chart has no density phase.
+            const juliaPhaseTag = this.topology === 'julia' && this.topologyIndra && !juliaFocus
+                ? `|phase:${this.density}${this.density === 'custom' ? `:${this.customNodes ?? ''}` : ''}` : '';
+            // D087-JULIA14 END
+            const layoutKey = lawKey ? `topology:${lawKey}${juliaPhaseTag}` : canopy ? `fractal-canopy:${projection}:${this.manifest.digest}:${canopy.digest}:${[...ids].sort().join('|')}`
                 : pageLayoutKey(this.manifest.digest, layoutInput);
             // D082-LAB-MERGE-TRIAL END
             this.recordProjectionPhase('projectionInput', performance.now() - projectionInputBegan);
@@ -5549,6 +5578,11 @@ export class V2Page {
                     this.d081Publish(route, availableArcs.total, this.density === 'complete' ? source.nodes.length : disclosed.nodes.length,
                         declaredAggregateCounts.members, declaredAggregateCounts.groups);
                     this.arcTotal = nextArcTotal;
+                    // D087-JULIA14 BEGIN: the accepted revision draws this
+                    // refresh's law phase — the certificate must describe it,
+                    // exactly as a remount's commit would.
+                    this.commitLawLayout(lawResult, projection);
+                    // D087-JULIA14 END
                     this.containers = nextContainers;
                     this.previousVisible = renderedIds;
                     // D081-P7 BEGIN: in-place zoom changes the counted marks too.
@@ -5899,18 +5933,10 @@ export class V2Page {
             // view that is actually displayed (witness, labels, panel counts included).
             this.rawPositions = nextRawPositions;
             // D082-B2 BEGIN
-            this.lawLayout = lawResult;
-            // D087-JULIA BEGIN: only the overview's promised pearls can open.
-            // A pathological parent excluded by admission cannot fail a later
-            // search selection or replace the mounted topology.
-            if (isJuliaAtlasLayout(lawResult) && lawResult.atlas.phase === 'overview') {
-                this.juliaAtlasAdmitted = new Set(lawResult.phaseNodeIds);
-                this.juliaAtlasAdmittedDimension = projection;
-            } else if (!isJuliaAtlasLayout(lawResult)) {
-                this.juliaAtlasAdmitted.clear();
-                this.juliaAtlasAdmittedDimension = null;
-            }
-            // D087-JULIA END
+            // D087-JULIA14 BEGIN: the law layout commit (with the Julia
+            // admission set it maintains) is shared with the in-place revision.
+            this.commitLawLayout(lawResult, projection);
+            // D087-JULIA14 END
             // D082-B2 END
             this.layoutProjection = projection;
             this.canonicalPositions = nextCanonicalPositions;
