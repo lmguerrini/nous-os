@@ -145,3 +145,20 @@ test('Canopy Completa retains every real vertex at its own minimum point', () =>
   for (const radius of canopy.radiusById.values()) assert.ok(radius >= 0.5);
 });
 // D087-SIZE11 END
+
+// D087-SIZE15 BEGIN: a damaged anchor set degrades to the anchored subset with the
+// witness count instead of rejecting the mount.
+test('a missing full-graph anchor degrades to the anchored subset with the witness', () => {
+  const partialAnchors = new Map(anchors);
+  partialAnchors.delete('n3');
+  partialAnchors.delete('n40');
+  for (const morphology of ['stellar', 'neural', 'mycelium'] as const) {
+    const degraded = calculateFullGraphLeafBase({ ...full, anchors: partialAnchors,
+      layoutKey: `canopy/degraded/${morphology}` }, structural, morphology, 1);
+    assert.equal(degraded.missingAnchors, 2);
+    assert.equal(degraded.fullGraphNodes, nodes.length);
+    assert.equal(degraded.radiusById.has('n3'), false);
+    assert.ok(degraded.given > 0, morphology);
+  }
+});
+// D087-SIZE15 END
