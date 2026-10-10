@@ -4560,7 +4560,10 @@ export class V2Page {
                         expandX: this.appearance.expandX, expandY: this.appearance.expandY,
                         expandZ: this.appearance.expandZ });
                     fullLeafLayoutKey = `${layoutKey}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}`;
-                } else if (organization === 'natural' && source.nodes.length > V2_CAP) {
+                // D087-SIZE15 BEGIN: the reference is complete
+                // even when the source fits below the disclosure cap; a partial request
+                // never defines its key.
+                } else if (organization === 'natural') {
                     // D087-SIZE11 BEGIN: the parallel plan already owns this exact input.
                     const completeInput: LayoutInput = parallelCompleteInput?.input ?? (() => {
                         const completeIds = new Set(source.nodes.map(node => node.id));
@@ -4592,9 +4595,27 @@ export class V2Page {
                         expandX: this.appearance.expandX, expandY: this.appearance.expandY,
                         expandZ: this.appearance.expandZ });
                     fullLeafLayoutKey = `${completeKey}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}`;
+                } else if (organization === 'indra' && source.nodes.length <= V2_CAP) {
+                    const completeInput: LayoutInput = { ...layoutInput,
+                        nodes: source.nodes.map(node => ({ id: node.id, level: node.level,
+                            parent: node.parent, size: node.size, domains: node.domains, hiddenDescendants: 0 })),
+                        edges: [],
+                    };
+                    delete (completeInput as { previous?: ReadonlyMap<string, Point3> }).previous;
+                    const completeKey = pageLayoutKey(this.manifest.digest, completeInput);
+                    let completeResult: LayoutResult | undefined = completeKey === layoutKey ? result
+                        : this.pageResults.get(completeKey) as LayoutResult | undefined;
+                    if (!completeResult) {
+                        completeResult = await computeClassicLayout(completeInput);
+                        if (projectionEpoch !== this.projectionEpoch) return;
+                        this.pageResults.set(completeKey, completeResult);
+                    }
+                    fullLeafPositions = completeResult.positions;
+                    fullLeafLayoutKey = completeKey;
                 } else {
-                    fullLeafPositions = organization === 'natural' ? expanded : result.positions;
+                    fullLeafPositions = result.positions;
                 }
+                // D087-SIZE15 END
                 this.recordProjectionPhase('leafFullLayout', performance.now() - fullLeafBegan);
             }
             // D087-SIZE10 END

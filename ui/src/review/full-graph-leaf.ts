@@ -28,7 +28,11 @@ export type FullGraphLeafSource = Readonly<{
 // D087-SIZE11 BEGIN
 export type FullGraphLeafBase = Readonly<{ given: number; targetPx: number; fullGraphNodes: number;
   radiusById: ReadonlyMap<string, number>; localDensityById: ReadonlyMap<string, number>;
-  projectionScale: number; edgeScreenDensityById: ReadonlyMap<string, number> }>;
+  projectionScale: number; edgeScreenDensityById: ReadonlyMap<string, number>;
+  // D087-SIZE15 BEGIN: a damaged anchor set degrades to the anchored subset instead of
+  // rejecting the mount; the count is the witness the product view reports.
+  missingAnchors: number }>;
+  // D087-SIZE15 END
 // D087-SIZE11 END
 
 type ScreenTree = Readonly<{ sample: DenseNodeSample; left: ScreenTree | null; right: ScreenTree | null }>;
@@ -99,14 +103,17 @@ function nearestRepresentedScreens(samples: readonly DenseNodeSample[],
  * coordinate system, never a live camera or an alternative rendered arrangement. */
 export function calculateFullGraphLeafBase(source: FullGraphLeafSource,
   structuralIds: ReadonlySet<string>, morphology: string, nodeScale: number): FullGraphLeafBase {
-  const points = source.nodes.map(node => {
+  // D087-SIZE15 BEGIN: a partial or damaged layout degrades per id and is counted in the
+  // witness. It must not reject a mounted graph whose source nodes are otherwise valid.
+  const points = source.nodes.flatMap(node => {
     const point = source.anchors.get(node.id);
-    if (!point) throw new Error(`Full graph leaf anchor missing: ${node.id}`);
-    return { node, point, x: point.x + point.z * 0.5, y: point.y + point.z * 0.35 };
+    return point ? [{ node, point, x: point.x + point.z * 0.5, y: point.y + point.z * 0.35 }] : [];
   });
+  const missingAnchors = source.nodes.length - points.length;
   const xs = points.map(item => item.x), ys = points.map(item => item.y);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const minX = xs.length ? Math.min(...xs) : 0, maxX = xs.length ? Math.max(...xs) : 1;
+  const minY = ys.length ? Math.min(...ys) : 0, maxY = ys.length ? Math.max(...ys) : 1;
+  // D087-SIZE15 END
   const screenScale = Math.min(1120 / Math.max(1, maxX - minX), 720 / Math.max(1, maxY - minY))
     * (source.fitShare ?? 1);
   // A single reference size scale is independent of the layout's world-unit range.
@@ -150,7 +157,7 @@ export function calculateFullGraphLeafBase(source: FullGraphLeafSource,
   return { given: targetPx / sizeScale, targetPx, fullGraphNodes: source.nodes.length,
     radiusById: new Map([...dense].map(([id, value]) => [id, value.radiusPx])),
     localDensityById: new Map([...dense].map(([id, value]) => [id, value.localDensity])),
-    projectionScale: sizeScale, edgeScreenDensityById };
+    projectionScale: sizeScale, edgeScreenDensityById, missingAnchors };
   // D087-SIZE11 END
 }
 

@@ -809,7 +809,10 @@ export const createProductView: CreateProductView = async (input) => {
   let denseFitDistanceNorm: ReadonlyMap<string, number> = new Map();
   // D087-SIZE11 BEGIN
   let referenceEdgeScreenDensityById: ReadonlyMap<string, number> = new Map();
-  let completeSizeReferenceWitness: { nodes: number; edges: number; layoutKey: string } | null = null;
+  let completeSizeReferenceWitness: { nodes: number; edges: number; layoutKey: string;
+    // D087-SIZE15 BEGIN: a mount that fell back to the subset leaf base reports it.
+    fullGraphSourceDegraded?: boolean } | null = null;
+  // D087-SIZE15 END
   // D087-SIZE11 END
   // D087-SIZE BEGIN: retained by the D-086 2D scene branch.
   let denseFitProjectionScaleById: ReadonlyMap<string, number> = new Map();
@@ -2184,8 +2187,10 @@ export const createProductView: CreateProductView = async (input) => {
       state.visible.size, state.density ?? witnessDensity);
     // D087-SIZE13 BEGIN: only Neural uses the per-ID Completa reference.
     // Stellar and Mycelium retain the round-ten leaf and presentation law.
-    if (input.v2Prepared && !input.fullGraphLeafSource)
-      throw new Error('The complete canonical 3D size source is required before mount');
+    // D087-SIZE15 BEGIN: a v2-prepared 3D mount without the complete source degrades
+    // to the subset-based leaf base instead of rejecting the view; the witness records it.
+    const fullGraphSourceDegraded = !!input.v2Prepared && !input.fullGraphLeafSource;
+    // D087-SIZE15 END
     const completeReference = axes.morphology === 'neural' && input.v2Prepared && input.fullGraphLeafSource
       ? fullGraphLeafBase(input.fullGraphLeafSource, structuralIds,
         axes.morphology, appearance.nodeScale) : undefined;
@@ -2197,7 +2202,15 @@ export const createProductView: CreateProductView = async (input) => {
         // non-Neural screen-density raster is skipped.
         edges: input.fullGraphLeafSource.edges?.length ?? 0,
         // D087-SIZE12 END
-        layoutKey: input.fullGraphLeafSource.layoutKey };
+        layoutKey: input.fullGraphLeafSource.layoutKey,
+        // D087-SIZE15 BEGIN: a damaged anchor set also degrades; witness the count.
+        fullGraphSourceDegraded: completeReference.missingAnchors > 0 };
+        // D087-SIZE15 END
+    } else if (fullGraphSourceDegraded) {
+      // D087-SIZE15 BEGIN: never reject the mount; the subset leaf base below carries it.
+      completeSizeReferenceWitness = { nodes: 0, edges: 0, layoutKey: '',
+        fullGraphSourceDegraded: true };
+      // D087-SIZE15 END
     }
     morphologyInteraction.usesDenseDrawingPolicy = !!completeReference;
     morphologyInteraction.denseNativeRadiusOnly = !completeReference;
@@ -2390,8 +2403,17 @@ export const createProductView: CreateProductView = async (input) => {
       leafCalibration = { given: base.given, targetPx: base.targetPx, exactFit: true };
       fullGraphLeafBases.set(leafKey, leafCalibration);
       // D087-SIZE13 END
-    } else if (axes.projection === '2d' && input.v2Prepared
+      // D087-SIZE15 BEGIN: a damaged non-Neural anchor set also degrades to the anchored
+      // subset; witness it without touching the healthy-mount witness.
+      if (base.missingAnchors > 0) completeSizeReferenceWitness = { nodes: base.radiusById.size,
+        edges: input.fullGraphLeafSource.edges?.length ?? 0,
+        layoutKey: input.fullGraphLeafSource.layoutKey, fullGraphSourceDegraded: true };
+      // D087-SIZE15 END
+    // D087-SIZE15 BEGIN: a 3D mount whose complete source is missing degrades to this
+    // same subset-based leaf base (the earlier behaviour for a view without the source).
+    } else if ((axes.projection === '2d' || !input.fullGraphLeafSource) && input.v2Prepared
       && (!leafCalibration || (exactFit && !leafCalibration.exactFit))) {
+    // D087-SIZE15 END
     // D087-SIZE11 END
       const fitScales = input.data.nodes.flatMap(node => {
         const point = completeAnchors.get(node.id);
