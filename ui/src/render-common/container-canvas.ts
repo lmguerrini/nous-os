@@ -1043,7 +1043,14 @@ export function placeContainerTitles(
         right: candidate.left + candidate.width + pad, bottom: candidate.top + candidate.height };
       return boxes.every(other => !(candidateBox.left < other.right && other.left < candidateBox.right
         && candidateBox.top < other.bottom && other.top < candidateBox.bottom));
-    });
+    // D087-JULIA13 BEGIN: an admitted pearl never loses its «+N». When every
+    // clear slot is taken, the badge keeps the first slot that still fits the
+    // canvas — the clamped centre rect always does — and overlaps rather than
+    // vanishing: a missing count refuses the whole overview certificate.
+    }) ?? (badge ? choices.find(candidate => candidate.left >= 1 && candidate.top >= 1
+      && candidate.left + candidate.width <= bounds.width - 1
+      && candidate.top + candidate.height <= bounds.height - 1) : undefined);
+    // D087-JULIA13 END
     if (!choice) continue;
     const box = { left: choice.left - pad, top: choice.top,
       right: choice.left + choice.width + pad, bottom: choice.top + choice.height };

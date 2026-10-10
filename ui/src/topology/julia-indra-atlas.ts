@@ -11,9 +11,10 @@ const distance3 = (a: Point3, b: Point3) => Math.hypot(a.x - b.x, a.y - b.y, a.z
 const REFERENCE_WIDTH = 1000;
 const RIM_PX = 8;
 const GAP_PX = 3;
-// D087-JULIA BEGIN: a partly clipped fitted view keeps admission slack while
-// requiring a clear majority of submitted pearls to carry drawn rims and counts.
-const OVERVIEW_MIN_SHARE = 0.75;
+// D087-JULIA13 BEGIN: the overview certificate has no admission slack — every
+// submitted closed pearl must carry its drawn rim and «+N» count for `ok`, so a
+// pearl is admitted only in the phase that actually draws it.
+// D087-JULIA13 END
 const FOCUS_REFERENCE_RIM_PX = 400;
 const CHILD_GAP_PX = 10;
 const CHILD_GAP_3D_PX = 16;
@@ -320,7 +321,7 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
     eligibleParents: eligible.length, closedPearlsSubmitted: containers.filter(c => !c.open).length,
     closedPearlsDrawn: 0, openPassing: 0, openEligible, childSeparationMinPx: 0,
     insideGuideMaxPx: 0, shellOverlapCount: overlap, focusedParent, ok: false,
-    closedPearlsRequired: Math.max(1, Math.ceil(OVERVIEW_MIN_SHARE * containers.length)),
+    closedPearlsRequired: containers.filter(c => !c.open).length,
     closedPearlShare: 0, minimumRimPx: RIM_PX,
     focusReferenceRimPx: FOCUS_REFERENCE_RIM_PX };
   const absoluteRadius = Math.max(fullExtent,
@@ -341,6 +342,25 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
   // D087-JULIA END
   return layout;
 }
+
+// D087-JULIA13 BEGIN
+/** The density phase of a composed overview: the admission's stable prefix the
+ * density budget actually draws. The limited layout is the one mounted and
+ * certified — its `closedPearlsSubmitted` counts exactly the pearls the phase
+ * submits for drawing, so no admitted pearl can lack its ink while the
+ * certificate stays green. The composition itself stays density-agnostic
+ * (callers cache it and re-derive their phase from it); positions, witnesses,
+ * guides and hidden-descendant counts are shared unchanged. */
+export function limitJuliaAtlasOverview(layout: JuliaAtlasLayout, phaseCount: number): JuliaAtlasLayout {
+  if (layout.atlas.phase !== 'overview') return layout;
+  const ids = [...layout.phaseNodeIds].slice(0, Math.max(0, Math.floor(phaseCount)));
+  const keep = new Set(ids);
+  const containers = layout.containers.filter(c => c.id === ABSOLUTE_CONTAINER_ID || keep.has(c.id));
+  const submitted = containers.filter(c => c.id !== ABSOLUTE_CONTAINER_ID).length;
+  return { ...layout, containers, phaseNodeIds: keep,
+    atlas: { ...layout.atlas, closedPearlsSubmitted: submitted, closedPearlsRequired: submitted } };
+}
+// D087-JULIA13 END
 
 /** Confirm the actual drawn phase. The caller supplies projected pixels and only ink
  * it observed; submitted shells or guides never count merely because they exist. */
@@ -393,11 +413,14 @@ export function certifyJuliaAtlasDrawing(layout: JuliaAtlasLayout, snapshot: Top
     if (shell && drawn.nodeIds.has(parent) && childSeparationMinPx >= 8 && insideGuideMaxPx >= 16)
       openPassing = 1;
   }
-  const required = Math.max(1, Math.ceil(OVERVIEW_MIN_SHARE * layout.atlas.closedPearlsSubmitted));
+  // D087-JULIA13 BEGIN: `ok` needs every submitted closed pearl counted — a
+  // drawn majority no longer certifies a phase that dropped admitted ink.
+  const required = layout.atlas.closedPearlsSubmitted;
   const share = layout.atlas.closedPearlsSubmitted ? closed / layout.atlas.closedPearlsSubmitted : 0;
   const ok = overlap === 0 && (layout.atlas.phase === 'overview'
-    ? closed >= required && share >= OVERVIEW_MIN_SHARE && layout.atlas.closedPearlsSubmitted > 0
+    ? layout.atlas.closedPearlsSubmitted > 0 && closed >= required
     : openPassing === 1);
+  // D087-JULIA13 END
   return { ...layout.atlas, closedPearlsDrawn: closed, openPassing,
     closedPearlsRequired: required, closedPearlShare: share, minimumRimPx: RIM_PX,
     focusReferenceRimPx: FOCUS_REFERENCE_RIM_PX,
