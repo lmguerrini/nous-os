@@ -11,7 +11,8 @@ export { somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.t
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 // D082-A-NODES BEGIN
-import { denseEdgeVeilFactor } from "#render-common/dense-node-scale.ts";
+import { DENSE_SCENE_THRESHOLD, denseEdgeVeilFactor } from "#render-common/dense-node-scale.ts";
+export { DENSE_SCENE_THRESHOLD } from "#render-common/dense-node-scale.ts";
 // D082-A-NODES END
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
 import type { CanvasDisc } from "#render-common/container-canvas.ts";
@@ -62,7 +63,6 @@ export type ProjectedPoint = { readonly x: number; readonly y: number; readonly 
 export function screenSpaceEdgeWidthPx(widthPx: number, minimumScreenWidthPx = 0): number {
   return Math.max(widthPx, minimumScreenWidthPx);
 }
-export const DENSE_SCENE_THRESHOLD = 1200;
 export type MorphologyCanvasStyle = {
   readonly fieldColor: string;
   // D086-CUSTOM BEGIN
@@ -935,10 +935,14 @@ const neuralLobeAreas = new Map<string, number>();
 const neuralSilhouettes = new Map<string, readonly number[]>();
 const neuralShapeStats = { lobeHits: 0, lobeMisses: 0, silhouetteHits: 0, silhouetteMisses: 0 };
 export function readNeuralShapeCacheStats(): Readonly<typeof neuralShapeStats> { return { ...neuralShapeStats }; }
-// D082-A-PERF BEGIN: enough room for one complete 11,199-node view, with a
-// fixed ceiling across successive mode switches. Both maps evict oldest keys.
+// D082-A-PERF BEGIN: retain the approved r4 ceiling and allow one larger complete
+// dataset's entries. Both maps also keep their fixed byte bound and evict oldest keys.
 const NEURAL_SHAPE_CACHE_LIMIT = 12_000;
 const NEURAL_SHAPE_CACHE_BYTES = 4 * 1024 * 1024;
+export function neuralShapeCacheEntryLimitFor(nodeCount: number): number {
+  return Math.max(NEURAL_SHAPE_CACHE_LIMIT, Number.isSafeInteger(nodeCount) ? nodeCount : 0);
+}
+let neuralShapeCacheEntryLimit = NEURAL_SHAPE_CACHE_LIMIT;
 let neuralLobeBytes = 0;
 let neuralSilhouetteBytes = 0;
 function shapeCacheGet<T>(cache: Map<string, T>, key: string): T | undefined {
@@ -959,7 +963,7 @@ function shapeCacheSet<T>(cache: Map<string, T>, key: string, value: T,
   // D082-A-PERF END
   cache.set(key, value);
   total += bytes;
-  while (cache.size > NEURAL_SHAPE_CACHE_LIMIT || total > NEURAL_SHAPE_CACHE_BYTES) {
+  while (cache.size > neuralShapeCacheEntryLimit || total > NEURAL_SHAPE_CACHE_BYTES) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
     const removed = cache.get(oldest);
@@ -971,7 +975,7 @@ function shapeCacheSet<T>(cache: Map<string, T>, key: string, value: T,
 export function neuralShapeCacheOccupancy() {
   return { lobes: neuralLobeAreas.size, silhouettes: neuralSilhouettes.size,
     lobeBytes: neuralLobeBytes, silhouetteBytes: neuralSilhouetteBytes,
-    entryLimit: NEURAL_SHAPE_CACHE_LIMIT, byteLimit: NEURAL_SHAPE_CACHE_BYTES };
+    entryLimit: neuralShapeCacheEntryLimit, byteLimit: NEURAL_SHAPE_CACHE_BYTES };
 }
 // D082-A-PERF END
 function neuralShapeVersion(): string {
@@ -1105,6 +1109,7 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
   // D082-A-PERF BEGIN: the flow overlay needs only animated endpoints.
   nodeIds?: ReadonlySet<string>): ReadonlyMap<string, NeuralSomaFrame> {
   // D082-A-PERF END
+  neuralShapeCacheEntryLimit = neuralShapeCacheEntryLimitFor(geometry.nodes.length);
   const frames = new Map<string, NeuralSomaFrame>();
   for (const node of geometry.nodes) {
     // D082-A-PERF BEGIN

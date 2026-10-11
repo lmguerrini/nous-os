@@ -1,6 +1,6 @@
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
-import { isReferenceCompleta } from "#render-common/dense-node-scale.ts";
+import { isCompleteDenseView } from "#render-common/dense-node-scale.ts";
 import { stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
 
 /**
@@ -13,7 +13,7 @@ import { stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
 export function labNativeSizeLawApplies(labTopology: string | undefined,
   nodeCount: number, visibleCount: number): boolean {
   return labTopology !== undefined && labTopology !== "natural"
-    && !isReferenceCompleta(nodeCount, visibleCount);
+    && !isCompleteDenseView(nodeCount, visibleCount);
 }
 // D086-F1 END
 

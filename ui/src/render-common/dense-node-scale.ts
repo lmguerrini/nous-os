@@ -21,20 +21,27 @@ export type DenseNodeScale = {
   readonly representativeId: string;
 };
 
-/** The reference r4 Completa view is complete only when all 11,199 dataset nodes are drawn. */
-export function isReferenceCompleta(nodeCount: number, visibleCount: number): boolean {
-  return nodeCount === 11_199 && visibleCount === 11_199;
+/** Existing threshold for the renderer's dense scene path. */
+export const DENSE_SCENE_THRESHOLD = 1200;
+
+/** A complete dense view draws every node in its actual dataset. */
+export function isCompleteDenseView(nodeCount: number, visibleCount: number): boolean {
+  return Number.isSafeInteger(nodeCount) && nodeCount >= DENSE_SCENE_THRESHOLD
+    && visibleCount === nodeCount;
 }
+
+/** Compatibility name for callers and tests; it now means any complete dense dataset. */
+export const isReferenceCompleta = isCompleteDenseView;
 
 // D086-CUSTOM BEGIN: Custom shares the drawing safeguards; the reference maximum keeps its exact policy.
 export function usesDenseDrawingPolicy(nodeCount: number, visibleCount: number, density: string): boolean {
-  return isReferenceCompleta(nodeCount, visibleCount) || density === 'custom';
+  return isCompleteDenseView(nodeCount, visibleCount) || density === 'custom';
 }
 // D086-CUSTOM END
 
 // D087-JULIA BEGIN
 /** The density the builders branch on for drawing. In the Julia + Indra atlas the pearl phase,
- * not the full 11,199-id set, is visible, so the reference visible-count test cannot recognise the
+ * not the full dataset, is visible, so the complete-view test cannot recognise the
  * Custom maximum: the page states it, and Custom at its maximum takes Completa's drawing
  * decisions. The page witness and the UI density keep saying «custom». */
 export function denseDrawingDensity(density: string, juliaAtlasCustomAtMaximum: boolean): string {

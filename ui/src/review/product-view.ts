@@ -90,7 +90,7 @@ import { labNativeSizeLawApplies } from "../render-common/native-node-law.ts";
 import { calibratedLeafCorePx, coLocatedRepresentatives, semanticMarkGeometry } from "../render-common/semantic-node-mark.ts";
 // D087-SIZE END
 // D086-F1 END
-import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseDrawingDensity, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isReferenceCompleta, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
+import { denseEdgeAlphaPermille, denseEdgeScreenAlphaPermille, denseEdgeScreenDensities, denseEdgeVeilFactor, denseDrawingDensity, denseNodeScales, denseNodeScalesDeferred, denseZoomBand, denseZoomNeedsRefresh, denseZoomProgressForCamera, isCompleteDenseView, usesDenseDrawingPolicy } from "../render-common/dense-node-scale.ts";
 import type { DenseEdgeScreenSegment } from '../render-common/dense-node-scale.ts';
 // D082-A-VEIL BEGIN
 import { fittedDenseEdgeScreenDensities } from "../render-common/dense-node-scale.ts";
@@ -1794,7 +1794,7 @@ export const createProductView: CreateProductView = async (input) => {
           { zoomProgress: current / 6, screenDistanceNorm: denseFitDistanceNorm,
             // D087-JULIA BEGIN: atlas Custom at its maximum keeps Completa's radius law here too.
             nativeRadiusOnly: drawingDensityOf(witnessDensity, witnessCustomAtMaximum) === 'custom'
-              && !isReferenceCompleta(input.data.nodes.length, visible.size) });
+              && !isCompleteDenseView(input.data.nodes.length, visible.size) });
         // D086-CUSTOM END
         if (destroyed || morphologyInteraction.quality !== "full" || revision !== denseRefreshRevision
           || !handle || current !== denseZoomBand(handle.readCameraState().ratio, semanticFitRatio(handle.readCameraState().ratio))) return;
@@ -1991,7 +1991,7 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN
     // D086-CUSTOM BEGIN: Custom uses the drawing safeguards at every amount. At the
     // reference maximum it takes the original Completa arithmetic and cache path exactly.
-    const referenceCompleta = isReferenceCompleta(input.data.nodes.length, state.visible.size);
+    const referenceCompleta = isCompleteDenseView(input.data.nodes.length, state.visible.size);
     // D087-JULIA BEGIN: atlas Custom at its maximum draws as Completa; the pearl phase is
     // visible, so the reference visible-count test alone cannot say which law applies.
     const drawingDensity = drawingDensityOf(state.density, state.customAtMaximum ?? witnessCustomAtMaximum);
@@ -2308,7 +2308,7 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN
     // D086-CUSTOM BEGIN: Custom uses the drawing safeguards at every amount. At the
     // reference maximum it takes the original Completa arithmetic and cache path exactly.
-    const referenceCompleta = isReferenceCompleta(input.data.nodes.length, state.visible.size);
+    const referenceCompleta = isCompleteDenseView(input.data.nodes.length, state.visible.size);
     // D087-JULIA BEGIN: atlas Custom at its maximum draws as Completa; the pearl phase is
     // visible, so the reference visible-count test alone cannot say which law applies.
     const drawingDensity = drawingDensityOf(state.density, state.customAtMaximum ?? witnessCustomAtMaximum);
@@ -2799,7 +2799,7 @@ export const createProductView: CreateProductView = async (input) => {
       selection: { ...DEFAULT_CALIBRATION.selection, focusDimFactorPermille: 600 } } } : {}),
     // D082-B1f BEGIN: preserve the small Canopy Completa radii in both prepared and mounted scenes.
     ...(axes.projection === '3d' && container.hasAttribute('data-fractal-rails-active')
-      && input.v2Prepared && isReferenceCompleta(input.data.nodes.length, visible.size)
+      && input.v2Prepared && isCompleteDenseView(input.data.nodes.length, visible.size)
       ? { calibration: canopyCompletaCalibration(DEFAULT_CALIBRATION) } : {}),
     // D082-B1f END
     morphology: axes.morphology,
@@ -2987,7 +2987,7 @@ export const createProductView: CreateProductView = async (input) => {
         points = juliaAtlas ? juliaAtlasMountedFitPoints(layoutContainers, axes.projection)
           : indraFullHierarchyFitPoints(layoutContainers, axes.projection);
       if (input.v2Prepared && axes.organization === 'natural' && axes.projection === '2d'
-        && isReferenceCompleta(input.data.nodes.length, visible.size))
+        && isCompleteDenseView(input.data.nodes.length, visible.size))
         points = naturalCompletaFitPoints(points);
       const brainSphere = three?.readBrainEnvelopeFramingSphere();
       if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
@@ -3193,7 +3193,7 @@ export const createProductView: CreateProductView = async (input) => {
       }
       // D087-SIZE END
       for (const members of denseMembersByRepresentative.values()) members.sort();
-      denseZoomProgress = isReferenceCompleta(input.data.nodes.length, nextVisible.size)
+      denseZoomProgress = isCompleteDenseView(input.data.nodes.length, nextVisible.size)
         ? denseZoomProgressForCamera(handle.readCameraState().ratio, fitRatio.get(cameraKeys().key))
         : canopyFullScene.zoomProgress;
     }
@@ -3613,7 +3613,7 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-B-CANOPYN BEGIN: split the full 3D Canopy policy from scene assembly.
       const canopyNeural3d = axes.projection === '3d' && axes.morphology === 'neural'
         && container.hasAttribute('data-fractal-rails-active')
-        && isReferenceCompleta(input.data.nodes.length, visible.size);
+        && isCompleteDenseView(input.data.nodes.length, visible.size);
       if (canopyNeural3d && perfMarksEnabled) performance.mark('d082-canopyn:draft:start');
       let draft = buildDrawnScene(anchors, undefined, true, undefined, false, undefined,
         labelBudget, canopyNeural3d);
@@ -3776,7 +3776,7 @@ export const createProductView: CreateProductView = async (input) => {
     // the preserved outlier witnesses otherwise shrink the disc to roughly one quarter.
     const fullNaturalCompletaFrame = input.v2Prepared && ids.length === visible.size
       && axes.organization === 'natural' && axes.projection === '2d'
-      && isReferenceCompleta(input.data.nodes.length, visible.size);
+      && isCompleteDenseView(input.data.nodes.length, visible.size);
     if (fullNaturalCompletaFrame) points = naturalCompletaFitPoints(points);
     // D082-A-DENSITY END
     if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
@@ -3861,7 +3861,7 @@ export const createProductView: CreateProductView = async (input) => {
     const fittedNeuralCompleta = ids.length === visible.size && lodMode
       && axes.organization === 'natural' && axes.projection === '2d'
       && axes.morphology === 'neural'
-      && isReferenceCompleta(input.data.nodes.length, visible.size);
+      && isCompleteDenseView(input.data.nodes.length, visible.size);
     const lifted = fittedNeuralCompleta ? drawnEdges.flatMap(edge => edge.v2
       ? [edge.v2 as import('./v2-relations.ts').LiftedRelation] : []) : [];
     const refreshed = fittedNeuralCompleta && lifted.length === drawnEdges.length
