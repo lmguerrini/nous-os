@@ -28,27 +28,29 @@ const DATASET = path.resolve(ROOT, args.dataset ?? 'demo/out/reference/dataset')
 const OUT = path.join(ROOT, 'docs', 'assets', 'gallery');
 const VIEWPORT = { width: 1440, height: 1000 };
 const DEVICE_SCALE_FACTOR = 2;
-const GRAPH_AREA = { x: 0, y: 210, width: 1060, height: 780 };
+const GRAPH_AREA = { x: 0, y: 156, width: 1060, height: 834 };
 const OVERLAYS = '#focus-chip,#lab-notice,#notice,#toast,#fractal-canopy-explanation,#gizmo,[role=tooltip],.tooltip{visibility:hidden!important}';
 
-const base = { indra: 'off', morphology: 'stellar', density: 'balanced', reading: 'attested', colour: 'bw', labels: true, brain: false };
+// Every topology the page offers, in 2D and in 3D, at «Completa» unless an image is about density. Labels are off and the Indra
+// meta-topology is not shown.
+const base = { indra: 'off', morphology: 'stellar', density: 'complete', reading: 'attested', colour: 'bw', labels: false, brain: false };
 export const GALLERY = [
-  { id: 'natural-2d', title: 'Natural · 2D', view: { ...base, rendering: '2d', topology: 'natural' } },
-  { id: 'natural-3d-complete', title: 'Natural · 3D · Completa', view: { ...base, density: 'complete', rendering: '3d', topology: 'natural' } },
-  { id: 'natural-indra-3d', title: 'Natural + Indra · 3D', view: { ...base, indra: 'on', rendering: '3d', topology: 'natural' } },
-  { id: 'canopy-2d', title: 'Canopy · 2D', view: { ...base, rendering: '2d', topology: 'canopy-ifs' } },
-  { id: 'canopy-indra-3d', title: 'Canopy + Indra · 3D', view: { ...base, indra: 'on', rendering: '3d', topology: 'canopy-ifs' } },
-  { id: 'julia-2d', title: 'Julia · 2D', view: { ...base, rendering: '2d', topology: 'julia' } },
-  { id: 'julia-indra-2d-complete', title: 'Julia + Indra atlas · 2D · Completa', view: { ...base, indra: 'on', density: 'complete', rendering: '2d', topology: 'julia' } },
-  { id: 'sierpinski-2d', title: 'Sierpiński · 2D', view: { ...base, rendering: '2d', topology: 'sierpinski' } },
-  { id: 'sierpinski-3d', title: 'Sierpiński · 3D', view: { ...base, rendering: '3d', topology: 'sierpinski' } },
-  { id: 'llull-2d', title: 'Llull · 2D', view: { ...base, rendering: '2d', topology: 'circular-combinatorial' } },
-  { id: 'llull-indra-3d-complete', title: 'Llull + Indra · 3D · Completa', view: { ...base, indra: 'on', density: 'complete', rendering: '3d', topology: 'circular-combinatorial' } },
-  { id: 'neural-3d-brain', title: 'Neural · 3D · brain · Completa', view: { ...base, morphology: 'neural', density: 'complete', brain: true, rendering: '3d', topology: 'natural' } },
-  { id: 'mycelium-2d-complete', title: 'Mycelium · 2D · Completa', view: { ...base, morphology: 'mycelium', density: 'complete', rendering: '2d', topology: 'natural' } },
-  { id: 'exploratory-3d', title: 'Esplorativa connections · 3D · Completa', view: { ...base, density: 'complete', reading: 'exploratory', rendering: '3d', topology: 'natural' } },
-  { id: 'palette-gems-2d', title: 'Palette Gemme · 2D', view: { ...base, colour: 'gems', rendering: '2d', topology: 'natural' } },
-  { id: 'interface', title: 'The whole page: Natural · 3D', view: { ...base, rendering: '3d', topology: 'natural' }, fullPage: true },
+  { id: 'natural-2d-complete', title: 'Natural · 2D · Completa', view: { ...base, rendering: '2d', topology: 'natural' } },
+  { id: 'natural-3d-complete', title: 'Natural · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' } },
+  { id: 'canopy-2d-complete', title: 'Canopy · 2D · Completa', view: { ...base, rendering: '2d', topology: 'canopy-ifs' } },
+  { id: 'canopy-3d-complete', title: 'Canopy · 3D · Completa', view: { ...base, rendering: '3d', topology: 'canopy-ifs' } },
+  { id: 'sierpinski-2d-complete', title: 'Sierpiński · 2D · Completa', view: { ...base, rendering: '2d', topology: 'sierpinski' } },
+  { id: 'sierpinski-3d-complete', title: 'Sierpiński · 3D · Completa', view: { ...base, rendering: '3d', topology: 'sierpinski' } },
+  { id: 'llull-2d-complete', title: 'Llull · 2D · Completa', view: { ...base, rendering: '2d', topology: 'circular-combinatorial' } },
+  { id: 'llull-3d-complete', title: 'Llull · 3D · Completa', view: { ...base, rendering: '3d', topology: 'circular-combinatorial' } },
+  { id: 'julia-2d-complete', title: 'Julia · 2D · Completa', view: { ...base, rendering: '2d', topology: 'julia' } },
+  { id: 'julia-3d-complete', title: 'Julia · 3D · Completa', view: { ...base, rendering: '3d', topology: 'julia' } },
+  { id: 'neural-3d-brain', title: 'Neural · 3D · Completa · Cervello', view: { ...base, morphology: 'neural', brain: true, rendering: '3d', topology: 'natural' } },
+  { id: 'mycelium-2d-complete', title: 'Mycelium · 2D · Completa', view: { ...base, morphology: 'mycelium', rendering: '2d', topology: 'natural' } },
+  { id: 'exploratory-3d-complete', title: 'Esplorativa connections · 3D · Completa', view: { ...base, reading: 'exploratory', rendering: '3d', topology: 'natural' } },
+  { id: 'natural-2d-essential', title: 'Natural · 2D · Essenziale', view: { ...base, density: 'essential', rendering: '2d', topology: 'natural' } },
+  { id: 'natural-2d-balanced', title: 'Natural · 2D · Bilanciata', view: { ...base, density: 'balanced', rendering: '2d', topology: 'natural' } },
+  { id: 'interface', title: 'The whole page: Natural · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' }, fullPage: true },
 ];
 
 const stateUrl = (origin, view) => `${origin}/#experimental=fractal&view2=` + encodeURIComponent(JSON.stringify({ schema: 2, ...view }));

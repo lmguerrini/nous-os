@@ -11,37 +11,37 @@
   "deviceScaleFactor": 2,
   "graphArea": {
     "x": 0,
-    "y": 210,
+    "y": 156,
     "width": 1060,
-    "height": 780
+    "height": 834
   },
   "browser": "Chromium 151.0.7922.34",
   "platform": "darwin arm64",
   "images": [
     {
-      "id": "natural-2d",
-      "title": "Natural · 2D",
-      "file": "natural-2d.jpg",
+      "id": "natural-2d-complete",
+      "title": "Natural · 2D · Completa",
+      "file": "natural-2d-complete.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
-        "density": "balanced",
+        "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "2d",
         "topology": "natural"
       },
       "state": {
-        "view": "natural/2d/stellar/balanced/attested",
+        "view": "natural/2d/stellar/complete/attested",
         "quality": "completa",
-        "nodesVisible": 400,
+        "nodesVisible": 11199,
         "nodesTotal": 11199,
-        "edgesDrawn": 359,
+        "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 1187,
+      "completeMs": 4738,
       "pageErrors": 0
     },
     {
@@ -54,7 +54,7 @@
         "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "3d",
         "topology": "natural"
@@ -67,246 +67,220 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 6657,
+      "completeMs": 6899,
       "pageErrors": 0
     },
     {
-      "id": "natural-indra-3d",
-      "title": "Natural + Indra · 3D",
-      "file": "natural-indra-3d.jpg",
-      "view": {
-        "indra": "on",
-        "morphology": "stellar",
-        "density": "balanced",
-        "reading": "attested",
-        "colour": "bw",
-        "labels": true,
-        "brain": false,
-        "rendering": "3d",
-        "topology": "natural"
-      },
-      "state": {
-        "view": "indra/3d/stellar/balanced/attested",
-        "quality": "completa",
-        "nodesVisible": 400,
-        "nodesTotal": 11199,
-        "edgesDrawn": 359,
-        "edgesTotal": 15800
-      },
-      "completeMs": 4975,
-      "pageErrors": 0
-    },
-    {
-      "id": "canopy-2d",
-      "title": "Canopy · 2D",
-      "file": "canopy-2d.jpg",
+      "id": "canopy-2d-complete",
+      "title": "Canopy · 2D · Completa",
+      "file": "canopy-2d-complete.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
-        "density": "balanced",
+        "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "2d",
         "topology": "canopy-ifs"
       },
       "state": {
-        "view": "lab/canopy-ifs/2d/stellar/balanced/attested",
+        "view": "lab/canopy-ifs/2d/stellar/complete/attested",
         "quality": "completa",
-        "nodesVisible": 2502,
+        "nodesVisible": 11199,
         "nodesTotal": 11199,
-        "edgesDrawn": 10,
+        "edgesDrawn": 14056,
         "edgesTotal": 15800
       },
-      "completeMs": 1766,
+      "completeMs": 2779,
       "pageErrors": 0
     },
     {
-      "id": "canopy-indra-3d",
-      "title": "Canopy + Indra · 3D",
-      "file": "canopy-indra-3d.jpg",
+      "id": "canopy-3d-complete",
+      "title": "Canopy · 3D · Completa",
+      "file": "canopy-3d-complete.jpg",
       "view": {
-        "indra": "on",
+        "indra": "off",
         "morphology": "stellar",
-        "density": "balanced",
+        "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "3d",
         "topology": "canopy-ifs"
       },
       "state": {
-        "view": "lab/canopy-ifs+indra/3d/stellar/balanced/attested",
+        "view": "lab/canopy-ifs/3d/stellar/complete/attested",
         "quality": "completa",
-        "nodesVisible": 2376,
+        "nodesVisible": 11199,
         "nodesTotal": 11199,
-        "edgesDrawn": 2459,
+        "edgesDrawn": 14056,
         "edgesTotal": 15800
       },
-      "completeMs": 5384,
+      "completeMs": 5031,
       "pageErrors": 0
     },
     {
-      "id": "julia-2d",
-      "title": "Julia · 2D",
-      "file": "julia-2d.jpg",
+      "id": "sierpinski-2d-complete",
+      "title": "Sierpiński · 2D · Completa",
+      "file": "sierpinski-2d-complete.jpg",
       "view": {
         "indra": "off",
-        "morphology": "stellar",
-        "density": "balanced",
-        "reading": "attested",
-        "colour": "bw",
-        "labels": true,
-        "brain": false,
-        "rendering": "2d",
-        "topology": "julia"
-      },
-      "state": {
-        "view": "lab/julia/2d/stellar/balanced/attested",
-        "quality": "completa",
-        "nodesVisible": 3920,
-        "nodesTotal": 11199,
-        "edgesDrawn": 3962,
-        "edgesTotal": 15800
-      },
-      "completeMs": 3495,
-      "pageErrors": 0
-    },
-    {
-      "id": "julia-indra-2d-complete",
-      "title": "Julia + Indra atlas · 2D · Completa",
-      "file": "julia-indra-2d-complete.jpg",
-      "view": {
-        "indra": "on",
         "morphology": "stellar",
         "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
-        "brain": false,
-        "rendering": "2d",
-        "topology": "julia"
-      },
-      "state": {
-        "view": "lab/julia+indra/2d/stellar/complete/attested",
-        "quality": "completa",
-        "nodesVisible": 9,
-        "nodesTotal": 11199,
-        "edgesDrawn": 63,
-        "edgesTotal": 15800
-      },
-      "completeMs": 5930,
-      "pageErrors": 0
-    },
-    {
-      "id": "sierpinski-2d",
-      "title": "Sierpiński · 2D",
-      "file": "sierpinski-2d.jpg",
-      "view": {
-        "indra": "off",
-        "morphology": "stellar",
-        "density": "balanced",
-        "reading": "attested",
-        "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "2d",
         "topology": "sierpinski"
       },
       "state": {
-        "view": "lab/sierpinski/2d/stellar/balanced/attested",
+        "view": "lab/sierpinski/2d/stellar/complete/attested",
         "quality": "completa",
-        "nodesVisible": 2420,
+        "nodesVisible": 11199,
         "nodesTotal": 11199,
-        "edgesDrawn": 2462,
+        "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 2551,
+      "completeMs": 4128,
       "pageErrors": 0
     },
     {
-      "id": "sierpinski-3d",
-      "title": "Sierpiński · 3D",
-      "file": "sierpinski-3d.jpg",
+      "id": "sierpinski-3d-complete",
+      "title": "Sierpiński · 3D · Completa",
+      "file": "sierpinski-3d-complete.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
-        "density": "balanced",
+        "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "3d",
         "topology": "sierpinski"
       },
       "state": {
-        "view": "lab/sierpinski/3d/stellar/balanced/attested",
+        "view": "lab/sierpinski/3d/stellar/complete/attested",
         "quality": "completa",
-        "nodesVisible": 2420,
+        "nodesVisible": 11199,
         "nodesTotal": 11199,
-        "edgesDrawn": 2462,
+        "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 4946,
+      "completeMs": 5780,
       "pageErrors": 0
     },
     {
-      "id": "llull-2d",
-      "title": "Llull · 2D",
-      "file": "llull-2d.jpg",
+      "id": "llull-2d-complete",
+      "title": "Llull · 2D · Completa",
+      "file": "llull-2d-complete.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
-        "density": "balanced",
+        "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "2d",
         "topology": "circular-combinatorial"
       },
       "state": {
-        "view": "lab/lull/2d/stellar/balanced/attested",
-        "quality": "completa",
-        "nodesVisible": 3920,
-        "nodesTotal": 11199,
-        "edgesDrawn": 3940,
-        "edgesTotal": 15800
-      },
-      "completeMs": 2713,
-      "pageErrors": 0
-    },
-    {
-      "id": "llull-indra-3d-complete",
-      "title": "Llull + Indra · 3D · Completa",
-      "file": "llull-indra-3d-complete.jpg",
-      "view": {
-        "indra": "on",
-        "morphology": "stellar",
-        "density": "complete",
-        "reading": "attested",
-        "colour": "bw",
-        "labels": true,
-        "brain": false,
-        "rendering": "3d",
-        "topology": "circular-combinatorial"
-      },
-      "state": {
-        "view": "lab/lull+indra/3d/stellar/complete/attested",
+        "view": "lab/lull/2d/stellar/complete/attested",
         "quality": "completa",
         "nodesVisible": 11199,
         "nodesTotal": 11199,
         "edgesDrawn": 11623,
         "edgesTotal": 15800
       },
-      "completeMs": 5988,
+      "completeMs": 3645,
+      "pageErrors": 0
+    },
+    {
+      "id": "llull-3d-complete",
+      "title": "Llull · 3D · Completa",
+      "file": "llull-3d-complete.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "stellar",
+        "density": "complete",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "rendering": "3d",
+        "topology": "circular-combinatorial"
+      },
+      "state": {
+        "view": "lab/lull/3d/stellar/complete/attested",
+        "quality": "completa",
+        "nodesVisible": 11199,
+        "nodesTotal": 11199,
+        "edgesDrawn": 11623,
+        "edgesTotal": 15800
+      },
+      "completeMs": 5952,
+      "pageErrors": 0
+    },
+    {
+      "id": "julia-2d-complete",
+      "title": "Julia · 2D · Completa",
+      "file": "julia-2d-complete.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "stellar",
+        "density": "complete",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "rendering": "2d",
+        "topology": "julia"
+      },
+      "state": {
+        "view": "lab/julia/2d/stellar/complete/attested",
+        "quality": "completa",
+        "nodesVisible": 11199,
+        "nodesTotal": 11199,
+        "edgesDrawn": 14050,
+        "edgesTotal": 15800
+      },
+      "completeMs": 6202,
+      "pageErrors": 0
+    },
+    {
+      "id": "julia-3d-complete",
+      "title": "Julia · 3D · Completa",
+      "file": "julia-3d-complete.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "stellar",
+        "density": "complete",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "rendering": "3d",
+        "topology": "julia"
+      },
+      "state": {
+        "view": "lab/julia/3d/stellar/complete/attested",
+        "quality": "completa",
+        "nodesVisible": 11199,
+        "nodesTotal": 11199,
+        "edgesDrawn": 14050,
+        "edgesTotal": 15800
+      },
+      "completeMs": 7698,
       "pageErrors": 0
     },
     {
       "id": "neural-3d-brain",
-      "title": "Neural · 3D · brain · Completa",
+      "title": "Neural · 3D · Completa · Cervello",
       "file": "neural-3d-brain.jpg",
       "view": {
         "indra": "off",
@@ -314,7 +288,7 @@
         "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": true,
         "rendering": "3d",
         "topology": "natural"
@@ -327,7 +301,7 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 11333,
+      "completeMs": 12798,
       "pageErrors": 0
     },
     {
@@ -340,7 +314,7 @@
         "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "2d",
         "topology": "natural"
@@ -353,20 +327,20 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 5907,
+      "completeMs": 6707,
       "pageErrors": 0
     },
     {
-      "id": "exploratory-3d",
+      "id": "exploratory-3d-complete",
       "title": "Esplorativa connections · 3D · Completa",
-      "file": "exploratory-3d.jpg",
+      "file": "exploratory-3d-complete.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
         "density": "complete",
         "reading": "exploratory",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "3d",
         "topology": "natural"
@@ -379,20 +353,46 @@
         "edgesDrawn": 11575,
         "edgesTotal": 15800
       },
-      "completeMs": 5870,
+      "completeMs": 5863,
       "pageErrors": 0
     },
     {
-      "id": "palette-gems-2d",
-      "title": "Palette Gemme · 2D",
-      "file": "palette-gems-2d.jpg",
+      "id": "natural-2d-essential",
+      "title": "Natural · 2D · Essenziale",
+      "file": "natural-2d-essential.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "stellar",
+        "density": "essential",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "rendering": "2d",
+        "topology": "natural"
+      },
+      "state": {
+        "view": "natural/2d/stellar/essential/attested",
+        "quality": "completa",
+        "nodesVisible": 80,
+        "nodesTotal": 11199,
+        "edgesDrawn": 86,
+        "edgesTotal": 15800
+      },
+      "completeMs": 1031,
+      "pageErrors": 0
+    },
+    {
+      "id": "natural-2d-balanced",
+      "title": "Natural · 2D · Bilanciata",
+      "file": "natural-2d-balanced.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
         "density": "balanced",
         "reading": "attested",
-        "colour": "gems",
-        "labels": true,
+        "colour": "bw",
+        "labels": false,
         "brain": false,
         "rendering": "2d",
         "topology": "natural"
@@ -405,33 +405,33 @@
         "edgesDrawn": 359,
         "edgesTotal": 15800
       },
-      "completeMs": 1233,
+      "completeMs": 1148,
       "pageErrors": 0
     },
     {
       "id": "interface",
-      "title": "The whole page: Natural · 3D",
+      "title": "The whole page: Natural · 3D · Completa",
       "file": "interface.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
-        "density": "balanced",
+        "density": "complete",
         "reading": "attested",
         "colour": "bw",
-        "labels": true,
+        "labels": false,
         "brain": false,
         "rendering": "3d",
         "topology": "natural"
       },
       "state": {
-        "view": "natural/3d/stellar/balanced/attested",
+        "view": "natural/3d/stellar/complete/attested",
         "quality": "completa",
-        "nodesVisible": 400,
+        "nodesVisible": 11199,
         "nodesTotal": 11199,
-        "edgesDrawn": 359,
+        "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 4073,
+      "completeMs": 6265,
       "pageErrors": 0
     }
   ]
