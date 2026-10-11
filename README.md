@@ -1,460 +1,87 @@
 # NousOS
 
-**A local-first knowledge system whose canonical layer is plain files.**
+NousOS is a local-first knowledge system whose canonical layer is plain files. Every claim keeps its source, its valid and recorded time, and the human decision that admitted it; indexes and views are derived from that record. It compiles context deterministically and includes a graph review page that draws a knowledge graph in 2D and 3D.
 
-NousOS keeps what you know in files you own, records where every claim came
-from and when it was true, and refuses to make anything canonical without you.
-It compiles context deterministically, and it draws the resulting knowledge
-graph in 2D and 3D from one shared semantic projection.
+![Natural topology in 3D](docs/assets/gallery/natural-3d-complete.jpg)
 
-Its [graph review page](#the-graph-review-page) draws a knowledge base in 2D and true 3D through five topologies, each of which can be
-organised into nested Indra pearls. A [synthetic demo dataset](demo/README.md) lets you run it from a clean clone.
-
-**V1 engine complete.** Personal knowledge data is attached separately and never
-lives in this repository.
-
-![The review page: Natural topology, all 11,199 nodes of the synthetic dataset, in 3D](docs/assets/gallery/natural-3d-complete.jpg)
-
-<sub>The synthetic demo dataset drawn by the review page. Every image in this document is generated from invented data: the
-visual-system figures from `fixtures/synthetic/`, the review-page gallery from the [demo dataset](demo/README.md), whose counts are
-illustrative.</sub>
-
----
+Every image in this README is generated from the invented synthetic demo dataset.
 
 ## Why it exists
 
-A note-taking application stores text. A retrieval-augmented chat application
-turns text into an answer. Neither of them can tell you **where a claim came
-from, when it stopped being true, or what it now contradicts** — and neither
-will admit when it does not know.
+Notes and search results can obscure where a claim came from, when it was true, and whether later evidence disagrees with it. NousOS keeps source snapshots, citations, temporal state, and decisions explicit. Search, context packs, and graph views can be rebuilt from that record.
 
-NousOS is built the other way round. Provenance, time and human authority are
-not features layered on a search index; they are the record, and everything else
-is derived from it and can be thrown away.
+### What it is and is not
 
-The problem it solves is the one that shows up after a few years of notes: you
-have thousands of statements, some of them stale, several of them mutually
-inconsistent, most of them unattributed, and no way to ask *which of these is
-still true, and how do I know?*
+NousOS is a Python library with two local interfaces, plus a browser-based graph review page. Its record and derived projections are designed for traceability and review.
 
-## What it is, and what it is not
+Some boundaries are deliberate:
 
-**It is** a library and two local transports over a canonical layer of plain
-files: identity, provenance, versioning, a rebuildable index, temporal
-reasoning, a human-gated candidate layer, and renderer-independent projections
-of the resulting graph, with three renderers that draw them.
+- **No hosted service.** The core transports are a local command line and stdio JSON-RPC, with no network listener. The separate graph review demo serves on loopback for local browser access.
+- **No chat product or autonomous agent.** It exposes operations; callers decide when to invoke them.
+- **No automatic promotion into canon.** No operation can promote a proposal into canon. Proposals and adjudications are recorded separately; promotion is a human act through a separate review path.
+- **No retrieval breakthrough claimed.** The measured results and limits are documented in [CAP-15 retrieval](docs/CAP-15-RETRIEVAL.md).
+- **Not a general graph library.** The renderers consume NousOS projections and their typed graph data.
 
-**It is not** any of the following, and no part of this repository claims to be:
+## Architecture and data flow
 
-- **Not a hosted service, a daemon, or anything that opens a network socket.**
-  Both transports are local: a command line and a stdio JSON-RPC server.
-- **Not a chat product, and not an agent.** It publishes operations; it does not
-  decide when to call them.
-- **Not a system that writes to your canon.** Twenty-four operations ship. Twenty
-  are read-only and four record proposals apart from canon. **None of them can
-  promote anything into canon** — promotion is a separate human act.
-- **Not a retrieval breakthrough.** [`docs/CAP-15-RETRIEVAL.md`](docs/CAP-15-RETRIEVAL.md)
-  reports what was measured, including where the numbers are poor and where a
-  planned comparison could not be run at all.
-- **Not a general-purpose graph visualisation library.** The visual layer draws
-  this project's own projections.
+Canonical plain files are the authority. Source snapshots are immutable and content-addressed; the ingest ledger is append-only. The canonical assertion record retains citations and two time axes. Full-text and optional semantic indexes are derived and rebuildable. Candidate proposals remain separate until a person reviews them. The context compiler produces reproducible packs from ranked material.
 
-## The principles the code is tested against
-
-These are constraints with tests behind them, not aspirations.
-
-- **Canon is files.** Every database NousOS builds is reconstructible from the
-  canonical file layer alone. Deleting the derived store loses nothing.
-- **The data root is configuration.** No machine path and no personal identifier
-  appears in product code. NousOS reads the corpus you point it at, and it has
-  no opinion about where that is.
-- **Unknown is a third answer.** A check that did not run is never recorded as
-  one that passed, and an absent measurement is never reported as zero.
-- **Nothing becomes canonical because a machine produced it.** Generated
-  material lands in a candidate layer and is promoted only by a person.
-- **The names are part of the product.** What each concept is called, and which
-  concepts earned a name from the vocabulary of knowledge rather than of
-  software, is written down in [`docs/VOCABULARY.md`](docs/VOCABULARY.md) and
-  checked against the code by the test suite.
-- **No complexity without evidence.** A new mechanism needs a named failure
-  mode, a reproducible test, and an observed win before it earns a place.
-
----
-
-## How knowledge moves through it
+The same operation catalogue serves the command line and stdio JSON-RPC transports. A renderer-independent projection feeds the visual engine and renderers: Sigma over WebGL for 2D, and Three.js with React Three Fiber for 3D. The review page reads a review dataset and does not add semantic relations of its own.
 
 ```mermaid
-flowchart TD
-    subgraph private["Yours, and outside this repository"]
-        SRC["Your documents<br/><i>any directory you point at</i>"]
-    end
-
-    subgraph canon["Canonical layer — plain files, the only authority"]
-        SNAP["Source snapshots<br/><i>immutable, content-addressed</i>"]
-        LEDGER["Ingest ledger<br/><i>append-only, version chains</i>"]
-        REC["Canonical record<br/><i>assertions, citations, two time axes</i>"]
-    end
-
-    subgraph gate["Proposed, and explicitly not canon"]
-        CAND["Candidate store<br/><i>proposals, bridge cards, rejections</i>"]
-        HUMAN{{"A person adjudicates"}}
-    end
-
-    subgraph derived["Derived — rebuildable, discardable"]
-        IDX["Derived index<br/><i>full text, chunks, optional dense</i>"]
-    end
-
-    subgraph out["Read surfaces"]
-        CC["Context Compiler<br/><i>ranking in, pack out, recorded</i>"]
-        PROJ["Projection IR<br/><i>renderer-independent graph</i>"]
-    end
-
-    subgraph view["One semantic state, three cameras"]
-        ENG["Visual engine<br/><i>layout, morphology, organization, detail</i>"]
-        R2["2D renderer<br/><i>Sigma, WebGL</i>"]
-        R3O["3D orthographic<br/><i>Three.js</i>"]
-        R3P["3D perspective<br/><i>Three.js</i>"]
-    end
-
-    SRC -->|"ingest"| SNAP
-    SNAP --> LEDGER
-    LEDGER --> REC
-    REC -->|"rebuild, always"| IDX
-    IDX -->|"proposes, never promotes"| CAND
-    CAND --> HUMAN
-    HUMAN -->|"promote"| REC
-    HUMAN -.->|"reject, remembered"| CAND
-    IDX --> CC
-    REC --> PROJ
-    CAND -.->|"under Discovery only"| PROJ
-    PROJ --> ENG
-    ENG --> R2
-    ENG --> R3O
-    ENG --> R3P
+flowchart LR
+    SRC["Source files"] --> SNAP["Immutable snapshots"] --> LEDGER["Append-only ledger"] --> CANON["Canonical assertion record"]
+    CANON --> IDX["Rebuildable full-text and optional semantic indexes"]
+    IDX --> CAND["Human-gated candidate layer"]
+    CAND -->|"human decision"| CANON
+    IDX --> CC["Deterministic context compiler"]
+    CANON --> PROJ["Renderer-independent projections"]
+    CAND -. "discovery view" .-> PROJ
+    CC --> CLI["Command line"]
+    CC --> RPC["stdio JSON-RPC"]
+    PROJ --> ENGINE["Visual engine"] --> RENDER["2D and 3D renderers"] --> REVIEW["Graph review page"]
 ```
 
-**The arrow that matters is the one from `A person adjudicates` to the canonical
-record.** It is the only way into canon, and no shipped operation can traverse
-it.
-
-### Canonical, and derived
-
-| | Canonical | Derived |
-|---|---|---|
-| What it is | plain files: snapshots, an append-only ledger, the assertion record | an index built from them |
-| Who may write it | a person, through adjudication | the rebuild, and nothing else |
-| If you delete it | you have lost knowledge | you have lost nothing |
-| Reproducibility | it is the source of truth | rebuilding produces **the same bytes**, not merely the same answers |
-
-If a rebuild could differ between runs, something in the index came from
-somewhere other than your files, and nobody would know what. A rebuild refuses
-rather than quietly indexing around a gap.
-
-### How human authority works
-
-Authority is a **tier fixed when the process starts**, and it never widens.
-
-- The default grant is **read-only**. A `tools/call` naming one of the three
-  proposal operations is refused with `NotAuthorized` rather than served.
-- Raising it is an explicit argument (`--tier`) at launch. No message, argument
-  value or client identity can change it afterwards.
-- **No catalogue or stdio operation promotes anything.** `candidate.propose`,
-  `candidate.discover` and `candidate.adjudicate` record proposals, judgements
-  and rejections in the candidate store. A separate decision-file review
-  console requires an explicit promotion grant and records both authorization
-  and canonical assertion versions; it is not reachable through either
-  transport.
-- A rejection is **remembered**. Rejecting a proposal is a recorded fact with
-  its own valid time, not a deletion, so the same suggestion cannot quietly
-  return as new.
-
-### Reliability and Discovery
-
-A projection is produced under a policy that decides **what is left out**:
-
-- **Reliability** admits sources, subjects, assertions and conflicts, and only
-  claims whose validity is established.
-- **Discovery** admits everything — all seven node kinds, all temporal answers
-  including undetermined, all rubric dispositions, and all three epistemic
-  classes.
-
-**The difference is omission, not interpretation.** Discovery does not find
-anything that Reliability hides; it declines to hide it. The same underlying
-state produces both, and one is re-derivable from the other. "Reliability" does
-not mean the omitted material is unreliable — a speculative link is *typed* as
-speculative and an undetermined interval is *typed* as undetermined. The
-narrower view is narrower, not truer.
-
-Both are **internal policy identifiers** today. No user-facing surface in this
-repository shows either word to a person;
-[`docs/VOCABULARY.md`](docs/VOCABULARY.md) records the recommendation for the
-labels if one is ever built, and says plainly that it is a recommendation.
-
-### Time, and provenance
-
-**Two axes, never collapsed.** Valid time is when a claim was true of the world.
-Recording time is when this system learned it. Asking *what did I believe last
-March about what was true in 2019* is two different questions and NousOS keeps
-them apart.
-
-- **Supersession** is recorded, not applied. A later assertion about the same
-  subject does not delete the earlier one; the history is returned oldest-first
-  and you can see the shape of the change.
-- **Disagreement stays visible.** Connected contradictions are reported as
-  conflicts with their members. Nothing picks a winner.
-- **A rejection begins when it was made**, not when the thing it rejects began.
-- **Support is a typed class, not a number.** There is no confidence score
-  anywhere, because a scalar invites arithmetic over evidence.
-- **Provenance is exact.** A citation names a snapshot and a byte range, and
-  `provenance.span` reads the quoted text back out of the snapshot it cites, so
-  a quotation can be checked rather than trusted.
-- **Identity is minted independently of content.** Correcting a typo does not
-  rename the thing; the content digest is exactly a function of content, so an
-  edit is detectable.
-
-### Two transports, one catalogue
-
-Every operation `core.py` publishes is reachable through **both** the `cli.py`
-command line and the `mcp.py` stdio JSON-RPC server, shaped like the Model
-Context Protocol's `initialize` / `tools/list` / `tools/call` trio.
-
-Neither hand-writes its own operation list. Both are generated by walking the
-same catalogue, so what one surface offers **cannot drift** from what the other
-does by having been typed twice. Once serving begins, stdout carries nothing but
-JSON-RPC messages; everything else goes to stderr.
-
-[`docs/INTEROPERABILITY.md`](docs/INTEROPERABILITY.md) is the whole contract,
-including how a client should be configured.
-
-`artifact.py` reads and writes a **portable proposal artifact**: a file a
-separate process — including one with no access to your canon — can produce, and
-which this system accepts as a *proposal* and never as authority. An artifact
-that arrives carrying a claim to authority is refused rather than downgraded.
-
----
-
-## The visual system
-
-**There is one semantic Projection IR.** 2D, 3D orthographic and 3D perspective
-are three projections of the same knowledge state — not three products, and not
-three sources of truth.
-
-|  |  |
-|---|---|
-| ![2D](docs/assets/projection-2d.png) | ![3D orthographic](docs/assets/projection-3d-orthographic.png) |
-| **2D** — Sigma, over WebGL. Builds its own render model. | **3D orthographic** — Three.js, shared scene model. |
-| ![3D perspective](docs/assets/projection-3d-perspective.png) | ![focused](docs/assets/projection-3d-focused.png) |
-| **3D perspective** — the same scene, a different camera. | **Focused** — the camera moved; the knowledge state did not. |
-
-**Renderer choice does not own semantics.** The visual layer is split so that
-meaning and drawing cannot leak into each other: the engine holds nothing
-specific to a rendering technology, and a renderer is handed a much smaller view
-of the graph than the one the engine has — with what it reads recorded, so that
-reading too much is detectable rather than merely discouraged. A check over the
-two Three cameras' own source refuses literal colours, literal material
-assignments, and imports of the modules that would let them resolve visual
-policy themselves.
-
-### Presentation axes, and what stays semantic
-
-**Morphology, organization, level of detail and colour are presentation.** They
-change how the same state looks and they change nothing about what it means.
-
-| ![stellar](docs/assets/morphology-stellar.png) | ![neural](docs/assets/morphology-neural.png) | ![mycelium](docs/assets/morphology-mycelium.png) |
-|---|---|---|
-| Stellar | Neural | Mycelium |
-
-*One graph, one projection, three morphologies.*
-
-| ![flat](docs/assets/organization-flat.png) | ![aggregated](docs/assets/organization-indra.png) |
-|---|---|
-| Flat organization | Aggregate windows over the **same** graph — not a different graph |
-
-**Provenance, temporal state, contradiction, and candidate / rejected /
-superseded status remain semantically grounded.** They come from the projection,
-they are typed, and a renderer cannot invent or suppress them. The node
-vocabulary is closed — `source`, `subject`, `cluster`, `assertion`, `conflict`,
-`bridge`, `rejection` — and so is the relation vocabulary, and **no relation
-selects a preferred claim**.
-
-Two rules the visual layer is measured against:
-
-- **Stable layouts.** Positions are derived deterministically, so the picture you
-  built a mental map of is the picture you get back. A layout that reshuffled on
-  every load would make the map worthless.
-- **Critical meaning is never carried by colour alone.** Anything that matters
-  epistemically is also carried by a form, a label or a structural difference.
-
-### What is not claimed
-
-- **3D is not claimed to be cognitively superior**, and the fact that it exists
-  is not an argument that it is. The controlled comparison in
-  [`docs/CAP-14-COMPARISON.md`](docs/CAP-14-COMPARISON.md) reports **all twenty
-  machine-instrument comparisons as not comparable**, three preregistered
-  task-correctness dimensions as not tested because they were never built, and
-  human cognition as not tested. No winner, and none was required.
-- **A separate spike qualified a WebGPU/TSL node-material direction as a
-  plausible future architecture, and it was deliberately not retrofitted into
-  V1.** Nothing in this repository depends on it, nothing here uses it, and its
-  evidence is not published here. It is mentioned so that its absence reads as a
-  decision rather than an oversight.
-
-[`docs/RENDERER-COMPARISON.md`](docs/RENDERER-COMPARISON.md) records what the
-implementation demonstrated, and where the evidence cannot support a comparison
-it says so instead of estimating one.
-
-## The graph review page
-
-The review page in `ui/review/` is a read-only explorer for one review dataset (`nousos.review-graph/2`). The dataset holds an index of
-nodes, the real relations between them, and detail records and quoted passages that load on demand. The nodes are:
-- root domains;
-- aggregates such as projects and systems;
-- conversations and other sources;
-- the statements drawn from them.
-
-`python3 -m nous_os.graph_review serve` serves the page and the dataset from one loopback address. The page draws the same dataset through
-several topologies, in 2D (Sigma over WebGL) and in true 3D (Three.js and React Three Fiber). **It never draws a relation the dataset does
-not contain.** Containment, Indra pearls, Llull pair bundles, density aggregates and geometric guides are drawn as what they are, and the
-legend and the status line say so. The interface is in Italian.
-
-![The review page: Natural topology in 3D, with the side panel](docs/assets/gallery/interface.jpg)
-
-<sub>Every image in this section comes from the [synthetic demo dataset](demo/README.md): 11,199 invented nodes under nine root domains.
-The gallery is drawn from an illustrative synthetic profile. Only those two figures are fixed, because the Completa calibration needs
-11,199 nodes and the Llull topology needs nine roots; every other count is a round, invented figure. It is not a pixel-for-pixel
-reproduction of any earlier capture.
-[`ui/tools/capture-gallery.mjs`](ui/tools/capture-gallery.mjs) captures each image from a fresh page once the renderer reports the view
-complete. [`docs/assets/gallery/MANIFEST.json`](docs/assets/gallery/MANIFEST.json) records the dataset digest, the viewport, the browser and
-the time every view took.</sub>
-
-### Topologies: where a node is placed
-
-**Natural** is the classic arrangement of the primary hierarchy: a deterministic, community-based layout around the root domains. The
-active morphology selects the arrangement (constellation, network or mycelium), and in 3D the same layout is expanded into volume.
-
-The **Geometry Lab** holds four mathematical topologies. They belong to different families, and no single label such as «fractal»
-groups them. Each places every real node deterministically from the whole hierarchy, so positions do not depend on density, and each
-explains a node's place in its «Perché qui» witness.
-
-- **Canopy** is a fractal tree generated by an Iterated Function System. A similarity IFS lays the hierarchy out as a canopy with curved
-  rails. Its maps are certified: contraction, address depth, deterministic finite iterates and a conservative tail bound on every
-  coordinate.
-- **Julia** is a complex dynamical system. The dynamics `z^p + c` are certified before anything is placed: `p` is 2 or 3, `|c| ≤ 0.05`,
-  there is an attracting fixed point, and the critical orbit is checked. Each node then gets external, Böttcher, coordinates:
-  - its potential comes from its importance rank;
-  - its angle comes from its community's sector;
-  - inverse rays solved by Newton continuation turn both into a position.
-
-  Rays and equipotentials are drawn as declared guides. In 3D the potential becomes height.
-- **Sierpiński** is an affine Iterated Function System: the triangle gasket in 2D (three maps `x ↦ (x + vᵢ)/2`) and regular-tetrahedron
-  dust in 3D (four maps).
-  - Every node receives a deterministic, prefix-free address over the full hierarchy.
-  - Its position is the convergent series `Σₖ 2⁻ᵏ v(aₖ)`, evaluated to a certified tolerance.
-  - A periodic tail keeps every node off the shared corners of the subdivision.
-- **Llull** is a combinatorial topology governed by the Llullian nine-domain rule. **It is not a fractal and not an IFS.**
-  - The nine root domains take the letters B–K of Llull's Figure A, at 40° intervals on the outer circle.
-  - Communities and records sit in inner bands of their own sector.
-  - A chord is drawn only where real relations exist, and at overview cross-sector relations fold into counted pair bundles.
-  - Llull needs exactly nine root domains; with any other number it is disabled and the reason is shown.
-
-### Indra: a meta-topology
-
-**Indra is not a fifth placement but an organisation of any topology.** The primary hierarchy becomes nested pearls, circles in 2D and
-spheres in 3D, each holding its real children.
-- With **Natural**, Indra uses the classic recursive layout.
-- With **Canopy, Sierpiński and Llull**, each pearl places its members with that topology's own local law.
-- With **Julia**, Indra becomes a progressive atlas:
-  - closed pearls carry a «+N» count of their hidden descendants;
-  - a pearl opens into a local chart of its real children.
-
-A combination whose legibility cannot be certified at the scale the page is drawn at is refused with the measured reason, rather than
-drawn unreadable. A Möbius and Schottky-group construction of the pearls exists as an experimental view (`#experimental=indra-pearls`).
-
-### Appearance: how a node is drawn
-
-**Morphologies change the drawing, never the placement.**
-- **Stellar** draws luminous points with straight filaments.
-- **Neural** draws somata with tapered processes.
-- **Mycelium** draws branching, organic hyphae.
-
-The appearance controls:
-- **Cervello** wraps the Neural 3D graph in a translucent two-lobed outline.
-- The Stellar morphology adds a background star field, with adjustable density and brightness.
-- Palettes: Monocromatico (the default), Caldo, Gemme, Notte and Ambra.
-- **Etichette** hides or shows the labels and their leader lines and changes nothing else.
-
-### Density, Custom and progressive reveal
-
-**Three presets nest inside each other, with stable positions and camera across switches.** The two lower presets have a node budget
-per topology (`ui/src/review/lod.ts`), because a geometry that must stay recognisable needs more real nodes:
-
-| Preset | Natural, Indra | Canopy | Sierpiński | Julia, Llull |
-|---|---|---|---|---|
-| **Essenziale** | 80 nodes | 150 | 80 | 80 |
-| **Bilanciata** | 400 nodes | 2,500 | 2,500 | 4,000 |
-
-A budget is a target, not a hard ceiling: nodes pinned by the selection, its path or an expansion are kept beyond it. In the gallery,
-Bilanciata draws 400 nodes in Natural, 2,502 in Canopy, 2,376 in Canopy + Indra, 2,420 in Sierpiński and 3,920 in Julia and Llull.
-
-**Completa** is the full drawing. The gallery records it for Natural in 3D, Neural with Cervello, Mycelium in 2D, Esplorativa and
-Llull + Indra in 3D: 11,199 of 11,199 nodes visible in each. The Julia + Indra atlas is the exception. It draws only closed pearls, 9
-in the gallery image, each counting its hidden descendants with «+N», and a pearl opens into a local chart of its children. With Indra,
-a pearl counts the descendants a preset does not draw.
-
-**Custom** draws an exact number of real nodes chosen ancestor-first. It is edited in a small popover anchored to the «Custom · N»
-button, and at its maximum it equals Completa.
-
-Zooming discloses deeper levels and loads quoted passages lazily. A container counts what it hides with «+N». The status line always
-reports:
-- visible, represented and total nodes, which differ wherever pearls or containers hold nodes that are not drawn;
-- drawn, eligible and total relations.
-
-### Connections
-
-«Connessione» chooses which relations are read:
-- **Attestata**: relations backed by cited records;
-- **Esplorativa**: non-canonical inferences, each with its explanation;
-- **Combinata**: both.
-
-Exploratory relations carry an animated beam. It pauses while the camera moves and stops with the **Movimento** switch. «Relazioni» chooses
-between the essential relations and all of them.
-
-### Interaction
-
-- Zoom, rotate in 3D and pan.
-- **Centra** and **Adatta** frame the graph; fullscreen keeps a compact toolbar.
-- Selecting a node opens a drawer with four sections, loaded on demand:
-  - a summary;
-  - its content;
-  - its provenance chain;
-  - its relations, grouped by class.
-- While the camera moves the renderer draws a lighter pass. The status line then shows «Movimento», «Recupero» and «Completa» until
-  the full drawing is back.
-
-### Gallery
-
-| | |
-|---|---|
-| ![Natural, 2D](docs/assets/gallery/natural-2d.jpg) | ![Natural, 3D, Completa](docs/assets/gallery/natural-3d-complete.jpg) |
-| **Natural · 2D · Bilanciata.** 400 of 11,199 nodes, attested relations. | **Natural · 3D · Completa.** Every node; the nine domains read as constellations. |
-| ![Natural with Indra, 3D](docs/assets/gallery/natural-indra-3d.jpg) | ![Canopy, 2D](docs/assets/gallery/canopy-2d.jpg) |
-| **Natural + Indra · 3D · Bilanciata.** The hierarchy as nested pearls, each counting what it hides: 400 nodes drawn. | **Canopy · 2D · Bilanciata.** The hierarchy as an IFS tree with curved rails: 2,502 of 11,199 nodes. |
-| ![Canopy with Indra, 3D](docs/assets/gallery/canopy-indra-3d.jpg) | ![Julia, 2D](docs/assets/gallery/julia-2d.jpg) |
-| **Canopy + Indra · 3D · Bilanciata.** Canopy's local law inside each pearl: 2,376 nodes drawn. | **Julia · 2D · Bilanciata.** Nodes in external coordinates of certified quadratic or cubic dynamics: 3,920 of 11,199. |
-| ![Julia with Indra atlas, 2D](docs/assets/gallery/julia-indra-2d-complete.jpg) | ![Sierpiński, 2D](docs/assets/gallery/sierpinski-2d.jpg) |
-| **Julia + Indra · 2D · Completa.** The progressive atlas on the Julia field: 9 closed pearls, each counting its hidden descendants with «+N». | **Sierpiński · 2D · Bilanciata.** Nodes on the triangle gasket, each at its address: 2,420 of 11,199. |
-| ![Sierpiński, 3D](docs/assets/gallery/sierpinski-3d.jpg) | ![Llull, 2D](docs/assets/gallery/llull-2d.jpg) |
-| **Sierpiński · 3D · Bilanciata.** The tetrahedral IFS: four maps, a genuinely 3D attractor; 2,420 nodes. | **Llull · 2D · Bilanciata.** Nine root domains on Figure A, chords only where relations exist: 3,920 of 11,199 nodes. |
-| ![Llull with Indra, 3D, Completa](docs/assets/gallery/llull-indra-3d-complete.jpg) | ![Neural, 3D, brain](docs/assets/gallery/neural-3d-brain.jpg) |
-| **Llull + Indra · 3D · Completa.** The nine pearls joined by their pair bundles: all 11,199 nodes. | **Neural · 3D · Cervello.** Every node inside the optional brain outline. |
-| ![Exploratory connections, 3D](docs/assets/gallery/exploratory-3d.jpg) | ![Palette Gemme, 2D](docs/assets/gallery/palette-gems-2d.jpg) |
-| **Esplorativa · 3D · Completa.** Non-canonical inferences only, each with its explanation in the drawer. | **Gemme · 2D.** A palette changes colour only; placement and meaning stay the same. |
-| ![Mycelium, 2D, Completa](docs/assets/gallery/mycelium-2d-complete.jpg) | |
-| **Mycelium · 2D · Completa.** All 11,199 nodes in 2D: the densest view the page draws. | |
-
-### Run it with synthetic data
-
-From a clone, with Node.js 24 and Python 3.11 or newer:
+A generated candidate cannot become canonical through either transport. Canonical updates require a distinct human review action. Derived indexes can be deleted and rebuilt from the canonical files. Stable identifiers, source citations, quoted byte spans, valid time, and recording time stay attached to the underlying records; a visual layout does not change them.
+
+### Record and trust boundaries
+
+A source file is captured as an immutable snapshot. The append-only ledger records which version was observed, and the canonical record carries assertions with their evidence. Re-ingesting unchanged bytes does not create a new content version. A citation points to a snapshot and byte range so the quoted span can be checked against its source.
+
+Valid time describes when a claim applied in the world. Recording time describes when the system learned it. Superseded assertions remain in the history, and disagreement is exposed as a conflict rather than resolved by selecting a preferred claim. A rejected proposal is recorded as a rejection rather than erased.
+
+The candidate layer stores proposals, discovery results, adjudications, and rejections apart from canonical assertions. These records can support review, but their presence does not itself change canon. Authority is set when a process starts and cannot be expanded by a request sent over a transport.
+
+### Derived search and context
+
+The full-text index is rebuilt from canonical data. The optional semantic index is also derived; it depends on locally available model files and can be rebuilt. The indexes support finding material, but they do not replace citations or source records.
+
+The context compiler accepts ranked material and emits a reproducible context pack with a record of its inputs. Of six assembly-strategy families, five were measured and none beat the plain strategy, so the plain strategy is the default. The sixth could not be measured on that corpus and is recorded as unmeasured rather than as a tie. Evaluation distinguishes whether a source pair was included from whether the cited passages were included. The recorded measurement is documented separately from the graph review demo.
+
+### Local interfaces
+
+The command line and stdio JSON-RPC server are generated from one operation catalogue, so their operation names and authority rules share one source. The JSON-RPC process writes protocol messages to standard output and diagnostics to standard error. A caller chooses the operation; the server does not initiate a conversation or make decisions on the caller's behalf.
+
+### Your data stays outside this repository
+
+- Store locations are supplied through configuration; the application does not guess a location for a corpus.
+- The tracked fixtures and all README gallery images use invented synthetic material.
+- Indexes are derived and rebuildable. They are not the source of truth.
+- Semantic indexing is optional and uses locally available model files; when required material is absent, the result is reported as not run.
+
+A corpus you point NousOS at remains where you place it. This repository contains the software and synthetic examples.
+
+### Projection boundary
+
+The graph projection is a read surface over typed records. It carries node and relation classes, evidence links, and review details without giving the renderer authority to reinterpret them. The review dataset separates its index from detail records so the page can load long-form content when a node is selected.
+
+The page distinguishes semantic relations from layout structure. A parent-child container, a visual bundle, or a geometric guide may help someone read the drawing, but it does not become a new source relation. Where relations are grouped for display, their underlying relation identities remain available to the review surface.
+
+This boundary is useful when comparing views: changing the topology or morphology changes the arrangement and drawing, while the source dataset and its attested relation set remain the reference. Exploratory relations are explicitly typed and explained, so they are not silently presented as cited evidence.
+
+## Install and run the demo
+
+The demo requires **Node.js 24** and **Python 3.11 or newer**. From the repository root, run:
 
 ```bash
 npm --prefix ui ci
@@ -463,211 +90,36 @@ node --experimental-strip-types demo/src/cli.ts synth --profile reference --seed
 PYTHONPATH=src python3 -m nous_os.graph_review serve --graph demo/out/reference/dataset --port 8766
 ```
 
-Then open <http://127.0.0.1:8766/#experimental=fractal>. The flag enables the Geometry Lab topologies; without it the page offers
-Natural and Indra. The generator is deterministic: seed 1 always gives the dataset digest recorded in the gallery manifest. The counts of the `reference` profile are illustrative; only
-the 11,199-node total and the nine root domains are fixed.
-[`demo/README.md`](demo/README.md) shows how to turn your own knowledge base into a dataset. That dataset stays outside this repository.
+Open <http://127.0.0.1:8766/#experimental=fractal>. The URL flag enables the Geometry Lab topologies; without it, the page offers Natural and Indra. Seed 1 of the `reference` profile produces the dataset digest recorded in [the gallery manifest](docs/assets/gallery/MANIFEST.json). The profile's counts are illustrative except for its fixed node total and root-domain count.
 
-To reproduce the gallery, install Playwright's Chromium (`npx --prefix ui playwright install chromium`) and run
-`node ui/tools/capture-gallery.mjs`.
+To reproduce the gallery captures, install Playwright Chromium and run the capture script:
 
-### Measured timings
+```bash
+npx --prefix ui playwright install chromium
+node ui/tools/capture-gallery.mjs
+```
 
-These are the times from opening a fresh page to the renderer reporting the view complete. They come from one machine and one browser
-and are not a claim about any other:
-- the illustrative synthetic 11,199-node dataset (seed 1 of the `reference` profile);
-- headless Chromium 151 with Metal on an Apple M1 Max;
-- a 1440 × 1000 viewport at device scale factor 2.
+### Python quickstart
 
-| View | Time to «Completa» |
-|---|---|
-| Natural or palette · 2D · Bilanciata | 1.2 s |
-| Canopy, Sierpiński, Llull, Julia · 2D · Bilanciata | 1.8–3.5 s |
-| Natural + Indra, Canopy + Indra, Sierpiński · 3D · Bilanciata | 4.9–5.4 s |
-| Natural, Llull + Indra, Esplorativa · 3D · Completa; Mycelium · 2D · Completa; Julia + Indra atlas · 2D · Completa | 5.9–6.7 s |
-| Neural · 3D · Completa with Cervello | 11.3 s |
+The Python package needs Python 3.11 or newer and has no third-party runtime dependencies; dense retrieval is an opt-in `semantic` extra.
 
-### Known limits
-
-The page is published as it was approved. These limits are open and stated rather than hidden.
-
-- In 2D a node's drawn size still depends on the density. In 3D it is the same in every density.
-- Llull needs exactly nine root domains.
-- Julia + Indra is refused when the atlas cannot be certified legible at the mounted scale. With «Etichette» off, the atlas's internal
-  legibility certificate reports failure because the «+N» badges are hidden; the drawing is unaffected.
-- Several dense-drawing calibrations of Completa are keyed to a dataset of 11,199 nodes, which the illustrative synthetic reference profile keeps.
-  Other sizes use the general policy until those constants are parametrised.
-- Performance:
-  - a second page drawing a heavy 3D view in the same browser can stall for several seconds;
-  - the first opening of a sparse Natural 3D view computes a full reference layout first.
-- The per-node date table that Canopy uses is empty here, so dates are shown as unknown unless the dataset carries them.
-- Coverage:
-  - only Chromium was verified; touch devices, keyboard navigation inside the canvas and screen readers were not;
-  - the Llull, Indra-composition and Julia-atlas views are covered by their own runtime certificates and by the synthetic gallery.
-- Development references:
-  - code comments, test names and some documents under `docs/` keep the internal decision references (`D0nn`) used during development;
-  - they identify a design step and carry no data.
-
----
-
-## Your data stays outside this repository
-
-**NousOS never stores your knowledge inside its own source tree, and this
-repository has never contained any.** The separation is physical, not merely a
-matter of `.gitignore`:
-
-- Every store location is **configuration you supply**. NousOS resolves seven of
-  them and **refuses to start if one is missing** rather than guessing a default.
-  A knowledge system that invents a location writes your data somewhere you did
-  not choose.
-- `fixtures/synthetic/` holds small, wholly invented documents used by the tests
-  and by every image in this document. They contain no personal material and are
-  safe to read, copy and publish.
-- The derived index is rebuildable and is never committed; `.gitignore` refuses
-  `*.db`, `*.sqlite` and `*.sqlite3`.
-- Full-text search indexes a normalized prose projection; after a schema change, rebuild from canon with `PYTHONPATH=src python3 -m nous_os.derived rebuild --snapshot-root SNAPSHOTS --ledger-path LEDGER --derived-path INDEX`.
-- The semantic index is also derived and rebuildable, never committed, and is
-  built only from cached local weights. Its chunks are sentence-packed verbatim
-  spans of one text part of a record, each located in the source body unless
-  its text occurs there more than once, and `verify` is the full check of a
-  generation while a search makes only the structural one. When that index or
-  its weights are absent, dense search answers `not_run` with the reason rather
-  than treating the absence as an empty result.
-- A test in the suite refuses any absolute machine path, personal identifier or
-  credential in tracked file content or names, and it runs in continuous
-  integration on every push.
-- The retrieval measurement in `docs/CAP-15-RETRIEVAL.md` was taken over a
-  private corpus that is **not** in this repository: what ships is the aggregate
-  result and opaque cell identifiers, never a document, a title, a path or a
-  quotation.
-
-If you point NousOS at a private corpus, that corpus stays where you put it. The
-only thing this repository holds is the software that reads it.
-
----
-
-## What V1 implements
-
-| Area | State |
-|---|---|
-| Package skeleton and version surface | present |
-| Data-root resolution from configuration | present |
-| Public synthetic fixtures | present |
-| Canonical record: identity, content hashing, provenance | present |
-| Immutable source snapshots | present |
-| Ingestion: append-only ledger, versioning, invalidation | present |
-| Source memory: provider export ingest, identity kept across re-import, per-export sightings | present |
-| Source memory: a second export format (sharded conversation mappings) with asset records — identity, digest and provenance of exported files, their bytes left in the archive | present |
-| Source memory: manifest-declared supplied documents and rendered-interface captures, with window provenance and deduplicated captured messages | present |
-| Attachment text extraction: byte-classified, bounded evidence with recorded mechanism versions and structural locations | present |
-| Derived index, rebuildable from the files alone | present |
-| Measuring instrument and cross-language baseline | present |
-| Context compilation, with a measured default | present |
-| Authority boundary for governed operations | present |
-| Candidate lifecycle, discovery rounds, human adjudication | present |
-| Human review decision files, authorization records, and content-addressed assertion versions | present |
-| Cross-source reconciliation proposals, evidence checks, and non-mutating verification | present |
-| Two time axes, supersession, visible disagreement | present |
-| Renderer-independent projections of the graph | present |
-| Visual engine over those projections | present |
-| 2D renderer (Sigma, WebGL) | present |
-| 3D renderer (Three.js / React Three Fiber), orthographic and perspective | present |
-| Controlled comparison of the three renderers | present, [`docs/CAP-14-COMPARISON.md`](docs/CAP-14-COMPARISON.md) |
-| Semantic retrieval, measured and reported honestly | present, opt-in, [`docs/CAP-15-RETRIEVAL.md`](docs/CAP-15-RETRIEVAL.md) |
-| Vocabulary: the two registers of names, and the map between them | present, [`docs/VOCABULARY.md`](docs/VOCABULARY.md) |
-| Command-line and stdio JSON-RPC interfaces | present, [`docs/INTEROPERABILITY.md`](docs/INTEROPERABILITY.md) |
-| Review dataset builder and loopback review server | present |
-| Graph review page: Natural and the Geometry Lab (Canopy, Julia, Sierpiński, Llull), Indra compositions, three morphologies, densities and Custom | present, [above](#the-graph-review-page) |
-| Synthetic demo dataset generator for the review page | present, [`demo/README.md`](demo/README.md) |
-
-**What ingestion guarantees.** Taking a source in twice changes nothing the
-second time, and a version is recorded only when the bytes actually differ. The
-history of a source is a plain append-only file, so recovering it means reading
-it. Content that arrives from a source is held in its own type that cannot stand
-in for text this project wrote — text that reads as an instruction is labelled
-and still stored, because refusing it would quietly lose part of your corpus.
-
-**What source memory adds.** An export from an assistant service is taken in as
-*evidence that the provider exported it*, one source per provider record — a
-conversation, each of its messages, a project, a memory file — and each keeps
-the same identity the next time the same export, or a later one, is taken in.
-A title change is one new version of one record; an unchanged message is
-recorded as unchanged; a record missing from a later export is not deleted;
-the same export twice writes nothing the second time. Which export carried
-which version is written down separately from the content, so a re-export is
-not a revision. The adapter recognises a format by the shape of its files,
-never by their names, and the provider is a string read from the export
-rather than a word in the code. A second adapter reads exports that split a
-conversation list into shards of node mappings and point at exported files:
-each file becomes an asset record — its identifier, digest, detected type,
-given name and the messages that point at it — while its bytes stay in the
-archive, never in a snapshot. Nothing in it is canonical, and no shipped
-operation reaches it. A third adapter reads a supplied bundle only through its
-manifest: every declared document is checked against its byte count and digest,
-and a rendered-interface capture is recognized by object shape rather than by
-its filename. Its windows and their deduplicated message identifiers become
-distinct evidence classes, so rendered text never becomes a native message;
-empty text, disagreement between windows and every refusal remain visible.
-
-**How context is assembled.** A pack is built from a ranking, and every pack
-records what went into it — reproducibly, so the same inputs always yield the
-same record. Which assembly strategy is the default was decided by measurement
-rather than preference: of six families, five were measured and none beat the
-plain one, so the plain one stayed. The sixth could not be measured at all on
-that corpus and is recorded as unmeasured rather than as a tie, because those
-are different facts. Two numbers are always reported apart — whether both
-documents of a pair made it in, and whether the specific passages that ground
-the claim made it in — because reading the first as evidence about the second is
-a mistake that has already been made once here, and it took real work to notice.
-
-**How results are measured.** The instrument is built before the things it
-judges, so it cannot be shaped by the answers it later reports. Expected results
-are written down from reading the documents, never recorded from a run — a
-golden file regenerated from the code it constrains cannot fail. Relating terms
-across languages is a pluggable layer with no default, because the fixed
-hand-written table is *measured* insufficient and its proposed replacement is
-unmeasured, and preferring an unmeasured design to a measured-poor one is still
-a guess.
-
----
-
-## Requirements
-
-**Python 3.11 or newer** for the package. It has **no third-party runtime
-dependencies**: `import nous_os` works with nothing else installed.
-`nous_os.semantic` is the one exception and is opt-in behind the `semantic`
-extra, so a clean install stays dependency-free unless a caller asks for dense
-retrieval.
-
-**Node.js 24 or newer, with npm**, for `ui/` — the visual engine and the three
-renderers, which are about half this repository by file count. The suites there
-are developed against Node 24.11 and npm 11.6. The Python package does not
-import any of it, and you can ignore `ui/` entirely if you only want the library.
-
-## Run
-
-No installation step is required. From a clone:
+Python package use does not require building the UI. From the repository root:
 
 ```bash
 PYTHONPATH=src python3 -m nous_os --version
 ```
 
-Installing the package works too and nothing here depends on it:
+A package install is also available:
 
 ```bash
 python3 -m pip install .
 ```
 
-## Quickstart
-
-**NousOS resolves eight store locations and refuses to start if any is missing.**
-The shortest way to a working instance is to point the data root at the public
-synthetic corpus and give the other seven a scratch directory:
+To run operations against the public synthetic corpus, configure its data and store paths. Use a scratch directory of your choice for generated stores:
 
 ```bash
-WORKSPACE="$(mktemp -d)"                       # any directory you choose
+WORKSPACE="$(mktemp -d)"
 mkdir -p "$WORKSPACE/snapshots"
-
 export PYTHONPATH=src
 export NOUS_OS_DATA_ROOT=fixtures/synthetic/corpus
 export NOUS_OS_SNAPSHOT_ROOT="$WORKSPACE/snapshots"
@@ -677,23 +129,13 @@ export NOUS_OS_CANDIDATE_STORE_PATH="$WORKSPACE/candidates.jsonl"
 export NOUS_OS_BRIDGE_REGISTRY_PATH="$WORKSPACE/bridges.jsonl"
 export NOUS_OS_REJECTION_MEMORY_PATH="$WORKSPACE/rejections.jsonl"
 export NOUS_OS_RELATION_STORE_PATH="$WORKSPACE/relations.jsonl"
-
 python3 -m nous_os system.capabilities
 python3 -m nous_os system.health
 ```
 
-To read promoted assertions, configure their optional canon location separately:
-`export NOUS_OS_CANON_ROOT_PATH="$WORKSPACE/canon"`. It may deliberately equal
-`NOUS_OS_DATA_ROOT` for a deployment that stores both there; it is not assumed to.
+The optional canon location is configured separately with `NOUS_OS_CANON_ROOT_PATH`. Every store path also has a command-line option. The health operation distinguishes healthy, absent, and unknown states.
 
-Every location also has a command-line option (`--data-root`, `--snapshot-root`,
-and so on) if you would rather not use the environment. `system.health` reports
-each location as `healthy`, `absent` or `unknown` — never as a silent zero.
-
-### The stdio JSON-RPC transport
-
-The same catalogue, over the Model Context Protocol's message shape. A client
-launches the module and speaks JSON-RPC on stdin and stdout:
+The stdio JSON-RPC transport uses newline-delimited JSON on standard input and output:
 
 ```bash
 printf '%s\n' \
@@ -703,11 +145,121 @@ printf '%s\n' \
   | python3 -m nous_os.mcp
 ```
 
----
+The demo generator's commands, dataset schema, and adapter rules are in [demo/README.md](demo/README.md). It writes a portable review dataset containing an index, detail records, offsets, and a manifest with digests. The review server checks that dataset before serving it from a loopback address. With seed 1, the `reference` profile produces 11,199 nodes under nine root domains, 4,610 relations, 10,850 passages and 22,036 details; apart from the node total and the nine root domains, these counts are illustrative. The generator creates invented labels, statements, citations, and passages from its seeded profile. It does not need access to an external corpus. Its validator checks shape, relationships, and digests before the server opens the dataset.
 
-## Tests
+## The graph review page
 
-This is the whole of it, and it is the same command continuous integration runs:
+The review page is a read-only explorer for a validated review dataset. It presents nodes, real relations, detail records, and quoted passages that load on demand. It can draw the same dataset through several topologies in 2D and 3D. Structural containment and layout guides are presented as such; they are not semantic relations. The interface labels are Italian.
+
+### Topologies: where a node is placed
+
+All five topologies support 2D and 3D.
+
+- **Natural** arranges the primary hierarchy deterministically around root domains.
+- **Canopy** applies an iterated function system (IFS) tree with curved rails.
+- **Sierpiński** uses an affine IFS: a triangular gasket in 2D and tetrahedral dust in 3D.
+- **Llull** implements the circular-combinatorial Figure A and requires exactly nine root domains. Its 3D height is the Third Figure's offset class.
+- **Julia** places nodes in external coordinates of certified quadratic or cubic dynamics. In 3D, height is a scalar lift of the external potential G; it is not a 3D Julia set.
+
+The Geometry Lab is enabled in the demo by `#experimental=fractal`. Each topology law checks its own preconditions and refuses input it cannot place faithfully, rather than inventing positions.
+
+**Indra** is an optional organization that can arrange a supported topology into nested containers called pearls. Julia with Indra is refused when its atlas cannot be certified legible at the mounted scale. A pearl counts the nodes it hides; opening it reveals its real children. Indra changes the organization of the view, not the dataset's relations.
+
+### Morphologies: how nodes and edges are drawn
+
+- **Stellar** uses luminous points and filaments.
+- **Neural** draws nodes as somata with neural-style connections. Its optional **«Cervello»** control adds a decorative brain outline in 3D.
+- **Mycelium** uses branching, network-like forms.
+
+In Natural, morphology selects the default arrangement: Stellar uses constellation, Neural uses network, and Mycelium uses mycelium, so it changes placement. In the other topologies, placement follows the selected topology law. Morphology does not change meaning.
+
+### Navigation and controls
+
+- **2D / 3D** switches rendering dimensions. 3D can be rotated, panned, and zoomed.
+- **«Focus»** frames the selected node. **«Adatta»** fits the visible graph. **«Centra»** centers the focus or graph without changing zoom or orientation. **«Reimposta»** restores camera, focus, and appearance. **«Fullscreen»** opens the canvas with a compact toolbar.
+- 3D orientation presets are **«Fronte»**, **«Retro»**, **«Sinistra»**, **«Destra»**, **«Alto»**, **«Basso»**, **«Isometrica»**, and **«Reimposta vista»**.
+- Search **«Cerca»** accepts a label or ID. **«Pannello»** shows or hides the side panel, where selected-node details are organized into summary, content, provenance, and relations.
+- **«Etichette»** toggles labels and their leader lines. **«Filtri»** filters by domain, family, standing, or evidence class.
+- **«Aspetto»** opens appearance controls, including palettes. Appearance changes do not alter the graph data.
+
+### Density
+
+The gallery manifest records these Natural 2D node counts for the density presets:
+
+| Control | Nodes visible / total |
+|---|---:|
+| «Essenziale» | 80 / 11,199 |
+| «Bilanciata» | 400 / 11,199 |
+| «Completa» | 11,199 / 11,199 |
+
+«Completa» means every node of the dataset is drawn. **Custom** lets the reader request a chosen number of real nodes. Status information distinguishes visible nodes from represented nodes and reports drawn and eligible relations. The gallery comparison records the actual visible counts rather than treating a requested budget as a guarantee.
+
+### Connections
+
+**«Attestata»** shows relations backed by cited records. **«Esplorativa»** shows non-canonical inferences, each with an explanation; this reading is kept distinct from the attested reading. **«Combinata»** shows both classes. The relation-detail control **«Essenziali» / «Tutte»** selects essential or all eligible relations. The legend and detail panel identify relation classes. Exploratory connections can be reviewed with their explanation; the display does not convert an inference into an attested edge. The «Essenziali» setting reduces relation detail for an overview, while «Tutte» requests all eligible relations under the active reading and view.
+
+## Gallery
+
+The gallery is captured from the synthetic `reference` dataset at seed 1. Captures use labels off, Indra off, wait for renderer status «Completa», and use headless Chromium with a 1440 × 1000 viewport at device scale factor 2. Node and edge counts below are the values recorded in `MANIFEST.json`.
+
+### Topologies at «Completa»
+
+| Topology | 2D | 3D |
+|---|---|---|
+| Natural | ![Natural topology in 2D](docs/assets/gallery/natural-2d-complete.jpg)<br>Natural · 2D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn. | ![Natural topology in 3D](docs/assets/gallery/natural-3d-complete.jpg)<br>Natural · 3D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn. |
+| Canopy | ![Canopy topology in 2D](docs/assets/gallery/canopy-2d-complete.jpg)<br>Canopy · 2D · «Completa» — 11,199 / 11,199 nodes; 14,056 edges drawn. | ![Canopy topology in 3D](docs/assets/gallery/canopy-3d-complete.jpg)<br>Canopy · 3D · «Completa» — 11,199 / 11,199 nodes; 14,056 edges drawn. |
+| Sierpiński | ![Sierpiński topology in 2D](docs/assets/gallery/sierpinski-2d-complete.jpg)<br>Sierpiński · 2D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn. | ![Sierpiński topology in 3D](docs/assets/gallery/sierpinski-3d-complete.jpg)<br>Sierpiński · 3D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn. |
+| Llull | ![Llull topology in 2D](docs/assets/gallery/llull-2d-complete.jpg)<br>Llull · 2D · «Completa» — 11,199 / 11,199 nodes; 11,623 edges drawn. | ![Llull topology in 3D](docs/assets/gallery/llull-3d-complete.jpg)<br>Llull · 3D · «Completa» — 11,199 / 11,199 nodes; 11,623 edges drawn. |
+| Julia | ![Julia topology in 2D](docs/assets/gallery/julia-2d-complete.jpg)<br>Julia · 2D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn. | ![Julia topology in 3D](docs/assets/gallery/julia-3d-complete.jpg)<br>Julia · 3D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn. |
+
+### Morphologies and exploratory connections
+
+| Neural morphology | Mycelium morphology | Exploratory connections |
+|---|---|---|
+| ![Neural morphology in 3D with Cervello](docs/assets/gallery/neural-3d-brain.jpg)<br>Neural · 3D · «Cervello» — 11,199 / 11,199 nodes; 14,050 edges drawn. | ![Mycelium morphology in 2D](docs/assets/gallery/mycelium-2d-complete.jpg)<br>Mycelium · 2D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn. | ![Exploratory connections in 3D](docs/assets/gallery/exploratory-3d-complete.jpg)<br>«Esplorativa» · 3D · «Completa» — 11,199 / 11,199 nodes; 11,575 edges drawn. |
+
+### Density comparison
+
+| «Essenziale» | «Bilanciata» | «Completa» |
+|---|---|---|
+| ![Natural 2D Essenziale](docs/assets/gallery/natural-2d-essential.jpg)<br>Natural · 2D · «Essenziale» — 80 / 11,199 nodes; 86 edges drawn. | ![Natural 2D Bilanciata](docs/assets/gallery/natural-2d-balanced.jpg)<br>Natural · 2D · «Bilanciata» — 400 / 11,199 nodes; 359 edges drawn. | ![Natural 2D Completa](docs/assets/gallery/natural-2d-complete.jpg)<br>Natural · 2D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn. |
+
+### Whole interface
+
+![The whole graph review interface](docs/assets/gallery/interface.jpg)
+
+Natural · 3D · «Completa» — 11,199 / 11,199 nodes; 14,050 edges drawn.
+
+### Measured render times
+
+`completeMs` measures time from a fresh page until the renderer reports «Completa». These captures come from one machine and one browser: headless Chromium 151 (ANGLE Metal backend) on an Apple-silicon Mac (darwin arm64). They are not a claim about any other machine or browser.
+
+| Gallery view | Time to «Completa» |
+|---|---:|
+| Natural · 2D | 4.7 s |
+| Natural · 3D | 6.9 s |
+| Canopy · 2D | 2.8 s |
+| Canopy · 3D | 5.0 s |
+| Sierpiński · 2D | 4.1 s |
+| Sierpiński · 3D | 5.8 s |
+| Llull · 2D | 3.6 s |
+| Llull · 3D | 6.0 s |
+| Julia · 2D | 6.2 s |
+| Julia · 3D | 7.7 s |
+| Neural · 3D · «Cervello» | 12.8 s |
+| Mycelium · 2D | 6.7 s |
+| «Esplorativa» · 3D | 5.9 s |
+| Natural · 2D · «Essenziale» | 1.0 s |
+| Natural · 2D · «Bilanciata» | 1.1 s |
+| Whole page | 6.3 s |
+
+## Verification status
+
+The Python suite covers canonical records, provenance, ingestion, derived indexes, candidate gates, temporal behavior, projections, and related package contracts. The demo generator has its own tests for deterministic output, canonical JSON, one index edge per real relation, and acceptance by the review dataset validator.
+
+UI unit tests exercise topology laws, density and relation selection, focus, panels, labels, appearance, and render scheduling. Renderer suites cover 2D and 3D drawing contracts and interactions. Browser evidence suites exercise page opening and rendered interactions when their required browser and GPU environment is available. The test files are present in the repository; the default continuous-integration workflow does not run every browser or visual evidence suite.
+
+The UI has unit, renderer, and browser-evidence suites. The reproducible public Python and typecheck commands used by continuous integration are:
 
 ```bash
 python3 -m pip install pytest ".[semantic]"
@@ -716,220 +268,128 @@ python3 -m pytest tests/ -q --ignore=tests/test_semantic.py --ignore=tests/test_
 npm --prefix ui run typecheck
 ```
 
-Three things in that recipe are load-bearing, and each of them was measured
-rather than assumed.
+The two excluded semantic modules require local ONNX checkpoints; resolution is local-only. The semantic extra is installed because other package tests import the semantic module. UI vocabulary tests also use the built UI dependency tree. Continuous integration runs from a clean checkout on Linux with the declared Python floor and a current Python version. It demonstrates package installation and import, the Python suite, typecheck, repository hygiene checks, and the commit-message contract across repository history. It does not run GPU-backed browser evidence or visual acceptance review.
 
-**The two `--ignore` arguments are not optional and not a skip.**
-`tests/test_semantic.py` and `tests/test_semantic_controls.py` need two ONNX
-checkpoints already present in a local Hugging Face cache. Resolution passes
-`local_files_only`, so nothing is ever downloaded. They are excluded by name,
-with the reason stated, rather than made to look green.
+From a public clone, the following limits are recorded:
 
-**The `semantic` extra is needed even though those two modules are excluded.**
-`nous_os.semantic` imports NumPy, ONNX Runtime, `tokenizers` and
-`huggingface_hub` at module level, and three tests elsewhere walk *every* module
-in the package — checking that no public callable can construct a human
-decision, that a reference walk refuses anything it cannot analyse, and that no
-provider name reaches a public identifier. Without the extra those three fail
-for a reason that has nothing to do with your change. With only `pytest`
-installed and no `--ignore`, **pytest aborts during collection and nothing runs
-at all.**
+- The browser suites require Playwright browsers and a real GPU adapter. They generate `ui/dist/`, which is run output and is not committed.
+- `npm --prefix ui run test:unit` does not pass from a clean clone, even after `npm --prefix ui run build:review`; four document suites require generated evidence under `ui/dist/` and fail when that evidence is absent.
+- The semantic tests need locally cached ONNX checkpoints. With the semantic extra and an empty cache, the recorded run has failures and errors; no download is attempted.
+- Six visual acceptance criteria require human inspection of rendered images.
+- Only Chromium was verified for the review page. Touch devices, keyboard navigation inside the canvas, and screen readers were not verified.
 
-**`npm --prefix ui ci` is not optional either.** Five tests in
-`tests/test_vocabulary.py` check a published document against the renderer's own
-resolved values by bundling the TypeScript that produces them, rather than by
-reimplementing the arithmetic in Python. Without `ui/node_modules` those five
-**fail** with a stated reason — they do not skip and they do not pass.
+These statements describe the repository's recorded checks; they do not claim that every combination of data, browser, or device has been tested.
 
-The synthetic demo generator has its own suite, with no dependencies:
-`node --test "demo/test/*.test.ts"` runs its 19 tests. They cover:
+## Known limits
 
-- canonical JSON byte-identical to Python's;
-- determinism per seed;
-- one index edge per real relation;
-- acceptance by the review page's own validator.
+- In 2D, a node's drawn size depends on density. In 3D, its size is the same across density settings.
+- Llull requires exactly nine root domains.
+- Julia with Indra is refused when the atlas cannot be certified legible at its mounted scale. With labels hidden, its legibility certificate can fail because the «+N» badges are hidden.
+- Some «Completa» drawing calibrations are keyed to the demo's 11,199 nodes; other dataset sizes use general policies until those constants are parameterized.
+- A second page drawing a heavy 3D view in the same browser can stall for several seconds. The first opening of a sparse Natural 3D view computes a full reference layout first.
+- The per-node date table used by Canopy is empty in the demo, so dates are unknown unless a dataset supplies them.
+- Llull, Indra compositions, and the Julia atlas are covered by their own runtime certificates.
+- Code comments and test names carry development step identifiers that reference no data.
 
-Some tests exist to keep the repository honest rather than to check behaviour:
-one refuses any absolute machine path, personal identifier or credential in
-tracked file content or names; one proves the data root really is configuration
-by running the same operation against two different roots; one proves the
-package imports and works with no external tree present; and one asserts the
-commit-message contract in [`CONTRIBUTING.md`](CONTRIBUTING.md) over **every
-commit in this repository's history**.
+## What V1 implements
 
-### What continuous integration proves
+| Area | Implemented capability |
+|---|---|
+| Canonical storage | Stable identity, immutable source snapshots, append-only ingest history, citations, and assertion versions. |
+| Derived state | Rebuildable full-text index and optional semantic index. |
+| Time and evidence | Provenance, two time axes, supersession history, and visible disagreement. |
+| Human control | Candidate proposals, discovery, adjudication, and a separate human review path for promotion. |
+| Context | Deterministic context compilation with recorded inputs. |
+| Interfaces | Command line and stdio JSON-RPC from one operation catalogue. |
+| Projections | Renderer-independent graph projections and a validated review dataset builder/server. |
+| Visual review | 2D and 3D rendering, five topologies, Indra organization, three morphologies, density controls, and relation readings. |
+| Demo | Seeded synthetic knowledge base generator and review-page dataset. |
 
-The workflow in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on
-every push and pull request, from a clean checkout with no local state.
+## Repository layout
 
-**It proves** that a fresh clone on Linux, on the declared Python floor and on a
-current Python, with only public dependencies installed:
+| Path | Contents |
+|---|---|
+| `src/nous_os/` | Canonical records, indexing, compilation, transports, and graph projections. |
+| `ui/src/` | Visual engine, review page, topologies, and 2D/3D renderers. |
+| `ui/test/` | UI unit, renderer, and browser suites. |
+| `demo/` | Synthetic dataset generator and its tests. |
+| `tests/` | Python test suite. |
+| `docs/` | Architecture, interface, retrieval, renderer, and review documentation. |
+| `docs/assets/gallery/` | Review-page captures and their manifest. |
 
-- installs and imports the package;
-- passes the clean-clone-reproducible Python suite;
-- passes the TypeScript typecheck;
-- passes the public-safety test that refuses machine paths, personal
-  identifiers and credentials in tracked files;
-- satisfies the commit-message contract across the **whole** history.
+<details><summary>Full repository layout</summary>
 
-**It does not prove**, and does not pretend to:
-
-- **the browser and GPU evidence.** The suites under `ui/test/browser/` need
-  Playwright browsers and a real GPU adapter. They are what produce `ui/dist/`,
-  which is run output and is deliberately not committed.
-- **`npm --prefix ui run test:unit`.** From a clean clone, after
-  `npm --prefix ui run build:review`, **2,281 of 2,300 tests pass, 3 are skipped
-  and 16 fail**. All sixteen live in four document suites that read generated
-  evidence under `ui/dist/`. A document generated from an artifact is checked
-  against that artifact rather than against a copy of its numbers, so without
-  the artifact the check refuses instead of passing vacuously.
-- **six visual acceptance criteria** that a person discharges
-  by looking at rendered images. No public substitute for that judgement exists, and inventing
-  one would make six criteria pass against something nobody judged.
-- **semantic retrieval.** See below.
-
-Running a check that cannot succeed in order to display a skip would make the
-badge mean less than it does now.
-
-### What does not run from a public clone
-
-Each of these fails with a stated reason rather than reporting a pass.
-
-**`tests/test_semantic.py` and `tests/test_semantic_controls.py`** need the
-`semantic` extra (`pip install .[semantic]`) *and* the two ONNX checkpoints
-`semantic.py` names already present in the local Hugging Face cache. Resolution
-passes `local_files_only`, so it never contacts the network and never downloads.
-Measured with the extra installed and an empty cache: **15 failed, 8 errors,
-1224 passed**. Obtaining weights is a separate, deliberate human act, and
-continuous integration does not perform it.
-
-**The browser suites** under `ui/test/browser/` need Playwright browsers
-installed and a real GPU adapter, and they are what produce `ui/dist/`. They are
-not part of either default run.
-
-**The documentation images** in `docs/assets/` are regenerated from the public
-fixtures by `node --experimental-strip-types tools/capture-docs-assets.ts`, run
-from `ui/`. It needs Playwright's chromium. `docs/assets/MANIFEST.json` records
-the fixture, its digest and each image's digest, so a published figure can be
-traced to the public data it came from.
-
----
-
-## Layout
-
-```
+```text
 src/
 └── nous_os/
-    ├── __init__.py       the version surface
-    ├── __main__.py       the process entry point, delegating to cli.py
-    ├── config.py         data-root resolution
-    ├── identity.py       stable ids and content hashing
-    ├── snapshots.py      immutable, content-addressed source snapshots
-    ├── provenance.py     citations, byte-range locators, quote-lint
-    ├── canonical.py      the assertion record
-    ├── untrusted.py      the boundary around content from outside
-    ├── ledger.py         append-only ingest record and version chains
-    ├── sources.py        source memory: provider records, the identity each keeps, where it was seen
+    ├── __init__.py
+    ├── __main__.py
+    ├── ablation.py
+    ├── adjudication.py
+    ├── aliases.py
+    ├── artifact.py
     ├── assistant_export.py
-    │                     one export format, classified by shape; the provider is read, not named
-    ├── mapping_export.py
-    │                     a second format: sharded conversation mappings and the assets they point at
+    ├── attribution.py
+    ├── candidate_search.py
+    ├── candidates.py
+    ├── canonical.py
+    ├── capability.py
     ├── capture_bundle.py
-    │                     manifest-declared supplied documents and rendered-interface capture windows
-    ├── extraction.py     bounded attachment text evidence, separately attributed from source records
-    ├── derived.py        the rebuildable index over everything above
-    ├── text_projection.py deterministic reader-facing text for full-text search
-    ├── aliases.py        interchangeable ways of relating terms across languages
-    ├── measure.py        the measuring instrument, and its third answer
-    ├── chunking.py       pieces of a document that remember where they came from
-    ├── semantic.py       a derived, offline dense index over chunks, and its third answer
-    ├── semantic_index.py persistent rebuildable dense generations over derived record tips
-    ├── compile.py        assembling a pack, and recording what went into it
-    ├── ablation.py       comparing assembly strategies without combining the numbers
-    ├── capability.py     four kinds of authority, and the one door they are checked at
-    ├── candidates.py     append-only proposals that are explicitly not canon
-    ├── candidate_search.py bounded read-only search of proposals and cited sources
-    ├── reconciliation.py typed relations between source versions, proposed but never merged
-    ├── temporal.py       two time axes, supersession, and disagreement kept visible
-    ├── attribution.py    a claim key that carries where it came from
-    ├── adjudication.py   the human-gated boundary between a proposal and canon
-    ├── review.py         decision-file review console and append-only assertion versions
-    ├── discovery.py      bridge candidates, gates, and append-only rounds
-    ├── projection.py     renderer-independent knowledge graph projections
-    ├── graph_view.py     read-only sample export and a loopback server for the graph viewer
-    ├── graph_review.py   read-only review export of cited cards and a loopback server for the review explorer
-    ├── graph_drawer.py   the four drawer sections the review page reads for any node
-    ├── review_graph.py   deterministic v2 review dataset builder with verified snapshot citations
-    ├── operations.py     registration of the project's governed operations
-    ├── core.py           the one application service boundary
-    ├── cli.py            the command-line transport, generated from the catalogue
-    ├── mcp.py            the stdio JSON-RPC transport, generated from the catalogue
-    └── artifact.py       the portable proposal artifact; refused if it carries authority
-ui/
-├── src/
-│   ├── adapter/          projections read into the visual model, meaning kept sealed
-│   ├── engine/           renderer-independent visual model, layout, and the axes
-│   │                     of presentation: morphology, organization, detail, colour
-│   ├── scene/            every material, geometry, label and interaction value,
-│   │                     resolved once and handed to whichever renderer draws it
-│   ├── render2d/         the Sigma renderer, over WebGL; resolves its own model
-│   ├── render3f/         the Three.js / React Three Fiber renderer, orthographic
-│   │                     and perspective, over the shared scene model
-│   ├── render-common/    drawing shared by both renderers: morphologies, halos,
-│   │                     labels, beams, star field and the quality ladder
-│   ├── projection/       typed projections: Natural, Indra's Pearls, Fractal, Holographic
-│   ├── topology/         the Geometry Lab laws (Canopy, Julia, Sierpiński, Llull)
-│   │                     and their Indra compositions
-│   ├── fractal/          Canopy's certified IFS, and the Julia dynamics: Böttcher map,
-│   │                     inverse rays, community sectors
-│   ├── indra/            Indra's Pearls: complex arithmetic, Möbius maps, Schottky
-│   │                     groups and lazily opened levels
-│   ├── holographic/      the experimental Holographic view
-│   ├── review/           the review page: toolbar, density, drawer, status
-│   ├── viewer/           the earlier graph viewer
-│   └── comparison/       the controlled analysis across the three renderers
-├── test/                 unit, scene, renderer and browser-evidence suites
-├── review/               the review page's HTML shell
-└── tools/                documentation and gallery capture; not part of any suite
-demo/                     the synthetic dataset generator for the review page, and its tests
-tools/                    the commit-message contract, as an executable check
-tests/                    the Python suite described above
-benchmarks/               the measuring instrument's own reporting scripts
-docs/
-├── VOCABULARY.md              the technical and epistemic registers, and the map
-│                              between them; checked against the code by the suite
-├── INTEROPERABILITY.md        the Core contract and its two transports
-├── RENDERER-COMPARISON.md     three renderers over one semantic state
-├── CAP-14-COMPARISON.md       the 2D/3D controlled comparison, generated from evidence
-├── CAP-15-RETRIEVAL.md        the retrieval measurement, including what did not run
-├── cap15-retrieval-artifact.json
-│                              the artifact that measurement is generated from, so the
-│                              document can be checked against it rather than trusted
-├── GRAPH-REVIEW.md            the review explorer and its export
-├── GRAPH-VIEWER.md            the earlier graph viewer
-├── CANDIDATE-SEARCH.md        bounded read-only search of proposals
-├── views/                     the view architecture, formulas, manual and limits
-└── assets/                    the images in this document, and their manifests; gallery/ is the review page
-fixtures/
-└── synthetic/
-    ├── MANIFEST.jsonl    path and content digest per document
-    ├── GOLDEN.md         what a correct search must return, and why
-    ├── DISCOVERY.md      published candidate-lifecycle and discovery expectations
-    ├── corpus/           public, invented test documents
-    ├── bilingual/        the same subjects in two languages
-    ├── injection/        text that reads as an instruction, for the boundary tests
-    ├── export/           an invented assistant export, its files deliberately misnamed
-    ├── mapping-export/   an invented sharded conversation-mapping export, text files standing in for assets
-    ├── capture-bundle/   an invented manifest bundle with supplied documents and overlapping capture windows
-    └── projection/       fixed graphs the visual layer is measured against
+    ├── chunking.py
+    ├── cli.py
+    ├── compile.py
+    ├── config.py
+    ├── core.py
+    ├── derived.py
+    ├── discovery.py
+    ├── extraction.py
+    ├── graph_drawer.py
+    ├── graph_review.py
+    ├── graph_view.py
+    ├── identity.py
+    ├── ledger.py
+    ├── mapping_export.py
+    ├── mcp.py
+    ├── measure.py
+    ├── operations.py
+    ├── projection.py
+    ├── provenance.py
+    ├── reconciliation.py
+    ├── review.py
+    ├── review_graph.py
+    ├── semantic.py
+    ├── semantic_index.py
+    ├── snapshots.py
+    ├── sources.py
+    ├── temporal.py
+    ├── text_projection.py
+    └── untrusted.py
 ```
+
+</details>
+
+
+## Documentation
+
+- [Vocabulary](docs/VOCABULARY.md)
+- [Interoperability and transports](docs/INTEROPERABILITY.md)
+- [Renderer comparison](docs/RENDERER-COMPARISON.md)
+- [2D/3D comparison](docs/CAP-14-COMPARISON.md)
+- [Retrieval measurement](docs/CAP-15-RETRIEVAL.md)
+- [Graph review export and page](docs/GRAPH-REVIEW.md)
+- [Graph viewer](docs/GRAPH-VIEWER.md)
+- [Candidate search](docs/CANDIDATE-SEARCH.md)
+- [View architecture](docs/views/architecture.md)
+- [View manual](docs/views/manual.md)
+- [Geometry Lab](docs/views/GEOMETRY-LAB.md)
+- [Deferred views](docs/views/deferred-views.md)
+- [View limits](docs/views/limits.md)
+- [Synthetic demo and dataset schema](demo/README.md)
 
 ## Contributing
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md) covers how to run the checks and the one
-contract this project is strict about: every commit message has the same shape,
-and it is enforced mechanically over the whole history.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and repository contribution conventions.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT. See [LICENSE](LICENSE).
