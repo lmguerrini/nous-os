@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { DENSE_NEURAL_POINT_FLOOR_CSS_PX } from '../src/engine/presentation-options.ts';
 import { DENSE_SCENE_THRESHOLD, denseDrawingDensity, denseNodeScales, denseZoomBand,
@@ -81,6 +82,41 @@ test('one hidden node leaves the complete branch, while Custom keeps its own den
     assert.equal(usesDenseDrawingPolicy(nodeCount, nodeCount - 1, 'custom'), true);
     assert.equal(labNativeSizeLawApplies('julia', nodeCount, nodeCount - 1), true);
   }
+});
+
+test('density-prepared subsets compare their drawn nodes with the whole dataset', () => {
+  const cases = [
+    { name: 'Canopy Bilanciata', prepared: 2_504, total: 11_199, visible: 2_504,
+      density: 'balanced', complete: false, dense: false },
+    { name: 'Natural Custom 2,000', prepared: 2_000, total: 11_199, visible: 2_000,
+      density: 'custom', complete: false, dense: true },
+    { name: 'r4 Completa', prepared: 11_199, total: 11_199, visible: 11_199,
+      density: 'complete', complete: true, dense: true },
+    { name: 'larger Completa', prepared: 13_742, total: 13_742, visible: 13_742,
+      density: 'complete', complete: true, dense: true },
+    { name: 'larger Bilanciata', prepared: 3_000, total: 13_742, visible: 3_000,
+      density: 'balanced', complete: false, dense: false },
+  ] as const;
+  for (const row of cases) {
+    assert.equal(row.prepared, row.visible, `${row.name}: prepared scene matches drawn count`);
+    assert.equal(isCompleteDenseView(row.total, row.visible), row.complete, row.name);
+    assert.equal(usesDenseDrawingPolicy(row.total, row.visible, row.density), row.dense, row.name);
+    assert.equal(labNativeSizeLawApplies('julia', row.total, row.visible), !row.complete, row.name);
+    if (row.total === 11_199)
+      assert.equal(isCompleteDenseView(row.total, row.visible), oldIsReferenceCompleta(row.total, row.visible),
+        `${row.name}: approved r4 oracle`);
+  }
+});
+
+test('the page gives the view its witness total and all complete decisions consume it', () => {
+  const page = readFileSync(new URL('../src/review/v2-page.ts', import.meta.url), 'utf8');
+  const view = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
+  assert.match(page, /const totalNodes = datasetTotalNodeCount;/);
+  assert.match(page, /\.\.\.\(\{ density: this\.density,\s+datasetTotalNodeCount,/);
+  assert.match(view, /const datasetTotalNodeCount = input\.v2Prepared[\s\S]*?datasetTotalNodeCount \?\? Number\.NaN/);
+  assert.equal((view.match(/isCompleteDenseView\(datasetTotalNodeCount,/g) ?? []).length, 9);
+  assert.equal((view.match(/usesDenseDrawingPolicy\(datasetTotalNodeCount,/g) ?? []).length, 2);
+  assert.equal((view.match(/labNativeSizeLawApplies\(input\.labTopology, datasetTotalNodeCount,/g) ?? []).length, 2);
 });
 
 test('small complete fixtures keep every old decision', () => {

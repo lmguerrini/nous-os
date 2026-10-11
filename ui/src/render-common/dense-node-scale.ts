@@ -25,17 +25,17 @@ export type DenseNodeScale = {
 export const DENSE_SCENE_THRESHOLD = 1200;
 
 /** A complete dense view draws every node in its actual dataset. */
-export function isCompleteDenseView(nodeCount: number, visibleCount: number): boolean {
-  return Number.isSafeInteger(nodeCount) && nodeCount >= DENSE_SCENE_THRESHOLD
-    && visibleCount === nodeCount;
+export function isCompleteDenseView(totalNodeCount: number, visibleCount: number): boolean {
+  return Number.isSafeInteger(totalNodeCount) && totalNodeCount >= DENSE_SCENE_THRESHOLD
+    && visibleCount === totalNodeCount;
 }
 
 /** Compatibility name for callers and tests; it now means any complete dense dataset. */
 export const isReferenceCompleta = isCompleteDenseView;
 
 // D086-CUSTOM BEGIN: Custom shares the drawing safeguards; the reference maximum keeps its exact policy.
-export function usesDenseDrawingPolicy(nodeCount: number, visibleCount: number, density: string): boolean {
-  return isCompleteDenseView(nodeCount, visibleCount) || density === 'custom';
+export function usesDenseDrawingPolicy(totalNodeCount: number, visibleCount: number, density: string): boolean {
+  return isCompleteDenseView(totalNodeCount, visibleCount) || density === 'custom';
 }
 // D086-CUSTOM END
 

@@ -115,7 +115,7 @@ test('a law that starts inactive (Completa mount) stays silent until a Lab revis
 test('the product view enables the law from the Lab scene and the renderer reads it only in the native tier', () => {
   const view = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   // D086-F1 BEGIN
-  assert.match(view, /labNativeSizeLawApplies\(input\.labTopology, input\.data\.nodes\.length, state\.visible\.size\)/);
+  assert.match(view, /labNativeSizeLawApplies\(input\.labTopology, datasetTotalNodeCount, state\.visible\.size\)/);
   // D086-F1 END
   const renderer = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
   assert.match(renderer, /model\.graph\.order >= DENSE_SCENE_THRESHOLD\s+\? createNativeSizeLaw/);

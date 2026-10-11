@@ -4396,6 +4396,10 @@ export class V2Page {
             // D085-X9b BEGIN: all classic scene, route and status reads share the fixed law source.
             const source = this.sourceIndex();
             // D085-X9b END
+            // The density scene can be a prepared subset; the witness and drawing
+            // policy both use the full snapshot as their node denominator.
+            const datasetTotalNodeCount = canopy || this.lawActive()
+                ? this.lawIndex.nodes.length : source.nodes.length;
             const disclosed = this.visible();
             // D087-JULIA BEGIN
             const juliaFocus = this.juliaAtlasFocusParent();
@@ -5348,7 +5352,7 @@ export class V2Page {
                 const budgetTopology = this.budgetTopologyOf();
                 // D085-X9 BEGIN
                 const isLaw = !canopy && this.lawActive();
-                const totalNodes = canopy || isLaw ? this.lawIndex.nodes.length : source.nodes.length;
+                const totalNodes = datasetTotalNodeCount;
                 // D085-X9 END
                 // D085-S2 BEGIN: all topology rows account against the same kind of pool:
                 // the full snapshot's eligible source/containment relations for this reading.
@@ -5780,6 +5784,7 @@ export class V2Page {
                         } : {}),
                     // D087-SIZE END
                     ...({ density: this.density,
+                        datasetTotalNodeCount,
                         // D087-JULIA BEGIN: the atlas view learns whether Custom is at its maximum.
                         customAtMaximum: this.density === 'custom' && this.customAtMaximum() } as object), text: id => { const n = visibleById.get(id)!; const text = presentationText(n); return { short: canopy ? withHiddenMemberCount(text.short, hiddenCount(n)) : this.axes.organization === 'indra' ? withHiddenMemberCount(text.short, this.indraLabelHiddenCounts.get(id) ?? 0) : text.short, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {

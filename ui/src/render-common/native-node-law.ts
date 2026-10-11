@@ -11,9 +11,9 @@ import { stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
  */
 // D086-F1 BEGIN: an Indra composition retains its encoded pearl/member radii as inputs to this law.
 export function labNativeSizeLawApplies(labTopology: string | undefined,
-  nodeCount: number, visibleCount: number): boolean {
+  totalNodeCount: number, visibleCount: number): boolean {
   return labTopology !== undefined && labTopology !== "natural"
-    && !isCompleteDenseView(nodeCount, visibleCount);
+    && !isCompleteDenseView(totalNodeCount, visibleCount);
 }
 // D086-F1 END
 

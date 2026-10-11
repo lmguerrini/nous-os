@@ -664,6 +664,12 @@ export function brainRendererEnabled(axes: Axes, inputBrain?: boolean): boolean 
 }
 
 export const createProductView: CreateProductView = async (input) => {
+  // The v2 page supplies the full snapshot count. Its `data.nodes` is only the
+  // density-prepared scene, so it cannot decide whether the view is complete.
+  // The legacy page passes its full export directly.
+  const datasetTotalNodeCount = input.v2Prepared
+    ? (input as typeof input & { datasetTotalNodeCount?: number }).datasetTotalNodeCount ?? Number.NaN
+    : input.data.nodes.length;
   // D087-JULIA BEGIN
   const juliaAtlas = input.labTopology === 'julia' && input.labIndra === true;
   // D087-JULIA END
@@ -1794,7 +1800,7 @@ export const createProductView: CreateProductView = async (input) => {
           { zoomProgress: current / 6, screenDistanceNorm: denseFitDistanceNorm,
             // D087-JULIA BEGIN: atlas Custom at its maximum keeps Completa's radius law here too.
             nativeRadiusOnly: drawingDensityOf(witnessDensity, witnessCustomAtMaximum) === 'custom'
-              && !isCompleteDenseView(input.data.nodes.length, visible.size) });
+              && !isCompleteDenseView(datasetTotalNodeCount, visible.size) });
         // D086-CUSTOM END
         if (destroyed || morphologyInteraction.quality !== "full" || revision !== denseRefreshRevision
           || !handle || current !== denseZoomBand(handle.readCameraState().ratio, semanticFitRatio(handle.readCameraState().ratio))) return;
@@ -1991,12 +1997,12 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN
     // D086-CUSTOM BEGIN: Custom uses the drawing safeguards at every amount. At the
     // reference maximum it takes the original Completa arithmetic and cache path exactly.
-    const referenceCompleta = isCompleteDenseView(input.data.nodes.length, state.visible.size);
+    const referenceCompleta = isCompleteDenseView(datasetTotalNodeCount, state.visible.size);
     // D087-JULIA BEGIN: atlas Custom at its maximum draws as Completa; the pearl phase is
     // visible, so the reference visible-count test alone cannot say which law applies.
     const drawingDensity = drawingDensityOf(state.density, state.customAtMaximum ?? witnessCustomAtMaximum);
     const customDense = drawingDensity === 'custom' && !referenceCompleta;
-    const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
+    const denseDrawingPolicy = usesDenseDrawingPolicy(datasetTotalNodeCount,
       state.visible.size, drawingDensity);
     // D087-JULIA END
     morphologyInteraction.usesDenseDrawingPolicy = denseDrawingPolicy;
@@ -2170,7 +2176,7 @@ export const createProductView: CreateProductView = async (input) => {
       // D086-F1 BEGIN
       // D086-CUSTOM BEGIN: the native Lab tier must receive the capped radius directly;
       // its sparse-scene floor would otherwise grow a capped Custom point again.
-      ...(labNativeSizeLawApplies(input.labTopology, input.data.nodes.length, state.visible.size)
+      ...(labNativeSizeLawApplies(input.labTopology, datasetTotalNodeCount, state.visible.size)
         && !customDense
         ? { nativeNodeSizeLaw: true } : {}),
       // D086-CUSTOM END
@@ -2308,12 +2314,12 @@ export const createProductView: CreateProductView = async (input) => {
     // D082-A-NODES BEGIN
     // D086-CUSTOM BEGIN: Custom uses the drawing safeguards at every amount. At the
     // reference maximum it takes the original Completa arithmetic and cache path exactly.
-    const referenceCompleta = isCompleteDenseView(input.data.nodes.length, state.visible.size);
+    const referenceCompleta = isCompleteDenseView(datasetTotalNodeCount, state.visible.size);
     // D087-JULIA BEGIN: atlas Custom at its maximum draws as Completa; the pearl phase is
     // visible, so the reference visible-count test alone cannot say which law applies.
     const drawingDensity = drawingDensityOf(state.density, state.customAtMaximum ?? witnessCustomAtMaximum);
     const customDense = drawingDensity === 'custom' && !referenceCompleta;
-    const denseDrawingPolicy = usesDenseDrawingPolicy(input.data.nodes.length,
+    const denseDrawingPolicy = usesDenseDrawingPolicy(datasetTotalNodeCount,
       state.visible.size, drawingDensity);
     // D087-JULIA END
     // D087-SIZE13 BEGIN: only Neural uses the per-ID Completa reference.
@@ -2661,7 +2667,7 @@ export const createProductView: CreateProductView = async (input) => {
       // D086-CUSTOM BEGIN: the native Lab tier must receive the capped radius directly;
       // its sparse-scene floor would otherwise grow a capped Custom point again.
       // D087-SIZE BEGIN
-      ...(labNativeSizeLawApplies(input.labTopology, input.data.nodes.length, state.visible.size)
+      ...(labNativeSizeLawApplies(input.labTopology, datasetTotalNodeCount, state.visible.size)
         ? { nativeNodeSizeLaw: true } : {}),
       // D087-SIZE END
       // D086-CUSTOM END
@@ -2799,7 +2805,7 @@ export const createProductView: CreateProductView = async (input) => {
       selection: { ...DEFAULT_CALIBRATION.selection, focusDimFactorPermille: 600 } } } : {}),
     // D082-B1f BEGIN: preserve the small Canopy Completa radii in both prepared and mounted scenes.
     ...(axes.projection === '3d' && container.hasAttribute('data-fractal-rails-active')
-      && input.v2Prepared && isCompleteDenseView(input.data.nodes.length, visible.size)
+      && input.v2Prepared && isCompleteDenseView(datasetTotalNodeCount, visible.size)
       ? { calibration: canopyCompletaCalibration(DEFAULT_CALIBRATION) } : {}),
     // D082-B1f END
     morphology: axes.morphology,
@@ -2987,7 +2993,7 @@ export const createProductView: CreateProductView = async (input) => {
         points = juliaAtlas ? juliaAtlasMountedFitPoints(layoutContainers, axes.projection)
           : indraFullHierarchyFitPoints(layoutContainers, axes.projection);
       if (input.v2Prepared && axes.organization === 'natural' && axes.projection === '2d'
-        && isCompleteDenseView(input.data.nodes.length, visible.size))
+        && isCompleteDenseView(datasetTotalNodeCount, visible.size))
         points = naturalCompletaFitPoints(points);
       const brainSphere = three?.readBrainEnvelopeFramingSphere();
       if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
@@ -3193,7 +3199,7 @@ export const createProductView: CreateProductView = async (input) => {
       }
       // D087-SIZE END
       for (const members of denseMembersByRepresentative.values()) members.sort();
-      denseZoomProgress = isCompleteDenseView(input.data.nodes.length, nextVisible.size)
+      denseZoomProgress = isCompleteDenseView(datasetTotalNodeCount, nextVisible.size)
         ? denseZoomProgressForCamera(handle.readCameraState().ratio, fitRatio.get(cameraKeys().key))
         : canopyFullScene.zoomProgress;
     }
@@ -3613,7 +3619,7 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-B-CANOPYN BEGIN: split the full 3D Canopy policy from scene assembly.
       const canopyNeural3d = axes.projection === '3d' && axes.morphology === 'neural'
         && container.hasAttribute('data-fractal-rails-active')
-        && isCompleteDenseView(input.data.nodes.length, visible.size);
+        && isCompleteDenseView(datasetTotalNodeCount, visible.size);
       if (canopyNeural3d && perfMarksEnabled) performance.mark('d082-canopyn:draft:start');
       let draft = buildDrawnScene(anchors, undefined, true, undefined, false, undefined,
         labelBudget, canopyNeural3d);
@@ -3776,7 +3782,7 @@ export const createProductView: CreateProductView = async (input) => {
     // the preserved outlier witnesses otherwise shrink the disc to roughly one quarter.
     const fullNaturalCompletaFrame = input.v2Prepared && ids.length === visible.size
       && axes.organization === 'natural' && axes.projection === '2d'
-      && isCompleteDenseView(input.data.nodes.length, visible.size);
+      && isCompleteDenseView(datasetTotalNodeCount, visible.size);
     if (fullNaturalCompletaFrame) points = naturalCompletaFitPoints(points);
     // D082-A-DENSITY END
     if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
@@ -3861,7 +3867,7 @@ export const createProductView: CreateProductView = async (input) => {
     const fittedNeuralCompleta = ids.length === visible.size && lodMode
       && axes.organization === 'natural' && axes.projection === '2d'
       && axes.morphology === 'neural'
-      && isCompleteDenseView(input.data.nodes.length, visible.size);
+      && isCompleteDenseView(datasetTotalNodeCount, visible.size);
     const lifted = fittedNeuralCompleta ? drawnEdges.flatMap(edge => edge.v2
       ? [edge.v2 as import('./v2-relations.ts').LiftedRelation] : []) : [];
     const refreshed = fittedNeuralCompleta && lifted.length === drawnEdges.length
