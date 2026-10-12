@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import type { Coordinates } from '../engine/contract.ts';
 import { denseEdgeScreenDensities, naturalCompletaFitPoints } from '../render-common/dense-node-scale.ts';
 
@@ -30,10 +31,10 @@ export function neuralCompletaFirstSceneScreen(
   width: number, height: number,
 ) {
   const fit = naturalCompletaFitPoints([...anchors.values()]);
-  const minX = Math.min(...fit.map(point => point.x));
-  const maxX = Math.max(...fit.map(point => point.x));
-  const minY = Math.min(...fit.map(point => point.y));
-  const maxY = Math.max(...fit.map(point => point.y));
+  const minX = minOf(fit.map(point => point.x));
+  const maxX = maxOf(fit.map(point => point.x));
+  const minY = minOf(fit.map(point => point.y));
+  const maxY = maxOf(fit.map(point => point.y));
   const scale = Math.max(0.001, Math.min(Math.max(1, width) / Math.max(1e-6, maxX - minX),
     Math.max(1, height) / Math.max(1e-6, maxY - minY)));
   const screen = new Map([...anchors].map(([id, point]) =>

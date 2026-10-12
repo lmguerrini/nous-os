@@ -1,3 +1,4 @@
+import { maxOf } from '#render-common/array-aggregation.ts';
 import type { Coordinates } from "#engine/contract.ts";
 import type { OklchToken } from "#engine/tokens.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
@@ -169,7 +170,7 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
       // D081-P1E BEGIN: only three clustered principal trunks, with no new scene semantics.
       // D082-A-NEURAL BEGIN: the fixed three GPU slots span the real root directions.
       const trunks = neuralPrincipalTrunks(shape.trunks ?? []);
-      const maximum = Math.max(1, ...trunks.map(trunk => trunk.weight));
+      const maximum = maxOf(trunks.map(trunk => trunk.weight), 1);
       // D081-P1F BEGIN: pack the same shoulder strength as the 2D and 3D canvas frame.
       const lobes = trunks.map(trunk => ({ angle: Math.atan2(trunk.direction.y, trunk.direction.x),
         strength: neuralTrunkLobeStrength(trunk, maximum, shape.degree) }));

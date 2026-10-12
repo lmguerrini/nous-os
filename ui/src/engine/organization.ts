@@ -1,3 +1,4 @@
+import { maxOf } from '#render-common/array-aggregation.ts';
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import type { Coordinates, EngineGraph } from "#engine/contract.ts";
 import { aggregateDiscs, aggregateMemberships, layoutAnchors } from "#engine/layout.ts";
@@ -100,14 +101,11 @@ export function indraOrganization(
       // Review anchors may be supplied by the export, so the enclosing disc must
       // follow those anchors instead of a separately computed layout.
       const radius = windowGeometryFromAnchors
-        ? Math.max(
-            calibration.aggregate.windowPaddingPx,
-            ...disc.members.map((id) => {
+        ? maxOf(disc.members.map((id) => {
               const point = anchors.get(id);
               if (!point) throw new TypeError("missing window member anchor");
               return Math.hypot(point.x - center.x, point.y - center.y) + calibration.aggregate.windowPaddingPx;
-            }),
-          )
+            }), calibration.aggregate.windowPaddingPx)
         : disc.radius;
       return {
         id: disc.id,
@@ -607,10 +605,8 @@ function settleSatellitePositions(
 ): ReadonlyMap<string, Vector> {
   const positions = new Map<string, Vector>();
   const overallCenter = centroid([...fixedPositions.values()]);
-  const outerRadius = Math.max(
-    calibration.layout.idealEdgeLengthPx,
-    ...windows.map((window) => planarDistance(window.center, overallCenter) + window.radius),
-  ) + calibration.layout.idealEdgeLengthPx;
+  const outerRadius = maxOf(windows.map((window) => planarDistance(window.center, overallCenter) + window.radius),
+    calibration.layout.idealEdgeLengthPx) + calibration.layout.idealEdgeLengthPx;
   for (const [index, id] of satelliteIds.entries()) {
     const neighborPositions = requiredNeighbors(neighborsById, id)
       .map((neighborId) => fixedPositions.get(neighborId))

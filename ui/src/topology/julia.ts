@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 /** Julia external coordinates; pure and safe to run in a worker. */
 import type { GuideCurve, TopologyDimension, TopologyLaw, TopologyLayout, TopologyNode, TopologySnapshot, TopologyWitness } from './contract.ts';
 import type { Point3 } from '../review/layout-v2.ts';
@@ -203,7 +204,7 @@ function layout(snapshot: TopologySnapshot, dimension: TopologyDimension): Topol
     }
   }
   const merged = mergeJuliaJobs(known, dynamics, jobs);
-  const maxResidual = Math.max(...[...merged.witnesses.values()].map(w => Number(w.values.inverseResidual)));
+  const maxResidual = maxOf([...merged.witnesses.values()].map(w => Number(w.values.inverseResidual)));
   return { positions: merged.positions, witnesses: merged.witnesses, guides: guidesFor(dynamics, sectors, dimension),
     containers: [], diagnostics: [
       { code: 'global-p', value: dynamics.power, acceptable: true },
@@ -243,8 +244,8 @@ export const juliaLaw: TopologyLaw = {
     const positions = new Map(children.map(node => [node.id, full.positions.get(node.id)!]));
     const witnesses = new Map(children.map(node => [node.id, full.witnesses.get(node.id)!]));
     const points = [...positions.values()];
-    const minX = Math.min(...points.map(p => p.x)), maxX = Math.max(...points.map(p => p.x));
-    const minY = Math.min(...points.map(p => p.y)), maxY = Math.max(...points.map(p => p.y));
+    const minX = minOf(points.map(p => p.x)), maxX = maxOf(points.map(p => p.x));
+    const minY = minOf(points.map(p => p.y)), maxY = maxOf(points.map(p => p.y));
     const pad = Math.max(maxX - minX, maxY - minY) * 0.1;
     // D085-S5 BEGIN: clip each global guide segment to this data-space window;
     // the composer then applies the same similarity as it does to real children.

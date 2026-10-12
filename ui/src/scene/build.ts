@@ -1,3 +1,4 @@
+import { maxOf } from '#render-common/array-aggregation.ts';
 import type { PresentationOptions } from "#engine/presentation-options.ts";
 import { tintToken } from "#engine/presentation-options.ts";
 import type { CalibrationProfile, MorphologyMaterial as CalibrationMorphologyMaterial } from "#engine/calibration.ts";
@@ -1019,10 +1020,8 @@ function resolveCondenseGeometry(
   // Every node declares the identical ceiling for Condense (see motion-grammar.ts's own condense
   // case), so any one of them names the whole phase's own envelope; taking the maximum rather than an
   // arbitrary index keeps this correct even if that uniformity were ever relaxed.
-  const envelopeCeilingPermille = Math.max(
-    0,
-    ...scene.nodes.map((node) => SCENE_PERMILLE_SCALE - requiredNodeMotionModulation(nodeModulationById, node.id).opacityPermille),
-  );
+  const envelopeCeilingPermille = maxOf(scene.nodes.map((node) =>
+    SCENE_PERMILLE_SCALE - requiredNodeMotionModulation(nodeModulationById, node.id).opacityPermille), 0);
   const opacityFadeCeilingPermille = Math.round((envelopeCeilingPermille * CONDENSE_OPACITY_FADE_CEILING_FRACTION_PERMILLE) / SCENE_PERMILLE_SCALE);
   const nodes = new Map<string, MotionGeometryNodeResolution>();
   for (const node of scene.nodes) {
@@ -1069,7 +1068,7 @@ function resolvePeripherality(
   centroid: Coordinates,
 ): { readonly peripheralityById: ReadonlyMap<string, number> } {
   const distanceById = new Map(scene.nodes.map((node) => [node.id, Math.hypot(node.position.x - centroid.x, node.position.y - centroid.y)] as const));
-  const maxDistance = Math.max(0, ...distanceById.values());
+  const maxDistance = maxOf(distanceById.values(), 0);
   const peripheralityById = new Map(scene.nodes.map((node) => {
     const distance = requiredDistance(distanceById, node.id);
     return [node.id, maxDistance === 0 ? 0 : distance / maxDistance] as const;
@@ -1168,14 +1167,14 @@ function resolveStructuralRank(graph: EngineGraph): StructuralRank {
   // A node the governed relation set never reaches from the hub (a disconnected component) is placed
   // one hop beyond the farthest node the traversal above did reach: it resolves last, deterministically,
   // without fabricating a distance the relation set itself never establishes.
-  const reachedMaxHop = Math.max(0, ...hopById.values());
+  const reachedMaxHop = maxOf(hopById.values(), 0);
   const unreachedHop = reachedMaxHop + 1;
   for (const node of graph.nodes) {
     if (!hopById.has(node.id)) {
       hopById.set(node.id, unreachedHop);
     }
   }
-  const maxHop = Math.max(1, ...hopById.values());
+  const maxHop = maxOf(hopById.values(), 1);
   const rankById = new Map<string, number>([...hopById].map(([id, hop]) => [id, hop / maxHop] as const));
   return { rankById, parentById };
 }

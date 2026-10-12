@@ -1,3 +1,4 @@
+import { appendAll } from '#render-common/array-aggregation.ts';
 /** Llull — combinatorial topology governed by the verified Llullian nine-domain rule;
  * not a fractal and not an IFS. Circular combinatorial layout law (D-082 P8, D-084).
  * Implements steps 2 and 5 of the Llull rule
@@ -489,7 +490,7 @@ function lullLayout2d(snapshot: TopologySnapshot): TopologyLayout {
       });
     }
   }
-  guides.push(...lullPairChords);
+  appendAll(guides, lullPairChords);
   // D085-S4 END
   // D085-S4 BEGIN: the evidenced compartments'
   // bundles, last in the list so the guide layer strokes them above the dashes.
@@ -497,7 +498,7 @@ function lullLayout2d(snapshot: TopologySnapshot): TopologyLayout {
   // never follows the active density or reading, which filter only the individual
   // drawn chords.
   const pairBundles = lullPairBundles(index, placements, lullPairRelationIds(snapshot, index), () => 0);
-  guides.push(...pairBundles);
+  appendAll(guides, pairBundles);
   const bundleAudit = {
     count: pairBundles.length,
     total: pairBundles.reduce((sum, bundle) => sum + bundle.weight, 0),
@@ -694,7 +695,7 @@ function lullLayout3d(snapshot: TopologySnapshot): TopologyLayout {
   // aggregate sits at the table it belongs to, above the lifted relation ink.
   const pairBundles = lullPairBundles(index, placements, lullPairRelationIds(snapshot, index),
     (a, b) => lullPairClass(letterIndexOf.get(index.roots[a]!.id)!, letterIndexOf.get(index.roots[b]!.id)!) * LULL_3D_LIFT);
-  guides.push(...pairBundles);
+  appendAll(guides, pairBundles);
   const bundleAudit = {
     count: pairBundles.length,
     total: pairBundles.reduce((sum, bundle) => sum + bundle.weight, 0),

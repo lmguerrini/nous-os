@@ -1,3 +1,4 @@
+import { appendAll } from '#render-common/array-aggregation.ts';
 import { ellipsizeTextKeepCount, readableTruncatedText, stripTrailingSeparators } from "./container-canvas.ts";
 export type LabelReason = "domain" | "main" | "zoom" | "selected" | "neighbour" | "hover";
 export type ViewportRect = { readonly left: number; readonly top: number; readonly width: number; readonly height: number };
@@ -615,7 +616,7 @@ export function placeLabels(
       .map(([x, y]) => [x, y] as [number, number]);
     // Bounded fallback rings keep an important label near its own node even in a dense cluster.
     // Every displaced slot has an explicit leader; no global "free-space" relocation is used.
-    if (c.tier1) for (const extra of [32, 48, 64]) attempts.push(...discOffsets(radius + extra));
+    if (c.tier1) for (const extra of [32, 48, 64]) appendAll(attempts, discOffsets(radius + extra));
     const rectAt = (dx: number, dy: number): ViewportRect => ({
       left: c.x + dx + (dx < 0 ? -size.width : 0),
       top: c.y + dy + (dy < 0 ? -size.height : 0),

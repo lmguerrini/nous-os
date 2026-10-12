@@ -2044,7 +2044,9 @@ export class V2Page {
     // D085-S5 END
     private run(action: () => Promise<void>): Promise<void> {
         const task = this.pending.then(action);
-        this.pending = task.catch(() => { });
+        this.pending = task.catch(error => {
+            if (!mountFailureLogged) console.error('V2 page job failed', error);
+        });
         return task.catch(e => {
             // D085-S5 BEGIN: every displayed failure has an object identity for ownership.
             const message = e instanceof Error ? e.message : String(e);

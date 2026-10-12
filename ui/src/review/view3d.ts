@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
@@ -138,7 +139,7 @@ export function mount3d(host: HTMLElement, data: ReviewExport, nodes: ReviewNode
     cameraPosition() { return { x: camera.position.x, y: camera.position.y, z: camera.position.z, settled: focusTarget === null }; },
     renderedFrames() { return renderedFrames; },
     depthStats() { const values = meshes.map((mesh) => mesh.position.z); const mean = values.reduce((a, b) => a + b, 0) / Math.max(1, values.length);
-      return { min: Math.min(...values), max: Math.max(...values), std: Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, values.length)) }; },
+      return { min: minOf(values), max: maxOf(values), std: Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, values.length)) }; },
     destroy() { cancelAnimationFrame(frame); observer.disconnect(); controls.dispose(); clearEmphasis(); for (const mesh of meshes) { mesh.geometry.dispose(); (mesh.material as THREE.Material).dispose(); } for (const line of edgeLines) { line.geometry.dispose(); (line.material as THREE.Material).dispose(); } renderer.dispose(); host.replaceChildren(); },
   };
 }

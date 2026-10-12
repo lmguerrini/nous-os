@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 /**
  * Fractal projection assembly, cache digest and LOD hints (tranche E6).
  *
@@ -610,7 +611,7 @@ export const fractalProjection: MathematicalProjection<'fractal'> = {
     }
     const visualRelations: VisualRelation[] = [];
     const priorityByVisualRelationId: Record<string, number> = {};
-    const largestBundle = Math.max(1, ...[...bundles.values()].map(bundle => bundle.edgeIds.length));
+    const largestBundle = maxOf([...bundles.values()].map(bundle => bundle.edgeIds.length), 1);
     for (const [key, bundle] of [...bundles].sort(([a], [b]) => codepointCompare(a, b))) {
       const visualId = `visual:fractal:route:${encodeURIComponent(key)}`;
       const edgeIds = bundle.edgeIds.sort(codepointCompare);
@@ -688,13 +689,13 @@ export const fractalProjection: MathematicalProjection<'fractal'> = {
     };
     const xs = Object.values(parameters.dimension === '2d' ? positions2 : positions3).map(point => point.x);
     const ys = Object.values(parameters.dimension === '2d' ? positions2 : positions3).map(point => point.y);
-    const canvasDiagonal = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    const canvasDiagonal = Math.hypot(maxOf(xs) - minOf(xs), maxOf(ys) - minOf(ys));
     const position = (id: string): Vec2 | Vec3 => parameters.dimension === '2d' ? positions2[id]! : positions3[id]!;
-    const maxRouteLength = Math.max(0, ...visualRelations.map(route => {
+    const maxRouteLength = maxOf(visualRelations.map(route => {
       const a = position(route.source);
       const b = position(route.target);
       return Math.hypot(a.x - b.x, a.y - b.y);
-    }));
+    }), 0);
 
     const fields: readonly MathematicalField[] = [{
       id: FRACTAL_POTENTIAL_FIELD_ID, kind: 'scalar', domain: 'node', values: fieldValues,

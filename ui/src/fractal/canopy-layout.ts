@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 /** Experimental C2 canopy. Binary words are addresses in an IFS, never semantic nodes. */
 import type { GraphEdge } from '../review/graph-v2.ts';
 import type { Reading } from '../review/view-contract.ts';
@@ -214,12 +215,12 @@ export function computeCanopyLayout(nodes: readonly CanopyInputNode[], edges: re
   // Centre the single canopy as one object, preserving every similarity and shared prefix.
   const raw = [...positions.values()].map(row => row.point);
   const centre = (key: keyof CanopyPoint) =>
-    (Math.min(0, ...raw.map(value => value[key])) + Math.max(0, ...raw.map(value => value[key]))) / 2;
+    (minOf(raw.map(value => value[key]), 0) + maxOf(raw.map(value => value[key]), 0)) / 2;
   const cx = centre('x'), cy = centre('y'), cz = centre('z');
   const shift = (value: CanopyPoint): CanopyPoint => ({ x: value.x - cx, y: value.y - cy, z: value.z - cz });
   const centre3d = (key: keyof CanopyPoint) => {
     const values = [...positions.values()].map(row => row.point3d[key]);
-    return (Math.min(0, ...values) + Math.max(0, ...values)) / 2;
+    return (minOf(values, 0) + maxOf(values, 0)) / 2;
   };
   const c3x = centre3d('x'), c3y = centre3d('y'), c3z = centre3d('z');
   const shift3d = (value: CanopyPoint): CanopyPoint =>
@@ -322,7 +323,7 @@ export function computeCanopyLayout(nodes: readonly CanopyInputNode[], edges: re
   });
   const coordinates = [...positions.values()].map(row => row.point);
   const extent = (key: keyof CanopyPoint): readonly [number, number] => [
-    Math.min(0, ...coordinates.map(value => value[key])), Math.max(0, ...coordinates.map(value => value[key])) ];
+    minOf(coordinates.map(value => value[key]), 0), maxOf(coordinates.map(value => value[key]), 0) ];
   const digest = digestOf([...positions.values()].sort((a, b) => compare(a.id, b.id))
     .map(row => `${row.id}|${row.parentId}|${row.address}|${row.point.x.toFixed(8)}|${row.point.y.toFixed(8)}|${row.point3d.x.toFixed(8)}|${row.point3d.y.toFixed(8)}|${row.point3d.z.toFixed(8)}`));
   return { positions, lineageIds, rails: railRows, railLoad, relationBundles,

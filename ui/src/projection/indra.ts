@@ -1,3 +1,4 @@
+import { appendAll, maxOf, minOf } from '#render-common/array-aggregation.ts';
 /**
  * Indra's Pearls projection assembly (D-073 row D7).
  *
@@ -688,7 +689,7 @@ export const indrasPearlsProjection: MathematicalProjection<'indras-pearls'> = {
         });
       }
     }
-    levels.push(...stubLevels);
+    appendAll(levels, stubLevels);
     levels.sort((left, right) => (left.depth - right.depth) || compareCodepointIds(left.id, right.id));
 
     // Phase 7: positions inside each loaded pearl, containers for every displayed pearl.
@@ -708,8 +709,8 @@ export const indrasPearlsProjection: MathematicalProjection<'indras-pearls'> = {
       }));
     }
     const importanceValues = allMembers.map(member => member.importance);
-    const minImportance = Math.min(...importanceValues);
-    const maxImportance = Math.max(...importanceValues);
+    const minImportance = minOf(importanceValues);
+    const maxImportance = maxOf(importanceValues);
     const normalizedImportance = (importance: number): number =>
       maxImportance > minImportance ? (importance - minImportance) / (maxImportance - minImportance) : 0.5;
     const representativeOf = new Map<string, NodeId>();
@@ -812,7 +813,7 @@ export const indrasPearlsProjection: MathematicalProjection<'indras-pearls'> = {
     }
     const visualRelations: VisualRelation[] = [];
     const priorityByVisualRelationId: Record<string, number> = {};
-    const largestBundle = Math.max(1, ...[...bundles.values()].map(bundle => bundle.edgeIds.length));
+    const largestBundle = maxOf([...bundles.values()].map(bundle => bundle.edgeIds.length), 1);
     for (const [visualId, bundle] of [...bundles.entries()].sort(([left], [right]) => compareCodepointIds(left, right))) {
       visualRelations.push({
         visualId, kind: 'lifted-route', semantic: false,
@@ -887,7 +888,7 @@ export const indrasPearlsProjection: MathematicalProjection<'indras-pearls'> = {
     const depthCounts = new Map<number, number>();
     for (const entry of displayed.values()) depthCounts.set(entry.pearl.depth, (depthCounts.get(entry.pearl.depth) ?? 0) + 1);
     const crossEdgeCount = visualRelations.reduce((sum, relation) => sum + relation.count, 0);
-    const maxWordCondition = Math.max(1, ...[...displayed.values()].map(entry => entry.condition));
+    const maxWordCondition = maxOf([...displayed.values()].map(entry => entry.condition), 1);
     const witness = group === null ? null : schottkyWitnessFacts(group);
     const diagnostics: ProjectionResult['diagnostics'] = [
       { code: 'indra:geometry-mode', value: plan.mode, acceptable: true },

@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import * as THREE from "three";
 import { Camera as SigmaCamera } from "sigma";
 import { DEFAULT_SETTINGS } from "sigma/settings";
@@ -670,8 +671,8 @@ export function resolvedNodeBounds(points: readonly Coordinates[]): Render3fFram
   const xValues = points.map((point) => point.x);
   const yValues = points.map((point) => point.y);
   return {
-    x: nonDegenerateExtent(Math.min(...xValues), Math.max(...xValues)),
-    y: nonDegenerateExtent(Math.min(...yValues), Math.max(...yValues)),
+    x: nonDegenerateExtent(minOf(xValues), maxOf(xValues)),
+    y: nonDegenerateExtent(minOf(yValues), maxOf(yValues)),
   };
 }
 
@@ -681,7 +682,7 @@ export function resolvedWorldCenterZ(points: readonly Coordinates[]): number {
     return 0;
   }
   const depths = points.map((point) => point.z);
-  return (Math.min(...depths) + Math.max(...depths)) / bisectionDivisor();
+  return (minOf(depths) + maxOf(depths)) / bisectionDivisor();
 }
 
 function updateOrthographicCamera(

@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 /** D-073 tranche F, row F9 (model half) — the Holographic error and baseline model.
  *
  * The measurable part-to-whole claim needs an explicit error model. For each sampled
@@ -241,7 +242,7 @@ export function holographicErrorModel(witnesses: readonly RegionReconstructionWi
   const heldOutErrors = recovered.map(witness => witness.heldOutRelativeError).filter((value): value is number => value !== null);
   const improvements = recovered.map(witness => witness.improvementOverStatedBaseline).filter((value): value is number => value !== null);
   const medianImprovement = median(improvements);
-  const worstImprovement = improvements.length > 0 ? Math.min(...improvements) : null;
+  const worstImprovement = improvements.length > 0 ? minOf(improvements) : null;
   const beatsCount = recovered.filter(witness => witness.beatsStatedBaseline === true).length;
   const beatingErrors = recovered.filter(witness => witness.beatsStatedBaseline === true)
     .map(witness => witness.heldOutRelativeError).filter((value): value is number => value !== null);
@@ -252,7 +253,7 @@ export function holographicErrorModel(witnesses: readonly RegionReconstructionWi
       : recovered.length === 0
         ? `Testimone di ricostruzione olografica: campionate ${String(witnesses.length)} regioni; tutte rifiutate per rango insufficiente. Non si formula alcuna affermazione di ricostruzione né sulla topologia.`
         : `Testimone di ricostruzione olografica: modello a banda limitata ricostruito in ${String(recovered.length)}/${String(witnesses.length)} regioni campionate ` +
-          `(errore relativo mediano sui dati esclusi ${format(median(heldOutErrors))}, errore massimo ${format(heldOutErrors.length > 0 ? Math.max(...heldOutErrors) : null)}); ` +
+          `(errore relativo mediano sui dati esclusi ${format(median(heldOutErrors))}, errore massimo ${format(heldOutErrors.length > 0 ? maxOf(heldOutErrors) : null)}); ` +
           `${String(beatsCount)}/${String(comparedCount)} superano la baseline dichiarata della media globale ` +
           `(miglioramento mediano ${format(medianImprovement)}, minimo ${format(worstImprovement)}); ` +
           `${String(witnesses.length - recovered.length)} regioni rifiutate per rango insufficiente. ${EXPLAIN_NO_TOPOLOGY_CLAIM}`;
@@ -263,7 +264,7 @@ export function holographicErrorModel(witnesses: readonly RegionReconstructionWi
     recoveredCount: recovered.length,
     refusedCount: witnesses.length - recovered.length,
     medianHeldOutRelativeError: median(heldOutErrors),
-    worstHeldOutRelativeError: heldOutErrors.length > 0 ? Math.max(...heldOutErrors) : null,
+    worstHeldOutRelativeError: heldOutErrors.length > 0 ? maxOf(heldOutErrors) : null,
     medianImprovementOverStatedBaseline: medianImprovement,
     worstImprovementOverStatedBaseline: worstImprovement,
     beatsStatedBaselineCount: beatsCount,

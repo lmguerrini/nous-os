@@ -1,3 +1,4 @@
+import { appendAll, maxOf, minOf } from '#render-common/array-aggregation.ts';
 import { createVisualState } from "../engine/visual-state.ts";
 // D082-A-PERF BEGIN: activate the renderer → HUD sink before a view presents its first frame.
 import './render-readiness.ts';
@@ -2054,10 +2055,10 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-NCOMPLETA3 BEGIN
       const projectedAnchors = visibleNodes.map(node => firstNeuralScreen?.screen.get(node.id)
         ?? (handle ? handle.graphToViewport(anchors.get(node.id)!) : projectForSize(anchors.get(node.id)!)));
-      const minX = reuseDenseFit ? 0 : Math.min(...projectedAnchors.map(point => point.x));
-      const maxX = reuseDenseFit ? 0 : Math.max(...projectedAnchors.map(point => point.x));
-      const minY = reuseDenseFit ? 0 : Math.min(...projectedAnchors.map(point => point.y));
-      const maxY = reuseDenseFit ? 0 : Math.max(...projectedAnchors.map(point => point.y));
+      const minX = reuseDenseFit ? 0 : minOf(projectedAnchors.map(point => point.x));
+      const maxX = reuseDenseFit ? 0 : maxOf(projectedAnchors.map(point => point.x));
+      const minY = reuseDenseFit ? 0 : minOf(projectedAnchors.map(point => point.y));
+      const maxY = reuseDenseFit ? 0 : maxOf(projectedAnchors.map(point => point.y));
       const span = Math.max(1, Math.hypot(maxX - minX, maxY - minY));
       const screenScale = handle || firstNeuralScreen ? 1 : Math.min(1120 / Math.max(1, maxX - minX), 720 / Math.max(1, maxY - minY));
       if (!reuseDenseFit) denseFitDistanceNorm = new Map(visibleNodes.map(node => {
@@ -2398,10 +2399,10 @@ export const createProductView: CreateProductView = async (input) => {
       // D082-A-NCOMPLETA3 BEGIN
       const projectedAnchors = visibleNodes.map(node => firstNeuralScreen?.screen.get(node.id)
         ?? (handle ? handle.graphToViewport(anchors.get(node.id)!) : projectForSize(anchors.get(node.id)!)));
-      const minX = reuseDenseFit ? 0 : Math.min(...projectedAnchors.map(point => point.x));
-      const maxX = reuseDenseFit ? 0 : Math.max(...projectedAnchors.map(point => point.x));
-      const minY = reuseDenseFit ? 0 : Math.min(...projectedAnchors.map(point => point.y));
-      const maxY = reuseDenseFit ? 0 : Math.max(...projectedAnchors.map(point => point.y));
+      const minX = reuseDenseFit ? 0 : minOf(projectedAnchors.map(point => point.x));
+      const maxX = reuseDenseFit ? 0 : maxOf(projectedAnchors.map(point => point.x));
+      const minY = reuseDenseFit ? 0 : minOf(projectedAnchors.map(point => point.y));
+      const maxY = reuseDenseFit ? 0 : maxOf(projectedAnchors.map(point => point.y));
       const span = Math.max(1, Math.hypot(maxX - minX, maxY - minY));
       const screenScale = handle || firstNeuralScreen ? 1 : Math.min(1120 / Math.max(1, maxX - minX), 720 / Math.max(1, maxY - minY));
       if (!reuseDenseFit) denseFitDistanceNorm = new Map(visibleNodes.map(node => {
@@ -2514,10 +2515,10 @@ export const createProductView: CreateProductView = async (input) => {
     const fitMarkPoints = axes.organization === 'natural' && axes.projection === '2d'
       && axes.morphology === 'neural' ? naturalCompletaFitPoints(allMarkPoints) : allMarkPoints;
     const xValues = fitMarkPoints.map(point => point.x), yValues = fitMarkPoints.map(point => point.y);
-    const minMarkX = xValues.length ? Math.min(...xValues) : 0;
-    const maxMarkX = xValues.length ? Math.max(...xValues) : 1;
-    const minMarkY = yValues.length ? Math.min(...yValues) : 0;
-    const maxMarkY = yValues.length ? Math.max(...yValues) : 1;
+    const minMarkX = xValues.length ? minOf(xValues) : 0;
+    const maxMarkX = xValues.length ? maxOf(xValues) : 1;
+    const minMarkY = yValues.length ? minOf(yValues) : 0;
+    const maxMarkY = yValues.length ? maxOf(yValues) : 1;
     const provisionalScale = Math.min(localRect().width * 0.92 / Math.max(1, maxMarkX - minMarkX),
       localRect().height * 0.92 / Math.max(1, maxMarkY - minMarkY));
     const markScale = (point: Coordinates) => axes.projection === '2d'
@@ -2571,10 +2572,10 @@ export const createProductView: CreateProductView = async (input) => {
         });
         const screenXs = fullScreenPoints.map(item => item.screen.x);
         const screenYs = fullScreenPoints.map(item => item.screen.y);
-        const screenMinX = screenXs.length ? Math.min(...screenXs) : 0;
-        const screenMaxX = screenXs.length ? Math.max(...screenXs) : 1;
-        const screenMinY = screenYs.length ? Math.min(...screenYs) : 0;
-        const screenMaxY = screenYs.length ? Math.max(...screenYs) : 1;
+        const screenMinX = screenXs.length ? minOf(screenXs) : 0;
+        const screenMaxX = screenXs.length ? maxOf(screenXs) : 1;
+        const screenMinY = screenYs.length ? minOf(screenYs) : 0;
+        const screenMaxY = screenYs.length ? maxOf(screenYs) : 1;
         const fullScreenScale = handle ? 1 : Math.min(1120 / Math.max(1, screenMaxX - screenMinX),
           720 / Math.max(1, screenMaxY - screenMinY));
         const screenSpan = Math.max(1, Math.hypot(screenMaxX - screenMinX, screenMaxY - screenMinY));
@@ -2988,7 +2989,7 @@ export const createProductView: CreateProductView = async (input) => {
     const openingPoints = (): Coordinates[] => {
       let points = input.data.nodes.filter((n) => visible.has(n.id)).map((n) => anchors.get(n.id)!).filter(Boolean);
       if (axes.projection === '3d' && axes.organization === 'natural')
-        points.push(...framingVolumePoints(points));
+        appendAll(points, framingVolumePoints(points));
       if (axes.organization === 'indra' && layoutContainers)
         points = juliaAtlas ? juliaAtlasMountedFitPoints(layoutContainers, axes.projection)
           : indraFullHierarchyFitPoints(layoutContainers, axes.projection);
@@ -2996,7 +2997,7 @@ export const createProductView: CreateProductView = async (input) => {
         && isCompleteDenseView(datasetTotalNodeCount, visible.size))
         points = naturalCompletaFitPoints(points);
       const brainSphere = three?.readBrainEnvelopeFramingSphere();
-      if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
+      if (brainSphere) appendAll(points, framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
       return points;
     };
     mountOpeningCamera = openingCamera;
@@ -3769,7 +3770,7 @@ export const createProductView: CreateProductView = async (input) => {
     const layout = restrictAnchors(fullAnchor(axes), visible);
     let points = ids.map((id) => layout.get(id) ?? byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
     if (ids.length === visible.size && axes.projection === '3d' && axes.organization === 'natural')
-      points.push(...framingVolumePoints(points));
+      appendAll(points, framingVolumePoints(points));
     // D-078 W6: «Adatta» includes the glass; focus and «Centra» keep their prior framing.
     const brainSphere = ids.length === visible.size ? three?.readBrainEnvelopeFramingSphere() : null;
     const fullIndraFrame = ids.length === visible.size && axes.organization === 'indra' && layoutContainers;
@@ -3785,9 +3786,9 @@ export const createProductView: CreateProductView = async (input) => {
       && isCompleteDenseView(datasetTotalNodeCount, visible.size);
     if (fullNaturalCompletaFrame) points = naturalCompletaFitPoints(points);
     // D082-A-DENSITY END
-    if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
+    if (brainSphere) appendAll(points, framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
     if (ids.length === visible.size && three && !fullIndraFrame && !fullNaturalCompletaFrame)
-      points.push(...(lodMode
+      appendAll(points, (lodMode
         ? three.readRelationGeometryWitnesses().filter((relation) => drawnEdgeIds.has(relation.id))
         : three.readRelationGeometryWitnesses()).map((relation) => relation.controlPoint).filter(finitePoint));
     // D086-NAT BEGIN: Adatta replays this scene's fresh mount subjects and
@@ -4212,8 +4213,8 @@ export const createProductView: CreateProductView = async (input) => {
           radius: w.radius,
         })),
         depth: {
-          zMin: zs.length ? Math.min(...zs) : 0,
-          zMax: zs.length ? Math.max(...zs) : 0,
+          zMin: zs.length ? minOf(zs) : 0,
+          zMax: zs.length ? maxOf(zs) : 0,
           zStd: Math.sqrt(mean(zs.map((z) => (z - zMean) ** 2))),
         },
         anchorsSource: input.v2Prepared ? "v2-layout" :

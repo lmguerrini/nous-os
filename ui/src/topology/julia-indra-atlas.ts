@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 // D087-JULIA BEGIN
 /** A progressive, source-only Julia atlas. No chart point is a new graph node. */
 import type { Point3, LayoutContainer } from '../review/layout-v2.ts';
@@ -143,8 +144,8 @@ function segmentTouchesViewport(a: Readonly<{ x: number; y: number }>,
 
 /** The same certified data-space window used by Julia's restricted chart. */
 function chartGuidesFromFull(full: TopologyLayout, points: readonly Point3[]): GuideCurve[] {
-  const minX = Math.min(...points.map(p => p.x)), maxX = Math.max(...points.map(p => p.x));
-  const minY = Math.min(...points.map(p => p.y)), maxY = Math.max(...points.map(p => p.y));
+  const minX = minOf(points.map(p => p.x)), maxX = maxOf(points.map(p => p.x));
+  const minY = minOf(points.map(p => p.y)), maxY = maxOf(points.map(p => p.y));
   const pad = Math.max(maxX - minX, maxY - minY) * 0.1;
   return full.guides.flatMap(guide => guide.points.slice(1).flatMap((b, i) => {
     const a = guide.points[i]!;
@@ -207,8 +208,8 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
   for (const id of nodes.keys()) count(id);
   const eligible = [...children].filter(([, ids]) => ids.length >= 3).map(([id]) => id)
     .sort((a, b) => nodes.get(a)!.level - nodes.get(b)!.level || compare(a, b));
-  const fullExtent = Math.max(1, ...[...full.positions.values()].map(p => Math.hypot(p.x, p.y)),
-    ...full.guides.flatMap(g => g.points.map(p => Math.hypot(p.x, p.y))));
+  const fullExtent = maxOf(full.guides.flatMap(g => g.points.map(p => Math.hypot(p.x, p.y))),
+    maxOf([...full.positions.values()].map(p => Math.hypot(p.x, p.y)), 1));
   const referencePx = 0.8 * referenceWidth / (2 * fullExtent);
   // D087-JULIA BEGIN: admission at the window's real scale. The composition's
   // own px is the mounted viewport's fitted scale (never above the reference,
@@ -270,13 +271,13 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
       y: points.reduce((sum, p) => sum + p.y, 0) / points.length, z: 0 };
     const chartGuides = sourceFull ? chartGuidesFromFull(full, points)
       : juliaLaw.layoutChart!(ids.map(id => nodes.get(id)!), snapshot, dimension).guides;
-    const sourceLongest = Math.max(0, ...chartGuides.map(g => distance(g.points[0]!, g.points[1]!)));
+    const sourceLongest = maxOf(chartGuides.map(g => distance(g.points[0]!, g.points[1]!)), 0);
     const scale = Math.max(1, 20 / Math.max(1e-12, sourceLongest * px));
     const transform = (p: Point3): Point3 => ({ x: parent.x + scale * (p.x - mu.x),
       y: parent.y + scale * (p.y - mu.y), z: p.z });
     const chartPositions = new Map(ids.map(id => [id, transform(full.positions.get(id)!)]));
-    const radius = Math.max(rim, ...[...chartPositions.values()].map(p => distance3(p, parent) + 2 / px),
-      ...chartGuides.flatMap(g => g.points.map(p => distance3(transform(p), parent) + 1 / px))) / 0.6;
+    const radius = maxOf(chartGuides.flatMap(g => g.points.map(p => distance3(transform(p), parent) + 1 / px)),
+      maxOf([...chartPositions.values()].map(p => distance3(p, parent) + 2 / px), rim)) / 0.6;
     const separated = separateJuliaGlyphs(ids, chartPositions, parent, radius,
       dimension === '3d' ? CHILD_GAP_3D_PX : CHILD_GAP_PX);
     containers.length = 0;
@@ -324,8 +325,7 @@ export function composeJuliaIndraAtlas(snapshot: TopologySnapshot, dimension: To
     closedPearlsRequired: containers.filter(c => !c.open).length,
     closedPearlShare: 0, minimumRimPx: RIM_PX,
     focusReferenceRimPx: FOCUS_REFERENCE_RIM_PX };
-  const absoluteRadius = Math.max(fullExtent,
-    ...containers.map(c => distance3(c.center, { x: 0, y: 0, z: 0 }) + c.radius)) * 1.05;
+  const absoluteRadius = maxOf(containers.map(c => distance3(c.center, { x: 0, y: 0, z: 0 }) + c.radius), fullExtent) * 1.05;
   containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: 0 },
     radius: absoluteRadius, radius2d: absoluteRadius, open: true, title: 'NousOS' });
   const layout: JuliaAtlasLayout = { positions, witnesses, guides, containers, phaseNodeIds,
@@ -397,10 +397,10 @@ export function certifyJuliaAtlasDrawing(layout: JuliaAtlasLayout, snapshot: Top
     // D087-JULIA END
     const ids = snapshot.nodes.filter(n => n.parent === parent && drawn.nodeIds.has(n.id)).map(n => n.id);
     const points = ids.map(id => projected(layout.positions.get(id)!));
-    const clearances = points.map((p, i) => Math.min(...points.filter((_, j) => i !== j)
+    const clearances = points.map((p, i) => minOf(points.filter((_, j) => i !== j)
       .map(q => Math.hypot(p.x - q.x, p.y - q.y))));
     childSeparationMinPx = clearances.length >= 3
-      ? Math.min(...clearances) * focusPixels : 0;
+      ? minOf(clearances) * focusPixels : 0;
     if (shell) for (const guide of layout.guides) {
       if (!guide.id.startsWith(`atlas:${parent}:`) || !drawn.guideIds.has(guide.id)) continue;
       const a = projected(guide.points[0]!), b = projected(guide.points[1]!);

@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import type { Coordinates } from "#engine/contract.ts";
 
 export type TrunkMember = { readonly id: string; readonly direction: Coordinates; readonly length: number; readonly weight: number };
@@ -24,8 +25,8 @@ export function clusterNeuralTrunks(members: readonly TrunkMember[]): readonly N
   const seeds = [items[0]!.direction];
   while (seeds.length < count) {
     const next = items.filter(item => !seeds.some(seed => dot(seed, item.direction) > 1 - 1e-9))
-      .sort((a, b) => Math.max(...seeds.map(seed => dot(seed, a.direction)))
-        - Math.max(...seeds.map(seed => dot(seed, b.direction))) || b.weight - a.weight || a.id.localeCompare(b.id))[0];
+      .sort((a, b) => maxOf(seeds.map(seed => dot(seed, a.direction)))
+        - maxOf(seeds.map(seed => dot(seed, b.direction))) || b.weight - a.weight || a.id.localeCompare(b.id))[0];
     if (!next) break;
     seeds.push(next.direction);
   }
@@ -57,7 +58,7 @@ export function clusterNeuralTrunks(members: readonly TrunkMember[]): readonly N
       y: sum.y + item.direction.y * item.weight, z: sum.z + item.direction.z * item.weight }), { x: 0, y: 0, z: 0 }));
     const side = groupIndex === 0 ? -0.07 : 0.07;
     const direction = degenerate ? unit({ x: mean.x - mean.y * side, y: mean.y + mean.x * side, z: mean.z }) : mean;
-    const shortest = Math.min(...group.map(item => item.length));
+    const shortest = minOf(group.map(item => item.length));
     return { direction, edgeIds: group.map(item => item.id).sort(), weight,
       branchDistance: Math.min(48, Math.max(2, shortest * 0.22), shortest * 0.4),
       rootWidthFactor: group.length === 1 ? 1 : Math.min(4, 2.4 + 0.4 * Math.log2(group.length)) };
@@ -92,7 +93,7 @@ export function arborizeNeuralTrunk(trunk: NeuralTrunk, members: readonly TrunkM
     }
     const children = groups.filter(group => group.length).map(group => {
       const childDirection = directionOf(group);
-      const shortest = Math.min(...group.map(item => item.length));
+      const shortest = minOf(group.map(item => item.length));
       const nextDistance = Math.min(shortest * 0.62, distance + Math.max(7, shortest * 0.14));
       return build(group, depth + 1, childDirection, nextDistance, widthFactor * 0.76);
     }).sort((a, b) => a.edgeIds[0]!.localeCompare(b.edgeIds[0]!));

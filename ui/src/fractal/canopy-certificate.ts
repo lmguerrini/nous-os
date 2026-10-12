@@ -1,3 +1,4 @@
+import { maxOf } from '#render-common/array-aggregation.ts';
 import { CANOPY_RATIO, CANOPY_TURN, CANOPY_SPATIAL_TILT, CANOPY_VERSION,
   CANOPY_SPATIAL_DISPLAY_ROTATION, CANOPY_SPATIAL_DISPLAY_SCALE,
   canopySpatialDisplayPoint, canopySpatialRotation, type CanopyLayout,
@@ -129,7 +130,7 @@ export function certifyCanopy(layout: CanopyLayout, nodes: readonly CanopyInputN
   const sourceIds = new Set(layout.relationBundles.flatMap(bundle => bundle.sourceEdgeIds));
   const inputIds = new Set(edges.map(edge => edge.id));
   const rotations = [canopySpatialRotation('0'), canopySpatialRotation('1')];
-  const orthogonality = Math.max(...rotations.map(orthogonalityResidual));
+  const orthogonality = maxOf(rotations.map(orthogonalityResidual));
   const displayOrthogonality = orthogonalityResidual(CANOPY_SPATIAL_DISPLAY_ROTATION);
   const origin = layout.rails.find(rail => rail.address === 'root')?.to3d;
   let coordinateResidual = 0, finiteNormExcess = 0;

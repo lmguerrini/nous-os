@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 /** Recursive containment over real primary parents. Natural ON keeps the classic layout-v2 route. */
 import { morphologyHash } from '../engine/stable-hash.ts';
 import { ABSOLUTE_CONTAINER_ID, LAYOUT_EXTENT, packDiscs, pearlRadius } from '../review/layout-v2.ts';
@@ -91,7 +92,7 @@ function locate(
           break;
         }
       }
-      if (!found) shift = { x: Math.max(...frames.map(frame => {
+      if (!found) shift = { x: maxOf(frames.map(frame => {
         const p = packed.get(frame.node.id)!;
         return Math.hypot(p.x, p.y);
       })) + gap, y: 0 };
@@ -114,7 +115,7 @@ function locate(
       // D086-F4 END
     }
     // D085-S5 END
-    const radius = Math.max(...frames.map(frame => length(offsets.get(frame.node.id)!) + frame.radius + gap)) / 0.94;
+    const radius = maxOf(frames.map(frame => length(offsets.get(frame.node.id)!) + frame.radius + gap)) / 0.94;
     const witnesses = new Map(frames.map(frame => [frame.node.id, { law: 'Llull',
       values: { localPacking: 'Indra' }, text: 'Posizione interna: perla della gerarchia primaria; la legge delle nove lettere vale fra le perle radice.' }] as const));
     return { offsets, radius, witnesses, guides: [], scale: 1, center: zero,
@@ -161,7 +162,7 @@ function locate(
   // D082-LAB-FIX2 END
   // Classic pearl packing fixes the shell envelope. Local law fixes the directions and ratios.
   const pearls = packDiscs(frames.map(frame => ({ id: frame.node.id, radius: frame.radius })), gap);
-  const pearlExtent = Math.max(...frames.map(frame => {
+  const pearlExtent = maxOf(frames.map(frame => {
     const p = pearls.get(frame.node.id)!;
     return Math.hypot(p.x, p.y) + p.radius;
   }));
@@ -169,7 +170,7 @@ function locate(
     const p = points.get(node.id)!;
     return { x: p.x - center.x, y: p.y - center.y, z: dim === '3d' ? p.z - center.z : 0 };
   });
-  const rawExtent = Math.max(...centered.map(length));
+  const rawExtent = maxOf(centered.map(length));
   let scale = rawExtent > 0 ? pearlExtent / rawExtent : 1;
   for (let i = 0; i < frames.length; i++) for (let j = i + 1; j < frames.length; j++) {
     const delta = plus(centered[i]!, times(centered[j]!, -1));
@@ -277,8 +278,8 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
   const packed = packDiscs(ordered.map(root => ({ id: root.node.id, radius: root.radius })), gap, coreCount);
   const discs = ordered.map(root => ({ id: root.node.id, ...packed.get(root.node.id)! }));
   if (discs.length && !(coreCount >= 3 && coreCount <= 12)) {
-    const dx = (Math.min(...discs.map(d => d.x - d.radius)) + Math.max(...discs.map(d => d.x + d.radius))) / 2;
-    const dy = (Math.min(...discs.map(d => d.y - d.radius)) + Math.max(...discs.map(d => d.y + d.radius))) / 2;
+    const dx = (minOf(discs.map(d => d.x - d.radius)) + maxOf(discs.map(d => d.x + d.radius))) / 2;
+    const dy = (minOf(discs.map(d => d.y - d.radius)) + maxOf(discs.map(d => d.y + d.radius))) / 2;
     for (const d of discs) { d.x -= dx; d.y -= dy; }
   }
   let radius2d = discs.reduce((r, d) => Math.max(r, Math.hypot(d.x, d.y) + d.radius), 0) / 0.94;
@@ -305,7 +306,7 @@ export function composeIndra(law: TopologyLaw, snapshot: TopologySnapshot, dimen
     rootOffsets = new Map(ringRoots.map((root, i) => [root.node.id, {
       x: lullRingRadius * Math.cos(-Math.PI / 2 + 2 * Math.PI * i / ringRoots.length),
       y: lullRingRadius * Math.sin(-Math.PI / 2 + 2 * Math.PI * i / ringRoots.length), z: 0 }]));
-    radius2d = (lullRingRadius + Math.max(...ringRoots.map(root => root.radius))) / 0.94;
+    radius2d = (lullRingRadius + maxOf(ringRoots.map(root => root.radius))) / 0.94;
   }
   // D085-S5 END
   // The full law provides the canonical witness when layoutLocal supplies coordinates only.
@@ -545,7 +546,7 @@ export function assessJuliaIndraLegibility(snapshot: TopologySnapshot, layout: T
     const list = children.get(node.parent) ?? []; list.push(node.id); children.set(node.parent, list);
   }
   const shells = new Map(layout.containers.map(shell => [shell.id, shell]));
-  const extent = Math.max(...layout.containers.map(shell => Math.hypot(shell.center.x, shell.center.y) + shell.radius));
+  const extent = maxOf(layout.containers.map(shell => Math.hypot(shell.center.x, shell.center.y) + shell.radius));
   const pixelsPerUnit = extent ? 0.8 * 1200 / (2 * extent) : 0;
   let eligible = 0, passing = 0;
   for (const [parent, ids] of children) {

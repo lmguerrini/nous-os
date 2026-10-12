@@ -1,3 +1,4 @@
+import { minOf } from '#render-common/array-aggregation.ts';
 import type { Coordinates } from "#engine/contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneEdge } from "#scene/contract.ts";
@@ -124,7 +125,7 @@ export function assertProjectedCameraFramingSubjectsInsideViewport(
       subject.viewportCenter.y - subject.extentCssPx,
       heightCssPx - subject.viewportCenter.y - subject.extentCssPx,
     ];
-    const subjectClearance = Math.min(...clearances);
+    const subjectClearance = minOf(clearances);
     if (subjectClearance < 0) {
       throw new Error(
         `${label} drawn extent ${subject.id} falls ${Math.abs(subjectClearance).toFixed(6)} CSS pixels outside the capture`,

@@ -1,3 +1,4 @@
+import { appendAll, maxOf, minOf } from '#render-common/array-aggregation.ts';
 /** G7 spectral 2D/3D geometry. Each attested component solves the symmetric
  * normalised Laplacian N = D^-1/2 L D^-1/2; the orthonormal u eigenvectors are
  * shared by heat and recovery, while the displayed Koren coordinates use
@@ -682,8 +683,8 @@ function spectralGeometryBlock(graph: SpectralGraph, options: SpectralGeometryOp
   let maxExtent = 0;
   const centers: number[] = [];
   for (const column of raw) {
-    const low = Math.min(...column);
-    const high = Math.max(...column);
+    const low = minOf(column);
+    const high = maxOf(column);
     centers.push((low + high) / 2);
     maxExtent = Math.max(maxExtent, high - low);
   }
@@ -841,7 +842,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
       } };
     }
     localDigests.push(local.resultDigest);
-    clusters.push(...local.clusters);
+    appendAll(clusters, local.clusters);
     relativeResidualMax = Math.max(relativeResidualMax, local.solver.relativeResidualMax ?? 0);
     orthogonality = Math.max(orthogonality, local.solver.orthogonalityDefect ?? 0);
     normEstimate = Math.max(normEstimate, local.solver.normEstimate);

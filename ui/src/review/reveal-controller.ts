@@ -1,3 +1,4 @@
+import { appendAll, maxOf } from '#render-common/array-aggregation.ts';
 /** Renderer and organization independent, settled camera disclosure. All coordinates are viewport pixels. */
 import { LOD_ENTER_INTERMEDIATE, LOD_ENTER_NEAR, LOD_EXIT_INTERMEDIATE, LOD_EXIT_NEAR } from './lod.ts';
 import { V2_CAP, V2_PAGE, v2Visible } from './v2-core.ts';
@@ -228,7 +229,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
     if (existing >= available.length || input.disclosure.expanded.has(parent.id)) return;
     const proposal: RevealAdmission = { parentId: parent.id,
       count: Math.min(currentAuto === undefined ? existing + page : page, available.length - (currentAuto ?? 0)),
-      threshold, band, clusterId: clusterOf(parent.id)!, order: admissions.length ? Math.max(...admissions.map(a => a.order)) + 1 : 0 };
+      threshold, band, clusterId: clusterOf(parent.id)!, order: admissions.length ? maxOf(admissions.map(a => a.order)) + 1 : 0 };
     let candidate = [...admissions, proposal];
     const wanted = Math.min(page, available.length - existing);
     const succeeds = (items: readonly RevealAdmission[]) => {
@@ -253,7 +254,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
       }
     }
     if (succeeds(candidate)) {
-      admissions = candidate; evicted.push(...removed);
+      admissions = candidate; appendAll(evicted, removed);
       admissionCount++;
       for (const node of v2Visible(input.index, input.disclosure, autoPages(admissions), cap, parent.id).nodes)
         if (!before.has(node.id)) admittedThisSample.add(node.id);

@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 /**
  * Framing that does not depend on any renderer's camera convention.
  *
@@ -61,10 +62,10 @@ export function framingEnvelopeSpherePoints(center: Coordinates, radius: number)
 }
 export function framingVolumePoints(points: readonly Coordinates[]): Coordinates[] {
   if (!points.length) return [];
-  const bounds = (axis: keyof Coordinates) => [Math.min(...points.map(point => point[axis])), Math.max(...points.map(point => point[axis]))] as const;
+  const bounds = (axis: keyof Coordinates) => [minOf(points.map(point => point[axis])), maxOf(points.map(point => point[axis]))] as const;
   const x = bounds('x'), y = bounds('y'), z = bounds('z');
   const center = { x: (x[0] + x[1]) / 2, y: (y[0] + y[1]) / 2, z: (z[0] + z[1]) / 2 };
-  const radius = Math.max(...points.map(point => Math.hypot(point.x - center.x, point.y - center.y, point.z - center.z)));
+  const radius = maxOf(points.map(point => Math.hypot(point.x - center.x, point.y - center.y, point.z - center.z)));
   return framingSpherePoints(center, radius);
 }
 
@@ -90,10 +91,10 @@ function projectAll(handle: CameraHandle, points: readonly Coordinates[]): Pixel
 
 function extentOf(pixels: readonly Pixel[]): { minX: number; maxX: number; minY: number; maxY: number } {
   return {
-    minX: Math.min(...pixels.map((p) => p.x)),
-    maxX: Math.max(...pixels.map((p) => p.x)),
-    minY: Math.min(...pixels.map((p) => p.y)),
-    maxY: Math.max(...pixels.map((p) => p.y)),
+    minX: minOf(pixels.map((p) => p.x)),
+    maxX: maxOf(pixels.map((p) => p.x)),
+    minY: minOf(pixels.map((p) => p.y)),
+    maxY: maxOf(pixels.map((p) => p.y)),
   };
 }
 
@@ -109,8 +110,8 @@ function overflow(pixels: readonly Pixel[], request: FrameRequest): number {
   const availableY = Math.max(1, request.rect.height - (2 * request.marginPx));
   const anchor = anchorOf(pixels, request.anchorFirst);
   if (request.anchorFirst) {
-    const farX = Math.max(...pixels.map((p) => Math.abs(p.x - anchor.x)));
-    const farY = Math.max(...pixels.map((p) => Math.abs(p.y - anchor.y)));
+    const farX = maxOf(pixels.map((p) => Math.abs(p.x - anchor.x)));
+    const farY = maxOf(pixels.map((p) => Math.abs(p.y - anchor.y)));
     return Math.max((2 * farX) / availableX, (2 * farY) / availableY);
   }
   const extent = extentOf(pixels);
@@ -214,11 +215,11 @@ function framedSphere(camera: VisualStateCamera, points: readonly Coordinates[])
   const ys = points.map((point) => point.y);
   const zs = points.map((point) => point.z);
   const center = {
-    x: (Math.min(...xs) + Math.max(...xs)) / 2,
-    y: (Math.min(...ys) + Math.max(...ys)) / 2,
-    z: (Math.min(...zs) + Math.max(...zs)) / 2,
+    x: (minOf(xs) + maxOf(xs)) / 2,
+    y: (minOf(ys) + maxOf(ys)) / 2,
+    z: (minOf(zs) + maxOf(zs)) / 2,
   };
-  const radius = Math.max(...points.map((point) =>
+  const radius = maxOf(points.map((point) =>
     Math.hypot(point.x - center.x, point.y - center.y, point.z - center.z)));
   return {
     centerX: center.x,

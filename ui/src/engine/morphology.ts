@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import type { CalibrationProfile, MorphologyMaterial as CalibrationMorphologyMaterial } from "#engine/calibration.ts";
 import type { DerivedValue, EngineGraph } from "#engine/contract.ts";
 
@@ -135,8 +136,8 @@ export function applyMorphology(
   const sharedScene = target === SHARED_SCENE_MATERIAL_TARGET;
   const nodeIds = graph.nodes.map((node) => node.id);
   const edgeIds = graph.edges.map((edge) => edge.id);
-  const minimumDegree = Math.min(...degree.values());
-  const maximumDegree = Math.max(...degree.values());
+  const minimumDegree = minOf(degree.values());
+  const maximumDegree = maxOf(degree.values());
   const nodes = graph.nodes.map((node) => {
     const nodeDegree = degree.get(node.id) ?? 0;
     const hopDistance = hops.get(node.id) ?? 0;
@@ -360,7 +361,7 @@ function degrees(graph: EngineGraph): Map<string, number> {
 }
 
 function hopDistances(graph: EngineGraph, degree: ReadonlyMap<string, number>): Map<string, number> {
-  const maximumDegree = Math.max(...degree.values());
+  const maximumDegree = maxOf(degree.values());
   const hubs = graph.nodes.filter((node) => degree.get(node.id) === maximumDegree).map((node) => node.id).sort();
   const adjacency = new Map<string, string[]>();
   for (const node of graph.nodes) {

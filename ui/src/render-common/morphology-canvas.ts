@@ -1,3 +1,4 @@
+import { appendAll, maxOf } from '#render-common/array-aggregation.ts';
 import type { AppearanceOptions, EdgeCategory, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
@@ -1031,7 +1032,7 @@ function localLobeShape(node: MorphologyNodeShape): LocalLobeShape {
   const angleOf = (direction: Coordinates) => Math.atan2(useYZ ? direction.z : direction.y,
     useYZ ? direction.y : direction.x);
   const trunks = neuralPrincipalTrunks(node.trunks ?? []);
-  const maximum = Math.max(1, ...trunks.map(trunk => trunk.weight));
+  const maximum = maxOf(trunks.map(trunk => trunk.weight), 1);
   const lobes = trunks.map(trunk => ({ angle: angleOf(trunk.direction),
     strength: neuralTrunkLobeStrength(trunk, maximum, node.degree) }));
   const result = { axisAngle: angleOf(axis), lobeAngles: lobes.map(lobe => lobe.angle), lobes };
@@ -1143,7 +1144,7 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
       project({ x: node.position.x, y: node.position.y, z: node.position.z + 1 }),
     ];
     const projectedUnit = moving ? Math.max(1e-9, p.scale)
-      : Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
+      : maxOf(basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)), 1e-9);
     // D082-A-PERF END
     const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
     const projectedEccentricity = Math.sqrt(1 + ((node.spindleRatio ?? node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
@@ -1158,7 +1159,7 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
     // per-trunk projections and angular integration on every wheel/orbit event;
     // at rest the spatially spread principal trunks (A-NEURALf) shape the lobes.
     const strongest = moving ? [] : neuralPrincipalTrunks(node.trunks ?? []);
-    const maximum = Math.max(1, ...strongest.map(trunk => trunk.weight));
+    const maximum = maxOf(strongest.map(trunk => trunk.weight), 1);
     const lobes = strongest.flatMap(trunk => {
       const tip = project({ x: node.position.x + trunk.direction.x,
         y: node.position.y + trunk.direction.y, z: node.position.z + trunk.direction.z });
@@ -1573,8 +1574,8 @@ export function clipEdgePaint(paint: MorphologyEdgePaint, width: number, height:
   // D086-F5 BEGIN: a sample with no finite projection has no width either; the margin is measured
   // from the finite ones, because one NaN would turn every clip bound into NaN and the segment
   // loop below would read a point that does not exist.
-  const margin = Math.max(32, ...[0, lastIndex * 0.5, lastIndex].map(index => paint.widthAt(index) * 0.5 + 4)
-    .filter(Number.isFinite));
+  const margin = maxOf([0, lastIndex * 0.5, lastIndex].map(index => paint.widthAt(index) * 0.5 + 4)
+    .filter(Number.isFinite), 32);
   // D086-F5 END
   const box = [-margin, width + margin, -margin, height + margin] as const;
   const runs: { point: ProjectedPoint; index: number; distance: number }[][] = [];
@@ -1987,7 +1988,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       // D084-W2-NEURAL: the cosmetic close-up sprouts (detailStart/detailEnd) are gone —
       // no decorative filament may fake a relation the graph does not draw.
     };
-    paints.push(...clipEdgePaint(paint, bounds.width, bounds.height));
+    appendAll(paints, clipEdgePaint(paint, bounds.width, bounds.height));
   }
   return paints;
 }
@@ -2637,7 +2638,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           project({ x: node.position.x, y: node.position.y + 1, z: node.position.z }),
           project({ x: node.position.x, y: node.position.y, z: node.position.z + 1 }),
         ];
-        const projectedUnit = Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
+        const projectedUnit = maxOf(basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)), 1e-9);
         const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
         const projectedEccentricity = Math.sqrt(1 + ((node.spindleRatio ?? node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
         eccentricity = node.spindleRatio ? clamp(projectedEccentricity * somaElongationFactor(harmonics), 1.04, 1.9)

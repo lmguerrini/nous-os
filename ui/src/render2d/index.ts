@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import { mixTowardField, revisedCanvasNodeColor } from "#engine/presentation-options.ts";
 import type { AppearanceOptions, EdgeCategory, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
@@ -1705,7 +1706,7 @@ export function mountProjection2d(
   const framePoints = Object.values(styled.projection.positions2 ?? {}).filter((point): point is Vec2 => !!point);
   if (framePoints.length) {
     const xs = framePoints.map(point => point.x), ys = framePoints.map(point => point.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const minX = minOf(xs), maxX = maxOf(xs), minY = minOf(ys), maxY = maxOf(ys);
     sigma.setCustomBBox({ x: [minX - 1, maxX + 1], y: [minY - 1, maxY + 1] });
   }
   sigma.createCanvasContext('projection-visuals');

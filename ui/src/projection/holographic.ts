@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 /** D-073 tranche F, row F11 — the Holographic experimental analytic view: projection
  * assembly.
  *
@@ -150,9 +151,9 @@ function separateCoincidentNodes(
       const point = positions[id]!;
       return [id, dimension === '2d' ? [point.x, point.y] : [point.x, point.y, point.z ?? 0]] as const;
     }));
-    const extent = Math.max(...Array.from({ length: dimension === '2d' ? 2 : 3 }, (_v, axis) => {
+    const extent = maxOf(Array.from({ length: dimension === '2d' ? 2 : 3 }, (_v, axis) => {
       const values = ids.map(id => coordinates.get(id)![axis]!);
-      return Math.max(...values) - Math.min(...values);
+      return maxOf(values) - minOf(values);
     }));
     const tolerance = HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE * extent;
     const groups: string[][] = [];
@@ -462,7 +463,7 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
           embeddingRelativeErrors: embedding.map(target => target.heldOutRelativeError),
           embeddingBandResiduals: embedding.map(target => target.bandlimitedRelativeResidual),
           communityRelativeErrors: community.map(target => target.heldOutRelativeError),
-          communityBandResidualMax: community.length ? Math.max(...community.map(target => target.bandlimitedRelativeResidual)) : null });
+          communityBandResidualMax: community.length ? maxOf(community.map(target => target.bandlimitedRelativeResidual)) : null });
       }
     }
     const model = holographicErrorModel(witnesses);

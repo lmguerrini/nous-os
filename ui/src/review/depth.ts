@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import type { Coordinates, VisualGraph } from "../engine/contract.ts";
 /** Standard deviation of the normalised depth, as a share of the larger planar extent. */
 const DEPTH_DEVIATION_SHARE = 0.1;
@@ -18,8 +19,8 @@ export function relaxDepth(
   });
   const extent = Math.max(
     1e-6,
-    Math.max(...points.map((p) => p.x)) - Math.min(...points.map((p) => p.x)),
-    Math.max(...points.map((p) => p.y)) - Math.min(...points.map((p) => p.y)),
+    maxOf(points.map((p) => p.x)) - minOf(points.map((p) => p.x)),
+    maxOf(points.map((p) => p.y)) - minOf(points.map((p) => p.y)),
   );
   const limit = extent * 0.35;
   const r0 = (extent / Math.sqrt(ids.length)) * 0.65;

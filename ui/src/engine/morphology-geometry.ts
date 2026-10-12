@@ -1,3 +1,4 @@
+import { maxOf } from '#render-common/array-aggregation.ts';
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
@@ -415,13 +416,13 @@ export function somaLobeAreaScale(lobes: readonly SomaLobe[],
   let before = 0, after = 0;
   for (let i = 0; i < 64; i++) {
     const angle = 2 * Math.PI * i / 64;
-    const extension = (old: boolean) => Math.max(0, ...lobes.map(lobe => {
+    const extension = (old: boolean) => maxOf(lobes.map(lobe => {
       const delta = Math.atan2(Math.sin(angle - lobe.angle), Math.cos(angle - lobe.angle));
       // D081-P1F: compare area with the P1e shoulder (its packed strength was 0.36 lower).
       const lowDegree = lobe.strength > 0.6;
       const strength = old ? 0.12 + 1.8 * (lobe.strength - (lowDegree ? 0.70 : 0.34)) : lobe.strength;
       return strength * Math.exp(-0.5 * (delta / (old ? 0.34 : somaLobeAngularWidth(lobe.strength))) ** 2);
-    }));
+    }), 0);
     const baseArea = baseRadiusAtAngle(angle) ** 2;
     before += baseArea * (1 + extension(true)) ** 2;
     after += baseArea * (1 + extension(false)) ** 2;
@@ -512,8 +513,8 @@ export function neuralPrincipalTrunks(trunks: readonly NeuralTrunk[]): readonly 
   const chosen = [trunks[0]!];
   while (chosen.length < 3) {
     const next = trunks.filter(trunk => !chosen.includes(trunk)).sort((a, b) =>
-      Math.max(...chosen.map(other => dot(a.direction, other.direction)))
-      - Math.max(...chosen.map(other => dot(b.direction, other.direction)))
+      maxOf(chosen.map(other => dot(a.direction, other.direction)))
+      - maxOf(chosen.map(other => dot(b.direction, other.direction)))
       || b.weight - a.weight || a.edgeIds[0]!.localeCompare(b.edgeIds[0]!))[0];
     if (!next) break;
     chosen.push(next);

@@ -1,3 +1,4 @@
+import { appendAll } from '#render-common/array-aggregation.ts';
 /** Batched typed 3D glyphs and morphology ribbons. All geometry is rebuilt on a visibility/style
  * revision, never on a camera frame; the old revision is disposed before the new one is attached. */
 import * as THREE from "three";
@@ -120,7 +121,7 @@ export function createTypedProjectionLayer(): TypedProjectionLayer {
       const key = `${ink.color.getHexString()}:${ink.alpha}`;
       let bucket = buckets.get(key);
       if (!bucket) { bucket = { ink, vertices: [], ends: [], edgeIds: [] }; buckets.set(key, bucket); }
-      bucket.vertices.push(...typedRibbonVertices(morphology === "stellar" ? stellarArc(segment, curvature) : segment));
+      appendAll(bucket.vertices, typedRibbonVertices(morphology === "stellar" ? stellarArc(segment, curvature) : segment));
       bucket.ends.push(bucket.vertices.length / 3);
       bucket.edgeIds.push(segment.edgeId);
       if (sliced && index % 128 === 127) await new Promise<void>(resolve => setTimeout(resolve, 0));

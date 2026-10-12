@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 /** Drawing-only size policy for a fully disclosed graph. Positions and identities are inputs only. */
 export type DenseNodeSample = {
   readonly id: string;
@@ -73,7 +74,7 @@ export function denseNodeScales(
 ): ReadonlyMap<string, DenseNodeScale> {
   if (!samples.length) return new Map();
   const xs = samples.map(sample => sample.x), ys = samples.map(sample => sample.y);
-  const span = Math.max(1, Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)));
+  const span = Math.max(1, Math.hypot(maxOf(xs) - minOf(xs), maxOf(ys) - minOf(ys)));
   const cellSize = Math.max(1, span / Math.sqrt(samples.length));
   const cell = (x: number, y: number) => `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
   // D087-SIZE10 BEGIN: only the fixed full-graph calibration supplies this index.
@@ -105,7 +106,7 @@ export function denseNodeScales(
   // Query far enough to include every centre a large domain or hub disc could cover. A fixed
   // 3x3 neighborhood misses candidates two buckets away when their radii exceed one cell, which
   // is exactly how the large filled pearls survived the first Completa pass.
-  const screenSearchCells = Math.max(1, Math.ceil((2 * Math.max(...samples.map(sample => sample.baseRadiusPx))) / screenCellSize));
+  const screenSearchCells = Math.max(1, Math.ceil((2 * maxOf(samples.map(sample => sample.baseRadiusPx))) / screenCellSize));
   // A deterministic independent set of one-pixel points. A hidden member remains in the
   // graph/picker and records the point that represents its coincident screen-space set.
   const zoom = clamp(options.zoomProgress ?? 0, 0, 1);
@@ -152,7 +153,7 @@ export function denseNodeScales(
         distance = Math.min(distance, Math.hypot(sample.screenX - other.screenX!, sample.screenY - other.screenY!));
     closestScreen.set(sample.id, distance);
   }
-  const importanceMax = Math.max(1, ...samples.map(sample => sample.importance));
+  const importanceMax = maxOf(samples.map(sample => sample.importance), 1);
   const scales = samples.map(sample => {
     const localDensity = clamp(reference / Math.max(0.01, nearest.get(sample.id) ?? reference), 0.25, 4);
     const densityScale = clamp(MAX_SCALE / Math.sqrt(localDensity), MIN_SCALE, MAX_SCALE);
@@ -303,18 +304,29 @@ export function denseZoomNeedsRefresh(currentRatio: number | undefined, fittedRa
   return denseZoomBand(currentRatio, fittedRatio) !== renderedBand;
 }
 
+/** Worker source keeps helper declarations under their bundled runtime names. */
+export function denseNodeScalesWorkerSource(
+  maximum: typeof maxOf = maxOf,
+  minimum: typeof minOf = minOf,
+  derive: typeof denseNodeScales = denseNodeScales,
+): string {
+  return `const MIN_SCREEN_RADIUS_PX=${MIN_SCREEN_RADIUS_PX};
+const MIN_SCALE=${MIN_SCALE},MAX_SCALE=${MAX_SCALE},MAX_HUB_BONUS=${MAX_HUB_BONUS};
+const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
+${maximum.toString()}
+${minimum.toString()}
+const denseNodeScales=${derive.toString()};
+self.onmessage=event=>{try{self.postMessage({result:[...denseNodeScales(event.data.samples,event.data.options)]});}
+catch(error){self.postMessage({error:String(error)});}};`;
+}
+
 /** The full nearest-neighbour pass runs after quality restoration in a short-lived worker. */
 export function denseNodeScalesDeferred(samples: readonly DenseNodeSample[], options: {
   readonly zoomProgress: number; readonly screenDistanceNorm: ReadonlyMap<string, number>;
   readonly nativeRadiusOnly?: boolean;
 }): Promise<ReadonlyMap<string, DenseNodeScale>> {
   if (typeof Worker === 'undefined') return Promise.resolve(denseNodeScales(samples, options));
-  const source = `const MIN_SCREEN_RADIUS_PX=${MIN_SCREEN_RADIUS_PX};
-const MIN_SCALE=${MIN_SCALE},MAX_SCALE=${MAX_SCALE},MAX_HUB_BONUS=${MAX_HUB_BONUS};
-const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
-const denseNodeScales=${denseNodeScales.toString()};
-self.onmessage=event=>{try{self.postMessage({result:[...denseNodeScales(event.data.samples,event.data.options)]});}
-catch(error){self.postMessage({error:String(error)});}};`;
+  const source = denseNodeScalesWorkerSource();
   const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
   let worker: Worker;
   try { worker = new Worker(url); }
@@ -379,7 +391,7 @@ export function centreCoverageFraction(
   points: readonly { readonly id: string; readonly x: number; readonly y: number; readonly radius: number }[],
 ): number {
   if (!points.length) return 0;
-  const cellSize = Math.max(1, Math.max(...points.map(point => point.radius)) * 2);
+  const cellSize = Math.max(1, maxOf(points.map(point => point.radius)) * 2);
   const buckets = new Map<string, typeof points[number][]>();
   for (const point of points) {
     const key = `${Math.floor(point.x / cellSize)},${Math.floor(point.y / cellSize)}`;

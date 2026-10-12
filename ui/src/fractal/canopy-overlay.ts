@@ -1,3 +1,4 @@
+import { maxOf } from '#render-common/array-aggregation.ts';
 import type { CanopyLayout, CanopyPosition } from './canopy-layout.ts';
 import type { Reading } from '../review/view-contract.ts';
 
@@ -66,7 +67,7 @@ export function canopySemanticCandidates(layout: CanopyLayout, visibleIds: Reado
     const lines = canopyLabelLines(position, reading);
     const text = lines.join('\n');
     rows.push({ id: position.id, x: coords.x, y: coords.y,
-      width: Math.min(245, Math.ceil(Math.max(...lines.map(measure))) + 12),
+      width: Math.min(245, Math.ceil(maxOf(lines.map(measure))) + 12),
       height: lines.length === 2 ? 34 : 20, text,
       priority: position.level === 1 ? 1000 + Math.log1p(canopyReadingCount(position, reading))
         : position.level === 2 ? 600 + Math.log1p(canopyReadingCount(position, reading))

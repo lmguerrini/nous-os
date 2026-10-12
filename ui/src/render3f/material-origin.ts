@@ -38,9 +38,9 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
   ["aggregate-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
   ["brain-envelope.ts", new Set(["three", "#engine/morphology-contract.ts", "#scene/contract.ts"])],
   // D082-A-PERF BEGIN: pure exact-key cache and versioned geometry remain material-independent.
-  ["buffers.ts", new Set(["#engine/contract.ts", "#engine/tokens.ts", "#engine/stable-hash.ts", "#engine/morphology-geometry.ts", "#scene/contract.ts", "#render-common/scene-cache.ts"])],
+  ["buffers.ts", new Set(["#engine/contract.ts", "#engine/tokens.ts", "#engine/stable-hash.ts", "#engine/morphology-geometry.ts", "#scene/contract.ts", "#render-common/scene-cache.ts", "#render-common/array-aggregation.ts"])],
   // D082-A-PERF END
-  ["camera-framing.ts", new Set(["#engine/contract.ts", "#scene/contract.ts"])],
+  ["camera-framing.ts", new Set(["#engine/contract.ts", "#scene/contract.ts", "#render-common/array-aggregation.ts"])],
   ["camera.tsx", new Set([
     "three",
     "sigma",
@@ -51,6 +51,7 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#engine/visual-state.ts",
     "#scene/contract.ts",
     "#render3f/camera-framing.ts",
+    "#render-common/array-aggregation.ts",
   ])],
   // D084-W2-NEURAL-R3 BEGIN: shader geometry constants originate in the engine.
   ["filament-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts", "#engine/morphology-geometry.ts",
@@ -167,6 +168,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#scene/contract.ts", new Set(["SceneNode", "SceneEdge"])],
   ])],
   ["buffers.ts", new Map([
+    ["#render-common/array-aggregation.ts", new Set(["maxOf"])],
     ["#engine/contract.ts", new Set(["Coordinates"])],
     ["#engine/tokens.ts", new Set(["OklchToken"])],
     ["#engine/stable-hash.ts", new Set(["morphologyHash"])],
@@ -188,10 +190,12 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ])],
   ])],
   ["camera-framing.ts", new Map([
+    ["#render-common/array-aggregation.ts", new Set(["minOf"])],
     ["#engine/contract.ts", new Set(["Coordinates"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE", "Scene", "SceneEdge"])],
   ])],
   ["camera.tsx", new Map([
+    ["#render-common/array-aggregation.ts", new Set(["maxOf", "minOf"])],
     ["three", new Set(["*"])],
     ["sigma", new Set(["Camera"])],
     ["sigma/settings", new Set(["DEFAULT_SETTINGS"])],

@@ -1,3 +1,4 @@
+import { appendAll } from '#render-common/array-aggregation.ts';
 /**
  * Fractal sector assignment (tranche E4 of the views-extension plan).
  *
@@ -476,7 +477,7 @@ export function communitySpectralOrder(
   const order: NodeId[] = [];
   for (const component of components) {
     if (component.length <= 2) {
-      order.push(...component);
+      appendAll(order, component);
       continue;
     }
     const edges: { source: NodeId; target: NodeId }[] = [];
@@ -485,7 +486,7 @@ export function communitySpectralOrder(
         if (codepointCompare(id, neighbor) < 0) edges.push({ source: id, target: neighbor });
       }
     }
-    order.push(...fiedlerLocalityOrder(component.map((id) => ({ id, importance: importanceOf.get(id)! })), edges).order);
+    appendAll(order, fiedlerLocalityOrder(component.map((id) => ({ id, importance: importanceOf.get(id)! })), edges).order);
   }
   return order;
 }

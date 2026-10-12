@@ -1,3 +1,4 @@
+import { appendAll } from '#render-common/array-aggregation.ts';
 type JsonRecord = Record<string, unknown>;
 type Section = 'summary' | 'content' | 'provenance' | 'relations';
 type SectionState = 'idle' | 'loading' | 'ok' | 'empty' | 'partial' | 'error';
@@ -150,7 +151,7 @@ export class NodeDrawer {
         const body = await this.request('relations', { offset: item.offset, limit: 50, group }, controller.signal);
         if (token !== this.token) return;
         const groups = list(record(body).groups).map(record); const type = groups.flatMap(g => list(g.types).map(record)).find(t => value(t.key) === group);
-        const received = list(type?.items).map(record); item.items.push(...received); item.offset += received.length; item.total = Number(type?.count ?? item.offset); item.error = '';
+        const received = list(type?.items).map(record); appendAll(item.items, received); item.offset += received.length; item.total = Number(type?.count ?? item.offset); item.error = '';
       } catch (error) { if (token === this.token && (error as Error)?.name !== 'AbortError') item.error = this.errorText(error); }
       finally { if (this.activeController === controller) this.activeController = undefined; if (token === this.token) { item.loading = false; this.render(); } }
       return;

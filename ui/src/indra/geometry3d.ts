@@ -1,3 +1,4 @@
+import { maxOf } from '#render-common/array-aggregation.ts';
 /** Upper-half-space geometry for Indra's Pearls (D-073 row D6).
  *
  * 3D: for f(z) = (az+b)/(cz+d) with det = 1, the
@@ -299,7 +300,7 @@ export function packFallbackNestedSpheres(children: readonly FallbackSphereChild
         }
       }
     }
-    const maximumRadius = Math.max(...radii);
+    const maximumRadius = maxOf(radii);
     if (ringRadius + maximumRadius <= parentRadius - separationMargin) {
       const spheres = ordered.map((child, index) => {
         const angle = orientationAngle + (2 * Math.PI * index) / count;

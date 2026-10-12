@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import type { VisualGraph } from "#engine/contract.ts";
 import type { VisualStateCamera } from "#engine/visual-state.ts";
 
@@ -7,10 +8,10 @@ export function focusCameraForNeighbourhood(
   camera: VisualStateCamera,
 ): Pick<VisualStateCamera, "x" | "y" | "ratio"> {
   if (positions.length === 0) return { x: camera.x, y: camera.y, ratio: camera.ratio };
-  const minX = Math.min(...positions.map((point) => point.x));
-  const maxX = Math.max(...positions.map((point) => point.x));
-  const minY = Math.min(...positions.map((point) => point.y));
-  const maxY = Math.max(...positions.map((point) => point.y));
+  const minX = minOf(positions.map((point) => point.x));
+  const maxX = maxOf(positions.map((point) => point.x));
+  const minY = minOf(positions.map((point) => point.y));
+  const maxY = maxOf(positions.map((point) => point.y));
   const span = Math.max(bounds.x[1] - bounds.x[0], bounds.y[1] - bounds.y[0]) || 1;
   const boundsCentreX = (bounds.x[0] + bounds.x[1]) / 2;
   const boundsCentreY = (bounds.y[0] + bounds.y[1]) / 2;

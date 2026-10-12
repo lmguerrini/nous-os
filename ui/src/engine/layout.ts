@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_AGGREGATE_LAYOUT_CALIBRATION, DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { detectCommunities } from "#engine/community.ts";
@@ -375,16 +376,13 @@ function communityReservationFor(
     throw new TypeError("community region lacks placement slots");
   }
   const gap = calibration.aggregate.windowPaddingPx;
-  const maximumSlotRadius = Math.max(...orderedSlots.map((slot) => slot.radius + gap));
+  const maximumSlotRadius = maxOf(orderedSlots.map((slot) => slot.radius + gap));
   const cellSpan = (maximumSlotRadius * MIDPOINT_DIVISOR) + gap;
   const localCenters = centersInGrid(orderedSlots.map((slot) => slot.id), cellSpan, calibration);
-  const reservationRadius = Math.max(
-    Math.sqrt(members.length) * layoutExtent(calibration),
-    ...orderedSlots.map((slot) => {
+  const reservationRadius = maxOf(orderedSlots.map((slot) => {
       const localCenter = requiredCenter(localCenters, slot.id);
       return Math.hypot(localCenter.x, localCenter.y) + slot.radius + gap;
-    }),
-  ) + gap;
+    }), Math.sqrt(members.length) * layoutExtent(calibration)) + gap;
   return { key, members: [...members].sort(compareText), slots: orderedSlots, localCenters, radius: reservationRadius };
 }
 
@@ -396,7 +394,7 @@ function regionCentersFor(
   if (ordered.length === 0) {
     return new Map();
   }
-  const maximumRadius = Math.max(...ordered.map((reservation) => reservation.radius));
+  const maximumRadius = maxOf(ordered.map((reservation) => reservation.radius));
   const initial = centersOnEllipse(
     ordered.map((reservation) => reservation.key),
     (maximumRadius * calibration.layout.communityRegionDistributionRadiusPermille) / PERMILLE,
@@ -680,8 +678,8 @@ function referenceFitScale(anchors: ReadonlyMap<string, Coordinates>, calibratio
   if (values.length === 0) {
     return 0;
   }
-  const width = Math.max(...values.map((anchor) => anchor.x)) - Math.min(...values.map((anchor) => anchor.x));
-  const height = Math.max(...values.map((anchor) => anchor.y)) - Math.min(...values.map((anchor) => anchor.y));
+  const width = maxOf(values.map((anchor) => anchor.x)) - minOf(values.map((anchor) => anchor.x));
+  const height = maxOf(values.map((anchor) => anchor.y)) - minOf(values.map((anchor) => anchor.y));
   if (width === 0 && height === 0) {
     return 0;
   }

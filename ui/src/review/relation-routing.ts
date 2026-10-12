@@ -1,3 +1,4 @@
+import { appendAll } from '#render-common/array-aggregation.ts';
 /** Final relation selection after node LOD. This module never changes source provenance. */
 import { EXPLORATORY_RESERVE_SHARE } from './lod.ts';
 import { relationVisible, type RelationClass } from './reading.ts';
@@ -255,14 +256,14 @@ export function routeRelationsAfterLOD(input: RouteInput): RouteResult {
   let structuralAccepted = 0;
   for (const bucket of queue) {
     if (accepted.length >= budget && !pinned(bucket)) {
-      suppressed.push(...bucket.source.map(relation => ({ id: relation.id, cause: 'line-budget' as const }))); continue;
+      appendAll(suppressed, bucket.source.map(relation => ({ id: relation.id, cause: 'line-budget' as const }))); continue;
     }
     if (!pinned(bucket) && bucket.class === 'structural' && structuralPriority(bucket) !== 2 &&
       ((degree.get(bucket.from.id) ?? 0) >= fan || (degree.get(bucket.to.id) ?? 0) >= fan)) {
-      suppressed.push(...bucket.source.map(relation => ({ id: relation.id, cause: 'fan-degree' as const }))); continue;
+      appendAll(suppressed, bucket.source.map(relation => ({ id: relation.id, cause: 'fan-degree' as const }))); continue;
     }
     if (bucket.class === 'structural' && structuralAccepted >= structuralCap && !pinned(bucket)) {
-      suppressed.push(...bucket.source.map(relation => ({ id: relation.id, cause: 'line-budget' as const }))); continue;
+      appendAll(suppressed, bucket.source.map(relation => ({ id: relation.id, cause: 'line-budget' as const }))); continue;
     }
     accepted.push(bucket);
     if (bucket.class === 'structural') structuralAccepted++;

@@ -1,3 +1,4 @@
+import { appendAll } from '#render-common/array-aggregation.ts';
 import type { GraphEdge, GraphIndex, GraphNode } from './graph-v2.ts';
 import type { Reading } from './view-contract.ts';
 import type { PickResult, ProjectionResult, RenderVisibility, SemanticGraphSnapshot } from '../projection/contract-types.ts';
@@ -93,7 +94,7 @@ export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisc
                 : n.level === 3 || n.level === 4 ? Math.min(page, all.length) : all.length;
             const room = Math.max(0, cap - nodes.length - (queue.length - i - 1));
             const ordered = n.level === 1 && state.overview ? [...all].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id)) : all;
-            queue.push(...ordered.slice(0, Math.min(take, room)));
+            appendAll(queue, ordered.slice(0, Math.min(take, room)));
             if (take > room)
                 capped = true;
             const total = n.level === 4 ? Math.max(all.length, n.counts.passages) : all.length;

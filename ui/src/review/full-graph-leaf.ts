@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 // D087-SIZE10 BEGIN
 import { denseEdgeScreenDensities, denseNodeScales } from '../render-common/dense-node-scale.ts';
 import type { DenseNodeSample } from '../render-common/dense-node-scale.ts';
@@ -62,7 +63,7 @@ function nearestWorldDistances(samples: readonly DenseNodeSample[]): ReadonlyMap
     return best;
   };
   const xs = samples.map(sample => sample.x), ys = samples.map(sample => sample.y);
-  const span = Math.max(1, Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)));
+  const span = Math.max(1, Math.hypot(maxOf(xs) - minOf(xs), maxOf(ys) - minOf(ys)));
   return new Map(samples.map(sample => [sample.id,
     Math.min(span, Math.sqrt(nearestSquared(tree, sample, 0, Number.POSITIVE_INFINITY)))] as const));
 }
@@ -111,8 +112,8 @@ export function calculateFullGraphLeafBase(source: FullGraphLeafSource,
   });
   const missingAnchors = source.nodes.length - points.length;
   const xs = points.map(item => item.x), ys = points.map(item => item.y);
-  const minX = xs.length ? Math.min(...xs) : 0, maxX = xs.length ? Math.max(...xs) : 1;
-  const minY = ys.length ? Math.min(...ys) : 0, maxY = ys.length ? Math.max(...ys) : 1;
+  const minX = xs.length ? minOf(xs) : 0, maxX = xs.length ? maxOf(xs) : 1;
+  const minY = ys.length ? minOf(ys) : 0, maxY = ys.length ? maxOf(ys) : 1;
   // D087-SIZE15 END
   const screenScale = Math.min(1120 / Math.max(1, maxX - minX), 720 / Math.max(1, maxY - minY))
     * (source.fitShare ?? 1);

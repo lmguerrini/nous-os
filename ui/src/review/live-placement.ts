@@ -1,3 +1,4 @@
+import { maxOf, minOf } from '#render-common/array-aggregation.ts';
 import type { Coordinates } from "../engine/contract.ts";
 import type { ReviewExport } from "./model.ts";
 
@@ -57,14 +58,14 @@ function frameOf(points: readonly Coordinates[]): { centre: Coordinates; extent:
   if (!points.length) return { centre: { x: 0, y: 0, z: 0 }, extent: 1 };
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
-  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const [minX, maxX, minY, maxY] = [minOf(xs), maxOf(xs), minOf(ys), maxOf(ys)];
   return { centre: { x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: 0 }, extent: Math.max(maxX - minX, maxY - minY) || 1 };
 }
 
 /** Median distance from each supplied point to its nearest neighbour in the plane. */
 function medianNearestDistance(points: readonly Coordinates[]): number {
   if (points.length < 2) return 0;
-  const nearest = points.map((point, index) => Math.min(...points
+  const nearest = points.map((point, index) => minOf(points
     .filter((_, other) => other !== index)
     .map((other) => Math.hypot(point.x - other.x, point.y - other.y))));
   const sorted = nearest.sort((a, b) => a - b);

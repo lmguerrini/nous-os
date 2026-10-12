@@ -1,3 +1,4 @@
+import { appendAll, maxOf, minOf } from '#render-common/array-aggregation.ts';
 /** Deterministic positions for the disclosed hierarchy; XY is the 2D and front-facing 3D view. */
 import { morphologyLayoutParams } from '#engine/morphology.ts';
 import { morphologyHash } from '#engine/stable-hash.ts';
@@ -65,7 +66,7 @@ export type LayoutStats = { readonly bbox: { readonly x: readonly [number, numbe
 export function layoutStats(positions: ReadonlyMap<string, Point3>): LayoutStats {
     const points = [...positions.values()];
     const bounds = (key: keyof Point3): readonly [number, number] => points.length
-        ? [Math.min(...points.map(p => p[key])), Math.max(...points.map(p => p[key]))] : [0, 0];
+        ? [minOf(points.map(p => p[key])), maxOf(points.map(p => p[key]))] : [0, 0];
     const x = bounds('x'), y = bounds('y'), z = bounds('z');
     return { bbox: { x, y, z }, depthRatio: (z[1] - z[0]) / Math.max(1, x[1] - x[0], y[1] - y[0]) };
 }
@@ -347,8 +348,8 @@ export function packDisconnectedComponents(input: LayoutInput, laidOut: LayoutRe
     const shifts = new Map<string, Point3>();
     const mainMidX = (main.minX + main.maxX) / 2;
     const mainMidY = (main.minY + main.maxY) / 2;
-    const mainMinZ = Math.min(...occupiedGroups[0]!.map(point => point.z));
-    const mainMaxZ = Math.max(...occupiedGroups[0]!.map(point => point.z));
+    const mainMinZ = minOf(occupiedGroups[0]!.map(point => point.z));
+    const mainMaxZ = maxOf(occupiedGroups[0]!.map(point => point.z));
     const outline = largeField ? [] : convexHull(occupiedGroups[0]!);
     for (const [componentIndex, ids] of ordered.slice(1).entries()) {
         const source = boundsOf(ids, positions);
@@ -358,7 +359,7 @@ export function packDisconnectedComponents(input: LayoutInput, laidOut: LayoutRe
             occupied.push(source);
             occupiedGroups.push(ids.map(id => positions.get(id)!));
             enclosure = unionBounds(enclosure, source);
-            placedSummaries.push(...ownSummaries);
+            appendAll(placedSummaries, ownSummaries);
             continue;
         }
         const width = source.maxX - source.minX, height = source.maxY - source.minY;
@@ -468,7 +469,7 @@ export function packDisconnectedComponents(input: LayoutInput, laidOut: LayoutRe
             && ownSummaries.length === 1 && placedSummaries.length && ids.length <= 16) {
             const own = ownSummaries[0]!;
             const oldZ = ids.map(id => positions.get(id)!.z);
-            const minZ = Math.min(mainMinZ, ...oldZ), maxZ = Math.max(mainMaxZ, ...oldZ);
+            const minZ = minOf(oldZ, mainMinZ), maxZ = maxOf(oldZ, mainMaxZ);
             let bestDistance = Math.min(nearest(0, 0, 0), nearest(chosen.dx, chosen.dy, dz));
             for (const anchor of placedSummaries) for (const direction of SPHERE_DIRECTIONS) {
                 const tangent = own.radius + anchor.radius + stellarVoid;
@@ -500,7 +501,7 @@ export function packDisconnectedComponents(input: LayoutInput, laidOut: LayoutRe
                 occupied.push(source);
                 occupiedGroups.push(ids.map(id => positions.get(id)!));
                 enclosure = unionBounds(enclosure, source);
-                placedSummaries.push(...ownSummaries);
+                appendAll(placedSummaries, ownSummaries);
                 continue;
             }
         }
@@ -512,7 +513,7 @@ export function packDisconnectedComponents(input: LayoutInput, laidOut: LayoutRe
         occupied.push(chosen.box);
         occupiedGroups.push(ids.map(id => packed.get(id)!));
         enclosure = unionBounds(enclosure, chosen.box);
-        placedSummaries.push(...ownSummaries.map(community => ({ ...community, center: {
+        appendAll(placedSummaries, ownSummaries.map(community => ({ ...community, center: {
             x: community.center.x + chosen.dx, y: community.center.y + chosen.dy,
             z: community.center.z + chosenDz,
         } })));
@@ -590,7 +591,7 @@ function flat2d(input: LayoutInput): LayoutResult {
     const siblingIndex = new Map<string, number>();
     for (let index = 0; index < queue.length; index++) {
         const node = queue[index]!;
-        queue.push(...(children.get(node.id) ?? []));
+        appendAll(queue, (children.get(node.id) ?? []));
         if (positions.has(node.id))
             continue;
         const parent = node.parent ? positions.get(node.parent) : undefined;
@@ -690,7 +691,7 @@ function flat3d(input: LayoutInput): LayoutResult {
     const siblingIndex = new Map<string, number>();
     for (let index = 0; index < queue.length; index++) {
         const node = queue[index]!;
-        queue.push(...(children.get(node.id) ?? []));
+        appendAll(queue, (children.get(node.id) ?? []));
         if (positions.has(node.id))
             continue;
         const parent = node.parent ? positions.get(node.parent) : undefined;
@@ -836,7 +837,7 @@ function stellarCommunities(children: ReadonlyMap<string | null, LayoutNode[]>, 
         const list = membersOf.get(rootId) ?? [];
         list.push(node);
         membersOf.set(rootId, list);
-        queue.push(...(children.get(node.id) ?? []));
+        appendAll(queue, (children.get(node.id) ?? []));
     }
     return { rootOf, membersOf };
 }
@@ -1066,7 +1067,7 @@ function indra(input: LayoutInput): LayoutResult {
     const capCollapsed = (list: readonly LayoutNode[]) => {
         const expanded = list.filter(child => (children.get(child.id)?.length ?? 0) > 0);
         if (!expanded.length) return;
-        const maximum = Math.max(...expanded.map(child => radii.get(child.id)!));
+        const maximum = maxOf(expanded.map(child => radii.get(child.id)!));
         for (const child of list) if ((child.hiddenDescendants ?? 0) > 0 && !(children.get(child.id)?.length))
             radii.set(child.id, Math.min(radii.get(child.id)!, maximum));
     };
@@ -1125,10 +1126,10 @@ function indra(input: LayoutInput): LayoutResult {
     const placedRoots: { x: number; y: number; radius: number }[] = ordered.map(root => ({ ...packedRoots.get(root.id)! }));
     // Centre the packed discs in their enclosing ring, including small bare domains.
     if (placedRoots.length && !(coreCount >= 3 && coreCount <= 12)) {
-        const left = Math.min(...placedRoots.map(root => root.x - root.radius));
-        const right = Math.max(...placedRoots.map(root => root.x + root.radius));
-        const top = Math.min(...placedRoots.map(root => root.y - root.radius));
-        const bottom = Math.max(...placedRoots.map(root => root.y + root.radius));
+        const left = minOf(placedRoots.map(root => root.x - root.radius));
+        const right = maxOf(placedRoots.map(root => root.x + root.radius));
+        const top = minOf(placedRoots.map(root => root.y - root.radius));
+        const bottom = maxOf(placedRoots.map(root => root.y + root.radius));
         const dx = (left + right) / 2, dy = (top + bottom) / 2;
         for (const root of placedRoots) { root.x -= dx; root.y -= dy; }
     }
@@ -1152,7 +1153,7 @@ function indra(input: LayoutInput): LayoutResult {
     ordered.forEach(root => place(root, rootDisc.get(root.id)!.x, rootDisc.get(root.id)!.y, zOffsets.get(root.id) ?? 0));
     // Centre the depth so the absolute sphere sits at z 0 rather than drifting with the ids.
     const zValues = [...positions.values()].map(point => point.z);
-    const zMid = zValues.length ? (Math.min(...zValues) + Math.max(...zValues)) / 2 : 0;
+    const zMid = zValues.length ? (minOf(zValues) + maxOf(zValues)) / 2 : 0;
     for (const [id, point] of positions) positions.set(id, { ...point, z: (point.z - zMid) * depth });
     for (let index = 0; index < containers.length; index++) {
         const item = containers[index]!;

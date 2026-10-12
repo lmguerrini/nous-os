@@ -1,3 +1,4 @@
+import { appendAll } from '#render-common/array-aggregation.ts';
 /** Validated, renderer independent progressive disclosure for review graph v2. */
 import { ellipsizeText } from '../render-common/container-canvas.ts';
 export interface GraphNode {
@@ -156,7 +157,7 @@ export function disclose(index: GraphIndex, expanded: ReadonlySet<string>, cap =
     if (visibleNodes.length >= cap) { limitReached = true; break; }
     visibleNodes.push(node);
     const descendants = tree.children.get(id) ?? [];
-    if (expanded.has(id)) queue.push(...descendants);
+    if (expanded.has(id)) appendAll(queue, descendants);
     else if (descendants.length || node.counts.passages) hiddenChildren.set(id, node.counts.children);
   }
   if (limitReached) {
