@@ -4,6 +4,7 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { NEURAL_SOMA_OUTLINE_MAX_RADIAL } from "#engine/morphology-geometry.ts";
 // D084-W2-NEURAL-R3 END
 import type { NodeBuffers } from "#render3f/buffers.ts";
+import type { Coordinates } from "#engine/contract.ts";
 
 const NODE_RENDER_ORDER = 3;
 
@@ -75,7 +76,12 @@ vec4 somaLobe(int slot, int instanceIndex) {
 void main() {
   vec4 viewCenter = modelViewMatrix * vec4(a_worldPosition, 1.0);
   vec4 clipCenter = projectionMatrix * viewCenter;
-  float perspectiveScale = u_referenceViewDepth / max(-viewCenter.z, u_referenceViewDepth / u_permilleScale);
+  // The last two texture cells hold the complete-layout size position. The
+  // visible node remains at a_worldPosition; only its radius uses this depth.
+  vec2 sizeXY = texelFetch(u_haloStops, ivec2(u_somaLobeOffset + 6, int(a_instanceIndex)), 0).rg;
+  vec2 sizeZ = texelFetch(u_haloStops, ivec2(u_somaLobeOffset + 7, int(a_instanceIndex)), 0).rg;
+  vec4 sizeViewCenter = modelViewMatrix * vec4(sizeXY, sizeZ.x, 1.0);
+  float perspectiveScale = u_referenceViewDepth / max(-sizeViewCenter.z, u_referenceViewDepth / u_permilleScale);
   // A1b outside-ownership bridge: keep drawn radius aligned with CPU picking and labels.
   float sizeScale = mix(u_orthographicSizeScale, min(perspectiveScale, u_nodeScaleCap), u_isPerspective);
   // End A1b outside-ownership bridge.
@@ -217,7 +223,8 @@ void main() {
 }`;
 
 /** This creates the live instanced node pass and does not alter any buffer value. */
-export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResources {
+export function createNodeRenderResources(buffers: NodeBuffers,
+  sizeReferencePositions?: ReadonlyMap<string, Coordinates>): NodeRenderResources {
   const geometry = new THREE.InstancedBufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(quadVertices(), coordinateCount()));
   geometry.setAttribute("a_worldPosition", instanced(buffers.positions, coordinateCount()));
@@ -234,7 +241,7 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
   geometry.setAttribute("a_haloStopCount", instanced(buffers.haloStopCounts, scalarCount()));
   geometry.setAttribute("a_instanceIndex", instanced(instanceIndices(buffers.ids.length), scalarCount()));
   geometry.instanceCount = buffers.ids.length;
-  const haloStops = haloStopTexture(buffers);
+  const haloStops = haloStopTexture(buffers, sizeReferencePositions);
   const material = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
     vertexShader: NODE_VERTEX_SHADER,
@@ -278,7 +285,8 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
 }
 
 /** This updates node material attributes in place and does not move a mounted world anchor. */
-export function updateNodeRenderResources(resources: NodeRenderResources, buffers: NodeBuffers): void {
+export function updateNodeRenderResources(resources: NodeRenderResources, buffers: NodeBuffers,
+  sizeReferencePositions?: ReadonlyMap<string, Coordinates>): void {
   // D082-A-NEURALe BEGIN
   resources.material.blendEquation = buffers.somaShape.some((value, index) => index % 2 === 0 && value > 0.5)
     ? THREE.MaxEquation : THREE.AddEquation;
@@ -298,14 +306,23 @@ export function updateNodeRenderResources(resources: NodeRenderResources, buffer
   copyAttribute(resources.geometry, "a_minimumCoreDeviceRadiusPx", buffers.minimumCoreDeviceRadiiPx);
   copyAttribute(resources.geometry, "a_haloStopCount", buffers.haloStopCounts);
   const textureData = resources.haloStops.image.data;
-  const expectedTextureLength = (Math.max(scalarCount(), buffers.haloStopCount) + 6)
+  const expectedTextureLength = (Math.max(scalarCount(), buffers.haloStopCount) + 8)
     * Math.max(scalarCount(), buffers.ids.length)
     * textureChannelCount();
   if (!(textureData instanceof Float32Array)
     || textureData.length !== expectedTextureLength) {
     throw new TypeError("node halo stop texture shape changed after mount");
   }
-  writeHaloTextureData(textureData, buffers);
+  writeHaloTextureData(textureData, buffers, sizeReferencePositions);
+  resources.haloStops.needsUpdate = true;
+}
+
+/** Change only the shader's size positions during an in-place density revision. */
+export function updateNodeSizeReferencePositions(resources: NodeRenderResources, buffers: NodeBuffers,
+  positions?: ReadonlyMap<string, Coordinates>): void {
+  const data = resources.haloStops.image.data;
+  if (!(data instanceof Float32Array)) throw new TypeError('node halo stop texture is not float data');
+  writeHaloTextureData(data, buffers, positions);
   resources.haloStops.needsUpdate = true;
 }
 
@@ -324,11 +341,12 @@ export function updateNodeProjectionUniforms(material: THREE.RawShaderMaterial, 
   // D082-A-N3D END
 }
 
-function haloStopTexture(buffers: NodeBuffers): THREE.DataTexture {
-  const width = Math.max(scalarCount(), buffers.haloStopCount) + 6;
+function haloStopTexture(buffers: NodeBuffers,
+  sizeReferencePositions?: ReadonlyMap<string, Coordinates>): THREE.DataTexture {
+  const width = Math.max(scalarCount(), buffers.haloStopCount) + 8;
   const height = Math.max(scalarCount(), buffers.ids.length);
   const data = new Float32Array(width * height * textureChannelCount());
-  writeHaloTextureData(data, buffers);
+  writeHaloTextureData(data, buffers, sizeReferencePositions);
   const texture = new THREE.DataTexture(data, width, height, THREE.RGFormat, THREE.FloatType);
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
@@ -337,9 +355,10 @@ function haloStopTexture(buffers: NodeBuffers): THREE.DataTexture {
   return texture;
 }
 
-function writeHaloTextureData(target: Float32Array, buffers: NodeBuffers): void {
+function writeHaloTextureData(target: Float32Array, buffers: NodeBuffers,
+  sizeReferencePositions?: ReadonlyMap<string, Coordinates>): void {
   target.fill(0);
-  const rowWidth = (Math.max(scalarCount(), buffers.haloStopCount) + 6) * textureChannelCount();
+  const rowWidth = (Math.max(scalarCount(), buffers.haloStopCount) + 8) * textureChannelCount();
   for (const [index, offset] of buffers.haloStopOffsets.entries()) {
     const nodeIndex = Math.floor(index / buffers.haloStopCount);
     const stopIndex = index % buffers.haloStopCount;
@@ -351,9 +370,15 @@ function writeHaloTextureData(target: Float32Array, buffers: NodeBuffers): void 
     );
   }
   const offset = Math.max(scalarCount(), buffers.haloStopCount) * textureChannelCount();
-  for (let index = 0; index < buffers.ids.length; index++)
+  for (let index = 0; index < buffers.ids.length; index++) {
     for (const [slot, source] of [buffers.somaLobe0, buffers.somaLobe1, buffers.somaLobe2].entries())
       target.set(source.subarray(index * 4, index * 4 + 4), index * rowWidth + offset + slot * 4);
+    const point = sizeReferencePositions?.get(buffers.ids[index]!) ?? {
+      x: buffers.positions[index * 3]!, y: buffers.positions[index * 3 + 1]!,
+      z: buffers.positions[index * 3 + 2]!,
+    };
+    target.set([point.x, point.y, point.z, 0], index * rowWidth + offset + 12);
+  }
 }
 
 function copyAttribute(geometry: THREE.InstancedBufferGeometry, name: string, values: Float32Array): void {

@@ -137,7 +137,7 @@ test('first 2D Completa scene has density factors before a renderer or gesture e
   const source = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   assert.match(source, /firstNeuralScreen\?\.edgeDensities[\s\S]*?const presentation = \{/);
   // D087-SIZE BEGIN: initial 2D geometry keeps D-086 incidence; 3D uses the full graph.
-  assert.match(source, /initialScene = \{ \.\.\.draft, geometry: axes\.projection === "3d" \? semanticMarkGeometry\(geometry, degree\) : geometry \}/);
+  assert.match(source, /initialScene = \{ \.\.\.draft, geometry: semanticMarkGeometry\(geometry, degree\) \}/);
   // D087-SIZE END
   const shader = readFileSync(new URL('../src/render2d/filament-program.ts', import.meta.url), 'utf8');
   // D084-W7-DENSE BEGIN: the dense veil factor multiplies the root alpha in the dense

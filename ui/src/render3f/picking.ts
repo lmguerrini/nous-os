@@ -2,6 +2,7 @@ import type { Coordinates } from "#engine/contract.ts";
 import type { PickResult, RenderVisibility, StyledProjection } from "../projection/contract-types.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneEdge, SceneNode } from "#scene/contract.ts";
+import { MIN_NODE_PICK_RADIUS_PX } from "#render-common/dense-node-scale.ts";
 
 /**
  * Chosen to sit in the empty gap between projection rounding and any perceptible curvature, not at
@@ -84,14 +85,20 @@ export class ScenePicker {
 
   /** This returns the topmost visible core at one viewport point and does not inspect node semantics. */
   pickNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null {
-    const ordered = [...this.sceneValue.nodes].sort(compareStackingPriority).reverse();
-    for (const node of ordered) {
+    let picked: string | null = null;
+    let best = Infinity;
+    for (const node of this.sceneValue.nodes) {
+      if (node.opacityPermille <= 0) continue;
+      const radius = this.projection.nodeFootprintRadiusPx?.(node) ?? this.projection.nodeRadiusPx(node);
+      if (!(radius > 0)) continue;
       const center = this.projection.project(node.position);
-      if (Math.hypot(position.x - center.x, position.y - center.y) <= this.projection.nodeRadiusPx(node)) {
-        return node.id;
+      const distance = Math.hypot(position.x - center.x, position.y - center.y);
+      if (distance <= Math.max(radius, MIN_NODE_PICK_RADIUS_PX)
+        && (distance < best || distance === best && (picked === null || node.id < picked))) {
+        picked = node.id; best = distance;
       }
     }
-    return null;
+    return picked;
   }
 
   /** This returns the topmost resolved filament at one viewport point and does not use a hidden line primitive. */
@@ -258,14 +265,21 @@ export class TypedProjectionPicker {
   private geometryValue: TypedProjectionGeometry;
   private fingerprint: string;
   private readonly project: PickingProjection["project"];
+  private readonly radiusAt: (id: string, position: Coordinates) => number;
   private readonly wheelProjection = { x: 0, y: 0 };
-  constructor(input: Render3fTypedInput, project: PickingProjection["project"]) {
+  constructor(input: Render3fTypedInput, project: PickingProjection["project"],
+    sizeScaleAt?: (position: Coordinates) => number) {
     this.geometryValue = buildTypedProjectionGeometry(input);
     this.input = input;
     this.fingerprint = typedFingerprint(input);
     this.project = project;
+    this.radiusAt = sizeScaleAt ? (id, position) => {
+      const size = this.input.styled.nodeStyle[id]?.size;
+      return Math.max(0, (typeof size === "number" ? size : 5) * sizeScaleAt(position));
+    } : () => 8;
   }
   get geometry(): TypedProjectionGeometry { return this.geometryValue; }
+  nodeFootprintRadiusPx(id: string, position: Coordinates): number { return this.radiusAt(id, position); }
   get visibility(): RenderVisibility { return this.input.visibility; }
   get semanticIncidence(): readonly ProjectionSemanticEdge[] {
     return this.input.semanticEdges.filter(edge => this.input.visibility.semanticEdgeIds.has(edge.id));
@@ -304,7 +318,17 @@ export class TypedProjectionPicker {
   /** Nodes, then structural relations, then source edges: the classes this picker owns outright. The
    * derived geometry (containers, curves, field rings) is picked by the projection visuals layer. */
   pickPrimary(position: { readonly x: number; readonly y: number }): PickResult | null {
-    for (const point of this.geometryValue.nodes) if (distance(position, this.project(point.position)) <= 8) return point.pick;
+    let chosen: PickResult | null = null;
+    let nearest = Infinity;
+    for (const point of this.geometryValue.nodes) {
+      if (point.pick.kind !== "node") continue;
+      const hitExtent = this.radiusAt(point.pick.id, point.position);
+      const separation = distance(position, this.project(point.position));
+      if (hitExtent > 0 && separation <= Math.max(hitExtent, MIN_NODE_PICK_RADIUS_PX) && separation < nearest) {
+        chosen = point.pick; nearest = separation;
+      }
+    }
+    if (chosen) return chosen;
     for (const segments of [this.geometryValue.visualRelations, this.geometryValue.semanticEdges]) {
       for (const segment of segments) if (segmentDistance(position, this.project(segment.source), this.project(segment.target)) <= 5) return segment.pick;
     }
@@ -312,7 +336,8 @@ export class TypedProjectionPicker {
   }
   pick(position: { readonly x: number; readonly y: number }): PickResult | null {
     for (const point of this.geometryValue.fields) if (distance(position, this.project(point.position)) <= 5) return point.pick;
-    for (const point of this.geometryValue.nodes) if (distance(position, this.project(point.position)) <= 8) return point.pick;
+    const primary = this.pickPrimary(position);
+    if (primary?.kind === "node") return primary;
     for (const segments of [this.geometryValue.visualRelations, this.geometryValue.semanticEdges,
       this.geometryValue.curves, this.geometryValue.containers]) {
       for (const segment of segments) if (segmentDistance(position, this.project(segment.source), this.project(segment.target)) <= 5) return segment.pick;

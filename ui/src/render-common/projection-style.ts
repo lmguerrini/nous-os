@@ -188,16 +188,14 @@ export function styleProjection(
   const nodeScale = options.nodeScale ?? 1;
   const reading = options.reading ?? "combined";
   const focus = options.focus;
-  const loaded = new Set(result.loadedNodeIds);
   // Hub ranking: undirected degree over the semantic edges the domain actually carries — the same
   // signal the product pass uses for label priority and the drawer uses for star growth.
   const degree = new Map<string, number>();
   for (const edge of snapshot.edges) {
-    if (!loaded.has(edge.source) || !loaded.has(edge.target)) continue;
     degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
     degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
   }
-  const crowded = result.loadedNodeIds.length > TYPED_HALO_CROWD_NODES;
+  const crowded = snapshot.nodes.length > TYPED_HALO_CROWD_NODES;
   const snapshotById = new Map(snapshot.nodes.map(node => [node.id, node]));
   const recordById = new Map<string, TypedNodeRecord | null>();
   for (const id of result.loadedNodeIds) recordById.set(id, typedNodeRecord(snapshotById, id));

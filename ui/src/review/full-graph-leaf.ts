@@ -7,15 +7,23 @@ import { canopyCompleteNodeScales } from '../fractal/canopy-node-policy.ts';
 // D087-SIZE11 END
 import type { Point3 } from './layout-v2.ts';
 import type { V2Node } from './v2-core.ts';
-import { v2Encoding } from './v2-adapter.ts';
+import { adaptV2, v2Encoding } from './v2-adapter.ts';
+import { createEngineGraphView } from '../engine/contract.ts';
+import { DEFAULT_CALIBRATION } from '../engine/calibration.ts';
+import { applyMorphology, SHARED_SCENE_MATERIAL_TARGET, STELLAR } from '../engine/morphology.ts';
 
 export type FullGraphLeafSource = Readonly<{
   digest: string;
   layoutKey: string;
   nodes: readonly V2Node[];
   anchors: ReadonlyMap<string, Point3>;
+  /** Size-only complete coordinates, retained across density remounts. */
+  sizeReferenceAnchors?: ReadonlyMap<string, Point3>;
   // D087-SIZE11 BEGIN: only real, reading-admitted source relations enter the fixed veil.
   edges?: readonly Readonly<{ id: string; source: string; target: string }>[];
+  /** Complete drawn relation incidence for the Stellar Indra halo material. */
+  haloEdges?: readonly Readonly<{ id: string; source: string; target: string }>[];
+  haloNodeIds?: ReadonlySet<string>;
   edgeKey?: string;
   // D087-SIZE11 END
   /** Share of the reference frame occupied by nodes when topology guides own the outer fit. */
@@ -24,6 +32,34 @@ export type FullGraphLeafSource = Readonly<{
   allNodesRepresented?: boolean;
   // D087-SIZE11 END
 }>;
+
+/** Keep the complete layout used for node size across admissions of one camera space. */
+export function stableFullLayoutSizeAnchors(
+  cache: Map<string, ReadonlyMap<string, Point3>>, key: string,
+  anchors: ReadonlyMap<string, Point3>,
+): ReadonlyMap<string, Point3> {
+  const previous = cache.get(key);
+  if (previous?.size === anchors.size) return previous;
+  cache.set(key, anchors);
+  return anchors;
+}
+
+/** Complete Indra Stellar halo material, independent of the admitted pearl set. */
+export function completeStellarHaloMaterial(source: FullGraphLeafSource): ReadonlyMap<string, {
+  readonly radiusPx: number; readonly intensityPermille: number;
+}> {
+  if (!source.haloEdges) return new Map();
+  const nodes = source.haloNodeIds
+    ? source.nodes.filter(node => source.haloNodeIds!.has(node.id)) : source.nodes;
+  const graph = adaptV2(nodes, source.haloEdges.map(edge => ({ ...edge,
+    class: 'attested' as const, type: 'links', directed: false, evidence: [] })),
+    source.anchors, source.digest).prepared.flatGraph;
+  const material = applyMorphology(createEngineGraphView(graph, { fast: true }).graph,
+    STELLAR, DEFAULT_CALIBRATION, SHARED_SCENE_MATERIAL_TARGET);
+  return new Map(material.nodes.map(node => [node.id, {
+    radiusPx: node.haloRadiusPx, intensityPermille: node.haloIntensityPermille,
+  }] as const));
+}
 
 // D087-SIZE11 BEGIN
 export type FullGraphLeafBase = Readonly<{ given: number; targetPx: number; fullGraphNodes: number;
@@ -149,7 +185,8 @@ export function calculateFullGraphLeafBase(source: FullGraphLeafSource,
   // D087-SIZE11 END
   const leafRadii = points.flatMap(({ node }) => {
     const radius = dense.get(node.id)?.radiusPx ?? 0;
-    return !structuralIds.has(node.id) && radius > 0 ? [radius * sizeScale] : [];
+    return !structuralIds.has(node.id) && radius > 0
+      && (source.allNodesRepresented || !dense.get(node.id)?.coveredForSize) ? [radius * sizeScale] : [];
   });
   const targetPx = calibratedLeafCorePx(leafRadii, morphology, '3d');
   // D087-SIZE11 BEGIN: retain every D-086 Completa dense-law result, including its

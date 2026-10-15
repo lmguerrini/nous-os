@@ -1,19 +1,19 @@
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
-import { isCompleteDenseView } from "#render-common/dense-node-scale.ts";
+import { DENSE_SCENE_THRESHOLD } from "#render-common/dense-node-scale.ts";
 import { stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
 
 /**
  * Geometry Lab scenes above the native-tier threshold draw their nodes twice: the morphology
  * canvas paints the settled core and Sigma's GPU layer paints a disc from the raw encoded radius.
- * Below the threshold only the canvas draws, so the GPU disc must not outgrow the canvas core.
- * Completa keeps its own dense size policy; Natural and standalone Indra are not Lab scenes.
+ * Below the threshold only the canvas draws. Every density in a native-tier Lab scene
+ * uses the same canvas-to-GPU radius law; Natural and standalone Indra use their own path.
  */
 // D086-F1 BEGIN: an Indra composition retains its encoded pearl/member radii as inputs to this law.
 export function labNativeSizeLawApplies(labTopology: string | undefined,
-  totalNodeCount: number, visibleCount: number): boolean {
+  totalNodeCount: number): boolean {
   return labTopology !== undefined && labTopology !== "natural"
-    && !isCompleteDenseView(totalNodeCount, visibleCount);
+    && totalNodeCount >= DENSE_SCENE_THRESHOLD;
 }
 // D086-F1 END
 

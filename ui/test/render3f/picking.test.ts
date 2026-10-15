@@ -47,7 +47,7 @@ test("wheel anchoring reads the current drawn pearl and its halo without a stale
     nodeFootprintRadiusPx(node) { return node.haloRadiusPx; },
   };
   const picker = new ScenePicker(singleNodeScene(scene, first), projection);
-  assert.equal(picker.pickNodeAtPosition({ x: 42, y: 40 }), null, "the regular core pick remains unchanged");
+  assert.equal(picker.pickNodeAtPosition({ x: 42, y: 40 }), first.id, "the drawn halo is pickable");
   assert.equal(picker.nodeAnchorAtPosition(42, 40), first.position, "the drawn halo supplies a wheel anchor");
   picker.replaceScene(singleNodeScene(scene, second));
   assert.equal(picker.nodeAnchorAtPosition(42, 40), undefined);

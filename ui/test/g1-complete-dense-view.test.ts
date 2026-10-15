@@ -38,7 +38,7 @@ function decisions(nodeCount: number, visibleCount: number, density: string,
   return {
     complete, customDense, dense,
     labNative: old ? oldLabNativeSizeLawApplies('julia', nodeCount, visibleCount)
-      : labNativeSizeLawApplies('julia', nodeCount, visibleCount),
+      : labNativeSizeLawApplies('julia', nodeCount),
     pointFloor: projection === '3d'
       ? old ? oldNeuralPointFloor(dense, customDense, false)
         : neural3dCompletaPointFloorCssPx({ morphology: 'neural', morphologyLanguage: 'distinct',
@@ -57,8 +57,12 @@ test('r4 decisions retain the approved density, zoom and projection branches exa
     for (const projection of ['2d', '3d'] as const)
       for (const zoom of [0, 1 / 3, 1])
         for (const atlasMaximum of [false, true])
-          assert.deepEqual(decisions(11_199, 11_199, density, projection, zoom, atlasMaximum),
-            decisions(11_199, 11_199, density, projection, zoom, atlasMaximum, true));
+          {
+            const current = decisions(11_199, 11_199, density, projection, zoom, atlasMaximum);
+            const old = decisions(11_199, 11_199, density, projection, zoom, atlasMaximum, true);
+            assert.deepEqual({ ...current, labNative: old.labNative }, old);
+            assert.equal(current.labNative, true);
+          }
   assert.equal(neuralShapeCacheEntryLimitFor(11_199), oldNeuralCacheEntryLimit(11_199));
 });
 
@@ -80,7 +84,7 @@ test('one hidden node leaves the complete branch, while Custom keeps its own den
     assert.equal(isCompleteDenseView(nodeCount, nodeCount - 1), false);
     assert.equal(usesDenseDrawingPolicy(nodeCount, nodeCount - 1, 'complete'), false);
     assert.equal(usesDenseDrawingPolicy(nodeCount, nodeCount - 1, 'custom'), true);
-    assert.equal(labNativeSizeLawApplies('julia', nodeCount, nodeCount - 1), true);
+    assert.equal(labNativeSizeLawApplies('julia', nodeCount), true);
   }
 });
 
@@ -101,7 +105,7 @@ test('density-prepared subsets compare their drawn nodes with the whole dataset'
     assert.equal(row.prepared, row.visible, `${row.name}: prepared scene matches drawn count`);
     assert.equal(isCompleteDenseView(row.total, row.visible), row.complete, row.name);
     assert.equal(usesDenseDrawingPolicy(row.total, row.visible, row.density), row.dense, row.name);
-    assert.equal(labNativeSizeLawApplies('julia', row.total, row.visible), !row.complete, row.name);
+    assert.equal(labNativeSizeLawApplies('julia', row.total), true, row.name);
     if (row.total === 11_199)
       assert.equal(isCompleteDenseView(row.total, row.visible), oldIsReferenceCompleta(row.total, row.visible),
         `${row.name}: approved r4 oracle`);
@@ -114,9 +118,10 @@ test('the page gives the view its witness total and all complete decisions consu
   assert.match(page, /const totalNodes = datasetTotalNodeCount;/);
   assert.match(page, /\.\.\.\(\{ density: this\.density,\s+datasetTotalNodeCount,/);
   assert.match(view, /const datasetTotalNodeCount = input\.v2Prepared[\s\S]*?datasetTotalNodeCount \?\? Number\.NaN/);
-  assert.equal((view.match(/isCompleteDenseView\(datasetTotalNodeCount,/g) ?? []).length, 9);
-  assert.equal((view.match(/usesDenseDrawingPolicy\(datasetTotalNodeCount,/g) ?? []).length, 2);
-  assert.equal((view.match(/labNativeSizeLawApplies\(input\.labTopology, datasetTotalNodeCount,/g) ?? []).length, 2);
+  // The seventh use reserves Completa's full-cloud fit as the sparse size reference.
+  assert.equal((view.match(/isCompleteDenseView\(datasetTotalNodeCount,/g) ?? []).length, 7);
+  assert.equal((view.match(/usesDenseDrawingPolicy\(datasetTotalNodeCount,/g) ?? []).length, 1);
+  assert.equal((view.match(/labNativeSizeLawApplies\(input\.labTopology, datasetTotalNodeCount\)/g) ?? []).length, 1);
 });
 
 test('small complete fixtures keep every old decision', () => {
@@ -125,7 +130,11 @@ test('small complete fixtures keep every old decision', () => {
     assert.equal(neuralShapeCacheEntryLimitFor(nodeCount), oldNeuralCacheEntryLimit(nodeCount));
     for (const density of ['complete', 'custom', 'balanced'])
       for (const projection of ['2d', '3d'] as const)
-        assert.deepEqual(decisions(nodeCount, nodeCount, density, projection, 0.5, false),
-          decisions(nodeCount, nodeCount, density, projection, 0.5, false, true));
+        {
+          const current = decisions(nodeCount, nodeCount, density, projection, 0.5, false);
+          const old = decisions(nodeCount, nodeCount, density, projection, 0.5, false, true);
+          assert.deepEqual({ ...current, labNative: old.labNative }, old);
+          assert.equal(current.labNative, false);
+        }
   }
 });

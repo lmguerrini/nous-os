@@ -2634,6 +2634,11 @@ const api = {
   get focusMode() { return focusMode; },
   camera: () => v2?.camera() ?? view?.camera() ?? null,
   cameraState: () => v2?.cameraState() ?? view?.readCamera() ?? null,
+  restoreCameraState: (state: unknown) => v2?.restoreCameraState(state) ?? (() => {
+    if (!view || !state) return false;
+    view.restoreCamera(state);
+    return true;
+  })(),
   tickZoomCost: () => ({ ...tickZoomCost, meanMs: tickZoomCost.calls ? tickZoomCost.totalMs / tickZoomCost.calls : 0 }),
   viewPreset,
   fullscreen,

@@ -129,6 +129,8 @@ export function focusArcOpacity(
 export type DistinctSubsetUpdate = {
   readonly input: MorphologyInput;
   readonly geometry: MorphologyGeometry;
+  /** Natural 3D sizes use the complete-layout positions during sparse revisions. */
+  readonly nodeSizeReferencePositions?: ReadonlyMap<string, Coordinates> | undefined;
   // D086-BURST BEGIN: the canvas subset and its certificate share one revision.
   readonly readinessView?: string;
   // D086-BURST END
