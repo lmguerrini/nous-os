@@ -73,6 +73,7 @@ import {
   createNodeRenderResources,
   updateNodeProjectionUniforms,
   updateNodeRenderResources,
+  updateNodeSizeReferencePositions,
 } from "#render3f/node-material.ts";
 import { ScenePicker } from "#render3f/picking.ts";
 import { TypedProjectionPicker } from "#render3f/picking.ts";
@@ -116,6 +117,8 @@ export type Render3fOptions = {
   readonly labIndra?: boolean;
   readonly labLevels?: readonly { readonly id: string; readonly level: number }[];
   readonly labRelationRanks?: ReadonlyMap<string, NativeRelationRank>;
+  /** Per-ID complete-layout position used only for node size projection. */
+  readonly nodeSizeReferencePositions?: ReadonlyMap<string, Coordinates>;
   // D085-S3 END
   readonly palette?: Palette;
   readonly temperature: Temperature;
@@ -479,7 +482,8 @@ export function mount(
   for (const id of live.buffers.filaments.edgeIds) if (nativeBeamEdgeIds.has(id)) nativeBeamGatedEdges += 1;
   // D085-S6 END
   setFilamentNeuralWidthPx(filamentResources.material, options.presentation?.appearance?.edgeWidth ?? 1);
-  const nodeResources = createNodeRenderResources(live.buffers.nodes);
+  let nodeSizeReferencePositions = options.nodeSizeReferencePositions;
+  const nodeResources = createNodeRenderResources(live.buffers.nodes, nodeSizeReferencePositions);
   // D082-A-N3D BEGIN: only the full Natural/Indra Neural 3D scene receives the point floor.
   // D082-B-GPUFLOOR BEGIN: a Canopy-family host is not that scene. The signal is the one the
   // shared canvas renderer already uses (data-fractal-rails-active on the render container)
@@ -594,6 +598,9 @@ export function mount(
     filamentResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
     nodeResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
   }
+  const nodePickProjection = { x: 0, y: 0 };
+  const sizePosition = (node: SceneNode): Coordinates =>
+    nodeSizeReferencePositions?.get(node.id) ?? node.position;
   const picker = new ScenePicker(live.scene, {
     project(point: Coordinates): { readonly x: number; readonly y: number } {
       return rig.graphToViewport(point);
@@ -603,24 +610,25 @@ export function mount(
     },
     nodeRadiusPx(node: SceneNode): number {
       // D082-A-NODES BEGIN
-      return (denseNodeRadii.get(node.id)?.radius ?? node.radiusPx) * rig.sizeScaleAt(node.position);
+      return (denseNodeRadii.get(node.id)?.radius ?? node.radiusPx) * rig.sizeScaleAt(sizePosition(node));
       // D082-A-NODES END
     },
     nodeFootprintRadiusPx(node: SceneNode): number {
-      const scale = rig.wheelNodeSizeScaleAt(node.position);
-      // D082-A-NODES BEGIN
+      if (!rig.projectToViewportInto(node.position, nodePickProjection)) return 0;
+      const scale = rig.sizeScaleAt(sizePosition(node));
       const dense = denseNodeRadii.get(node.id);
-      if (dense) return Math.max(dense.radius, dense.halo) * scale;
-      // D082-A-NODES END
-      return Math.max(node.haloRadiusPx * scale,
-        Math.max(node.radiusPx * scale, node.minimumCoreDeviceRadiusPx) + node.haloCoreGapPx * scale);
+      const base = dense?.radius ?? node.radiusPx;
+      if (!(base > 0)) return 0;
+      const core = Math.max(base * scale, node.minimumCoreDeviceRadiusPx, denseNeuralPointFloorCssPx);
+      return Math.max((dense?.halo ?? node.haloRadiusPx) * scale,
+        core + node.haloCoreGapPx * scale);
     },
     filamentSizeScale(): number {
       return rig.readProjectionState().filamentSizeScale;
     },
   });
   let typedPicker = typedInput === undefined ? null : new TypedProjectionPicker(
-    typedInput, point => rig.graphToViewport(point),
+    typedInput, point => rig.graphToViewport(point), point => rig.sizeScaleAt(point),
   );
   const typedLayer = createTypedProjectionLayer();
   threeScene.add(typedLayer.group);
@@ -1548,7 +1556,7 @@ export function mount(
     retainedSceneReferences.add(scenes.orthographic);
     retainedSceneReferences.add(scenes.perspective);
     if (!typedPicker) {
-      updateNodeRenderResources(nodeResources, live.buffers.nodes);
+      updateNodeRenderResources(nodeResources, live.buffers.nodes, nodeSizeReferencePositions);
       // D085-S6 BEGIN: the exploratory gate follows the freshly built relation set.
       updateFilamentRenderResources(filamentResources, live.buffers.filaments,
         { beamEdgeIds: nativeBeamEdgeIds, flowElapsedMs: sampleNativeBeam });
@@ -1646,6 +1654,10 @@ export function mount(
     },
     updateVisibleSubset(update: DistinctSubsetUpdate | Render3fTypedInput): void {
       if (!("styled" in update)) {
+        if (nodeSizeReferencePositions !== update.nodeSizeReferencePositions) {
+          nodeSizeReferencePositions = update.nodeSizeReferencePositions;
+          updateNodeSizeReferencePositions(nodeResources, live.buffers.nodes, nodeSizeReferencePositions);
+        }
         if (typedPicker) throw new TypeError("Legacy subset cannot replace typed 3D visibility");
         distinct?.updateVisibleSubset(update);
         activeLegacySubset = update;
@@ -1931,13 +1943,16 @@ export function mount(
       return live.readSurfaceWitness();
     },
     readNodeFootprintWitnesses(ids?: ReadonlySet<string>): readonly NodeFootprintWitness[] {
-      if (typedPicker) return typedPicker.geometry.nodes.flatMap(node => {
+      const typed = typedPicker;
+      if (typed) return typed.geometry.nodes.flatMap(node => {
         if (node.pick.kind !== "node" || (ids && !ids.has(node.pick.id))) return [];
+        const radius = typed.nodeFootprintRadiusPx(node.pick.id, node.position);
         return [{ id: node.pick.id, viewportCenter: rig.graphToViewport(node.position),
-          coreRadiusPx: 4.5, haloRadiusPx: 4.5 }];
+          coreRadiusPx: radius, haloRadiusPx: radius }];
       });
       // D082-A-NODES BEGIN
-      return readNodeFootprints(live, rig, ids, nodeResources.geometry);
+      return readNodeFootprints(live, rig, ids, nodeResources.geometry, denseNeuralPointFloorCssPx,
+        nodeSizeReferencePositions);
       // D082-A-NODES END
     },
     readRelationGeometryWitnesses(): readonly RelationGeometryWitness[] {
@@ -2128,7 +2143,8 @@ export function stateFromOptions(
 
 // D082-A-NODES BEGIN
 function readNodeFootprints(live: LiveSceneState, rig: CameraRig, ids?: ReadonlySet<string>,
-  geometry?: THREE.InstancedBufferGeometry): readonly NodeFootprintWitness[] {
+  geometry?: THREE.InstancedBufferGeometry, neuralPointFloorCssPx = 0,
+  sizeReferencePositions?: ReadonlyMap<string, Coordinates>): readonly NodeFootprintWitness[] {
   const buffers = live.buffers.nodes;
   const coreAttribute = geometry?.getAttribute("a_coreRadiusPx") as THREE.InstancedBufferAttribute | undefined;
   const haloAttribute = geometry?.getAttribute("a_haloRadiusPx") as THREE.InstancedBufferAttribute | undefined;
@@ -2137,20 +2153,28 @@ function readNodeFootprints(live: LiveSceneState, rig: CameraRig, ids?: Readonly
   const floorAttribute = geometry?.getAttribute("a_minimumCoreDeviceRadiusPx") as THREE.InstancedBufferAttribute | undefined;
   // D087-SIZE END
   const result: NodeFootprintWitness[] = [];
+  const projected = { x: 0, y: 0 };
   buffers.ids.forEach((id, index) => {
     if (ids && !ids.has(id)) return;
     const position = coordinatesAt(buffers.positions, index);
-    const sizeScale = rig.sizeScaleAt(position);
-    const coreRadiusPx = Math.max(
-      requiredNumber(coreAttribute?.getX(index) ?? buffers.coreRadiiPx[index], `mounted node ${id} core radius`) * sizeScale,
-      requiredNumber(floorAttribute?.getX(index) ?? buffers.minimumCoreDeviceRadiiPx[index], `mounted node ${id} core floor`));
+    if (!rig.projectToViewportInto(position, projected)) {
+      result.push({ id, viewportCenter: { x: projected.x, y: projected.y },
+        coreRadiusPx: 0, haloRadiusPx: 0 });
+      return;
+    }
+    const sizeScale = rig.sizeScaleAt(sizeReferencePositions?.get(id) ?? position);
+    const sourceRadius = requiredNumber(coreAttribute?.getX(index) ?? buffers.coreRadiiPx[index],
+      `mounted node ${id} core radius`);
+    const coreRadiusPx = sourceRadius > 0 ? Math.max(sourceRadius * sizeScale,
+      requiredNumber(floorAttribute?.getX(index) ?? buffers.minimumCoreDeviceRadiiPx[index],
+        `mounted node ${id} core floor`), neuralPointFloorCssPx) : 0;
     const requestedHaloRadius = requiredNumber(haloAttribute?.getX(index) ?? buffers.haloRadiiPx[index], `mounted node ${id} halo radius`) * sizeScale;
     const gapHaloRadius = (
       coreRadiusPx + requiredNumber(gapAttribute?.getX(index) ?? buffers.haloCoreGapsPx[index], `mounted node ${id} halo core gap`) * sizeScale
     );
     result.push({
       id,
-      viewportCenter: rig.graphToViewport(position),
+      viewportCenter: { x: projected.x, y: projected.y },
       coreRadiusPx,
       haloRadiusPx: Math.max(requestedHaloRadius, gapHaloRadius),
     });

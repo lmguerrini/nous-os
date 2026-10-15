@@ -9,15 +9,14 @@ import { canvasNodeFloorPx, canvasNodeRadiusPx, createNativeSizeLaw, geometryDeg
 const DENSITIES = { essential: 80, balanced: 2_420, complete: 11_199 } as const;
 const LAB = ['canopy-ifs', 'julia', 'sierpinski', 'lull'] as const;
 
-// D086-F1 BEGIN: Lab compositions now share the existing two-density native size scope.
-test('the size law covers Lab Essenziale and Bilanciata, never Completa, Natural or standalone Indra', () => {
+// D086-F1 BEGIN: D-100 extends the Lab native law to every density.
+test('the size law covers every Lab density, never Natural or standalone Indra', () => {
   for (const topology of LAB) {
-    assert.equal(labNativeSizeLawApplies(topology, 11_199, DENSITIES.essential), true, topology);
-    assert.equal(labNativeSizeLawApplies(topology, 11_199, DENSITIES.balanced), true, topology);
-    assert.equal(labNativeSizeLawApplies(topology, 11_199, DENSITIES.complete), false, topology);
+    for (const count of Object.values(DENSITIES))
+      assert.equal(labNativeSizeLawApplies(topology, 11_199), true, `${topology}/${count}`);
   }
-  assert.equal(labNativeSizeLawApplies('natural', 11_199, DENSITIES.balanced), false);
-  assert.equal(labNativeSizeLawApplies(undefined, 11_199, DENSITIES.balanced), false);
+  assert.equal(labNativeSizeLawApplies('natural', 11_199), false);
+  assert.equal(labNativeSizeLawApplies(undefined, 11_199), false);
 });
 // D086-F1 END
 
@@ -115,7 +114,7 @@ test('a law that starts inactive (Completa mount) stays silent until a Lab revis
 test('the product view enables the law from the Lab scene and the renderer reads it only in the native tier', () => {
   const view = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   // D086-F1 BEGIN
-  assert.match(view, /labNativeSizeLawApplies\(input\.labTopology, datasetTotalNodeCount, state\.visible\.size\)/);
+  assert.match(view, /labNativeSizeLawApplies\(input\.labTopology, datasetTotalNodeCount\)/);
   // D086-F1 END
   const renderer = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
   assert.match(renderer, /model\.graph\.order >= DENSE_SCENE_THRESHOLD\s+\? createNativeSizeLaw/);

@@ -36,11 +36,11 @@ const style = (factor: number): MorphologyCanvasStyle => ({
       denseVeilBaseOpacityPermille: 720, neuralDenseFactor: factor } }]]),
 });
 
-test('D-086 2D native law applies only to sparse Lab admissions', () => {
+test('D-100 2D native law applies to every Lab admission', () => {
   for (const topology of ['natural', 'canopy-ifs', 'julia', 'sierpinski', 'lull']) {
-    for (const [density, count] of Object.entries(totals)) {
-      const expected = topology !== 'natural' && density !== 'complete';
-      assert.equal(labNativeSizeLawApplies(topology, 11_199, count), expected,
+    for (const density of Object.keys(totals)) {
+      const expected = topology !== 'natural';
+      assert.equal(labNativeSizeLawApplies(topology, 11_199), expected,
         `${topology}/${density}`);
     }
   }
@@ -129,16 +129,16 @@ test('product keeps D-086 2D scene branch and 3D semantic witness', () => {
   assert.match(product, /buildDrawnSceneD0862d\(anchors, state/);
   assert.match(product, /const denseSize = denseScaleById\.get\(node\.id\)/);
   assert.match(product, /openContainers\.has\(node\.id\)/);
-  // D087-SIZE13 BEGIN: the reference, scene, GPU flags and witness switch together.
-  assert.match(product, /const completeReference = axes\.morphology === 'neural' && input\.v2Prepared/);
-  assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = !!completeReference/);
-  assert.match(product, /usesDenseDrawingPolicy: completeReference \? true : denseDrawingPolicy/);
-  assert.match(product, /denseNativeRadiusOnly: !completeReference/);
+  // D087-SIZE13 BEGIN: only Neural uses the per-ID reference; all morphologies keep the dense GPU floor.
+  assert.match(product, /const completeReference = axes\.morphology === 'neural' && input\.v2Prepared && input\.fullGraphLeafSource/);
+  assert.match(product, /morphologyInteraction\.usesDenseDrawingPolicy = !!input\.v2Prepared && datasetTotalNodeCount >= DENSE_SCENE_THRESHOLD/);
+  assert.match(product, /usesDenseDrawingPolicy: !!input\.v2Prepared && datasetTotalNodeCount >= DENSE_SCENE_THRESHOLD/);
+  assert.match(product, /denseNativeRadiusOnly: false/);
   assert.match(product, /referenceEdgeScreenDensityById = completeReference\?\.edgeScreenDensityById \?\? new Map\(\)/);
   assert.match(product, /completeSizeReferenceWitness = null/);
   assert.match(product, /else if \(axes\.projection === '3d' && input\.v2Prepared && input\.fullGraphLeafSource\)/);
   // D087-SIZE13 END
-  assert.match(product, /referenceRadius = completeReference\?\.radiusById\.get\(node\.id\)/);
+  assert.match(product, /referenceRadius = cappedReferenceRadius\(node\)/);
   assert.match(product, /completeSizeReference: completeSizeReferenceWitness/);
   const canvas = readFileSync(new URL('../src/render-common/morphology-canvas.ts', import.meta.url), 'utf8');
   assert.equal((canvas.match(/geometry\.morphology === "neural" && denseDrawingPolicy\(style\) \? 0\.5/g) ?? []).length, 2);
@@ -314,10 +314,10 @@ test('a conversation keeps its structural mark when the mounted density dropped 
   assert.match(product, /input\.fullGraphStructuralIds\s*\?\s*new Set\(input\.fullGraphStructuralIds\)/);
 });
 
-test('2D label footprints and witnesses retain D-086 semantics', () => {
+test('2D label footprints expose the drawn core and halo', () => {
   const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   const twoD = readFileSync(new URL('../src/render2d/index.ts', import.meta.url), 'utf8');
-  assert.match(product, /axes\.projection === "2d" \? radii\.has\(id\)/);
+  assert.match(product, /footprint \?\? \(radii\.has\(id\) \? \{ radius: radii\.get\(id\)! \} : \{\}\)/);
   assert.match(twoD, /return glowWitnesses\(sigma, model, profile\)/);
   assert.doesNotMatch(twoD, /encodedRadii\(\)/);
 });
@@ -330,14 +330,14 @@ test('2D native tier retains D-086 canvas and Sigma split', () => {
   assert.doesNotMatch(twoD, /distinct\?\.leafIds\(\)/);
 });
 // D087-SIZE END
-// D087-SIZE BEGIN: D-089 keeps the D-086 2D pick target; a sparse 3D mount must not throw.
-test('the 2D pick index keeps the D-086 dense skip and pick floor', () => {
+// D087-SIZE BEGIN: D-100 uses committed geometry centres with mounted ink radii.
+test('the 2D pick index excludes undrawn members and uses the drawn radius', () => {
   const product = readFileSync(new URL('../src/review/product-view.ts', import.meta.url), 'utf8');
   const pick = product.slice(product.indexOf('function rebuildScreenPickIndex()'),
     product.indexOf('function labelPass('));
-  assert.match(pick, /if \(denseScaleById\.size && given === 0\) return \[\];/);
-  assert.match(pick, /Math\.min\(contract\.node\.maxRadiusPx, Math\.max\(denseScaleById\.size \? 0\.5/);
-  assert.match(pick, /: axes\.morphology === "mycelium" \? 1\.3 : 2,/);
+  assert.match(pick, /handle\.readNodeFootprintWitnesses\(\)\.map\(mark =>/);
+  assert.match(pick, /Math\.max\(mark\.coreRadiusPx, mark\.haloRadiusPx\)/);
+  assert.match(pick, /product2dPickDiscs\(drawnGeometry\.nodes, visible/);
   assert.doesNotMatch(pick, /axes\.projection === "3d"/);
 });
 

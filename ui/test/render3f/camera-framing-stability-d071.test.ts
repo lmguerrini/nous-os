@@ -56,6 +56,26 @@ function subject(id: string, x: number, y: number, z: number, extentCssPx = 4): 
   return { id, position: { x, y, z }, extentCssPx, sizeMode: "node" };
 }
 
+test('D-100 a restored 3D camera retains its projection and node size across visible subsets', () => {
+  const complete = makeRig([subject('a', -100, 0, -300), subject('b', 100, 0, 500)], BOUNDS, 0.6);
+  const saved = complete.readCameraState();
+  const sparse = makeRig([subject('a', -100, 0, -300)], BOUNDS, 0.6);
+  sparse.restoreCameraState(saved);
+  const point = { x: -100, y: 0, z: -300 };
+  assert.deepEqual(sparse.readPose(), complete.readPose());
+  assert.deepEqual(sparse.graphToViewport(point), complete.graphToViewport(point));
+  assert.equal(sparse.sizeScaleAt(point), complete.sizeScaleAt(point));
+  sparse.setWorldFramingSubjects([subject('a', -100, 0, -300), subject('c', 0, 0, 900)]);
+  assert.deepEqual(sparse.graphToViewport(point), complete.graphToViewport(point));
+  assert.equal(sparse.sizeScaleAt(point), complete.sizeScaleAt(point));
+});
+
+test('D-100 CPU radius uses the GPU depth floor at a perspective camera centre', () => {
+  const rig = makeRig([subject('a', 0, 0, 0)], BOUNDS, 0.6);
+  const [x, y, z] = rig.readPose().position;
+  assert.ok(Math.abs(rig.sizeScaleAt({ x: x!, y: y!, z: z! }) - 1_000) < 1e-6);
+});
+
 /** The pre-reveal scene: nodes well inside the bounds, like a small Indra opening. */
 const BASE_POSITIONS: readonly (readonly [number, number, number])[] = [
   [-300, -260, -120], [300, -260, -120], [-300, 260, -120], [300, 260, -120],

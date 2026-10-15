@@ -1807,7 +1807,9 @@ get<HTMLElement>('appearance-sliders').append(motionRow);
 function syncPresetList(): void {
   const list = get<HTMLSelectElement>("preset-list");
   const selected = list.value;
-  list.replaceChildren(new Option("Preset salvati", ""), ...Object.keys(presets).sort().map((name) => new Option(name, name)));
+  list.replaceChildren();
+  list.append(new Option("Preset salvati", ""));
+  for (const name of Object.keys(presets).sort()) list.append(new Option(name, name));
   list.value = selected;
 }
 /** The palette the graph is drawn with right now: the saved one, or the custom editor's. */
@@ -1995,7 +1997,9 @@ get<HTMLButtonElement>("edit-colours").addEventListener("click", () => {
 });
 function refreshColourPresetList(): void {
   const list = get<HTMLSelectElement>("colour-preset-list");
-  list.replaceChildren(new Option("Preset colori salvati", ""), ...Object.keys(readColourPresets(storage)).sort().map(name => new Option(name, name)));
+  list.replaceChildren();
+  list.append(new Option("Preset colori salvati", ""));
+  for (const name of Object.keys(readColourPresets(storage)).sort()) list.append(new Option(name, name));
   list.value = selectedColourPreset;
 }
 get<HTMLButtonElement>("custom-apply").addEventListener("click", () => {
@@ -2634,6 +2638,11 @@ const api = {
   get focusMode() { return focusMode; },
   camera: () => v2?.camera() ?? view?.camera() ?? null,
   cameraState: () => v2?.cameraState() ?? view?.readCamera() ?? null,
+  restoreCameraState: (state: unknown) => v2?.restoreCameraState(state) ?? (() => {
+    if (!view || !state) return false;
+    view.restoreCamera(state);
+    return true;
+  })(),
   tickZoomCost: () => ({ ...tickZoomCost, meanMs: tickZoomCost.calls ? tickZoomCost.totalMs / tickZoomCost.calls : 0 }),
   viewPreset,
   fullscreen,

@@ -7,6 +7,7 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 // "D082-A-PERF BEGIN"
 import { memoizedContrastToken } from "#render-common/contrast-cache.ts";
 import { mainRelation, MODEL_PREP_SLICE_MS } from "#render-common/quality-ladder.ts";
+import { MIN_NODE_PICK_RADIUS_PX } from "#render-common/dense-node-scale.ts";
 // "D082-A-PERF END"
 // The governed RENDERED composition is NOT resolved here. It lives in the shared scene layer, which
 // composes the two axes of a relation's carrier positionally instead of averaging them: the local
@@ -123,7 +124,10 @@ export function buildScreenPickIndex(
       if (list) list.push(index); else map.set(key, [index]);
     }
   };
-  discs.forEach((d, i) => insert(nodeCells, i, d.x - d.radius, d.y - d.radius, d.x + d.radius, d.y + d.radius));
+  discs.forEach((d, i) => {
+    const reach = Math.max(d.radius, MIN_NODE_PICK_RADIUS_PX);
+    insert(nodeCells, i, d.x - reach, d.y - reach, d.x + reach, d.y + reach);
+  });
   const indexSegments = (segments: readonly ScreenPickSegment[], map: Map<number, number[]>) => segments.forEach((s, i) =>
     insert(map, i, Math.min(s.ax, s.bx) - s.tolerance, Math.min(s.ay, s.by) - s.tolerance,
       Math.max(s.ax, s.bx) + s.tolerance, Math.max(s.ay, s.by) + s.tolerance));
@@ -149,13 +153,17 @@ export function buildScreenPickIndex(
   };
   return {
     nodeAt(point) {
-      // Later discs are painted over earlier ones. A rim answers only outside all discs.
-      const candidates = entries(nodeCells, point);
-      for (let i = candidates.length - 1; i >= 0; i--) {
-        const disc = discs[candidates[i]!]!;
-        if (Math.hypot(point.x - disc.x, point.y - disc.y) <= disc.radius) return disc.id;
+      let picked: string | null = null;
+      let best = Infinity;
+      for (const index of entries(nodeCells, point)) {
+        const disc = discs[index]!;
+        const distance = Math.hypot(point.x - disc.x, point.y - disc.y);
+        if (disc.radius > 0 && distance <= Math.max(disc.radius, MIN_NODE_PICK_RADIUS_PX)
+          && (distance < best || distance === best && (picked === null || disc.id < picked))) {
+          picked = disc.id; best = distance;
+        }
       }
-      return nearest(rims, rimCells, point);
+      return picked ?? nearest(rims, rimCells, point);
     },
     edgeAt: point => nearest(edges, edgeCells, point),
   };
@@ -1316,7 +1324,9 @@ export function mountProjectionLabelOverlay(host: HTMLElement): ProjectionLabelO
         if (input.textColor) element.style.color = input.textColor;
         return element;
       });
-      layer.replaceChildren(...(lines ? [lines] : []), ...elements);
+      layer.replaceChildren();
+      if (lines) layer.append(lines);
+      for (const element of elements) layer.append(element);
       return placed.length;
     },
     readCount: () => placedIds.length,

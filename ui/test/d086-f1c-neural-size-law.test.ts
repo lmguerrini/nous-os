@@ -19,8 +19,7 @@ const scenes = [
 
 test('one camera gives shared nodes equal native sizes in Essenziale and Bilanciata for every Lab morphology', () => {
   for (const scene of scenes) for (const morphology of morphologies) {
-    assert.equal(labNativeSizeLawApplies(scene.topology, totalCount, essentialCount), true);
-    assert.equal(labNativeSizeLawApplies(scene.topology, totalCount, balancedCount), true);
+    assert.equal(labNativeSizeLawApplies(scene.topology, totalCount), true);
     const essentialGiven = new Map(scene.shared);
     const balancedGiven = new Map(scene.shared);
     for (let index = essentialGiven.size; index < essentialCount; index++) essentialGiven.set(`essential:${index}`, 4);
@@ -48,10 +47,10 @@ test('one camera gives shared nodes equal native sizes in Essenziale and Bilanci
   }
 });
 
-test('Neural keeps its raw-radius post-fit policy when the Lab law is inactive', () => {
-  assert.equal(labNativeSizeLawApplies('canopy-ifs', totalCount, totalCount), false);
-  assert.equal(labNativeSizeLawApplies('natural', totalCount, balancedCount), false);
-  assert.equal(labNativeSizeLawApplies(undefined, totalCount, balancedCount), false);
+test('Neural keeps its raw-radius post-fit policy when no Lab law is active', () => {
+  assert.equal(labNativeSizeLawApplies('canopy-ifs', totalCount), true);
+  assert.equal(labNativeSizeLawApplies('natural', totalCount), false);
+  assert.equal(labNativeSizeLawApplies(undefined, totalCount), false);
   const base = { size: 4, haloRadiusPx: 20, color: '#fff' } as RenderNodeAttributes;
   const presented = nativeNodePresentationBase(base, { radiusPx: 15.47, haloRadiusPx: 7 }, false);
   assert.equal(presented.size, 15.47);

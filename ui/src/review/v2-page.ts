@@ -83,6 +83,7 @@ import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labe
 import { summarizeD081Bundles } from './toolbar-status.ts';
 // D086-F2 BEGIN: page carryover uses the same coordinate-space key as the product renderer.
 import { createProductView, productCameraKey } from './product-view.ts';
+import { stableFullLayoutSizeAnchors } from './full-graph-leaf.ts';
 // D086-F2 END
 // C2 Fractal-only integration imports. Natural and Indra do not call these modules.
 import { CANOPY_RATIO, type CanopyLayout } from '../fractal/canopy-layout.ts';
@@ -2195,6 +2196,7 @@ export class V2Page {
     private densitySwitchPending = false;
     private densityStableKey = '';
     private densityStablePositions = new Map<string, Point3>();
+    private readonly completeSizeAnchors = new Map<string, ReadonlyMap<string, Point3>>();
     // D086-NAT BEGIN: the last accepted transition is visible through the page witness.
     private densityTransitionDisplacement: (ReturnType<typeof naturalDensityDisplacement> & {
         from: Density; to: Density; phase: 'animating' | 'complete' | 'superseded';
@@ -4775,7 +4777,7 @@ export class V2Page {
             // off the main thread and prevent a first-frame size correction.
             let fullLeafPositions: ReadonlyMap<string, Point3> | null = null;
             let fullLeafLayoutKey = layoutKey;
-            if (projection === '3d') {
+            if (projection === '3d' || projection === '2d') {
                 const fullLeafBegan = performance.now();
                 if (canopy) {
                     fullLeafPositions = canopyRenderPositions(canopy, source.nodes.map(node => node.id), projection);
@@ -4849,6 +4851,21 @@ export class V2Page {
                 this.recordProjectionPhase('leafFullLayout', performance.now() - fullLeafBegan);
             }
             // D087-SIZE10 END
+            const sizeReferenceAnchors = fullLeafPositions && projection === '3d'
+                && organization === 'natural' && this.topology === 'natural' && !this.topologyIndra
+                ? stableFullLayoutSizeAnchors(this.completeSizeAnchors,
+                    [this.manifest.digest, projection, this.axes.morphology, this.axes.reading,
+                        this.appearance.expandX, this.appearance.expandY, this.appearance.expandZ].join('|'),
+                    fullLeafPositions)
+                : undefined;
+            let completeHaloEdges = fullLeafPositions && projection === '3d'
+                && organization === 'indra' && this.topology === 'natural'
+                && this.axes.morphology === 'stellar'
+                ? selectRelationDetail(completeRoute(this.densityRelations(this.axes.reading).edges,
+                    new Set(source.nodes.map(node => node.id))), this.relationDetail).drawn.map(edge => ({
+                    id: edge.id, source: edge.from.id, target: edge.to.id }))
+                : undefined;
+            let completeHaloNodeIds: ReadonlySet<string> | undefined;
             // Preserve only disclosed shells in the view; their centres and radii
             // are taken from the same complete packing as the member positions.
             const positionedContainers = organization === 'indra' && densityLayout
@@ -5271,6 +5288,42 @@ export class V2Page {
                 .flatMap(edge => edge.sourceRelationIds.flatMap(id =>
                     allRelationById.get(id)?.underlying.map(source => source.id) ?? [])))].sort() };
             // D085-S7 END
+            // Size alone uses the atlas's Completa pearl phase and route. Its
+            // source incidence must not change with the admitted pearl prefix.
+            if (atlasRouting && projection === '3d' && this.axes.morphology === 'stellar'
+                && !juliaFocus && lawKey) {
+                const wholeAtlas = this.lawCache.get(lawKey);
+                if (isJuliaAtlasLayout(wholeAtlas) && wholeAtlas.atlas.phase === 'overview') {
+                    completeHaloNodeIds = wholeAtlas.phaseNodeIds;
+                    const completeIds = new Set(source.nodes.map(node => node.id));
+                    const completeTiers = manualExpansionTiers(source.nodes.map(node => ({
+                        id: node.id, level: node.level, parent: node.parent,
+                        importance: node.importance.value,
+                    })), this.history.state.manualOrder, V2_PAGE);
+                    const completePinnedArcIds = this.pinnedArcIds(completeTiers);
+                    const haloRoute = (detail: RelationDetail) => {
+                        const relations = projectRelations(source.nodes, source.edges, completeIds,
+                            this.axes.reading, organization, detail, null).edges;
+                        return routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: completeIds,
+                            renderedNodeIds: completeHaloNodeIds!,
+                            relations: relations.map(edge => ({ id: edge.id, channel: 'lifted' as const,
+                                source: edge.source, target: edge.target, class: edge.class,
+                                type: edge.type, count: edge.count,
+                                sourceEdgeIds: edge.underlying.map(item => item.id) })),
+                            reading: this.axes.reading,
+                            budget: densityBudget('balanced', this.budgetTopologyOf()).arcs,
+                            focusId: null, pinnedRelationIds: completePinnedArcIds });
+                    };
+                    const primary = haloRoute(this.relationDetail);
+                    const alternate = haloRoute(this.relationDetail === 'essential' ? 'all' : 'essential');
+                    const completeRoute = resolveLabRelationDetail(
+                        this.relationDetail === 'essential' ? primary : alternate,
+                        this.relationDetail === 'essential' ? alternate : primary,
+                        this.relationDetail);
+                    completeHaloEdges = completeRoute.drawn.map(edge => ({ id: edge.id,
+                        source: edge.from.id, target: edge.to.id }));
+                }
+            }
             // D082-B1c END.
             let shown: LiftedRelation[] = route.drawn.map(edge => {
                 const originals = edge.sourceRelationIds.map(id => relationById.get(id)).filter((item): item is LiftedRelation => !!item);
@@ -5768,7 +5821,7 @@ export class V2Page {
                 const labIndra = this.topologyIndra;
                 const preparingMount = this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, labTopology, labIndra, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(canopy ? [] : shown.map(edge => edge.id)), axes: { ...this.axes, organization, ...(canopy ? { colour: 'bw' as const } : {}) }, brain: this.axes.brain === true, appearance: this.appearance, customPalette: this.palette, insets: initialViewInsets(this.insets), flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: canopy ? 0 : budget.labels,
                     // D087-SIZE BEGIN
-                    ...(this.axes.projection === '3d'
+                    ...(fullLeafPositions
                         ? { fullGraphStructuralIds: this.fullGraphStructuralIds(),
                             // D087-SIZE10 BEGIN
                             fullGraphLeafSource: { digest: this.manifest.digest,
@@ -5776,9 +5829,12 @@ export class V2Page {
                                 // D087-SIZE11 BEGIN
                                 edgeKey: this.axes.reading,
                                 edges: canopy ? [] : this.densityRelations(this.axes.reading).edges,
+                                ...(completeHaloEdges ? { haloEdges: completeHaloEdges } : {}),
+                                ...(completeHaloNodeIds ? { haloNodeIds: completeHaloNodeIds } : {}),
                                 ...(canopy ? { allNodesRepresented: true } : {}),
                                 // D087-SIZE11 END
                                 anchors: fullLeafPositions!,
+                                ...(sizeReferenceAnchors ? { sizeReferenceAnchors } : {}),
                                 ...(canopy ? { fitShare: 0.5 }
                                     : this.topology === 'canopy-ifs' ? { fitShare: 0.6 } : {}),
                             },
@@ -7214,6 +7270,12 @@ export class V2Page {
     }
     get brainEnabled(): boolean { return this.axes.brain === true; }
     cameraState() { return this.view?.readCamera() ?? this.projectionRenderer?.readCameraState?.() ?? null; }
+    /** Probe-only camera replay; normal density and camera flows do not call this. */
+    restoreCameraState(state: unknown): boolean {
+        if (!this.view || !state) return false;
+        this.view.restoreCamera(state);
+        return true;
+    }
     viewPreset(name: Parameters<ProductView['viewPreset']>[0]) { this.noteCameraIntent(); this.userMovedSinceFit = true; this.view?.viewPreset(name); }
     setInsets(value: Parameters<ProductView['setInsets']>[0]) {
         this.insets = initialViewInsets(value);

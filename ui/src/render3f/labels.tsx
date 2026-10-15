@@ -140,8 +140,9 @@ function LabelOverlay({ scene, projection }: { readonly scene: Scene; readonly p
     const svg = leaders.current;
     if (svg) {
       svg.setAttribute("viewBox", `0 0 ${box.width} ${box.height}`);
-      svg.replaceChildren(...placed.flatMap(label => {
-        if (!label.leader) return [];
+      const leaders: SVGLineElement[] = [];
+      for (const label of placed) {
+        if (!label.leader) continue;
         const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
         line.setAttribute("x1", String(label.leader.from.x));
         line.setAttribute("y1", String(label.leader.from.y));
@@ -150,8 +151,10 @@ function LabelOverlay({ scene, projection }: { readonly scene: Scene; readonly p
         line.setAttribute("stroke", elements.current.get(label.id)?.style.color ?? "currentColor");
         line.setAttribute("stroke-width", "1");
         line.setAttribute("stroke-opacity", "0.7");
-        return [line];
-      }));
+        leaders.push(line);
+      }
+      svg.replaceChildren();
+      for (const line of leaders) svg.append(line);
     }
   }, [labels, projection, scene]);
   return <><svg ref={leaders} data-render3f-label-leaders="true" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "hidden" }} />{labels.map((label) => (

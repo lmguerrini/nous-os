@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "source": "d095-graph baseline source",
+  "model": {
+    "stellar": {
+      "nodes": [
+        [
+          "assertion:asr_3N8REEPQF5FW301DG544P5B6PD",
+          8.5,
+          5.795214110316703,
+          440,
+          "rgba(80, 80, 80, 1)",
+          0
+        ],
+        [
+          "assertion:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+          3.5,
+          5.795214110316703,
+          440,
+          "rgba(81, 81, 81, 1)",
+          0
+        ]
+      ],
+      "edge": [
+        "about:asr_3N8REEPQF5FW301DG544P5B6PD",
+        0.9,
+        0.65,
+        0.65,
+        "rgba(158, 158, 158, 0.43)",
+        0
+      ],
+      "nodeOrder": [
+        "assertion:asr_3N8REEPQF5FW301DG544P5B6PD",
+        "assertion:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+        "assertion:asr_ESSGDR0NQDZKN3S4MW5GHA6BRM"
+      ],
+      "edgeOrder": [
+        "about:asr_3N8REEPQF5FW301DG544P5B6PD",
+        "about:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+        "about:asr_ESSGDR0NQDZKN3S4MW5GHA6BRM"
+      ],
+      "haloMaterial": true
+    },
+    "neural": {
+      "nodes": [
+        [
+          "assertion:asr_3N8REEPQF5FW301DG544P5B6PD",
+          8.5,
+          2.3707694087659243,
+          900,
+          "rgba(80, 80, 80, 0.9)",
+          0
+        ],
+        [
+          "assertion:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+          3.5,
+          2.3707694087659243,
+          900,
+          "rgba(81, 81, 81, 0.9)",
+          0
+        ]
+      ],
+      "edge": [
+        "about:asr_3N8REEPQF5FW301DG544P5B6PD",
+        0.2625,
+        0.5,
+        1.8,
+        "rgba(158, 158, 158, 0.387)",
+        0
+      ],
+      "nodeOrder": [
+        "assertion:asr_3N8REEPQF5FW301DG544P5B6PD",
+        "assertion:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+        "assertion:asr_ESSGDR0NQDZKN3S4MW5GHA6BRM"
+      ],
+      "edgeOrder": [
+        "about:asr_3N8REEPQF5FW301DG544P5B6PD",
+        "about:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+        "about:asr_ESSGDR0NQDZKN3S4MW5GHA6BRM"
+      ],
+      "haloMaterial": true
+    },
+    "mycelium": {
+      "nodes": [
+        [
+          "assertion:asr_3N8REEPQF5FW301DG544P5B6PD",
+          8.5,
+          1.6331967038165254,
+          170,
+          "rgba(80, 80, 80, 0.82)",
+          0
+        ],
+        [
+          "assertion:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+          3.5,
+          1.6331967038165254,
+          170,
+          "rgba(81, 81, 81, 0.82)",
+          0
+        ]
+      ],
+      "edge": [
+        "about:asr_3N8REEPQF5FW301DG544P5B6PD",
+        0.95,
+        1.25,
+        1.25,
+        "rgba(158, 158, 158, 0.3526)",
+        0
+      ],
+      "nodeOrder": [
+        "assertion:asr_3N8REEPQF5FW301DG544P5B6PD",
+        "assertion:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+        "assertion:asr_ESSGDR0NQDZKN3S4MW5GHA6BRM"
+      ],
+      "edgeOrder": [
+        "about:asr_3N8REEPQF5FW301DG544P5B6PD",
+        "about:asr_5TWK1P6Y46QA77Z57NEGKRKWWY",
+        "about:asr_ESSGDR0NQDZKN3S4MW5GHA6BRM"
+      ],
+      "haloMaterial": true
+    }
+  },
+  "denseSelected": {
+    "node:0000": {
+      "radius": 2.3000000000000003,
+      "representative": "node:0000"
+    },
+    "node:0001": {
+      "radius": 1.9706024809947784,
+      "representative": "node:0001"
+    },
+    "covered:deliberate": {
+      "radius": 0,
+      "representative": "node:0000"
+    }
+  },
+  "normalDenseHash": "bcfcb110be15fc659b203d2aa767b15cb73a089f252e9fdedf99c8f081698326",
+  "starCount": 2279
+}

@@ -18,7 +18,9 @@ export type DenseNodeScale = {
   readonly localDensity: number;
   readonly scale: number;
   readonly radiusPx: number;
-  /** A sub-pixel coincident node is represented by this selectable node's point. */
+  /** Excluded from the historical Completa median, while still drawn at the minimum. */
+  readonly coveredForSize?: true;
+  /** D-100: every real node represents its own painted and selectable centre. */
   readonly representativeId: string;
 };
 
@@ -51,6 +53,8 @@ export function denseDrawingDensity(density: string, juliaAtlasCustomAtMaximum: 
 // D087-JULIA END
 
 export const MIN_SCREEN_RADIUS_PX = 0.5;
+/** Click tolerance for a mark smaller than a comfortable screen target. */
+export const MIN_NODE_PICK_RADIUS_PX = 3;
 const MIN_SCALE = 0.32;
 const MAX_SCALE = 0.78;
 const MAX_HUB_BONUS = 0.16;
@@ -107,10 +111,10 @@ export function denseNodeScales(
   // 3x3 neighborhood misses candidates two buckets away when their radii exceed one cell, which
   // is exactly how the large filled pearls survived the first Completa pass.
   const screenSearchCells = Math.max(1, Math.ceil((2 * maxOf(samples.map(sample => sample.baseRadiusPx))) / screenCellSize));
-  // A deterministic independent set of one-pixel points. A hidden member remains in the
-  // graph/picker and records the point that represents its coincident screen-space set.
+  // Preserve Completa's represented-centre spacing for the radius cap. Covered real
+  // members receive their own minimum mark below; none disappear from drawing or picking.
   const zoom = clamp(options.zoomProgress ?? 0, 0, 1);
-  const pointSeparation = (1 - zoom) * 1.001;
+  const pointSeparation = 1.001;
   const representatives = new Map<string, string>();
   const kept = new Map<string, DenseNodeSample[]>();
   const pointCell = Math.max(pointSeparation, 0.001);
@@ -160,8 +164,7 @@ export function denseNodeScales(
     const distance = clamp(options.screenDistanceNorm?.get(sample.id) ?? 0, 0, 1);
     const peripheralScale = 1 - distance * 0.12;
     const hub = clamp(sample.importance / importanceMax, 0, 1) * MAX_HUB_BONUS;
-    // D086-CUSTOM BEGIN: below the maximum, Custom keeps the encoded native size wherever
-    // the overlap cap does not bind. Completa's arithmetic remains unchanged.
+    // The production size path keeps nativeRadiusOnly false for every density.
     const scale = options.nativeRadiusOnly ? 1
       : clamp((densityScale * (1 - zoom) + zoom) * peripheralScale + hub, MIN_SCALE, 1);
     // D086-CUSTOM END
@@ -176,9 +179,11 @@ export function denseNodeScales(
       ? overviewCap * (1 - zoom) + sample.baseRadiusPx * (sample.projectionScale ?? 1) * zoom : Number.POSITIVE_INFINITY;
     const screenScale = Math.max(0.001, sample.projectionScale ?? 1);
     const radiusPx = representatives.get(sample.id) === sample.id
-      ? Math.max(MIN_SCREEN_RADIUS_PX, Math.min(sample.baseRadiusPx * scale * screenScale, overlapSafeCap)) / screenScale : 0;
+      ? Math.max(MIN_SCREEN_RADIUS_PX, Math.min(sample.baseRadiusPx * scale * screenScale, overlapSafeCap)) / screenScale
+      : MIN_SCREEN_RADIUS_PX / screenScale;
     return [sample.id, { id: sample.id, localDensity, scale, radiusPx,
-      representativeId: representatives.get(sample.id) ?? sample.id }] as const;
+      representativeId: sample.id,
+      ...(representatives.get(sample.id) === sample.id ? {} : { coveredForSize: true as const }) }] as const;
   });
   return new Map(scales);
 }
@@ -384,6 +389,31 @@ export function naturalCompletaFitPoints(
     { x: xs[0], y: ys[0], z }, { x: xs[1], y: ys[0], z },
     { x: xs[1], y: ys[1], z }, { x: xs[0], y: ys[1], z },
   ];
+}
+
+/** Sigma's full-layout normalization box, independent of the admitted node subset. */
+export function completeLayoutBounds(points: readonly { readonly x: number; readonly y: number }[]):
+  { readonly x: readonly [number, number]; readonly y: readonly [number, number] } {
+  if (!points.length) return { x: [0, 1], y: [0, 1] };
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.x); maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y); maxY = Math.max(maxY, point.y);
+  }
+  return { x: [minX, maxX], y: [minY, maxY] };
+}
+
+/** A repeated click may cycle only marks with the exact same projected centre. */
+export function coincidentPickCentres(
+  anchors: ReadonlyMap<string, { readonly x: number; readonly y: number; readonly z: number }>,
+  ids: readonly string[], pickedId: string,
+): boolean {
+  const centre = anchors.get(pickedId);
+  return !!centre && ids.length > 1 && ids.every(id => {
+    const point = anchors.get(id);
+    return !!point && Math.hypot(point.x - centre.x, point.y - centre.y,
+      point.z - centre.z) < 1e-6;
+  });
 }
 
 /** Fraction of centres covered by another node's disc, using the emitted drawing radii. */

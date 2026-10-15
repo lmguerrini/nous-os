@@ -111,3 +111,16 @@ test("routed visual overlays retain source provenance beyond the visible domain"
   assert.throws(() => buildTypedProjectionGeometry({ ...sourced, semanticEdges: input.semanticEdges }),
     /Invalid 3D visual relation/);
 });
+
+test('D-100 typed 3D picking follows styled radius and nearest centre', () => {
+  const source = fixture();
+  const projection = { ...source.styled.projection,
+    positions3: { ...source.styled.projection.positions3, b: point(6, 0) } } as ProjectionResult;
+  const styled = { ...source.styled, projection,
+    nodeStyle: { a: { size: 8 }, b: { size: 8 }, c: { size: 8 } } } as StyledProjection;
+  const picker = new TypedProjectionPicker({ ...source, styled }, p => p, () => 1);
+  assert.deepEqual(picker.pickPrimary({ x: -8, y: 0 }), { kind: 'node', id: 'a' });
+  assert.equal(picker.pickPrimary({ x: -8.01, y: 0 }), null);
+  assert.deepEqual(picker.pickPrimary({ x: 4, y: 0 }), { kind: 'node', id: 'b' });
+  assert.equal(picker.nodeFootprintRadiusPx('a', point(0, 0)), 8);
+});

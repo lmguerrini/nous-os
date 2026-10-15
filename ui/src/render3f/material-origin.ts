@@ -127,9 +127,10 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
   // the engine (#engine/presentation-options.ts), never in this renderer module.
   ["neural-point-floor.ts", new Set(["#engine/morphology.ts", "#engine/presentation-options.ts"])],
   // D084-W2-NEURAL-R3 BEGIN
-  ["node-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts", "#engine/morphology-geometry.ts"])],
+  ["node-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts", "#engine/morphology-geometry.ts", "#engine/contract.ts"])],
   // D084-W2-NEURAL-R3 END
-  ["picking.ts", new Set(["#engine/contract.ts", "#scene/contract.ts", "../projection/contract-types.ts"])],
+  ["picking.ts", new Set(["#engine/contract.ts", "#scene/contract.ts", "../projection/contract-types.ts",
+    "#render-common/dense-node-scale.ts"])],
   ["resources.ts", new Set(["three", "#engine/renderer-handle.ts"])],
   ["shader-contract.ts", new Set()],
   ["state.ts", new Set([
@@ -357,6 +358,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
       "createNodeRenderResources",
       "updateNodeProjectionUniforms",
       "updateNodeRenderResources",
+      "updateNodeSizeReferencePositions",
     ])],
     ["#render3f/picking.ts", new Set([
       "ScenePicker",
@@ -386,6 +388,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     // D084-W2-NEURAL-R3 END
   ])],
   ["picking.ts", new Map([
+    ["#render-common/dense-node-scale.ts", new Set(["MIN_NODE_PICK_RADIUS_PX"])],
     ["#engine/contract.ts", new Set(["Coordinates"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE", "Scene", "SceneEdge", "SceneNode"])],
     ["../projection/contract-types.ts", new Set(["PickResult", "RenderVisibility", "StyledProjection"])],

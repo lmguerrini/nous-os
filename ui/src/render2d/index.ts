@@ -9,6 +9,7 @@ import { buildMorphologyGeometry, NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_
 import type { MorphologyGeometry } from "#engine/morphology-geometry.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas, stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
+import { MIN_SCREEN_RADIUS_PX } from "#render-common/dense-node-scale.ts";
 import { TYPED_COMPLETE_BUNDLE_LABEL } from "#render-common/projection-style.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
@@ -468,7 +469,8 @@ export function mount(
   // BELOW the windows: atmosphere does not occlude structure.
   const windows = mountAggregateWindows(sigma, model, options.calibration);
   const distinctLanguage = activeOptions.presentation?.morphologyLanguage === "distinct";
-  const glow = model.material.node.includes("halo") && !(distinctLanguage && model.graph.order >= DENSE_SCENE_THRESHOLD)
+  const glow = model.material.node.includes("halo") && !(distinctLanguage
+    && (activeOptions.presentation?.nativeNodeSizeLaw === true || model.graph.order >= DENSE_SCENE_THRESHOLD))
     ? mountNodeGlow(sigma, model, options.calibration, !distinctLanguage)
     : noGlowLayer();
   const distinct = distinctLanguage
@@ -482,14 +484,15 @@ export function mount(
   // Size-fix BEGIN: a dense Lab scene draws its GPU discs at the radius the morphology
   // canvas gives the same node, so the density never changes a node's size. The canvas keeps
   // reading the encoded radius; only Sigma's size attribute follows the settled camera scale.
-  const nativeSizeLaw = model.graph.order >= DENSE_SCENE_THRESHOLD
+  const nativeSizeLaw = activeOptions.presentation?.nativeNodeSizeLaw === true || model.graph.order >= DENSE_SCENE_THRESHOLD
     ? createNativeSizeLaw({
       morphology: activeOptions.morphology,
       active: activeOptions.presentation?.nativeNodeSizeLaw === true,
       given: new Map([...baseNodeAttributes].map(([id, attributes]) => [id, attributes.size] as const)),
       degree: geometryDegrees(activeOptions.presentation?.morphologyGeometry),
       projectedScale: () => sigma.scaleSize(1),
-      floorPx: () => canvasNodeFloorPx(activeOptions.morphology, sigma.getContainer().closest('[data-fractal-rails-active]') !== null),
+      floorPx: () => activeOptions.presentation?.nativeNodeSizeLaw === true ? MIN_SCREEN_RADIUS_PX
+        : canvasNodeFloorPx(activeOptions.morphology, sigma.getContainer().closest('[data-fractal-rails-active]') !== null),
       write: sizes => {
         for (const [id, size] of sizes) {
           const base = baseNodeAttributes.get(id);
@@ -509,7 +512,7 @@ export function mount(
       .map(id => {
         const attributes = model.graph.getNodeAttributes(id);
         const p = sigma.graphToViewport(attributes);
-        return { id, x: p.x, y: p.y, radius: sigma.scaleSize(attributes.size) + 2 };
+        return { id, x: p.x, y: p.y, radius: sigma.scaleSize(attributes.size) };
       });
     const edges: ScreenPickSegment[] = [];
     if (handlePickGeometry) {
@@ -1858,7 +1861,7 @@ export function mountProjection2d(
       const style = node.style as Readonly<Record<string, number | string>>;
       const radiusPx = Math.max(0, styleNumber(style, 'size', PROJECTION_NODE_RADIUS_PX) * scale);
       const screen = sigma.graphToViewport(node.position);
-      discs.push({ id, x: screen.x, y: screen.y, radius: radiusPx + 2 });
+      discs.push({ id, x: screen.x, y: screen.y, radius: radiusPx });
       const anchor = { id, x: screen.x, y: screen.y, radiusPx, style };
       const kind = typedLabelKind(anchor, { neighbours: null, overview, close, projection: '2d' });
       if (kind === null) continue;
@@ -1892,7 +1895,7 @@ export function mountProjection2d(
       const basis = Math.min(contract.node.maxRadiusPx, Math.max(2,
         given * scale * contract.node.scale));
       const radius = morphology === 'stellar' ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
-      return { id: node.id, x: p.x, y: p.y, radius: radius + 2 };
+      return { id: node.id, x: p.x, y: p.y, radius: radius };
     });
     const semantic: ScreenPickSegment[] = [];
     for (const part of paint.geometry.drawnSegments) for (let i = 1; i < part.samples.length; i++) {

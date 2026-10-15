@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { emptyDisclosure, V2_CAP, V2_PAGE, v2Visible } from './v2-core.ts';
 import { emptyRevealState, stepReveal } from './reveal-controller.ts';
 import { DENSITY_BUDGETS, recentDisclosedPage, selectNodes } from './lod.ts';
+import { maxOf } from '../render-common/array-aggregation.ts';
 
 const source = process.argv[2];
 if (!source) throw new Error('usage: node reachability-proof.mjs <index.json> [output.json]');
@@ -127,7 +128,7 @@ const result = { schema: 'd079-zoom-reachability/1', total: index.nodes.length, 
   firstView: first.nodes.length, cap: V2_CAP, page: V2_PAGE, frames, peak, limitedFrames,
   maxReachedButWindowed: maxWindowed,
   zoomPaths: zoomReached, zoomPeak, zoomDepths,
-  maxActions: Math.max(...distances.values()), pathLengthDistribution: distribution,
+  maxActions: maxOf(distances.values()), pathLengthDistribution: distribution,
   levels: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level, index.nodes.filter(node => node.level === level).length])) };
 if (process.argv[3]) await writeFile(process.argv[3], JSON.stringify(result, null, 2) + '\n');
 console.log(JSON.stringify(result, null, 2));

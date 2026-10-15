@@ -64,10 +64,10 @@ test('both builders route every drawing branch through the atlas drawing density
         'both builders compute the drawing density');
     assert.equal((product.match(/const customDense = drawingDensity === 'custom' && !referenceCompleta;/g) ?? []).length, 2,
         'customDense follows the drawing density in both builders');
-    assert.equal((product.match(/state\.visible\.size, drawingDensity\);/g) ?? []).length, 2,
-        'usesDenseDrawingPolicy receives the drawing density in both builders');
+    assert.equal((product.match(/state\.visible\.size, drawingDensity\);/g) ?? []).length, 1,
+        '2D edge drawing retains the atlas density while 3D node size uses the full graph');
     // The zoom-band refresh applies the same law to the deferred radius solve.
-    assert.match(product, /nativeRadiusOnly: drawingDensityOf\(witnessDensity, witnessCustomAtMaximum\) === 'custom'/);
+    assert.match(product, /nativeRadiusOnly: false/);
 });
 
 test('the maximum rides beside the density on mount and through every in-place revision', () => {

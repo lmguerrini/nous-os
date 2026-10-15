@@ -56,6 +56,8 @@ export type ReviewCameraState = VisualStateCamera & {
    * re-deriving one from whatever the scene happens to contain now.
    */
   readonly framingTangent?: number;
+  /** World Z of the camera rig that emitted this state; subset subjects cannot redefine it. */
+  readonly framingCenterZ?: number;
 };
 
 type FramingBounds3d = Readonly<{
@@ -163,9 +165,10 @@ export class CameraRig {
     this.devicePixelRatio = requiredDimension(devicePixelRatio, "camera device pixel ratio");
     this.worldFramingSubjects = canonicalCameraFramingSubjects(worldFramingSubjects);
     this.worldFramingBounds = framingBounds3d(this.worldFramingSubjects);
-    this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
+    this.worldCenterZ = this.stateValue.framingCenterZ ?? quantizeCameraFramingValue(resolvedWorldCenterZ(
       this.worldFramingSubjects.map((subject) => subject.position),
     ));
+    this.stateValue = { ...this.stateValue, framingCenterZ: this.worldCenterZ };
     // D085-S5 BEGIN: sparse Indra disclosures can have a deep volume but narrow XY
     // bounds. Keep every node in front of the opening camera with room for its
     // perspective-scaled device extent; ordinary XY-dominant scenes retain ratio.
@@ -193,7 +196,8 @@ export class CameraRig {
   /** This copies the serialisable camera record, including the live framing tangent, and does
    * not expose mutable camera state. */
   readCameraState(): ReviewCameraState {
-    return { ...copyCameraState(this.stateValue), framingTangent: this.framingTangentValue };
+    return { ...copyCameraState(this.stateValue), framingTangent: this.framingTangentValue,
+      framingCenterZ: this.worldCenterZ };
   }
 
   /** This restores serialisable camera state and does not move a world anchor. */
@@ -206,6 +210,7 @@ export class CameraRig {
       ? next.framingTangent
       : this.deriveFramingTangent(next);
     this.stateValue = next;
+    if (Number.isFinite(next.framingCenterZ)) this.worldCenterZ = next.framingCenterZ!;
     this.updateCameras();
   }
 
@@ -239,7 +244,7 @@ export class CameraRig {
   setWorldFramingSubjects(subjects: readonly CameraFramingSubject[]): void {
     this.worldFramingSubjects = canonicalCameraFramingSubjects(subjects);
     this.worldFramingBounds = framingBounds3d(this.worldFramingSubjects);
-    this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
+    this.worldCenterZ = this.stateValue.framingCenterZ ?? quantizeCameraFramingValue(resolvedWorldCenterZ(
       this.worldFramingSubjects.map((subject) => subject.position),
     ));
     // New subjects alone (a disclosure, a selection) must not move the field of view: the
@@ -302,7 +307,9 @@ export class CameraRig {
     const target = perspectiveTarget(this.stateValue, this.worldCenterZ).applyMatrix4(this.perspective.matrixWorldInverse);
     const pointView = new THREE.Vector3(point.x, point.y, point.z).applyMatrix4(this.perspective.matrixWorldInverse);
     const targetDepth = Math.max(-target.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
-    const pointDepth = Math.max(-pointView.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    // The shader divides by max(view depth, reference depth / 1000). Use that
+    // same bound for CPU footprints and picking, including centres behind the eye.
+    const pointDepth = Math.max(-pointView.z, targetDepth / SCENE_PERMILLE_SCALE);
     if (this.stateValue.ratio >= NODE_REFERENCE_FLOOR_RATIO) return targetDepth / pointDepth;
     const reference = this.nodeReferenceDepth(targetDepth);
     return Math.min(CLOSE_NODE_SCALE_CAP, reference / Math.max(-pointView.z,
@@ -895,6 +902,7 @@ function copyCameraState(state: VisualStateCamera | SceneCameraRequest): ReviewC
       ? { closeSizeAnchor: { ...review.closeSizeAnchor }, closeSizeStartRatio: review.closeSizeStartRatio,
           closeSizeStartScale: review.closeSizeStartScale } : {}),
     ...(validFramingTangent(review.framingTangent) ? { framingTangent: review.framingTangent } : {}),
+    ...(Number.isFinite(review.framingCenterZ) ? { framingCenterZ: review.framingCenterZ } : {}),
   };
 }
 

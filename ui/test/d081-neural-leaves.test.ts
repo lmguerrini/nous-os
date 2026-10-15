@@ -137,7 +137,7 @@ test("GPU soma texture carries the same three bounded real trunk directions", ()
     const index = buffers.ids.indexOf(node.id);
     const trunks = node.trunks!.slice(0, 3);
     for (const [slot, trunk] of trunks.entries()) {
-      const offset = index * (Math.max(1, buffers.haloStopCount) + 6) * 2
+      const offset = index * (Math.max(1, buffers.haloStopCount) + 8) * 2
         + Math.max(1, buffers.haloStopCount) * 2 + slot * 4;
       assert.ok(Math.abs(data[offset]! - trunk.direction.x) < 1e-6);
       assert.ok(Math.abs(data[offset + 1]! - trunk.direction.y) < 1e-6);
