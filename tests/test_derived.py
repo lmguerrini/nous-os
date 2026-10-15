@@ -36,6 +36,7 @@ from nous_os.derived import (
     PAGE_SIZE,
     CanonDivergence,
     DerivedStoreError,
+    QueryError,
     build,
     rebuild,
     search,
@@ -446,13 +447,59 @@ def test_querying_a_deleted_store_refuses_instead_of_creating_one() -> None:
     assert sources(path)
 
 
-@pytest.mark.parametrize("query", ['"', "bay AND", "*", "NEAR("])
-def test_a_malformed_query_is_reported_by_this_module(query: str) -> None:
+@pytest.mark.parametrize("query", ['"', "*"])
+def test_a_syntax_error_without_searchable_tokens_is_reported(query: str) -> None:
     store, ledger, base = _canon()
     path = base / "derived.db"
     build(store, ledger, path)
     with pytest.raises(DerivedStoreError):
         search(path, query)
+
+
+def test_syntax_error_with_tokens_returns_the_expected_hit() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    hits = search(path, "bay AND")
+    assert hits
+    assert hits[0].source_id == SOURCE_A
+    assert "bay" in hits[0].text
+
+
+def test_syntax_error_fallback_can_return_no_match() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    assert search(path, "NEAR(") == ()
+
+
+def test_non_syntax_operational_error_does_not_retry(tmp_path: Path, monkeypatch) -> None:
+    from nous_os import derived
+
+    class _Result:
+        def fetchone(self):
+            return None
+
+    class _LockedConnection:
+        def __init__(self):
+            self.match_calls = 0
+
+        def execute(self, statement, parameters=()):
+            if "sqlite_master" in statement:
+                return _Result()
+            if " MATCH ?" in statement:
+                self.match_calls += 1
+                raise sqlite3.OperationalError("database is locked")
+            raise AssertionError(f"unexpected SQL: {statement}")
+
+        def close(self):
+            pass
+
+    connection = _LockedConnection()
+    monkeypatch.setattr(derived, "_open_for_reading", lambda _path: connection)
+    with pytest.raises(QueryError, match="database is locked"):
+        search(tmp_path / "unused.db", "can't find this?")
+    assert connection.match_calls == 1
 
 
 @pytest.mark.parametrize("limit", [0, -1, True, "3", None, 2.5])

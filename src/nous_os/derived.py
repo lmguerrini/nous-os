@@ -37,6 +37,7 @@ import fcntl
 import json
 import os
 import sqlite3
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -158,6 +159,15 @@ class SearchHit:
     snapshot_digest: str
     source_id: str
     excerpt: str
+    kind: str | None = None
+    role: str | None = None
+    created_at: str | None = None
+    title: str | None = None
+
+    @property
+    def text(self) -> str:
+        """Reader-facing text; ``excerpt`` remains an internal compatibility alias."""
+        return self.excerpt
 
 
 _RECORD_FIELDS = (
@@ -369,18 +379,53 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
         raise DerivedStoreError("a search needs a query")
     if type(limit) is not int or isinstance(limit, bool) or limit < 1:
         raise DerivedStoreError(f"limit must be a positive integer, not {limit!r}")
+    # Natural-language punctuation is not FTS syntax. Retry only parser errors,
+    # quoting each unicode61 token and OR-ing them so a question remains useful
+    # when not every word appears in one message. OR is intentional here: implicit
+    # AND across every question word made ordinary questions return no hits.
+    tokens: list[str] = []
+    token = ""
+    for char in query:
+        if char.isalnum() or unicodedata.category(char).startswith("M"):
+            token += char
+        elif token:
+            tokens.append(token)
+            token = ""
+    if token:
+        tokens.append(token)
+    fallback_query = " OR ".join('"' + word.replace('"', '""') + '"' for word in tokens)
+
     connection = _open_for_reading(path)
     try:
-        rows = connection.execute(
+        has_record = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='record'"
+        ).fetchone() is not None
+        metadata_columns = (
+            "r.kind, r.role, r.created_at"
+            if has_record else "NULL, NULL, NULL"
+        )
+        record_join = (
+            " LEFT JOIN record r ON r.snapshot_digest = s.snapshot_digest"
+            "  AND r.source_id = s.source_id"
+            if has_record else ""
+        )
+        statement = (
             "SELECT s.snapshot_digest, s.source_id,"
-            " substr(c.body, 1, 120), rank"
+            " snippet(search_plain, 0, '', '', ' … ', 24),"
+            f" {metadata_columns}, c.body, rank"
             " FROM search_plain s JOIN content c ON c.snapshot_digest = s.snapshot_digest"
             "  AND c.source_id = s.source_id"
+            f"{record_join}"
             " WHERE search_plain MATCH ?"
             " ORDER BY rank, s.snapshot_digest, s.source_id"
-            " LIMIT ?",
-            (query, limit),
-        ).fetchall()
+            " LIMIT ?"
+        )
+        try:
+            rows = connection.execute(statement, (query, limit)).fetchall()
+        except sqlite3.OperationalError as error:
+            if "fts5: syntax error" not in str(error).lower() or not fallback_query:
+                raise
+            rows = connection.execute(statement, (fallback_query, limit)).fetchall()
     except sqlite3.OperationalError as error:
         # A malformed query is this module's failure to report, not the storage
         # engine's to leak.
@@ -392,9 +437,29 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
         raise StoreUnusable(f"the store could not be read: {error}") from error
     finally:
         connection.close()
-    return tuple(
-        SearchHit(snapshot_digest=row[0], source_id=row[1], excerpt=row[2]) for row in rows
-    )
+    hits = []
+    for row in rows:
+        try:
+            body_value = json.loads(row[6])
+        except (json.JSONDecodeError, TypeError):
+            body_value = None
+        title = None
+        if isinstance(body_value, dict):
+            payload = body_value.get("payload")
+            record_value = payload.get("record") if isinstance(payload, dict) else None
+            for candidate in (
+                payload.get("title") if isinstance(payload, dict) else None,
+                record_value.get("title") if isinstance(record_value, dict) else None,
+                body_value.get("title"),
+            ):
+                if isinstance(candidate, str) and candidate:
+                    title = candidate
+                    break
+        hits.append(SearchHit(
+            snapshot_digest=row[0], source_id=row[1], excerpt=row[2],
+            kind=row[3], role=row[4], created_at=row[5], title=title,
+        ))
+    return tuple(hits)
 
 
 #: The tables a usable store must have. Checked rather than assumed: SQLite

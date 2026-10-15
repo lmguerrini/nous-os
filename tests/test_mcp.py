@@ -23,10 +23,27 @@ import nous_os.capability as authority
 import nous_os.core as core
 import nous_os.mcp as mcp
 from nous_os.capability import Grant, Tier
+from nous_os.derived import SearchHit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 SECOND_SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+
+
+def test_search_renderer_returns_text_and_separate_metadata() -> None:
+    hit = SearchHit("a" * 64, SOURCE_ID, "readable match", "message", "assistant",
+                    "2026-01-01T00:00:00Z", "A title")
+    assert core._render_search((hit,)) == [{
+        "snapshot_digest": "a" * 64,
+        "source_id": SOURCE_ID,
+        "text": "readable match",
+        "kind": "message",
+        "role": "assistant",
+        "created_at": "2026-01-01T00:00:00Z",
+        "title": "A title",
+    }]
+    without_title = core._render_search((SearchHit("b" * 64, SOURCE_ID, "text"),))[0]
+    assert "title" not in without_title
 
 
 # --- fixtures --------------------------------------------------------------

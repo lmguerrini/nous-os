@@ -15,7 +15,7 @@ from nous_os.untrusted import UntrustedText
 from test_derived import SOURCE_A, SOURCE_B, SOURCE_C, SOURCE_D, _canon
 
 
-def test_projected_search_crosses_escapes_and_keeps_json_excerpt(tmp_path: Path) -> None:
+def test_projected_search_crosses_escapes_and_returns_readable_text(tmp_path: Path) -> None:
     store = SnapshotStore(tmp_path / "snapshots")
     ledger = Ledger(tmp_path / "ledger.jsonl")
     text = 'alpha beta\ngamma delta epsilon l’intuizione è città kā "quoted" \\ path'
@@ -30,10 +30,92 @@ def test_projected_search_crosses_escapes_and_keeps_json_excerpt(tmp_path: Path)
                   '"kā quoted path"'):
         hits = search(path, query)
         assert [hit.source_id for hit in hits] == [SOURCE_A]
-        assert hits[0].excerpt == body[:120]
+        assert "alpha" in hits[0].text or "intuizione" in hits[0].text or "quoted" in hits[0].text
+        assert not any(key in hits[0].text for key in (
+            '"kind"', '"provider"', '"account"', '"payload"',
+            '"content_type"', '"parts"',
+        ))
+        assert hits[0].source_id == SOURCE_A
+        assert hits[0].snapshot_digest
+        assert hits[0].kind == "message"
+
+
+def test_punctuated_natural_queries_retry_without_changing_valid_fts(tmp_path: Path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    body = json.dumps({"kind": "message", "provider": "chatgpt.com", "role": "assistant",
+                       "created_at": "2026-01-01T00:00:00Z", "payload": {
+                           "title": "Friendly heading",
+                           "content": {"parts": ["L'intuizione, città? risposta chiara"]}}}, ensure_ascii=False)
+    ingest(store, ledger, SOURCE_A, UntrustedText(body), datetime(2026, 1, 1, tzinfo=timezone.utc))
+    path = tmp_path / "derived.sqlite3"
+    build(store, ledger, path)
+    punctuated = search(path, "L'intuizione, città?")
+    assert len(punctuated) == 1
+    assert punctuated[0].source_id == SOURCE_A
+    assert punctuated[0].snapshot_digest
+    assert "L'intuizione" in punctuated[0].text
+    assert punctuated[0].kind == "message"
+    assert punctuated[0].role == "assistant"
+    assert punctuated[0].created_at == "2026-01-01T00:00:00Z"
+    assert punctuated[0].title == "Friendly heading"
+    assert search(path, '"città"') == punctuated
+    assert search(path, '"absent" OR "città"') == punctuated
     assert not search(path, "metadata_only")
     assert not search(path, "content_type")
     assert "\\n" not in project(body)
+
+
+def test_punctuated_natural_question_uses_or_when_only_some_tokens_match(tmp_path: Path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    body = json.dumps({"kind": "message", "provider": "chatgpt.com", "payload": {
+        "content": {"parts": ["A violet lagoon appears at dusk"]}}})
+    ingest(store, ledger, SOURCE_A, UntrustedText(body), datetime(2026, 1, 1, tzinfo=timezone.utc))
+    path = tmp_path / "derived.sqlite3"
+    build(store, ledger, path)
+
+    hits = search(path, "Where can the violet lagoon be found?")
+    assert [hit.source_id for hit in hits] == [SOURCE_A]
+    assert "lagoon" in hits[0].text
+
+
+def test_title_is_omitted_for_missing_title_and_unparseable_json(tmp_path: Path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    envelope = json.dumps({"kind": "message", "provider": "chatgpt.com", "payload": {
+        "content": {"parts": ["readable bluebird prose"]}}})
+    ingest(store, ledger, SOURCE_A, UntrustedText(envelope),
+           datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ingest(store, ledger, SOURCE_B, UntrustedText("not-json readable amberbird prose"),
+           datetime(2026, 1, 2, tzinfo=timezone.utc))
+    path = tmp_path / "derived.sqlite3"
+    build(store, ledger, path)
+
+    cases = (("bluebird", SOURCE_A, "bluebird"), ("amberbird", SOURCE_B, "amberbird"))
+    for query, source_id, expected_text in cases:
+        hits = search(path, query)
+        assert [hit.source_id for hit in hits] == [source_id]
+        assert expected_text in hits[0].text
+        assert hits[0].title is None
+
+
+def test_long_match_returns_a_bounded_snippet_with_ellipsis(tmp_path: Path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    words = [f"word{index}" for index in range(80)]
+    words[40] = "distinctivematch"
+    ingest(store, ledger, SOURCE_A, UntrustedText(" ".join(words)),
+           datetime(2026, 1, 1, tzinfo=timezone.utc))
+    path = tmp_path / "derived.sqlite3"
+    build(store, ledger, path)
+
+    hits = search(path, "distinctivematch")
+    assert len(hits) == 1
+    assert "distinctivematch" in hits[0].text
+    assert "…" in hits[0].text
+    assert len(hits[0].text) < len(" ".join(words))
+    assert len(hits[0].text.split()) <= 26
 
 
 def test_record_kinds_and_crlf_project_only_reader_text(tmp_path: Path) -> None:

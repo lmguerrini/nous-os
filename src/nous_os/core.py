@@ -1731,10 +1731,20 @@ def _render_assertion(assertion: Assertion) -> dict[str, object]:
 
 
 def _render_search(hits) -> list[dict[str, object]]:
-    return [
-        {"snapshot_digest": hit.snapshot_digest, "source_id": hit.source_id, "excerpt": hit.excerpt}
-        for hit in hits
-    ]
+    rendered = []
+    for hit in hits:
+        item = {
+            "snapshot_digest": hit.snapshot_digest,
+            "source_id": hit.source_id,
+            "text": hit.text,
+            "kind": hit.kind,
+            "role": hit.role,
+            "created_at": hit.created_at,
+        }
+        if hit.title is not None:
+            item["title"] = hit.title
+        rendered.append(item)
+    return rendered
 
 
 def _render_describe_corpus(described) -> list[dict[str, object]]:
