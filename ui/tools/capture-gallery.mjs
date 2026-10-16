@@ -1,6 +1,6 @@
 // Capture the README gallery of the review page from the synthetic demo dataset.
 //
-//   node ui/tools/capture-gallery.mjs [--port 8776] [--dataset demo/out/reference/dataset] [--only id,id] [--out dir]
+//   node ui/tools/capture-gallery.mjs [--port 8776] [--dataset demo/out/reference/dataset] [--only id,id] [--out dir] [--variants file.json --out dir]
 //
 // Prerequisites, from the repository root: `npm --prefix ui ci`, `npm --prefix ui run build:review`, Playwright's Chromium
 // (`npx --prefix ui playwright install chromium`) and the synthetic dataset
@@ -70,7 +70,7 @@ export const GALLERY = [
   { id: 'llull-2d-complete', title: 'Llull · 2D · Completa', view: { ...base, rendering: '2d', topology: 'circular-combinatorial' } },
   { id: 'llull-3d-complete', title: 'Llull · 3D · Completa', view: { ...base, rendering: '3d', topology: 'circular-combinatorial' } },
   { id: 'julia-2d-complete', title: 'Julia · 2D · Completa', view: { ...base, rendering: '2d', topology: 'julia' } },
-  { id: 'julia-3d-complete', title: 'Julia · 3D · Completa', view: { ...base, rendering: '3d', topology: 'julia' } },
+  { id: 'julia-3d-complete', title: 'Julia · 3D · Completa', view: { ...base, rendering: '3d', topology: 'julia' }, camera: [{ op: 'zoomAt', x: 0.5, y: 0.5, steps: 3 }] },
   { id: 'neural-3d-brain', title: 'Neural · 3D · Completa · Cervello', view: { ...base, morphology: 'neural', brain: true, rendering: '3d', topology: 'natural' } },
   { id: 'mycelium-2d-complete', title: 'Mycelium · 2D · Completa', view: { ...base, morphology: 'mycelium', rendering: '2d', topology: 'natural' } },
   { id: 'exploratory-3d-complete', title: 'Esplorativa connections · 3D · Completa', view: { ...base, reading: 'exploratory', rendering: '3d', topology: 'natural' } },
@@ -80,10 +80,10 @@ export const GALLERY = [
   { id: 'natural-stellar-2d-balanced', title: 'Natural · Stellar · 2D · Bilanciata', view: { ...base, density: 'balanced', rendering: '2d', topology: 'natural' }, paired: true },
   { id: 'natural-stellar-3d-complete', title: 'Natural · Stellar · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' }, paired: true },
   { id: 'natural-stellar-3d-balanced', title: 'Natural · Stellar · 3D · Bilanciata', view: { ...base, density: 'balanced', rendering: '3d', topology: 'natural' }, paired: true },
-  { id: 'natural-stellar-2d-complete-zoom-mid', title: 'Natural · Stellar · 2D · Completa · intermediate zoom', view: { ...base, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', zoom: 'mid', wheelSteps: 3 },
-  { id: 'natural-stellar-2d-complete-zoom-deep', title: 'Natural · Stellar · 2D · Completa · deep zoom', view: { ...base, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', zoom: 'deep', wheelSteps: 8 },
-  { id: 'natural-stellar-3d-complete-zoom-mid', title: 'Natural · Stellar · 3D · Completa · intermediate zoom', view: { ...base, rendering: '3d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '3d', zoom: 'mid', wheelSteps: 22 },
-  { id: 'natural-stellar-3d-complete-zoom-deep', title: 'Natural · Stellar · 3D · Completa · deep zoom', view: { ...base, rendering: '3d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '3d', zoom: 'deep', wheelSteps: 26 },
+  { id: 'natural-stellar-2d-complete-detail-links', title: 'Natural · Stellar · 2D · Completa · small cluster and its links', view: { ...base, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', camera: [{ op: 'zoomAnchor', anchor: 'domain:d1', steps: 7 }] },
+  { id: 'natural-stellar-2d-complete-detail-cluster', title: 'Natural · Stellar · 2D · Completa · nodes of one cluster', view: { ...base, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', camera: [{ op: 'zoomAnchor', anchor: 'domain:d6', steps: 8 }] },
+  { id: 'natural-stellar-3d-complete-detail-oblique', title: 'Natural · Stellar · 3D · Completa · oblique view of one cluster', view: { ...base, rendering: '3d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '3d', camera: [{ op: 'orbit', dx: 120, dy: -50, steps: 10 }, { op: 'zoomAnchor', anchor: 'domain:d6', steps: 30 }] },
+  { id: 'natural-stellar-3d-complete-detail-cluster', title: 'Natural · Stellar · 3D · Completa · nodes of one cluster', view: { ...base, rendering: '3d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '3d', camera: [{ op: 'zoomAnchor', anchor: 'domain:d8', steps: 34 }] },
   { id: 'interface', title: 'The whole page: Natural · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' }, fullPage: true },
 ];
 
@@ -168,6 +168,115 @@ async function stableFullReadiness(page, timeoutMs = 120000) {
 
 async function cameraSnapshot(page) {
   return page.evaluate(() => ({ state: window.__d067?.cameraState?.() ?? null, pose: window.__d067?.camera?.() ?? null }));
+}
+
+function zoomFromCameras(before, after, dimension, itemId) {
+  if (dimension === '2d') {
+    const beforeRatio = before.state?.ratio, afterRatio = after.state?.ratio;
+    if (!(beforeRatio > 0) || !(afterRatio > 0)) throw new Error(`${itemId}: cannot measure zoom from 2D camera ratios`);
+    return { factor: beforeRatio / afterRatio, source: 'cameraState ratio' };
+  }
+  const distance = camera => {
+    const position = camera?.pose?.position, target = camera?.pose?.target;
+    return position?.length === 3 && target?.length === 3
+      ? Math.hypot(position[0] - target[0], position[1] - target[1], position[2] - target[2]) : NaN;
+  };
+  const beforeDistance = distance(before), afterDistance = distance(after);
+  if (!(beforeDistance > 0) || !(afterDistance > 0)) throw new Error(`${itemId}: cannot measure zoom from 3D camera distance`);
+  return { factor: beforeDistance / afterDistance, source: 'camera position-target distance' };
+}
+
+async function resolveCameraAnchor(page, rule, itemId) {
+  const anchor = await page.evaluate(request => {
+    const positions = window.__d067.witness()?.nodeViewport ?? {};
+    const candidates = Object.entries(positions).filter(([id, point]) => Number.isFinite(point?.x) && Number.isFinite(point?.y)
+      && (request.kind !== 'domain' || id.startsWith('domain:'))
+      && (request.kind !== 'id' || id === request.id));
+    if (request.kind === 'id') return candidates[0] ? { id: candidates[0][0], position: candidates[0][1] } : null;
+    const target = request.kind === 'centre-domain' ? { x: innerWidth / 2, y: innerHeight / 2 }
+      : { x: request.x * innerWidth, y: request.y * innerHeight };
+    candidates.sort(([aId, a], [bId, b]) => {
+      const da = (a.x - target.x) ** 2 + (a.y - target.y) ** 2;
+      const db = (b.x - target.x) ** 2 + (b.y - target.y) ** 2;
+      return da - db || aId.localeCompare(bId);
+    });
+    return candidates[0] ? { id: candidates[0][0], position: { x: candidates[0][1].x, y: candidates[0][1].y } } : null;
+  }, rule);
+  if (!anchor) throw new Error(`${itemId}: camera zoom anchor '${rule.kind === 'id' ? rule.id : rule.kind}' is not drawn`);
+  return anchor;
+}
+
+async function applyCameraProgram(page, program, dimension, itemId) {
+  if (!Array.isArray(program)) throw new Error(`${itemId}: camera program must be an array`);
+  const before = await cameraSnapshot(page), zooms = [], orbits = [];
+  for (let index = 0; index < program.length; index++) {
+    const operation = program[index], operationBefore = await cameraSnapshot(page);
+    const validateSteps = () => {
+      if (!Number.isInteger(operation.steps) || operation.steps < 1) throw new Error(`${itemId}: camera operation ${index} needs positive integer steps`);
+    };
+    if (operation?.op === 'orbit' || operation?.op === 'pan') {
+      validateSteps();
+      if (!Number.isFinite(operation.dx) || !Number.isFinite(operation.dy))
+        throw new Error(`${itemId}: camera operation ${index} needs finite dx and dy`);
+      const center = await page.evaluate(() => ({ x: innerWidth / 2, y: innerHeight / 2 }));
+      await page.mouse.move(center.x, center.y);
+      const shiftPan = operation.op === 'pan' && dimension === '3d';
+      if (shiftPan) await page.keyboard.down('Shift');
+      try {
+        await page.mouse.down({ button: 'left' });
+        for (let step = 1; step <= operation.steps; step++)
+          await page.mouse.move(center.x + operation.dx * step / operation.steps,
+            center.y + operation.dy * step / operation.steps);
+        await page.mouse.up({ button: 'left' });
+      } finally {
+        if (shiftPan) await page.keyboard.up('Shift');
+      }
+      if (operation.op === 'orbit' && dimension === '3d') {
+        const operationAfter = await cameraSnapshot(page);
+        orbits.push({ operation: index, before: operationBefore.state?.orbit ?? null, after: operationAfter.state?.orbit ?? null });
+      }
+    } else if (operation?.op === 'zoomAt') {
+      validateSteps();
+      if (![operation.x, operation.y].every(value => Number.isFinite(value) && value >= 0 && value <= 1))
+        throw new Error(`${itemId}: camera operation ${index} zoomAt coordinates must be within 0..1`);
+      const point = await page.evaluate(({ x, y }) => ({ x: x * innerWidth, y: y * innerHeight }), operation);
+      await page.mouse.move(point.x, point.y);
+      for (let step = 0; step < operation.steps; step++) {
+        await page.mouse.wheel(0, -100);
+        await page.waitForTimeout(350);
+      }
+      const operationAfter = await cameraSnapshot(page);
+      zooms.push({ operation: index, ...zoomFromCameras(operationBefore, operationAfter, dimension, itemId), point });
+    } else if (operation?.op === 'zoomAnchor') {
+      validateSteps();
+      let rule;
+      if (operation.anchor === 'centre-domain') rule = { kind: 'centre-domain' };
+      else if (typeof operation.anchor === 'string' && operation.anchor.startsWith('domain:'))
+        rule = { kind: 'id', id: operation.anchor };
+      else if (operation.anchor && typeof operation.anchor === 'object' && operation.anchor['node-near']) {
+        const point = operation.anchor['node-near'];
+        if (!point || typeof point !== 'object'
+          || ![point.x, point.y].every(value => Number.isFinite(value) && value >= 0 && value <= 1))
+          throw new Error(`${itemId}: camera operation ${index} node-near coordinates must be within 0..1`);
+        rule = { kind: 'node-near', x: point.x, y: point.y };
+      } else throw new Error(`${itemId}: camera operation ${index} has an unsupported zoomAnchor rule`);
+      const anchor = await resolveCameraAnchor(page, rule, itemId);
+      for (let step = 0; step < operation.steps; step++) {
+        const current = await page.evaluate(id => window.__d067.witness()?.nodeViewport?.[id] ?? null, anchor.id);
+        if (!current || !Number.isFinite(current.x) || !Number.isFinite(current.y))
+          throw new Error(`${itemId}: zoom anchor ${anchor.id} is no longer drawn`);
+        await page.mouse.move(current.x, current.y);
+        await page.mouse.wheel(0, -100);
+        await page.waitForTimeout(350);
+      }
+      const operationAfter = await cameraSnapshot(page);
+      zooms.push({ operation: index, ...zoomFromCameras(operationBefore, operationAfter, dimension, itemId), anchor: operation.anchor,
+        anchorId: anchor.id, anchorAtStart: anchor.position });
+    } else throw new Error(`${itemId}: camera operation ${index} has unsupported op '${operation?.op}'`);
+  }
+  const after = await cameraSnapshot(page);
+  return { program: JSON.parse(JSON.stringify(program)), before, after, zooms,
+    ...(orbits.length ? { orbits, orbit: { before: before.state?.orbit ?? null, after: after.state?.orbit ?? null } } : {}) };
 }
 
 async function fitAfterResize(page) {
@@ -270,11 +379,29 @@ async function captureJpeg(page, file, paired, fullPage = false) {
 
 async function main() {
   const manifest = JSON.parse(await readFile(path.join(DATASET, 'manifest.json'), 'utf8'));
+  if (args.variants === true) throw new Error('--variants needs a JSON file path');
+  if (args.variants !== undefined && args.out === undefined) throw new Error('--variants needs --out, so variant captures never overwrite the gallery');
+  const variants = typeof args.variants === 'string'
+    ? JSON.parse(await readFile(path.resolve(ROOT, args.variants), 'utf8')) : null;
+  if (variants !== null) {
+    if (!Array.isArray(variants)) throw new Error('--variants must contain a JSON list');
+    const names = new Set();
+    for (const [index, variant] of variants.entries()) {
+      if (!variant || typeof variant.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(variant.name))
+        throw new Error(`--variants item ${index} needs a safe output-file stem in name`);
+      if (names.has(variant.name)) throw new Error(`--variants has duplicate name '${variant.name}'`);
+      names.add(variant.name);
+      if (!GALLERY.some(item => item.id === variant.base)) throw new Error(`--variants item ${variant.name}: unknown base '${variant.base}'`);
+      if (typeof variant.title !== 'string' || !Array.isArray(variant.camera))
+        throw new Error(`--variants item ${variant.name} needs title and camera array`);
+    }
+  }
   let previousGallery = null;
   try { previousGallery = JSON.parse(await readFile(path.join(OUT, 'MANIFEST.json'), 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const only = typeof args.only === 'string' ? new Set(args.only.split(',')) : null;
-  const unknown = only && [...only].filter(id => !GALLERY.some(item => item.id === id));
+  const availableIds = variants ? new Set(variants.map(variant => variant.name)) : new Set(GALLERY.map(item => item.id));
+  const unknown = only && [...only].filter(id => !availableIds.has(id));
   if (unknown?.length) throw new Error(`unknown gallery id(s): ${unknown.join(', ')}`);
   await mkdir(OUT, { recursive: true });
   const server = await startServer();
@@ -349,116 +476,9 @@ async function main() {
       }
     };
 
-    const captureDetailSession = async (morphology, dimension) => {
-      const items = GALLERY.filter(item => item.detail && item.morphology === morphology && item.dimension === dimension);
-      const requested = items.filter(item => !only || only.has(item.id));
-      if (!requested.length) return;
-      const lastRequestedIndex = Math.max(...items.map((item, index) => requested.includes(item) ? index : -1));
-      const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DEVICE_SCALE_FACTOR, colorScheme: 'dark' });
-      const page = await context.newPage();
-      const pageErrors = [], pageRecords = [];
-      page.on('pageerror', error => pageErrors.push(String(error.message ?? error)));
-      page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
-      try {
-        const navigationStartedAt = Date.now();
-        await page.goto(stateUrl(server.origin, items[0].view), { waitUntil: 'load' });
-        const completeMs = await waitForComplete(page, navigationStartedAt);
-        await installCaptureStyle(page, true);
-        await enterFullscreenAndFit(page, items[0].id);
-        await stableFullReadiness(page);
-        const cameraAtFit = await cameraSnapshot(page);
-        const anchor = await page.evaluate(() => {
-          const positions = window.__d067.witness()?.nodeViewport ?? {};
-          const center = { x: innerWidth / 2, y: innerHeight / 2 };
-          const candidates = Object.entries(positions).filter(([id, point]) => id.startsWith('domain:')
-            && Number.isFinite(point?.x) && Number.isFinite(point?.y));
-          candidates.sort(([idA, a], [idB, b]) => {
-            const da = (a.x - center.x) ** 2 + (a.y - center.y) ** 2;
-            const db = (b.x - center.x) ** 2 + (b.y - center.y) ** 2;
-            return da - db || idA.localeCompare(idB);
-          });
-          return candidates[0] ? { id: candidates[0][0], position: { x: candidates[0][1].x, y: candidates[0][1].y } } : null;
-        });
-        if (!anchor) throw new Error(`${morphology} ${dimension}: no drawn domain: node is available as a zoom anchor`);
-
-        for (let itemIndex = 0; itemIndex <= lastRequestedIndex; itemIndex++) {
-          const item = items[itemIndex];
-          for (let step = 0; step < item.wheelSteps; step++) {
-            const point = await page.evaluate(id => window.__d067.witness()?.nodeViewport?.[id] ?? null, anchor.id);
-            if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
-              throw new Error(`${item.id}: zoom anchor ${anchor.id} is no longer drawn`);
-            await page.mouse.move(point.x, point.y);
-            await page.mouse.wheel(0, -100);
-            await page.waitForTimeout(350);
-          }
-          if (!requested.includes(item)) continue;
-          await page.mouse.move(-40, -40);
-          await page.waitForTimeout(300);
-          let ready = await stableFullReadiness(page);
-          const readPreCapture = () => page.evaluate(() => {
-            const selected = window.__d067.state().selected;
-            const tooltipSelectors = '[role="tooltip"],.tooltip,#v2-edge-tooltip,#control-tooltip';
-            const visibleTooltips = [...document.querySelectorAll(tooltipSelectors)].filter(element => {
-              const style = getComputedStyle(element), rect = element.getBoundingClientRect();
-              return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-            }).map(element => element.id || element.getAttribute('role') || element.className);
-            return { selected, visibleTooltips };
-          });
-          let preCapture = await readPreCapture();
-          let tooltipFallbackUsed = false;
-          if (preCapture.visibleTooltips.length) {
-            tooltipFallbackUsed = true;
-            await page.evaluate(() => {
-              const root = document.querySelector('#render-root');
-              const canvasContainer = root?.querySelector('.view-host');
-              root?.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
-              if (canvasContainer && canvasContainer !== root)
-                canvasContainer.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
-            });
-            ready = await stableFullReadiness(page);
-            preCapture = await readPreCapture();
-          }
-          if (preCapture.selected !== null) throw new Error(`${item.id}: selection is active before detail capture`);
-          if (preCapture.visibleTooltips.length) throw new Error(`${item.id}: tooltip visible before detail capture: ${preCapture.visibleTooltips.join(', ')}`);
-          const fullscreenInfo = await assertFullscreenCapture(page, item.id);
-
-          const cameraAtCapture = await cameraSnapshot(page);
-          const reveal = await page.evaluate(() => window.__d074?.revealWitness?.() ?? null);
-          let zoom, zoomSource;
-          if (dimension === '2d') {
-            const fitRatio = cameraAtFit.state?.ratio, currentRatio = cameraAtCapture.state?.ratio;
-            if (!(fitRatio > 0) || !(currentRatio > 0)) throw new Error(`${item.id}: cannot compute zoom from 2D camera ratios`);
-            zoom = fitRatio / currentRatio; zoomSource = 'cameraState ratio';
-          } else {
-            const distance = camera => {
-              const p = camera?.pose?.position, t = camera?.pose?.target;
-              return p?.length === 3 && t?.length === 3 ? Math.hypot(p[0] - t[0], p[1] - t[1], p[2] - t[2]) : NaN;
-            };
-            const fitDistance = distance(cameraAtFit), currentDistance = distance(cameraAtCapture);
-            if (!(fitDistance > 0) || !(currentDistance > 0)) throw new Error(`${item.id}: cannot compute zoom from 3D camera distance`);
-            zoom = fitDistance / currentDistance; zoomSource = 'camera position-target distance';
-          }
-          const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), true);
-          const detail = { anchorId: anchor.id, anchorAtFit: anchor.position, wheelSteps: item.wheelSteps,
-            zoom, zoomSource, revealZoom: Number.isFinite(reveal?.zoom) ? reveal.zoom : null,
-            cameraAtFit, cameraAtCapture, tooltipFallbackUsed };
-          pageRecords.push(await saveRecord(page, item, { recorded: cameraAtFit, restored: cameraAtCapture }, dimensions,
-            { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, detail, fullscreenInfo));
-        }
-      } finally {
-        await context.close();
-        for (const record of pageRecords) record.pageErrors = pageErrors.length;
-      }
-    };
-
-    for (const item of GALLERY) {
-      if (item.detail) continue;
-      if (item.paired) {
-        if (item.id.endsWith('-2d-complete')) await capturePair('2d');
-        if (item.id.endsWith('-3d-complete')) await capturePair('3d');
-        continue;
-      }
-      if (only && !only.has(item.id)) continue;
+    const captureDetailItem = async item => {
+      if (only && !only.has(item.id)) return;
+      const dimension = item.dimension;
       const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DEVICE_SCALE_FACTOR, colorScheme: 'dark' });
       const page = await context.newPage();
       const pageErrors = [], pageRecords = [];
@@ -467,34 +487,143 @@ async function main() {
       try {
         const navigationStartedAt = Date.now();
         await page.goto(stateUrl(server.origin, item.view), { waitUntil: 'load' });
-        const fullWindow = item.id !== 'interface';
         const completeMs = await waitForComplete(page, navigationStartedAt);
-        await installCaptureStyle(page, fullWindow);
-        if (fullWindow) await enterFullscreenAndFit(page, item.id);
-        const settled = await stableFullReadiness(page);
-        const fullscreenInfo = fullWindow ? await assertFullscreenCapture(page, item.id) : null;
-        const camera = await cameraSnapshot(page);
-        const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), false, item.fullPage === true);
-        pageRecords.push(await saveRecord(page, item, { recorded: camera, restored: camera }, dimensions,
-          { completeMs, densitySwitchMs: null, stableMs: settled.stableMs }, pageErrors, null, null, null, fullscreenInfo));
+        await installCaptureStyle(page, true);
+        await enterFullscreenAndFit(page, item.id);
+        await stableFullReadiness(page);
+        const cameraAtFit = await cameraSnapshot(page);
+        const program = item.camera ?? (item.wheelSteps
+          ? [{ op: 'zoomAnchor', anchor: 'centre-domain', steps: item.wheelSteps }] : []);
+        const execution = await applyCameraProgram(page, program, dimension, item.id);
+        await page.mouse.move(-40, -40);
+        await page.waitForTimeout(300);
+        let ready = await stableFullReadiness(page);
+        const readPreCapture = () => page.evaluate(() => {
+          const selected = window.__d067.state().selected;
+          const tooltipSelectors = '[role="tooltip"],.tooltip,#v2-edge-tooltip,#control-tooltip';
+          const visibleTooltips = [...document.querySelectorAll(tooltipSelectors)].filter(element => {
+            const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+            return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+          }).map(element => element.id || element.getAttribute('role') || element.className);
+          return { selected, visibleTooltips };
+        });
+        let preCapture = await readPreCapture();
+        let tooltipFallbackUsed = false;
+        if (preCapture.visibleTooltips.length) {
+          tooltipFallbackUsed = true;
+          await page.evaluate(() => {
+            const root = document.querySelector('#render-root');
+            const canvasContainer = root?.querySelector('.view-host');
+            root?.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
+            if (canvasContainer && canvasContainer !== root)
+              canvasContainer.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
+          });
+          ready = await stableFullReadiness(page);
+          preCapture = await readPreCapture();
+        }
+        if (preCapture.selected !== null) throw new Error(`${item.id}: selection is active before detail capture`);
+        if (preCapture.visibleTooltips.length) throw new Error(`${item.id}: tooltip visible before detail capture: ${preCapture.visibleTooltips.join(', ')}`);
+        const fullscreenInfo = await assertFullscreenCapture(page, item.id);
+
+        const cameraAtCapture = execution.after;
+        const reveal = await page.evaluate(() => window.__d074?.revealWitness?.() ?? null);
+        const measuredZoom = zoomFromCameras(cameraAtFit, cameraAtCapture, dimension, item.id);
+        const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), true);
+        const firstAnchor = execution.zooms.find(zoom => zoom.anchorId);
+        const detail = { anchorId: firstAnchor?.anchorId ?? null, anchorAtFit: firstAnchor?.anchorAtStart ?? null,
+          wheelSteps: item.wheelSteps ?? null, zoom: measuredZoom.factor, zoomSource: measuredZoom.source,
+          revealZoom: Number.isFinite(reveal?.zoom) ? reveal.zoom : null,
+          cameraAtFit, cameraAtCapture, tooltipFallbackUsed };
+        pageRecords.push(await saveRecord(page, item, execution, dimensions,
+          { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, detail, fullscreenInfo));
       } finally {
         await context.close();
         for (const record of pageRecords) record.pageErrors = pageErrors.length;
       }
+    };
+
+    if (variants) {
+      for (const variant of variants) {
+        if (only && !only.has(variant.name)) continue;
+        const baseItem = GALLERY.find(item => item.id === variant.base);
+        const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DEVICE_SCALE_FACTOR, colorScheme: 'dark' });
+        const page = await context.newPage();
+        const pageErrors = [], pageRecords = [];
+        page.on('pageerror', error => pageErrors.push(String(error.message ?? error)));
+        page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
+        try {
+          const navigationStartedAt = Date.now();
+          await page.goto(stateUrl(server.origin, baseItem.view), { waitUntil: 'load' });
+          const completeMs = await waitForComplete(page, navigationStartedAt);
+          await installCaptureStyle(page, true);
+          await enterFullscreenAndFit(page, variant.name);
+          await stableFullReadiness(page);
+          const dimension = baseItem.view.rendering ?? '2d';
+          const camera = await applyCameraProgram(page, variant.camera, dimension, variant.name);
+          await page.mouse.move(-40, -40);
+          await page.waitForTimeout(300);
+          const ready = await stableFullReadiness(page);
+          const fullscreenInfo = await assertFullscreenCapture(page, variant.name);
+          const item = { ...baseItem, id: variant.name, title: variant.title };
+          const dimensions = await captureJpeg(page, path.join(OUT, `${variant.name}.jpg`), true);
+          pageRecords.push(await saveRecord(page, item, camera, dimensions,
+            { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, null, fullscreenInfo));
+        } finally {
+          await context.close();
+          for (const record of pageRecords) record.pageErrors = pageErrors.length;
+        }
+      }
+    } else {
+      for (const item of GALLERY) {
+        if (item.detail) continue;
+        if (item.paired) {
+          if (item.id.endsWith('-2d-complete')) await capturePair('2d');
+          if (item.id.endsWith('-3d-complete')) await capturePair('3d');
+          continue;
+        }
+        if (only && !only.has(item.id)) continue;
+        const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DEVICE_SCALE_FACTOR, colorScheme: 'dark' });
+        const page = await context.newPage();
+        const pageErrors = [], pageRecords = [];
+        page.on('pageerror', error => pageErrors.push(String(error.message ?? error)));
+        page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
+        try {
+          const navigationStartedAt = Date.now();
+          await page.goto(stateUrl(server.origin, item.view), { waitUntil: 'load' });
+          const fullWindow = item.id !== 'interface';
+          const completeMs = await waitForComplete(page, navigationStartedAt);
+          await installCaptureStyle(page, fullWindow);
+          if (fullWindow) await enterFullscreenAndFit(page, item.id);
+          let settled = await stableFullReadiness(page);
+          let camera = { recorded: await cameraSnapshot(page), restored: null };
+          if (item.camera) {
+            camera = await applyCameraProgram(page, item.camera, item.view.rendering ?? '2d', item.id);
+            await page.mouse.move(-40, -40);
+            await page.waitForTimeout(300);
+            settled = await stableFullReadiness(page);
+          }
+          const fullscreenInfo = fullWindow ? await assertFullscreenCapture(page, item.id) : null;
+          if (camera.restored === null) camera.restored = camera.recorded;
+          const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), false, item.fullPage === true);
+          pageRecords.push(await saveRecord(page, item, camera, dimensions,
+            { completeMs, densitySwitchMs: null, stableMs: settled.stableMs }, pageErrors, null, null, null, fullscreenInfo));
+        } finally {
+          await context.close();
+          for (const record of pageRecords) record.pageErrors = pageErrors.length;
+        }
+      }
+      for (const item of GALLERY.filter(item => item.detail)) await captureDetailItem(item);
     }
-    const detailMorphologies = [...new Set(GALLERY.filter(item => item.detail).map(item => item.morphology))];
-    for (const morphology of detailMorphologies) for (const dimension of ['2d', '3d'])
-      await captureDetailSession(morphology, dimension);
   } finally {
     await browser.close();
     server.stop();
   }
   const capturedIds = new Set(records.map(record => record.id));
-  const byId = new Map((previousGallery?.images ?? []).filter(record => !capturedIds.has(record.id)).map(record => [record.id, record]));
+  const galleryIds = new Set(GALLERY.map(item => item.id));
+  const byId = new Map((previousGallery?.images ?? [])
+    .filter(record => galleryIds.has(record.id) && !capturedIds.has(record.id)).map(record => [record.id, record]));
   for (const record of records) byId.set(record.id, record);
   const images = GALLERY.flatMap(item => byId.has(item.id) ? [byId.get(item.id)] : []);
-  const knownIds = new Set(GALLERY.map(item => item.id));
-  for (const [id, record] of byId) if (!knownIds.has(id)) images.push(record);
   const pageErrorRecords = records.filter(record => record.pageErrors > 0);
   await writeFile(path.join(OUT, 'MANIFEST.json'), JSON.stringify({
     schema: 'nousos-gallery/2', dataset: { generator: previousGallery?.dataset?.generator ?? 'demo/src/cli.ts synth --profile reference --seed 1', digest: manifest.digest },
