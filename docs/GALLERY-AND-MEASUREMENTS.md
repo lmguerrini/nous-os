@@ -1,0 +1,58 @@
+# Gallery and measurements
+
+The gallery uses the synthetic demo dataset, whose content is invented. Seed 1 of the `reference` profile produces the dataset digest recorded in the manifest; the profile's counts are illustrative except for its fixed node total and root-domain count. Captures use the page's fullscreen view, where only the NousOS title stays visible at the top left; node labels, panels, tooltips, selections and controls are hidden. Each capture waits for the renderer to stabilise before the image is saved. Each pair is captured in the same page session and orientation; each density is framed by the page's fit. Balanced has its own layout, 7–10× more compact than Complete, measured from the manifest's layout bounds, so an identical camera would show it as a small cluster. Both camera states are recorded in the manifest.
+
+The detail images use page camera programs recorded in the manifest. The 2D view anchored at `domain:d1` uses 7 wheel steps and measures ×4.77; the 2D view anchored at `domain:d6` uses 8 wheel steps and measures ×5.96. For the oblique 3D view anchored at `domain:d6`, the camera is first dragged 120 px right and 50 px up, then zoomed 30 wheel steps; it measures ×4.48. The other 3D detail is anchored at `domain:d8`, uses 34 wheel steps, and measures ×5.47. Every detail capture stayed at Complete with the same counts: 11,199 visible nodes and 14,050 drawn edges. Julia 3D uses three wheel steps at the centre and measures ×1.16 closer than the fitted view. The renders stabilised at Complete; nothing is cropped or enlarged.
+
+## Density counts
+
+In Natural 2D, the gallery manifest records 80 / 11,199 nodes for Essential, 400 / 11,199 for Balanced, and 11,199 / 11,199 for Complete. Complete draws every node.
+
+## Recorded render times
+
+`completeMs` measures time from a fresh page until the renderer's readiness status reports Complete, meaning every requested node and edge is drawn at full quality. Captures were measured on one machine and browser: headless Chromium 151 (ANGLE Metal backend) on an Apple-silicon Mac (darwin arm64). These measurements do not characterize other machines or browsers.
+
+| Gallery view | Time to Complete |
+|---|---:|
+| Natural · 2D | 4.5 s |
+| Natural · 3D | 3.1 s |
+| Canopy · 2D | 2.4 s |
+| Canopy · 3D | 2.4 s |
+| Sierpiński · 2D | 3.3 s |
+| Sierpiński · 3D | 2.7 s |
+| Llull · 2D | 3.3 s |
+| Llull · 3D | 2.7 s |
+| Julia · 2D | 5.3 s |
+| Julia · 3D | 5.8 s |
+| Neural · 3D · Brain | 7.2 s |
+| Mycelium · 2D | 5.6 s |
+| Exploratory · 3D | 2.7 s |
+| Natural · 2D · Essential | 1.5 s |
+| Natural · 2D · Balanced | 1.6 s |
+| Whole page | 3.2 s |
+
+In the paired captures, switching the same page from Complete to Balanced reached Complete readiness (every requested node and edge drawn at full quality) in 1.4 s (2D) and 0.8 s (3D). Canopy, Sierpiński, Llull and Julia are experimental Geometry Lab topologies.
+
+## Node-size coherence matrix
+
+The matrix samples node sizes in a browser on the synthetic demo dataset across five topologies × three morphologies × 2D/3D × Indra on/off: 60 configurations, with 5 to 21 sampled nodes each. Every configuration reached Complete. Node size is taken from the complete layout at every density preset (Essential, Balanced, Complete, Custom), with an identical camera. In 46 of 60 configurations, every sampled node stayed within 1% of its Complete radius across presets. Exceptions:
+
+- 2D Canopy without Indra: sparse presets draw nodes up to about twice their Complete size.
+- 3D Sierpiński, Llull and Canopy, Stellar with Indra: up to 23%.
+- 2D Natural and 2D Canopy with Indra: one sampled node each, up to 57% and 11%.
+- 3D Natural Stellar without Indra: up to 7.7% in drawn size; the node keeps its size, but each density's layout places it at a different depth.
+- 2D Natural Mycelium without Indra: 1.4%.
+
+In the same matrix, 440 of 561 sampled clicks (78%) selected the intended node; in dense views a click can select a neighbouring node. These are measurements of this synthetic demo matrix, not general guarantees.
+
+See [`assets/gallery/MANIFEST.json`](assets/gallery/MANIFEST.json) for capture metadata and layout bounds.
+
+## Topology, morphology, and density behavior
+
+Topology determines where nodes are placed; morphology determines how nodes and edges are drawn. All five topologies support both dimensions. **Natural** deterministically arranges the primary hierarchy around root domains. **Canopy** uses an iterated function system (IFS) tree with curved rails. **Sierpiński** uses an affine IFS: a triangular gasket in 2D and tetrahedral dust in 3D. **Llull** implements the circular-combinatorial Figure A and requires exactly nine root domains; its 3D height is the Third Figure's offset class. **Julia** places nodes in external coordinates of certified quadratic or cubic dynamics; its 3D height is a scalar lift of the external potential G, not a 3D Julia set. Each topology checks its preconditions and refuses input it cannot place faithfully.
+
+The four Geometry Lab topologies—Canopy, Sierpiński, Llull, and Julia—are experimental. **Indra** is an optional organization that groups a supported topology into nested containers called pearls. A pearl counts hidden nodes, and opening it reveals its real children; Indra changes the organization of the view, not the dataset's relations. Julia with Indra is refused when its atlas cannot be certified legible at its mounted scale.
+
+The three morphologies are **Stellar** (luminous points and filaments), **Neural** (somata and neural-style connections), and **Mycelium** (branching network-like forms). Neural's optional brain control adds a decorative brain outline in 3D. In Natural, morphology also selects the default arrangement: Stellar uses constellation, Neural uses network, and Mycelium uses mycelium. In other topologies, placement follows the selected topology law; morphology does not change meaning.
+
+Density controls select how much of the graph is drawn. Complete draws every node. Custom requests a chosen number of real nodes. Status distinguishes visible from represented nodes and reports drawn and eligible relations; a requested budget does not guarantee the actual visible count. At Complete, dense 3D views draw every node and every relation selected by the relation-detail control. The relation-detail control can select essential or all eligible relations under the active reading; attested and exploratory readings stay distinct, and an inference does not become cited evidence because it is drawn.

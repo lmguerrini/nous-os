@@ -938,12 +938,20 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 4687,
+      "completeMs": 5826,
       "densitySwitchMs": null,
-      "stableMs": 2041,
+      "stableMs": 2248,
       "pageErrors": 0,
       "camera": {
-        "recorded": {
+        "program": [
+          {
+            "op": "zoomAt",
+            "x": 0.5,
+            "y": 0.5,
+            "steps": 3
+          }
+        ],
+        "before": {
           "state": {
             "x": 0.5601622678746457,
             "y": 0.5660798487736352,
@@ -987,12 +995,12 @@
             "fov": 43.03617178716777
           }
         },
-        "restored": {
+        "after": {
           "state": {
             "x": 0.5601622678746457,
-            "y": 0.5660798487736352,
+            "y": 0.566079848773635,
             "angle": 0,
-            "ratio": 1,
+            "ratio": 0.8607079764250579,
             "bounds": {
               "x": [
                 -5.628654102295952,
@@ -1009,18 +1017,19 @@
               -0.477714417108261,
               0.6743797232066278
             ],
+            "targetZ": 1,
             "framingTangent": 0.39427515864372253,
             "framingCenterZ": 1
           },
           "pose": {
             "position": [
-              8.340251346917018,
-              6.270593951010932,
-              14.151408282973943
+              7.282611314309113,
+              5.5006949701357035,
+              12.319522010378249
             ],
             "target": [
               0.7472822345193393,
-              0.7433644577800915,
+              0.7433644577800902,
               1
             ],
             "up": [
@@ -1030,7 +1039,18 @@
             ],
             "fov": 43.03617178716777
           }
-        }
+        },
+        "zooms": [
+          {
+            "operation": 0,
+            "factor": 1.1618342427282828,
+            "source": "camera position-target distance",
+            "point": {
+              "x": 800,
+              "y": 500
+            }
+          }
+        ]
       },
       "width": 1600,
       "height": 1000,
@@ -1950,9 +1970,9 @@
       "pairRule": "same page session and orientation; each density framed by the page's fit()"
     },
     {
-      "id": "natural-stellar-2d-complete-zoom-mid",
-      "title": "Natural · Stellar · 2D · Completa · intermediate zoom",
-      "file": "natural-stellar-2d-complete-zoom-mid.jpg",
+      "id": "natural-stellar-2d-complete-detail-links",
+      "title": "Natural · Stellar · 2D · Completa · small cluster and its links",
+      "file": "natural-stellar-2d-complete-detail-links.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
@@ -1972,12 +1992,19 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 4495,
+      "completeMs": 5807,
       "densitySwitchMs": null,
-      "stableMs": 2041,
+      "stableMs": 2045,
       "pageErrors": 0,
       "camera": {
-        "recorded": {
+        "program": [
+          {
+            "op": "zoomAnchor",
+            "anchor": "domain:d1",
+            "steps": 7
+          }
+        ],
+        "before": {
           "state": {
             "x": 0.49738848159525845,
             "y": 0.5030382398059888,
@@ -1996,12 +2023,12 @@
           },
           "pose": null
         },
-        "restored": {
+        "after": {
           "state": {
-            "x": 0.5250865531346605,
-            "y": 0.47534016970901927,
+            "x": 0.5448376632190155,
+            "y": 0.8696458352258725,
             "angle": 0,
-            "ratio": 0.6208330580397,
+            "ratio": 0.2542932205730612,
             "bounds": {
               "x": [
                 -8183.953604172864,
@@ -2014,7 +2041,23 @@
             }
           },
           "pose": null
-        }
+        },
+        "zooms": [
+          {
+            "operation": 0,
+            "factor": 4.768371582031248,
+            "source": "cameraState ratio",
+            "anchor": "domain:d1",
+            "anchorId": "domain:d1",
+            "anchorAtStart": {
+              "x": 846.7398312123125,
+              "y": 140.55884364579796,
+              "radius": 0.8898236167316989,
+              "haloRadius": 0.8898236167316989,
+              "sizeRadius": 0.9798427074667279
+            }
+          }
+        ]
       },
       "width": 3200,
       "height": 2000,
@@ -2027,13 +2070,16 @@
         "height": 23
       },
       "detail": {
-        "anchorId": "domain:d5",
+        "anchorId": "domain:d1",
         "anchorAtFit": {
-          "x": 844.0080711134581,
-          "y": 544.4358339554838
+          "x": 846.7398312123125,
+          "y": 140.55884364579796,
+          "radius": 0.8898236167316989,
+          "haloRadius": 0.8898236167316989,
+          "sizeRadius": 0.9798427074667279
         },
-        "wheelSteps": 3,
-        "zoom": 1.9531249999999998,
+        "wheelSteps": null,
+        "zoom": 4.768371582031248,
         "zoomSource": "cameraState ratio",
         "revealZoom": 1,
         "cameraAtFit": {
@@ -2057,10 +2103,10 @@
         },
         "cameraAtCapture": {
           "state": {
-            "x": 0.5250865531346605,
-            "y": 0.47534016970901927,
+            "x": 0.5448376632190155,
+            "y": 0.8696458352258725,
             "angle": 0,
-            "ratio": 0.6208330580397,
+            "ratio": 0.2542932205730612,
             "bounds": {
               "x": [
                 -8183.953604172864,
@@ -2078,9 +2124,9 @@
       }
     },
     {
-      "id": "natural-stellar-2d-complete-zoom-deep",
-      "title": "Natural · Stellar · 2D · Completa · deep zoom",
-      "file": "natural-stellar-2d-complete-zoom-deep.jpg",
+      "id": "natural-stellar-2d-complete-detail-cluster",
+      "title": "Natural · Stellar · 2D · Completa · nodes of one cluster",
+      "file": "natural-stellar-2d-complete-detail-cluster.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
@@ -2100,12 +2146,19 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 4495,
+      "completeMs": 5533,
       "densitySwitchMs": null,
-      "stableMs": 2041,
+      "stableMs": 2045,
       "pageErrors": 0,
       "camera": {
-        "recorded": {
+        "program": [
+          {
+            "op": "zoomAnchor",
+            "anchor": "domain:d6",
+            "steps": 8
+          }
+        ],
+        "before": {
           "state": {
             "x": 0.49738848159525845,
             "y": 0.5030382398059888,
@@ -2124,12 +2177,12 @@
           },
           "pose": null
         },
-        "restored": {
+        "after": {
           "state": {
-            "x": 0.5492713194421337,
-            "y": 0.45073784171848735,
+            "x": 0.8589143323047859,
+            "y": 0.5528855825713203,
             "angle": 0,
-            "ratio": 0.10415850314672591,
+            "ratio": 0.20343457645844898,
             "bounds": {
               "x": [
                 -8183.953604172864,
@@ -2142,7 +2195,23 @@
             }
           },
           "pose": null
-        }
+        },
+        "zooms": [
+          {
+            "operation": 0,
+            "factor": 5.96046447753906,
+            "source": "cameraState ratio",
+            "anchor": "domain:d6",
+            "anchorId": "domain:d6",
+            "anchorAtStart": {
+              "x": 1136.8613343523143,
+              "y": 453.7680238771681,
+              "radius": 0.8898236167316543,
+              "haloRadius": 0.8898236167316543,
+              "sizeRadius": 0.9798427074666788
+            }
+          }
+        ]
       },
       "width": 3200,
       "height": 2000,
@@ -2155,13 +2224,16 @@
         "height": 23
       },
       "detail": {
-        "anchorId": "domain:d5",
+        "anchorId": "domain:d6",
         "anchorAtFit": {
-          "x": 844.0080711134581,
-          "y": 544.4358339554838
+          "x": 1136.8613343523143,
+          "y": 453.7680238771681,
+          "radius": 0.8898236167316543,
+          "haloRadius": 0.8898236167316543,
+          "sizeRadius": 0.9798427074666788
         },
-        "wheelSteps": 8,
-        "zoom": 11.641532182693473,
+        "wheelSteps": null,
+        "zoom": 5.96046447753906,
         "zoomSource": "cameraState ratio",
         "revealZoom": 1,
         "cameraAtFit": {
@@ -2185,10 +2257,10 @@
         },
         "cameraAtCapture": {
           "state": {
-            "x": 0.5492713194421337,
-            "y": 0.45073784171848735,
+            "x": 0.8589143323047859,
+            "y": 0.5528855825713203,
             "angle": 0,
-            "ratio": 0.10415850314672591,
+            "ratio": 0.20343457645844898,
             "bounds": {
               "x": [
                 -8183.953604172864,
@@ -2206,9 +2278,9 @@
       }
     },
     {
-      "id": "natural-stellar-3d-complete-zoom-mid",
-      "title": "Natural · Stellar · 3D · Completa · intermediate zoom",
-      "file": "natural-stellar-3d-complete-zoom-mid.jpg",
+      "id": "natural-stellar-3d-complete-detail-oblique",
+      "title": "Natural · Stellar · 3D · Completa · oblique view of one cluster",
+      "file": "natural-stellar-3d-complete-detail-oblique.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
@@ -2228,12 +2300,25 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 3213,
+      "completeMs": 4482,
       "densitySwitchMs": null,
-      "stableMs": 2024,
+      "stableMs": 2045,
       "pageErrors": 0,
       "camera": {
-        "recorded": {
+        "program": [
+          {
+            "op": "orbit",
+            "dx": 120,
+            "dy": -50,
+            "steps": 10
+          },
+          {
+            "op": "zoomAnchor",
+            "anchor": "domain:d6",
+            "steps": 30
+          }
+        ],
+        "before": {
           "state": {
             "x": 0.5287813380302936,
             "y": 0.5760999904401983,
@@ -2277,12 +2362,12 @@
             "fov": 36.38784158971811
           }
         },
-        "restored": {
+        "after": {
           "state": {
-            "x": 0.5154120267150818,
-            "y": 0.5849146134902579,
+            "x": 0.5142858423595825,
+            "y": 0.362042844677809,
             "angle": 0,
-            "ratio": 0.4257131742492162,
+            "ratio": 0.2853640745607127,
             "bounds": {
               "x": [
                 -5792.928195136485,
@@ -2294,33 +2379,80 @@
               ]
             },
             "orbit": [
-              -0.5213338044735968,
-              -0.21263110997159385,
-              -0.477714417108261,
-              0.6743797232066278
+              -0.35632296639586997,
+              -0.28789997037107545,
+              -0.5704845807679837,
+              0.6816853334091614
             ],
-            "targetZ": -342.35554674586,
+            "targetZ": 134.10662755676685,
             "framingTangent": 0.32866570353507996,
             "framingCenterZ": -396.134765625
           },
           "pose": {
             "position": [
-              4901.87228924482,
-              4075.6935556669155,
-              6221.583070761519
+              1851.6231069160344,
+              -744.9040669527933,
+              5407.544601395462
             ],
             "target": [
-              1112.1805614827563,
-              1317.0235837664213,
-              -342.35554674586
+              1097.0927772409182,
+              -1668.8473751213671,
+              134.10662755676685
             ],
             "up": [
-              0.21130913087034986,
-              0.9063077870366498,
-              0.3659981507706671
+              0.014039141622915918,
+              0.8142852680983359,
+              0.5802951013583633
             ],
             "fov": 36.38784158971811
           }
+        },
+        "zooms": [
+          {
+            "operation": 1,
+            "factor": 4.481689070338063,
+            "source": "camera position-target distance",
+            "anchor": "domain:d6",
+            "anchorId": "domain:d6",
+            "anchorAtStart": {
+              "x": 756.2726414294611,
+              "y": 732.218374051349,
+              "radius": 19.334128487131437,
+              "haloRadius": 19.334128487131437,
+              "sizeRadius": 15.997455
+            }
+          }
+        ],
+        "orbits": [
+          {
+            "operation": 0,
+            "before": [
+              -0.5213338044735968,
+              -0.21263110997159385,
+              -0.477714417108261,
+              0.6743797232066278
+            ],
+            "after": [
+              -0.35632296639586997,
+              -0.28789997037107545,
+              -0.5704845807679837,
+              0.6816853334091614
+            ]
+          }
+        ],
+        "orbit": {
+          "before": [
+            -0.5213338044735968,
+            -0.21263110997159385,
+            -0.477714417108261,
+            0.6743797232066278
+          ],
+          "after": [
+            -0.35632296639586997,
+            -0.28789997037107545,
+            -0.5704845807679837,
+            0.6816853334091614
+          ]
         }
       },
       "width": 3200,
@@ -2334,13 +2466,16 @@
         "height": 23
       },
       "detail": {
-        "anchorId": "domain:d5",
+        "anchorId": "domain:d6",
         "anchorAtFit": {
-          "x": 782.9153126955676,
-          "y": 488.24939155126805
+          "x": 756.2726414294611,
+          "y": 732.218374051349,
+          "radius": 19.334128487131437,
+          "haloRadius": 19.334128487131437,
+          "sizeRadius": 15.997455
         },
-        "wheelSteps": 22,
-        "zoom": 3.004166023946431,
+        "wheelSteps": null,
+        "zoom": 4.481689070338062,
         "zoomSource": "camera position-target distance",
         "revealZoom": 1,
         "cameraAtFit": {
@@ -2389,10 +2524,10 @@
         },
         "cameraAtCapture": {
           "state": {
-            "x": 0.5154120267150818,
-            "y": 0.5849146134902579,
+            "x": 0.5142858423595825,
+            "y": 0.362042844677809,
             "angle": 0,
-            "ratio": 0.4257131742492162,
+            "ratio": 0.2853640745607127,
             "bounds": {
               "x": [
                 -5792.928195136485,
@@ -2404,30 +2539,30 @@
               ]
             },
             "orbit": [
-              -0.5213338044735968,
-              -0.21263110997159385,
-              -0.477714417108261,
-              0.6743797232066278
+              -0.35632296639586997,
+              -0.28789997037107545,
+              -0.5704845807679837,
+              0.6816853334091614
             ],
-            "targetZ": -342.35554674586,
+            "targetZ": 134.10662755676685,
             "framingTangent": 0.32866570353507996,
             "framingCenterZ": -396.134765625
           },
           "pose": {
             "position": [
-              4901.87228924482,
-              4075.6935556669155,
-              6221.583070761519
+              1851.6231069160344,
+              -744.9040669527933,
+              5407.544601395462
             ],
             "target": [
-              1112.1805614827563,
-              1317.0235837664213,
-              -342.35554674586
+              1097.0927772409182,
+              -1668.8473751213671,
+              134.10662755676685
             ],
             "up": [
-              0.21130913087034986,
-              0.9063077870366498,
-              0.3659981507706671
+              0.014039141622915918,
+              0.8142852680983359,
+              0.5802951013583633
             ],
             "fov": 36.38784158971811
           }
@@ -2436,9 +2571,9 @@
       }
     },
     {
-      "id": "natural-stellar-3d-complete-zoom-deep",
-      "title": "Natural · Stellar · 3D · Completa · deep zoom",
-      "file": "natural-stellar-3d-complete-zoom-deep.jpg",
+      "id": "natural-stellar-3d-complete-detail-cluster",
+      "title": "Natural · Stellar · 3D · Completa · nodes of one cluster",
+      "file": "natural-stellar-3d-complete-detail-cluster.jpg",
       "view": {
         "indra": "off",
         "morphology": "stellar",
@@ -2458,12 +2593,19 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 3213,
+      "completeMs": 4478,
       "densitySwitchMs": null,
-      "stableMs": 2029,
+      "stableMs": 2054,
       "pageErrors": 0,
       "camera": {
-        "recorded": {
+        "program": [
+          {
+            "op": "zoomAnchor",
+            "anchor": "domain:d8",
+            "steps": 34
+          }
+        ],
+        "before": {
           "state": {
             "x": 0.5287813380302936,
             "y": 0.5760999904401983,
@@ -2507,12 +2649,12 @@
             "fov": 36.38784158971811
           }
         },
-        "restored": {
+        "after": {
           "state": {
-            "x": 0.510595715212944,
-            "y": 0.5880751329015494,
+            "x": 0.3071070710842947,
+            "y": 0.5650238779519657,
             "angle": 0,
-            "ratio": 0.11602037469633995,
+            "ratio": 0.23363634366649375,
             "bounds": {
               "x": [
                 -5792.928195136485,
@@ -2529,20 +2671,20 @@
               -0.477714417108261,
               0.6743797232066278
             ],
-            "targetZ": -322.89728227932346,
+            "targetZ": 1380.8607267935977,
             "framingTangent": 0.32866570353507996,
             "framingCenterZ": -396.134765625
           },
           "pose": {
             "position": [
-              2080.466667271883,
-              2111.191156828452,
-              1465.984678515161
+              401.29189869349193,
+              2564.5324155444723,
+              4983.226618688585
             ],
             "target": [
-              1047.6551856587223,
-              1359.3658829973213,
-              -322.89728227932346
+              -1678.5350187116042,
+              1050.5422348223,
+              1380.8607267935977
             ],
             "up": [
               0.21130913087034986,
@@ -2551,11 +2693,28 @@
             ],
             "fov": 36.38784158971811
           }
-        }
+        },
+        "zooms": [
+          {
+            "operation": 0,
+            "factor": 5.4739473917271955,
+            "source": "camera position-target distance",
+            "anchor": "domain:d8",
+            "anchorId": "domain:d8",
+            "anchorAtStart": {
+              "x": 534.2029094485117,
+              "y": 512.2433364786581,
+              "radius": 18.867393204901994,
+              "haloRadius": 18.867393204901994,
+              "sizeRadius": 15.99703
+            }
+          }
+        ]
       },
       "width": 3200,
       "height": 2000,
-      "jpegQuality": 90,
+      "jpegQuality": 89,
+      "jpegQualityReason": "byte-level safety pattern in the encoded bytes",
       "fullscreen": true,
       "brandRect": {
         "x": 16,
@@ -2564,13 +2723,16 @@
         "height": 23
       },
       "detail": {
-        "anchorId": "domain:d5",
+        "anchorId": "domain:d8",
         "anchorAtFit": {
-          "x": 782.9153126955676,
-          "y": 488.24939155126805
+          "x": 534.2029094485117,
+          "y": 512.2433364786581,
+          "radius": 18.867393204901994,
+          "haloRadius": 18.867393204901994,
+          "sizeRadius": 15.99703
         },
-        "wheelSteps": 26,
-        "zoom": 11.023176380641589,
+        "wheelSteps": null,
+        "zoom": 5.4739473917271955,
         "zoomSource": "camera position-target distance",
         "revealZoom": 1,
         "cameraAtFit": {
@@ -2619,10 +2781,10 @@
         },
         "cameraAtCapture": {
           "state": {
-            "x": 0.510595715212944,
-            "y": 0.5880751329015494,
+            "x": 0.3071070710842947,
+            "y": 0.5650238779519657,
             "angle": 0,
-            "ratio": 0.11602037469633995,
+            "ratio": 0.23363634366649375,
             "bounds": {
               "x": [
                 -5792.928195136485,
@@ -2639,20 +2801,20 @@
               -0.477714417108261,
               0.6743797232066278
             ],
-            "targetZ": -322.89728227932346,
+            "targetZ": 1380.8607267935977,
             "framingTangent": 0.32866570353507996,
             "framingCenterZ": -396.134765625
           },
           "pose": {
             "position": [
-              2080.466667271883,
-              2111.191156828452,
-              1465.984678515161
+              401.29189869349193,
+              2564.5324155444723,
+              4983.226618688585
             ],
             "target": [
-              1047.6551856587223,
-              1359.3658829973213,
-              -322.89728227932346
+              -1678.5350187116042,
+              1050.5422348223,
+              1380.8607267935977
             ],
             "up": [
               0.21130913087034986,
