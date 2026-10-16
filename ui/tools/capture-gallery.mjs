@@ -10,6 +10,7 @@
 // share a page session; detail items use real camera zoom in one session per morphology and projection.
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -390,10 +391,17 @@ async function captureJpeg(page, file, paired, fullPage = false) {
   throw new Error(`${path.basename(file)}: unable to produce a JPEG that passes the byte-level safety scan`);
 }
 
+// Variant captures must never land in the gallery, however its folder is spelled (symlinks, case-insensitive file systems).
+function sameDirectory(a, b) {
+  const real = p => { try { return realpathSync.native(p); } catch { return path.resolve(p); } };
+  const fold = p => (process.platform === 'darwin' || process.platform === 'win32' ? p.toLowerCase() : p);
+  return fold(real(a)) === fold(real(b));
+}
+
 async function main() {
   const manifest = JSON.parse(await readFile(path.join(DATASET, 'manifest.json'), 'utf8'));
   if (args.variants === true) throw new Error('--variants needs a JSON file path');
-  if (args.variants !== undefined && OUT === GALLERY_DIR)
+  if (args.variants !== undefined && sameDirectory(OUT, GALLERY_DIR))
     throw new Error('--variants needs --out outside docs/assets/gallery, so variant captures never overwrite the gallery');
   const variants = typeof args.variants === 'string'
     ? JSON.parse(await readFile(path.resolve(ROOT, args.variants), 'utf8')) : null;
