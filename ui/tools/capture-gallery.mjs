@@ -13,6 +13,7 @@
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -30,8 +31,8 @@ const GALLERY_DIR = path.resolve(ROOT, 'docs', 'assets', 'gallery');
 const OUT = path.resolve(ROOT, args.out ?? GALLERY_DIR);
 const VIEWPORT = { width: 1600, height: 1000 };
 const DEVICE_SCALE_FACTOR = 2;
-const GRAPH_OVERLAYS = '#focus-chip,#lab-notice,#notice,#toast,#fractal-canopy-explanation,#gizmo,[role=tooltip],.tooltip{visibility:hidden!important}';
-const OVERLAYS = '#focus-chip,#lab-notice,#notice,#toast,#fractal-canopy-explanation,#gizmo,[role=tooltip],.tooltip,#review-toolbar,#details,#panel-edge-toggle,#fullscreen-bar,#fullscreen-legend,#selection-focus-controls,#graph-status-panel,#performance-overlay,#appearance-panel,#error{display:none!important;visibility:hidden!important}';
+const GRAPH_OVERLAYS = '#focus-chip,#lab-notice,#notice,#toast,#fractal-canopy-explanation,#gizmo,[role=tooltip],.tooltip,[data-fractal-bundle-count]{visibility:hidden!important}';
+const OVERLAYS = '#focus-chip,#lab-notice,#notice,#toast,#fractal-canopy-explanation,#gizmo,[role=tooltip],.tooltip,[data-fractal-bundle-count],#review-toolbar,#details,#panel-edge-toggle,#fullscreen-bar,#fullscreen-legend,#selection-focus-controls,#graph-status-panel,#performance-overlay,#appearance-panel,#error{display:none!important;visibility:hidden!important}';
 const FULL_WINDOW = OVERLAYS;
 
 // Copied from tests/test_public_safety.py::test_no_personal_identifier_in_tracked_bytes (ALL_PATTERNS).
@@ -70,7 +71,7 @@ export const GALLERY = [
   { id: 'canopy-2d-complete', title: 'Canopy · 2D · Completa', view: { ...base, rendering: '2d', topology: 'canopy-ifs' }, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'canopy-3d-complete', title: 'Canopy · 3D · Completa', view: { ...base, rendering: '3d', topology: 'canopy-ifs' }, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'sierpinski-2d-complete', title: 'Sierpiński · 2D · Completa', view: { ...base, rendering: '2d', topology: 'sierpinski' }, frame: { subject: 'all', occupancy: 0.85 } },
-  { id: 'sierpinski-3d-complete', title: 'Sierpiński · 3D · Completa', view: { ...base, rendering: '3d', topology: 'sierpinski' }, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'sierpinski-3d-complete', title: 'Sierpiński · 3D · Completa', view: { ...base, rendering: '3d', topology: 'sierpinski' }, frame: { subject: 'all', bounds: 'visible', occupancy: 0.85 } },
   { id: 'llull-2d-complete', title: 'Llull · 2D · Completa', view: { ...base, rendering: '2d', topology: 'circular-combinatorial' }, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'llull-3d-complete', title: 'Llull · 3D · Completa', view: { ...base, rendering: '3d', topology: 'circular-combinatorial' }, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'julia-2d-complete', title: 'Julia · 2D · Completa', view: { ...base, rendering: '2d', topology: 'julia' }, frame: { subject: 'all', occupancy: 0.85 } },
@@ -84,7 +85,7 @@ export const GALLERY = [
   { id: 'natural-stellar-2d-balanced', title: 'Natural · Stellar · 2D · Bilanciata', view: { ...base, density: 'balanced', rendering: '2d', topology: 'natural' }, paired: true, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'natural-stellar-3d-complete', title: 'Natural · Stellar · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' }, paired: true, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'natural-stellar-3d-balanced', title: 'Natural · Stellar · 3D · Bilanciata', view: { ...base, density: 'balanced', rendering: '3d', topology: 'natural' }, paired: true, frame: { subject: 'all', occupancy: 0.85 } },
-  // Close-ups (D-119): centred on one cluster. At Balanced a cluster's nodes are spread across the compact Balanced layout, so 2D uses
+  // Close-ups: centred on one cluster. At Balanced a cluster's nodes are spread across the compact Balanced layout, so 2D uses
   // Custom with 2,000 nodes, where each root domain keeps its own disc; in 3D, Custom draws those nodes faint among long relations,
   // so 3D stays at Complete on one source and its proposals.
   { id: 'natural-stellar-2d-custom-detail-links', title: 'Natural · Stellar · 2D · Custom 2000 · small cluster and its links', view: { ...base, density: 'custom', customNodes: 2000, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', camera: [], frame: { subject: { domains: ['d1'] }, occupancy: 0.7 } },
@@ -239,6 +240,118 @@ function subjectNodeIds(subject, hierarchy) {
   return [...hierarchy.domains].filter(([, memberships]) => memberships.some(domain => domains.has(domain))).map(([id]) => id);
 }
 
+// Decodes the 8-bit RGB or RGBA PNG that Chromium's screenshot returns into per-pixel luminance.
+function decodePngLuminance(buffer) {
+  if (buffer.readUInt32BE(0) !== 0x89504e47) throw new Error('screenshot is not a PNG');
+  let offset = 8, width = 0, height = 0, colourType = -1;
+  const idat = [];
+  while (offset < buffer.length) {
+    const length = buffer.readUInt32BE(offset), type = buffer.toString('ascii', offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0); height = data.readUInt32BE(4); colourType = data[9];
+      if (data[8] !== 8 || data[12] !== 0) throw new Error('unsupported PNG bit depth or interlace');
+    } else if (type === 'IDAT') idat.push(data);
+    else if (type === 'IEND') break;
+    offset += 12 + length;
+  }
+  const channels = colourType === 6 ? 4 : colourType === 2 ? 3 : 0;
+  if (!channels) throw new Error(`unsupported PNG colour type ${colourType}`);
+  const raw = inflateSync(Buffer.concat(idat)), stride = width * channels;
+  const pixels = Buffer.alloc(stride * height), luminance = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)], line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    const row = pixels.subarray(y * stride, (y + 1) * stride), above = y ? pixels.subarray((y - 1) * stride, y * stride) : null;
+    for (let i = 0; i < stride; i++) {
+      const a = i >= channels ? row[i - channels] : 0, b = above ? above[i] : 0, c = above && i >= channels ? above[i - channels] : 0;
+      let value = line[i];
+      if (filter === 1) value += a;
+      else if (filter === 2) value += b;
+      else if (filter === 3) value += (a + b) >> 1;
+      else if (filter === 4) {
+        const estimate = a + b - c, pa = Math.abs(estimate - a), pb = Math.abs(estimate - b), pc = Math.abs(estimate - c);
+        value += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      row[i] = value & 255;
+    }
+    for (let x = 0; x < width; x++) {
+      const i = y * stride + x * channels;
+      luminance[y * width + x] = (pixels[i] * 299 + pixels[i + 1] * 587 + pixels[i + 2] * 114) / 1000;
+    }
+  }
+  return { width, height, luminance };
+}
+
+// The drawn structure as a reader sees it, for a topology whose guides reach beyond its nodes (Sierpinski's 3D outline): nodes,
+// relations and guides from a screenshot of the page, without the background stars, its smooth glow, or the title.
+async function measureVisibleFraming(page) {
+  const { rect, title } = await page.evaluate(() => {
+    const r = document.getElementById('viewport').getBoundingClientRect(), b = document.getElementById('fullscreen-brand')?.getBoundingClientRect();
+    return { rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+      title: b ? { left: b.left - r.left, top: b.top - r.top, right: b.right - r.left, bottom: b.bottom - r.top } : null };
+  });
+  const png = await page.screenshot({ type: 'png', scale: 'css', clip: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } });
+  const { width, height, luminance } = decodePngLuminance(png);
+  // A half-resolution grid (the brightest pixel of each 2x2 block, so thin lines survive). A cell counts when it is bright and clearly
+  // brighter than its surroundings, which leaves out the background's smooth glow; only connected regions of at least 24 cells are kept,
+  // which leaves out the stars.
+  const gw = Math.floor(width / 2), gh = Math.floor(height / 2), grid = new Uint8Array(gw * gh), bright = new Uint8Array(gw * gh);
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+    const i = 2 * y * width + 2 * x;
+    grid[y * gw + x] = Math.max(luminance[i], luminance[i + 1], luminance[i + width], luminance[i + width + 1]);
+  }
+  const sums = new Float64Array((gw + 1) * (gh + 1));
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++)
+    sums[(y + 1) * (gw + 1) + x + 1] = grid[y * gw + x] + sums[y * (gw + 1) + x + 1] + sums[(y + 1) * (gw + 1) + x] - sums[y * (gw + 1) + x];
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+    const x0 = Math.max(0, x - 15), x1 = Math.min(gw, x + 16), y0 = Math.max(0, y - 15), y1 = Math.min(gh, y + 16);
+    const mean = (sums[y1 * (gw + 1) + x1] - sums[y0 * (gw + 1) + x1] - sums[y1 * (gw + 1) + x0] + sums[y0 * (gw + 1) + x0]) / ((x1 - x0) * (y1 - y0));
+    const value = grid[y * gw + x];
+    const inTitle = title && 2 * x >= title.left - 8 && 2 * x <= title.right + 8 && 2 * y >= title.top - 8 && 2 * y <= title.bottom + 8;
+    bright[y * gw + x] = value > 28 && value - mean > 16 && !inTitle ? 1 : 0;
+  }
+  const label = new Int32Array(gw * gh).fill(-1), queue = new Int32Array(gw * gh), columns = new Uint32Array(gw), rows = new Uint32Array(gh);
+  let kept = 0;
+  for (let start = 0; start < bright.length; start++) {
+    if (!bright[start] || label[start] !== -1) continue;
+    let head = 0, tail = 0;
+    queue[tail++] = start; label[start] = start;
+    while (head < tail) {
+      const cell = queue[head++], cx = cell % gw, cy = (cell - cx) / gw;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+        const next = ny * gw + nx;
+        if (bright[next] && label[next] === -1) { label[next] = start; queue[tail++] = next; }
+      }
+    }
+    if (tail < 24) continue;
+    for (let k = 0; k < tail; k++) { const cell = queue[k], cx = cell % gw; columns[cx]++; rows[(cell - cx) / gw]++; }
+    kept += tail;
+  }
+  if (!kept) throw new Error('no visible structure to frame');
+  const quantile = (counts, fraction) => {
+    let seen = 0;
+    for (let i = 0; i < counts.length; i++) { seen += counts[i]; if (seen > fraction * kept) return i; }
+    return counts.length - 1;
+  };
+  const left = 2 * quantile(columns, 0.001), right = 2 * (quantile(columns, 0.999) + 1);
+  const top = 2 * quantile(rows, 0.001), bottom = 2 * (quantile(rows, 0.999) + 1);
+  const w = rect.width, h = rect.height, occupancy = { x: (right - left) / w, y: (bottom - top) / h };
+  return { subject: 'visible', count: kept, bounds: 'visible structure (stars, background glow and title excluded)',
+    bbox: { left, top, right, bottom, width: right - left, height: bottom - top }, viewport: { width: w, height: h }, occupancy,
+    limiting: occupancy.x >= occupancy.y ? 'x' : 'y', centreOffset: { x: (left + right) / 2 - w / 2, y: (top + bottom) / 2 - h / 2 },
+    clipped: left <= 2 || top <= 2 || right >= w - 2 || bottom >= h - 2 ? 1 : 0 };
+}
+
+// The framing measurement a capture records: the bounds of its frame subject's drawn nodes, or the visible structure when the frame
+// setting asks for it.
+async function measureForSetting(page, setting, idDomains) {
+  if (setting?.bounds === 'visible') return measureVisibleFraming(page);
+  const subject = setting?.subject ?? 'all';
+  return measureFraming(page, subject, subjectNodeIds(subject, idDomains));
+}
+
 async function measureFraming(page, subject = 'all', selectedIds = null) {
   return page.evaluate(({ subject, selectedIds }) => {
     const witness = window.__d067?.witness?.();
@@ -271,20 +384,46 @@ async function measureFraming(page, subject = 'all', selectedIds = null) {
   }, { subject, selectedIds });
 }
 
+// A programmatic fit or camera restore moves the camera but does not redraw every overlay: Llull's figure, Sierpinski's outline and
+// Julia's rays kept an earlier placement while the nodes moved. Each fit and restore is therefore followed by one wheel step in and one
+// out at the viewport centre. Scaling about the same point by s and then 1/s returns the same camera, now redrawn through the page's own
+// wheel path.
+async function redrawThroughWheel(page) {
+  const size = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  await page.mouse.move(size.width / 2, size.height / 2);
+  await page.mouse.wheel(0, -100);
+  await page.waitForTimeout(450);
+  await page.mouse.wheel(0, 100);
+  await page.waitForTimeout(450);
+  // Leave no hover behind (a Canopy bundle badge stayed after the pointer left the window): end the pointer's path over an empty
+  // corner, tell the canvas the pointer has left, then move it out of the page.
+  await page.mouse.move(4, size.height - 4, { steps: 8 });
+  await page.evaluate(() => {
+    const root = document.querySelector('#render-root'), host = root?.querySelector('.view-host');
+    for (const element of [host, root]) element?.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
+  });
+  await page.mouse.move(-40, -40);
+  await page.waitForTimeout(300);
+}
+
+async function restoreCameraThroughPage(page, state) {
+  await page.evaluate(state => window.__d067.restoreCameraState(state), state);
+  await redrawThroughWheel(page);
+  await stableFullReadiness(page);
+}
+
 // Pans through the page's own camera state. A drag carries inertia in 2D (a 60 px drag moved the content about 105 px), so the
 // subject's centre is moved by solving the measured response of its on-screen centre to the camera's x and y.
-async function measurePanResponse(page, subject, ids, base) {
+async function measurePanResponse(page, measure, base) {
   const state = await page.evaluate(() => window.__d067.cameraState());
   const step = 0.01 * (state.ratio ?? 1);
   const probe = async key => {
-    await page.evaluate(({ state, key, step }) => window.__d067.restoreCameraState({ ...state, [key]: state[key] + step }), { state, key, step });
-    await stableFullReadiness(page);
-    const moved = await measureFraming(page, subject, ids);
+    await restoreCameraThroughPage(page, { ...state, [key]: state[key] + step });
+    const moved = await measure();
     return { x: (moved.centreOffset.x - base.centreOffset.x) / step, y: (moved.centreOffset.y - base.centreOffset.y) / step };
   };
   const alongX = await probe('x'), alongY = await probe('y');
-  await page.evaluate(state => window.__d067.restoreCameraState(state), state);
-  await stableFullReadiness(page);
+  await restoreCameraThroughPage(page, state);
   const determinant = alongX.x * alongY.y - alongY.x * alongX.y;
   if (!(Math.abs(determinant) > 1e-9)) throw new Error('camera state x/y has no measurable effect on the subject');
   return { alongX, alongY, determinant, step };
@@ -298,7 +437,8 @@ async function applyFrame(page, setting, dimension, itemId, idDomains) {
   const ids = subjectNodeIds(subject, idDomains), iterations = [];
   const effectiveTarget = target;
   let response = null, nearRatio = null, farRatio = null;
-  let measurement = await measureFraming(page, subject, ids);
+  const measure = () => setting.bounds === 'visible' ? measureVisibleFraming(page) : measureFraming(page, subject, ids);
+  let measurement = await measure();
   const zoomMetric = async () => {
     const snapshot = await cameraSnapshot(page);
     if (dimension === '3d') {
@@ -313,15 +453,14 @@ async function applyFrame(page, setting, dimension, itemId, idDomains) {
       pan: { dx: 0, dy: 0 }, zoom: null };
     const offset = measurement.centreOffset;
     if (Math.abs(offset.x) > measurement.viewport.width * 0.005 || Math.abs(offset.y) > measurement.viewport.height * 0.005) {
-      response ??= await measurePanResponse(page, subject, ids, measurement);
+      response ??= await measurePanResponse(page, measure, measurement);
       const { alongX, alongY, determinant } = response;
       const dx = (-offset.x * alongY.y + offset.y * alongY.x) / determinant;
       const dy = (-offset.y * alongX.x + offset.x * alongX.y) / determinant;
       const state = await page.evaluate(() => window.__d067.cameraState());
-      await page.evaluate(({ state, dx, dy }) => window.__d067.restoreCameraState({ ...state, x: state.x + dx, y: state.y + dy }), { state, dx, dy });
-      await stableFullReadiness(page);
+      await restoreCameraThroughPage(page, { ...state, x: state.x + dx, y: state.y + dy });
       entry.pan = { method: 'page camera state', offsetBefore: offset, cameraDelta: { x: dx, y: dy } };
-      measurement = await measureFraming(page, subject, ids);
+      measurement = await measure();
       // A large pan changes what the zoom bracket was measured on; a subject still off centre cannot be judged for size.
       if (Math.abs(offset.x) > measurement.viewport.width * 0.05 || Math.abs(offset.y) > measurement.viewport.height * 0.05) nearRatio = farRatio = null;
       if (Math.abs(measurement.centreOffset.x) > measurement.viewport.width * 0.005
@@ -343,9 +482,8 @@ async function applyFrame(page, setting, dimension, itemId, idDomains) {
       let next = state.ratio * Math.min(2, Math.max(0.5, occupancy / target));
       if (nearRatio !== null && farRatio !== null && !(next > nearRatio && next < farRatio)) next = Math.sqrt(nearRatio * farRatio);
       const before = await zoomMetric();
-      await page.evaluate(({ state, next }) => window.__d067.restoreCameraState({ ...state, ratio: next }), { state, next });
-      await stableFullReadiness(page);
-      measurement = await measureFraming(page, subject, ids);
+      await restoreCameraThroughPage(page, { ...state, ratio: next });
+      measurement = await measure();
       entry.zoom = { ratioFrom: state.ratio, ratioTo: next, bracket: { near: nearRatio, far: farRatio }, before, after: await zoomMetric() };
       response = null;
     }
@@ -357,7 +495,7 @@ async function applyFrame(page, setting, dimension, itemId, idDomains) {
     if (Math.abs(finalOccupancy - effectiveTarget) <= tolerance && measurement.clipped === 0
       && Math.abs(measurement.centreOffset.x) <= measurement.viewport.width * 0.005
       && Math.abs(measurement.centreOffset.y) <= measurement.viewport.height * 0.005)
-      return { program: { op: 'frame', subject, occupancy: target, tolerance, maxIterations }, effectiveTarget, iterations, final: measurement };
+      return { program: { op: 'frame', subject, ...(setting.bounds ? { bounds: setting.bounds } : {}), occupancy: target, tolerance, maxIterations }, effectiveTarget, iterations, final: measurement };
   }
   throw new Error(`${itemId}: frame did not reach target after ${maxIterations} iterations; last measurement ${JSON.stringify(measurement)}`);
 }
@@ -443,6 +581,7 @@ async function fitAfterResize(page) {
     const result = window.__d067.fit();
     if (result && typeof result.then === 'function') await result;
   });
+  await redrawThroughWheel(page);
 }
 
 async function enterFullscreenAndFit(page, itemId) {
@@ -480,7 +619,7 @@ async function assertFullscreenCapture(page, itemId) {
     const visibleViewportControls = [...viewport.querySelectorAll('button, input')].filter(visible)
       .map(element => element.id || element.tagName.toLowerCase());
     const selected = window.__d067.state().selected;
-    const tooltipSelectors = '[role="tooltip"],.tooltip,#v2-edge-tooltip,#control-tooltip';
+    const tooltipSelectors = '[role="tooltip"],.tooltip,#v2-edge-tooltip,#control-tooltip,[data-fractal-bundle-count]';
     const visibleTooltips = [...document.querySelectorAll(tooltipSelectors)].filter(visible)
       .map(element => element.id || element.getAttribute('role') || element.className);
     return { brandRect, brandVisible, brandInsideQuarter, visibleLegendControls, visibleViewportControls, selected, visibleTooltips };
@@ -652,7 +791,7 @@ async function main() {
         await enterFullscreenAndFit(page, full.id);
         let complete = await stableFullReadiness(page);
         const completeDensity = await assertRequestedDensity(page, full.view, full.id);
-        const pairRule = "same page session and orientation; each density framed by the page's fit()";
+        const pairRule = "same page session and orientation; each density fitted by the page, then framed on its own nodes";
         let completeCapture = null, completeFrame = null, completeCamera = await cameraSnapshot(page);
         if (full.frame) {
           completeFrame = await applyFrame(page, full.frame, dimension, full.id, idDomains);
@@ -665,8 +804,7 @@ async function main() {
         if (requested.includes(full)) {
           const fullscreenInfo = await assertFullscreenCapture(page, full.id);
           await assertCameraUnchanged(page, completeCamera, full.id);
-          const framingMeasurement = await measureFraming(page, full.frame?.subject ?? 'all',
-            subjectNodeIds(full.frame?.subject ?? 'all', idDomains));
+          const framingMeasurement = await measureForSetting(page, full.frame, idDomains);
           const dimensions = await captureJpeg(page, path.join(OUT, `${full.id}.jpg`), true);
           completeCapture = { fullscreenInfo, dimensions, state: await readState(page),
             framing: { program: full.frame ? { op: 'frame', ...full.frame } : null, result: completeFrame, measurement: framingMeasurement } };
@@ -692,8 +830,7 @@ async function main() {
         if (requested.includes(balanced)) {
           const fullscreenInfo = await assertFullscreenCapture(page, balanced.id);
           await assertCameraUnchanged(page, balancedCamera, balanced.id);
-          const framingMeasurement = await measureFraming(page, balanced.frame?.subject ?? 'all',
-            subjectNodeIds(balanced.frame?.subject ?? 'all', idDomains));
+          const framingMeasurement = await measureForSetting(page, balanced.frame, idDomains);
           const dimensions = await captureJpeg(page, path.join(OUT, `${balanced.id}.jpg`), true);
           pageRecords.push(await saveRecord(page, balanced, pairCamera, dimensions,
             { completeMs: null, densitySwitchMs, stableMs: balancedReady.stableMs }, pageErrors, null, pairRule, null, fullscreenInfo,
@@ -731,7 +868,7 @@ async function main() {
         let ready = await stableFullReadiness(page);
         const readPreCapture = () => page.evaluate(() => {
           const selected = window.__d067.state().selected;
-          const tooltipSelectors = '[role="tooltip"],.tooltip,#v2-edge-tooltip,#control-tooltip';
+          const tooltipSelectors = '[role="tooltip"],.tooltip,#v2-edge-tooltip,#control-tooltip,[data-fractal-bundle-count]';
           const visibleTooltips = [...document.querySelectorAll(tooltipSelectors)].filter(element => {
             const style = getComputedStyle(element), rect = element.getBoundingClientRect();
             return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
@@ -760,8 +897,7 @@ async function main() {
         await assertCameraUnchanged(page, cameraAtCapture, item.id);
         const reveal = await page.evaluate(() => window.__d074?.revealWitness?.() ?? null);
         const measuredZoom = zoomFromCameras(cameraAtFit, cameraAtCapture, dimension, item.id);
-        const framingMeasurement = await measureFraming(page, item.frame?.subject ?? 'all',
-          subjectNodeIds(item.frame?.subject ?? 'all', idDomains));
+        const framingMeasurement = await measureForSetting(page, item.frame, idDomains);
         const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), true);
         const firstAnchor = execution.zooms.find(zoom => zoom.anchorId);
         const detail = { anchorId: firstAnchor?.anchorId ?? null, anchorAtFit: firstAnchor?.anchorAtStart ?? null,
@@ -803,8 +939,7 @@ async function main() {
           const fullscreenInfo = await assertFullscreenCapture(page, variant.name);
           const item = { ...baseItem, id: variant.name, title: variant.title, view: variantView };
           await assertCameraUnchanged(page, camera.after, variant.name);
-          const variantSubject = variant.camera.filter(operation => operation.op === 'frame').at(-1)?.subject ?? 'all';
-          const framingMeasurement = await measureFraming(page, variantSubject, subjectNodeIds(variantSubject, idDomains));
+          const framingMeasurement = await measureForSetting(page, variant.camera.filter(operation => operation.op === 'frame').at(-1) ?? null, idDomains);
           const dimensions = await captureJpeg(page, path.join(OUT, `${variant.name}.jpg`), true);
           pageRecords.push(await saveRecord(page, item, camera, dimensions,
             { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, null, fullscreenInfo,
@@ -848,8 +983,7 @@ async function main() {
           const fullscreenInfo = fullWindow ? await assertFullscreenCapture(page, item.id) : null;
           if (camera.restored === null) camera.restored = camera.recorded;
           await assertCameraUnchanged(page, program.length ? camera.after : camera.recorded, item.id);
-          const framingMeasurement = await measureFraming(page, item.frame?.subject ?? 'all',
-            subjectNodeIds(item.frame?.subject ?? 'all', idDomains));
+          const framingMeasurement = await measureForSetting(page, item.frame, idDomains);
           const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), false, item.fullPage === true);
           pageRecords.push(await saveRecord(page, item, camera, dimensions,
             { completeMs, densitySwitchMs: null, stableMs: settled.stableMs }, pageErrors, null, null, null, fullscreenInfo,
