@@ -23,7 +23,8 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) =>
   a.startsWith('--') ? [...acc, [a.slice(2), all[i + 1]?.startsWith('--') || all[i + 1] === undefined ? true : all[i + 1]]] : acc, []));
 const PORT = Number(args.port ?? 8776);
 const DATASET = path.resolve(ROOT, args.dataset ?? 'demo/out/reference/dataset');
-const OUT = path.resolve(ROOT, args.out ?? path.join('docs', 'assets', 'gallery'));
+const GALLERY_DIR = path.resolve(ROOT, 'docs', 'assets', 'gallery');
+const OUT = path.resolve(ROOT, args.out ?? GALLERY_DIR);
 const VIEWPORT = { width: 1600, height: 1000 };
 const DEVICE_SCALE_FACTOR = 2;
 const GRAPH_OVERLAYS = '#focus-chip,#lab-notice,#notice,#toast,#fractal-canopy-explanation,#gizmo,[role=tooltip],.tooltip{visibility:hidden!important}';
@@ -168,6 +169,18 @@ async function stableFullReadiness(page, timeoutMs = 120000) {
 
 async function cameraSnapshot(page) {
   return page.evaluate(() => ({ state: window.__d067?.cameraState?.() ?? null, pose: window.__d067?.camera?.() ?? null }));
+}
+
+// The recorded camera is the one at the end of the program; refuse to capture if the view has drifted since (3D controls damp).
+async function assertCameraUnchanged(page, recorded, itemId) {
+  const current = await cameraSnapshot(page);
+  const differs = (a, b) => {
+    if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) > 1e-6 * Math.max(1, Math.abs(a), Math.abs(b));
+    if (a && b && typeof a === 'object' && typeof b === 'object')
+      return Object.keys({ ...a, ...b }).some(key => differs(a[key], b[key]));
+    return a !== b;
+  };
+  if (differs(recorded, current)) throw new Error(`${itemId}: the camera moved after its program; recorded ${JSON.stringify(recorded)}, now ${JSON.stringify(current)}`);
 }
 
 function zoomFromCameras(before, after, dimension, itemId) {
@@ -380,7 +393,8 @@ async function captureJpeg(page, file, paired, fullPage = false) {
 async function main() {
   const manifest = JSON.parse(await readFile(path.join(DATASET, 'manifest.json'), 'utf8'));
   if (args.variants === true) throw new Error('--variants needs a JSON file path');
-  if (args.variants !== undefined && args.out === undefined) throw new Error('--variants needs --out, so variant captures never overwrite the gallery');
+  if (args.variants !== undefined && OUT === GALLERY_DIR)
+    throw new Error('--variants needs --out outside docs/assets/gallery, so variant captures never overwrite the gallery');
   const variants = typeof args.variants === 'string'
     ? JSON.parse(await readFile(path.resolve(ROOT, args.variants), 'utf8')) : null;
   if (variants !== null) {
@@ -390,6 +404,7 @@ async function main() {
       if (!variant || typeof variant.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(variant.name))
         throw new Error(`--variants item ${index} needs a safe output-file stem in name`);
       if (names.has(variant.name)) throw new Error(`--variants has duplicate name '${variant.name}'`);
+      if (GALLERY.some(item => item.id === variant.name)) throw new Error(`--variants name '${variant.name}' is a gallery id`);
       names.add(variant.name);
       if (!GALLERY.some(item => item.id === variant.base)) throw new Error(`--variants item ${variant.name}: unknown base '${variant.base}'`);
       if (typeof variant.title !== 'string' || !Array.isArray(variant.camera))
@@ -526,6 +541,7 @@ async function main() {
         const fullscreenInfo = await assertFullscreenCapture(page, item.id);
 
         const cameraAtCapture = execution.after;
+        await assertCameraUnchanged(page, cameraAtCapture, item.id);
         const reveal = await page.evaluate(() => window.__d074?.revealWitness?.() ?? null);
         const measuredZoom = zoomFromCameras(cameraAtFit, cameraAtCapture, dimension, item.id);
         const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), true);
@@ -565,6 +581,7 @@ async function main() {
           const ready = await stableFullReadiness(page);
           const fullscreenInfo = await assertFullscreenCapture(page, variant.name);
           const item = { ...baseItem, id: variant.name, title: variant.title };
+          await assertCameraUnchanged(page, camera.after, variant.name);
           const dimensions = await captureJpeg(page, path.join(OUT, `${variant.name}.jpg`), true);
           pageRecords.push(await saveRecord(page, item, camera, dimensions,
             { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, null, fullscreenInfo));
@@ -604,6 +621,7 @@ async function main() {
           }
           const fullscreenInfo = fullWindow ? await assertFullscreenCapture(page, item.id) : null;
           if (camera.restored === null) camera.restored = camera.recorded;
+          if (item.camera) await assertCameraUnchanged(page, camera.after, item.id);
           const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), false, item.fullPage === true);
           pageRecords.push(await saveRecord(page, item, camera, dimensions,
             { completeMs, densitySwitchMs: null, stableMs: settled.stableMs }, pageErrors, null, null, null, fullscreenInfo));
@@ -623,7 +641,7 @@ async function main() {
   const byId = new Map((previousGallery?.images ?? [])
     .filter(record => galleryIds.has(record.id) && !capturedIds.has(record.id)).map(record => [record.id, record]));
   for (const record of records) byId.set(record.id, record);
-  const images = GALLERY.flatMap(item => byId.has(item.id) ? [byId.get(item.id)] : []);
+  const images = variants ? records : GALLERY.flatMap(item => byId.has(item.id) ? [byId.get(item.id)] : []);
   const pageErrorRecords = records.filter(record => record.pageErrors > 0);
   await writeFile(path.join(OUT, 'MANIFEST.json'), JSON.stringify({
     schema: 'nousos-gallery/2', dataset: { generator: previousGallery?.dataset?.generator ?? 'demo/src/cli.ts synth --profile reference --seed 1', digest: manifest.digest },
