@@ -6,7 +6,7 @@
 // (`npx --prefix ui playwright install chromium`) and the synthetic dataset
 // (`node --experimental-strip-types demo/src/cli.ts synth --profile reference --seed 1 --out demo/out/reference`).
 //
-// Every item except `interface` hides page chrome and captures the full viewport after stable full readiness. Density pairs
+// Every item except `interface` enters the page's real fullscreen mode, keeps the fullscreen brand visible, and captures after stable full readiness. Density pairs
 // share a page session; detail items use real camera zoom in one session per morphology and projection.
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
@@ -28,7 +28,34 @@ const VIEWPORT = { width: 1600, height: 1000 };
 const DEVICE_SCALE_FACTOR = 2;
 const GRAPH_OVERLAYS = '#focus-chip,#lab-notice,#notice,#toast,#fractal-canopy-explanation,#gizmo,[role=tooltip],.tooltip{visibility:hidden!important}';
 const OVERLAYS = '#focus-chip,#lab-notice,#notice,#toast,#fractal-canopy-explanation,#gizmo,[role=tooltip],.tooltip,#review-toolbar,#details,#panel-edge-toggle,#fullscreen-bar,#fullscreen-legend,#selection-focus-controls,#graph-status-panel,#performance-overlay,#appearance-panel,#error{display:none!important;visibility:hidden!important}';
-const FULL_WINDOW = `${OVERLAYS}\nhtml,body,#shell,#viewport,#render-root,.view-host{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;min-width:0!important;min-height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;background:#050505!important}`;
+const FULL_WINDOW = OVERLAYS;
+
+// Copied from tests/test_public_safety.py::test_no_personal_identifier_in_tracked_bytes (ALL_PATTERNS).
+const ABSOLUTE_PATH_PATTERNS = [
+  /\/[U]sers\/[A-Za-z0-9._-]+/,
+  /\/[h]ome\/[A-Za-z0-9._-]+/,
+  /[C]:\\\\?[U]sers\\\\?/,
+  /\/[V]olumes\/[A-Za-z0-9._-]+/,
+  /\/[p]rivate\/(?:tmp|var)\/[A-Za-z0-9._-]+/,
+  /~\/(?:[D]esktop|[D]ocuments|[D]ownloads|[L]ibrary|[P]ictures|[M]usic|[M]ovies)(?:\/[A-Za-z0-9._-]+)*/,
+  /\/[o]pt\/[A-Za-z0-9._-]+/,
+  /\/[s]rv\/[A-Za-z0-9._-]+/,
+  /\/[A]pplications\/[A-Za-z0-9._-]+/,
+  /\/[n]et\/[A-Za-z0-9._-]+/,
+  /%[U]SERPROFILE%\\[A-Za-z0-9._-]+/,
+  /\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9._-]+/,
+];
+const IDENTIFIER_PATTERNS = [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/];
+const CREDENTIAL_PATTERNS = [
+  /\bs[k]-[A-Za-z0-9_-]{16,}/,
+  /\bgh[p]_[A-Za-z0-9]{16,}/,
+  /\b[A]KIA[0-9A-Z]{12,}/,
+  /-----BEGIN [A-Z ]*PRI[V]ATE KEY-----/,
+  /\b(?:api[_-]?key|secret|token|password)\s*[=:]\s*['"][^'"]{8,}/,
+  /\bx[o]xb-[A-Za-z0-9-]{10,}/,
+  /\b[A]IzaSy[A-Za-z0-9_-]{16,}/,
+];
+const ALL_PATTERNS = [...ABSOLUTE_PATH_PATTERNS, ...IDENTIFIER_PATTERNS, ...CREDENTIAL_PATTERNS];
 
 // Every topology the page offers, in 2D and in 3D, at «Completa» unless an image is about density. Labels are off and the Indra
 // meta-topology is not shown.
@@ -151,6 +178,55 @@ async function fitAfterResize(page) {
   });
 }
 
+async function enterFullscreenAndFit(page, itemId) {
+  const deadline = Date.now() + 10000;
+  const toolbarActivationStyle = await page.addStyleTag({ content: '#review-toolbar{display:block!important;visibility:visible!important}' });
+  try {
+    await page.click('#fullscreen', { timeout: 10000 });
+    await page.waitForFunction(() => document.fullscreenElement === document.getElementById('viewport'), null,
+      { timeout: Math.max(1, deadline - Date.now()) });
+  } catch (error) {
+    throw new Error(`${itemId}: viewport fullscreen was not entered within 10 seconds: ${error.message}`);
+  }
+  await toolbarActivationStyle.evaluate(style => style.remove());
+  await fitAfterResize(page);
+}
+
+async function assertFullscreenCapture(page, itemId) {
+  const result = await page.evaluate(() => {
+    const viewport = document.getElementById('viewport');
+    const brand = document.getElementById('fullscreen-brand');
+    const rect = brand?.getBoundingClientRect();
+    const brandStyle = brand ? getComputedStyle(brand) : null;
+    const brandRect = rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+    const visible = element => {
+      const style = getComputedStyle(element), box = element.getBoundingClientRect();
+      return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden'
+        && Number(style.opacity) > 0 && box.width > 0 && box.height > 0;
+    };
+    const brandVisible = !!brand && !brand.hidden && brandStyle.display !== 'none' && brandStyle.visibility !== 'hidden'
+      && rect.width > 0 && rect.height > 0;
+    const brandInsideQuarter = !!rect && rect.left >= 0 && rect.top >= 0
+      && rect.right <= viewport.clientWidth / 2 && rect.bottom <= viewport.clientHeight / 2;
+    const visibleLegendControls = [...document.querySelectorAll('#fullscreen-bar, #fullscreen-bar *, #fullscreen-legend, #fullscreen-legend *')]
+      .filter(visible).map(element => element.id || element.tagName.toLowerCase());
+    const visibleViewportControls = [...viewport.querySelectorAll('button, input')].filter(visible)
+      .map(element => element.id || element.tagName.toLowerCase());
+    const selected = window.__d067.state().selected;
+    const tooltipSelectors = '[role="tooltip"],.tooltip,#v2-edge-tooltip,#control-tooltip';
+    const visibleTooltips = [...document.querySelectorAll(tooltipSelectors)].filter(visible)
+      .map(element => element.id || element.getAttribute('role') || element.className);
+    return { brandRect, brandVisible, brandInsideQuarter, visibleLegendControls, visibleViewportControls, selected, visibleTooltips };
+  });
+  if (!result.brandVisible || !result.brandInsideQuarter)
+    throw new Error(`${itemId}: fullscreen brand is missing, hidden, or outside the top-left viewport quarter`);
+  if (result.visibleLegendControls.length || result.visibleViewportControls.length)
+    throw new Error(`${itemId}: visible viewport controls remain: ${[...result.visibleLegendControls, ...result.visibleViewportControls].join(', ')}`);
+  if (result.selected !== null) throw new Error(`${itemId}: selection is active before capture`);
+  if (result.visibleTooltips.length) throw new Error(`${itemId}: tooltip visible before capture: ${result.visibleTooltips.join(', ')}`);
+  return { brandRect: result.brandRect };
+}
+
 function sameWithinTolerance(left, right, label) {
   if (typeof left === 'number' && typeof right === 'number') return Math.abs(left - right) <= 1e-9;
   if (Array.isArray(left) && Array.isArray(right))
@@ -175,10 +251,21 @@ function assertSameOrientation(dimension, completeCamera, balancedCamera) {
 }
 
 async function captureJpeg(page, file, paired, fullPage = false) {
-  const raw = await page.screenshot({ type: 'jpeg', quality: paired ? 90 : 85,
-    scale: paired ? 'device' : 'css', ...(fullPage ? { fullPage: true } : {}) });
-  await writeFile(file, raw);
-  return inspectJpeg(await readFile(file), path.basename(file));
+  const initialQuality = paired ? 90 : 85;
+  for (let retry = 0; retry <= 5; retry++) {
+    const jpegQuality = initialQuality - retry;
+    const raw = await page.screenshot({ type: 'jpeg', quality: jpegQuality,
+      scale: paired ? 'device' : 'css', ...(fullPage ? { fullPage: true } : {}) });
+    const decoded = new TextDecoder('utf-8', { fatal: false }).decode(raw);
+    if (ALL_PATTERNS.some(pattern => pattern.test(decoded))) {
+      if (retry === 5) throw new Error(`${path.basename(file)}: byte-level safety pattern persisted after five JPEG quality retries`);
+      continue;
+    }
+    await writeFile(file, raw);
+    return { ...inspectJpeg(await readFile(file), path.basename(file)), jpegQuality,
+      ...(retry ? { jpegQualityReason: 'byte-level safety pattern in the encoded bytes' } : {}) };
+  }
+  throw new Error(`${path.basename(file)}: unable to produce a JPEG that passes the byte-level safety scan`);
 }
 
 async function main() {
@@ -200,12 +287,15 @@ async function main() {
         return { view: r?.view ?? null, quality: r?.quality ?? null, nodesVisible: s?.nodes?.visible ?? null,
           nodesTotal: s?.nodes?.total ?? null, edgesDrawn: s?.edges?.drawn ?? null, edgesTotal: s?.edges?.total ?? null };
       });
-    const saveRecord = async (page, item, camera, dimensions, timings, pageErrors, state = null, pairRule = null, detail = null) => {
+    const saveRecord = async (page, item, camera, dimensions, timings, pageErrors, state = null, pairRule = null, detail = null, fullscreenInfo = null) => {
       const record = {
         id: item.id, title: item.title, file: `${item.id}.jpg`, view: item.view, state: state ?? await readState(page),
         completeMs: timings.completeMs, densitySwitchMs: timings.densitySwitchMs,
         stableMs: timings.stableMs, pageErrors: pageErrors.length, camera,
         width: dimensions.width, height: dimensions.height,
+        jpegQuality: dimensions.jpegQuality,
+        ...(dimensions.jpegQualityReason ? { jpegQualityReason: dimensions.jpegQualityReason } : {}),
+        ...(fullscreenInfo ? { fullscreen: true, brandRect: fullscreenInfo.brandRect } : {}),
         ...(pairRule ? { pairRule } : {}),
         ...(detail ? { detail } : {}),
       };
@@ -226,14 +316,15 @@ async function main() {
       try {
         const navigationStartedAt = Date.now();
         await page.goto(stateUrl(server.origin, full.view), { waitUntil: 'load' });
-        await installCaptureStyle(page, true);
         const completeMs = await waitForComplete(page, navigationStartedAt);
-        await fitAfterResize(page);
+        await installCaptureStyle(page, true);
+        await enterFullscreenAndFit(page, full.id);
         const complete = await stableFullReadiness(page);
         const recordedCamera = await cameraSnapshot(page);
         if (!recordedCamera.state) throw new Error(`${full.id}: page did not expose cameraState()`);
         const pairRule = "same page session and orientation; each density framed by the page's fit()";
         const completeCapture = requested.includes(full) ? {
+          fullscreenInfo: await assertFullscreenCapture(page, full.id),
           dimensions: await captureJpeg(page, path.join(OUT, `${full.id}.jpg`), true), state: await readState(page),
         } : null;
         const densitySwitchStartedAt = Date.now();
@@ -245,11 +336,12 @@ async function main() {
         assertSameOrientation(dimension, recordedCamera, balancedCamera);
         const pairCamera = { completa: recordedCamera, bilanciata: balancedCamera };
         if (completeCapture) pageRecords.push(await saveRecord(page, full, pairCamera, completeCapture.dimensions,
-          { completeMs, densitySwitchMs: null, stableMs: complete.stableMs }, pageErrors, completeCapture.state, pairRule));
+          { completeMs, densitySwitchMs: null, stableMs: complete.stableMs }, pageErrors, completeCapture.state, pairRule, null, completeCapture.fullscreenInfo));
         if (requested.includes(balanced)) {
+          const fullscreenInfo = await assertFullscreenCapture(page, balanced.id);
           const dimensions = await captureJpeg(page, path.join(OUT, `${balanced.id}.jpg`), true);
           pageRecords.push(await saveRecord(page, balanced, pairCamera, dimensions,
-            { completeMs: null, densitySwitchMs, stableMs: balancedReady.stableMs }, pageErrors, null, pairRule));
+            { completeMs: null, densitySwitchMs, stableMs: balancedReady.stableMs }, pageErrors, null, pairRule, null, fullscreenInfo));
         }
       } finally {
         await context.close();
@@ -270,9 +362,9 @@ async function main() {
       try {
         const navigationStartedAt = Date.now();
         await page.goto(stateUrl(server.origin, items[0].view), { waitUntil: 'load' });
-        await installCaptureStyle(page, true);
         const completeMs = await waitForComplete(page, navigationStartedAt);
-        await fitAfterResize(page);
+        await installCaptureStyle(page, true);
+        await enterFullscreenAndFit(page, items[0].id);
         await stableFullReadiness(page);
         const cameraAtFit = await cameraSnapshot(page);
         const anchor = await page.evaluate(() => {
@@ -328,6 +420,7 @@ async function main() {
           }
           if (preCapture.selected !== null) throw new Error(`${item.id}: selection is active before detail capture`);
           if (preCapture.visibleTooltips.length) throw new Error(`${item.id}: tooltip visible before detail capture: ${preCapture.visibleTooltips.join(', ')}`);
+          const fullscreenInfo = await assertFullscreenCapture(page, item.id);
 
           const cameraAtCapture = await cameraSnapshot(page);
           const reveal = await page.evaluate(() => window.__d074?.revealWitness?.() ?? null);
@@ -350,7 +443,7 @@ async function main() {
             zoom, zoomSource, revealZoom: Number.isFinite(reveal?.zoom) ? reveal.zoom : null,
             cameraAtFit, cameraAtCapture, tooltipFallbackUsed };
           pageRecords.push(await saveRecord(page, item, { recorded: cameraAtFit, restored: cameraAtCapture }, dimensions,
-            { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, detail));
+            { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, detail, fullscreenInfo));
         }
       } finally {
         await context.close();
@@ -375,14 +468,15 @@ async function main() {
         const navigationStartedAt = Date.now();
         await page.goto(stateUrl(server.origin, item.view), { waitUntil: 'load' });
         const fullWindow = item.id !== 'interface';
-        await installCaptureStyle(page, fullWindow);
         const completeMs = await waitForComplete(page, navigationStartedAt);
-        if (fullWindow) await fitAfterResize(page);
+        await installCaptureStyle(page, fullWindow);
+        if (fullWindow) await enterFullscreenAndFit(page, item.id);
         const settled = await stableFullReadiness(page);
+        const fullscreenInfo = fullWindow ? await assertFullscreenCapture(page, item.id) : null;
         const camera = await cameraSnapshot(page);
         const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), false, item.fullPage === true);
         pageRecords.push(await saveRecord(page, item, { recorded: camera, restored: camera }, dimensions,
-          { completeMs, densitySwitchMs: null, stableMs: settled.stableMs }, pageErrors));
+          { completeMs, densitySwitchMs: null, stableMs: settled.stableMs }, pageErrors, null, null, null, fullscreenInfo));
       } finally {
         await context.close();
         for (const record of pageRecords) record.pageErrors = pageErrors.length;
