@@ -36,7 +36,7 @@ Notes and search can surface a claim while losing where it came from, when it ap
 
 The interface labels are Italian: «Essenziale» means Essential, «Bilanciata» means Balanced, «Completa» means Complete; «Attestata» means Attested and «Esplorativa» means Exploratory.
 
-The gallery uses invented demo data. Each pair is captured in the same page session and orientation; each density is framed by the page's fit. Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds.
+The gallery uses invented demo data. Each overview is centred with its nodes filling about 85% of the frame's limiting dimension, measured from the drawn nodes rather than the background stars. Each pair is captured in the same page session and orientation, and each density is framed on its own nodes: Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds.
 
 ### Natural · Stellar overviews
 
@@ -47,23 +47,19 @@ The gallery uses invented demo data. Each pair is captured in the same page sess
 
 ### Explore at different scales
 
-Close-ups use the page's own camera: a smaller cluster is zoomed with the mouse wheel, and one 3D view is first rotated by a short drag to show depth. Each image was captured at Complete after the render stabilised; nothing is cropped or enlarged, and the camera of every view is recorded in the manifest.
+Each close-up is centred on one cluster through the page's own camera, after the render stabilised; nothing is cropped or enlarged, and the density, counts and camera of every view are recorded in the manifest. At Balanced a cluster's nodes are spread across the compact Balanced layout, so the 2D close-ups use Custom with 2,000 nodes, where each cluster keeps its own disc. In 3D, Custom draws those nodes faintly among long relations, so the 3D close-up stays at Complete.
 
-[![Natural · Stellar · 2D · Complete detail of links](docs/assets/gallery/natural-stellar-2d-complete-detail-links.jpg)](docs/assets/gallery/natural-stellar-2d-complete-detail-links.jpg)
+[![Natural · Stellar · 2D · Custom 2,000 · a small cluster and its links](docs/assets/gallery/natural-stellar-2d-custom-detail-links.jpg)](docs/assets/gallery/natural-stellar-2d-custom-detail-links.jpg)
 
-Natural · Stellar · 2D · Complete, camera ×4.8 on a small cluster: its nodes and the relations fanning out to two large clusters.
+Natural · Stellar · 2D · Custom (2,000 nodes), centred on a small cluster: all 144 of its nodes and the relations leaving it.
 
-[![Natural · Stellar · 2D · Complete detail of a cluster](docs/assets/gallery/natural-stellar-2d-complete-detail-cluster.jpg)](docs/assets/gallery/natural-stellar-2d-complete-detail-cluster.jpg)
+[![Natural · Stellar · 2D · Custom 2,000 · nodes of one cluster](docs/assets/gallery/natural-stellar-2d-custom-detail-cluster.jpg)](docs/assets/gallery/natural-stellar-2d-custom-detail-cluster.jpg)
 
-Natural · Stellar · 2D · Complete, camera ×6.0 on a mid-sized cluster: individual nodes around its hub.
+Natural · Stellar · 2D · Custom (2,000 nodes), centred on another cluster: all 187 of its nodes around its hub.
 
-[![Natural · Stellar · 3D · Complete oblique detail](docs/assets/gallery/natural-stellar-3d-complete-detail-oblique.jpg)](docs/assets/gallery/natural-stellar-3d-complete-detail-oblique.jpg)
+[![Natural · Stellar · 3D · Complete · one source and its proposals](docs/assets/gallery/natural-stellar-3d-complete-detail-source.jpg)](docs/assets/gallery/natural-stellar-3d-complete-detail-source.jpg)
 
-Natural · Stellar · 3D · Complete, rotated by a short drag, camera ×4.5 on a mid-sized cluster, with a larger cluster behind it.
-
-[![Natural · Stellar · 3D · Complete detail of a cluster](docs/assets/gallery/natural-stellar-3d-complete-detail-cluster.jpg)](docs/assets/gallery/natural-stellar-3d-complete-detail-cluster.jpg)
-
-Natural · Stellar · 3D · Complete, camera ×5.5 on a small cluster: its nodes and their relations, with a neighbouring hub at the right.
+Natural · Stellar · 3D · Complete, rotated by a short drag and centred on one source: its 61 proposals around the source node and their relations.
 
 ### Other topologies at Complete · experimental Geometry Lab
 

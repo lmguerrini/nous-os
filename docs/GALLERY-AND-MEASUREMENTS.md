@@ -1,8 +1,8 @@
 # Gallery and measurements
 
-The gallery uses the synthetic demo dataset, whose content is invented. Seed 1 of the `reference` profile produces the dataset digest recorded in the manifest; the profile's counts are illustrative except for its fixed node total and root-domain count. Captures use the page's fullscreen view, where only the NousOS title stays visible at the top left; node labels, panels, tooltips, selections and controls are hidden. Each capture waits for the renderer to stabilise before the image is saved. Each pair is captured in the same page session and orientation; each density is framed by the page's fit. Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds, so an identical camera would show it as a small cluster. Both camera states are recorded in the manifest.
+The gallery uses the synthetic demo dataset, whose content is invented. Seed 1 of the `reference` profile produces the dataset digest recorded in the manifest; the profile's counts are illustrative except for its fixed node total and root-domain count. Captures use the page's fullscreen view, where only the NousOS title stays visible at the top left; node labels, panels, tooltips, selections and controls are hidden. Each capture waits for the renderer to stabilise before the image is saved. Each pair is captured in the same page session and orientation; each density is framed on its own nodes. Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds, so an identical camera would show it as a small cluster. Both camera states are recorded in the manifest.
 
-The detail images use page camera programs recorded in the manifest. The 2D view anchored at `domain:d1` uses 7 wheel steps and measures ×4.77; the 2D view anchored at `domain:d6` uses 8 wheel steps and measures ×5.96. For the oblique 3D view anchored at `domain:d6`, the camera is first dragged 120 px right and 50 px up, then zoomed 30 wheel steps; it measures ×4.48. The other 3D detail is anchored at `domain:d8`, uses 34 wheel steps, and measures ×5.47. Every detail capture stayed at Complete with the same counts: 11,199 visible nodes and 14,050 drawn edges. Julia 3D uses three wheel steps at the centre and measures ×1.16 closer than the fitted view; at the fitted view its relation bundles are faint, and they become visible as the camera moves closer. The renders stabilised at Complete; nothing is cropped or enlarged.
+Every capture in the README is framed by measurement. The capture tool reads each drawn node's position from the page, takes the bounds of the subject's nodes (the whole graph for an overview, one cluster for a close-up; the background stars are not nodes), and moves the camera through the page's own camera state until those bounds are centred and fill the target share of the frame's limiting dimension: 85% for the overviews, 70% for the 2D close-ups and 65% for the 3D close-up. In 3D the bounds use node centres, because a node near the camera can report a footprint larger than what is drawn. A cluster is the set of nodes that descend from one root domain in the hierarchy, which is how the page groups them. At Balanced a cluster's nodes are spread across the compact Balanced layout, so the 2D close-ups use Custom with 2,000 nodes (2,000 nodes and 2,947 drawn edges in the view): the d1 cluster with all 144 of its nodes, and the d8 cluster with all 187. In 3D, Custom draws a cluster's nodes faintly among long relations, so the 3D close-up stays at Complete (11,199 nodes, 14,050 drawn edges): the camera is first dragged 120 px right and 50 px up, then centred on one source and its 61 proposals. Julia 3D keeps its earlier camera, three wheel steps closer than the fitted view (×1.16): framed at 85–93% of its node bounds its relation bundles are faint, and they become visible as the camera moves closer. Each record in the manifest holds the capture's density, counts, camera and framing measurement. The renders stabilised before each capture; nothing is cropped or enlarged.
 
 ## Density counts
 
@@ -17,12 +17,12 @@ In Natural 2D, the gallery manifest records 80 / 11,199 nodes for Essential, 400
 | Natural · 2D | 4.5 s |
 | Natural · 3D | 3.1 s |
 | Canopy · 2D | 2.4 s |
-| Canopy · 3D | 2.4 s |
+| Canopy · 3D | 2.3 s |
 | Sierpiński · 2D | 3.3 s |
 | Sierpiński · 3D | 2.7 s |
-| Llull · 2D | 3.3 s |
-| Llull · 3D | 2.7 s |
-| Julia · 2D | 5.3 s |
+| Llull · 2D | 3.1 s |
+| Llull · 3D | 2.6 s |
+| Julia · 2D | 5.1 s |
 | Julia · 3D | 5.8 s |
 | Neural · 3D · Brain | 7.2 s |
 | Mycelium · 2D | 5.6 s |
@@ -31,7 +31,7 @@ In Natural 2D, the gallery manifest records 80 / 11,199 nodes for Essential, 400
 | Natural · 2D · Balanced | 1.6 s |
 | Whole page | 3.2 s |
 
-In the paired captures, switching the same page from Complete to Balanced reached Complete readiness (every requested node and edge drawn at full quality) in 1.4 s (2D) and 0.8 s (3D). Canopy, Sierpiński, Llull and Julia are experimental Geometry Lab topologies.
+In the paired captures, switching the same page from Complete to Balanced reached Complete readiness (every requested node and edge drawn at full quality) in 1.4 s (2D) and 0.9 s (3D). Canopy, Sierpiński, Llull and Julia are experimental Geometry Lab topologies.
 
 ## Node-size coherence matrix
 
