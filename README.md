@@ -42,7 +42,7 @@ Density controls select how much of the graph is drawn. In Natural 2D, the galle
 
 ### Natural · Stellar gallery
 
-The gallery uses the invented synthetic demo dataset. Each pair is captured in one page session: only the density control changes, the orientation is kept, and the page frames each density with its own fit. «Bilanciata» has its own layout, 7 to 10 times more compact than «Completa» in these captures, so an identical camera would show it as a small cluster. Both camera states are recorded in the manifest.
+The gallery uses the invented synthetic demo dataset. Captures use the page's fullscreen view, where only the NousOS title stays visible at the top left; node labels, panels, tooltips, selections and controls are hidden. Each pair is captured in one page session: only the density control changes, the orientation is kept, and the page frames each density with its own fit. «Bilanciata» has its own layout, 7 to 10 times more compact than «Completa» in these captures, so an identical camera would show it as a small cluster. Both camera states are recorded in the manifest.
 
 [![Natural · Stellar · 2D · Bilanciata](docs/assets/gallery/natural-stellar-2d-balanced.jpg)](docs/assets/gallery/natural-stellar-2d-balanced.jpg)
 
@@ -59,6 +59,26 @@ Natural · Stellar · 3D · Bilanciata — synthetic demo data.
 [![Natural · Stellar · 3D · Completa](docs/assets/gallery/natural-stellar-3d-complete.jpg)](docs/assets/gallery/natural-stellar-3d-complete.jpg)
 
 Natural · Stellar · 3D · Completa — synthetic demo data.
+
+### Explore at different scales
+
+The same synthetic domain cluster, from the overview to its inner nodes. Each image comes from zooming the page's camera on that cluster at «Completa» and waiting for the render to stabilise; nothing is cropped or enlarged. Magnifications are relative to the fitted overview and recorded in the manifest.
+
+[![Natural · Stellar · 2D · Completa · intermediate zoom](docs/assets/gallery/natural-stellar-2d-complete-zoom-mid.jpg)](docs/assets/gallery/natural-stellar-2d-complete-zoom-mid.jpg)
+
+Natural · Stellar · 2D · Completa, about 2× closer: the cluster among its neighbours, with individual nodes already distinguishable — synthetic demo data.
+
+[![Natural · Stellar · 2D · Completa · deep zoom](docs/assets/gallery/natural-stellar-2d-complete-zoom-deep.jpg)](docs/assets/gallery/natural-stellar-2d-complete-zoom-deep.jpg)
+
+Natural · Stellar · 2D · Completa, about 12× closer: inside the cluster, individual nodes and the relations converging on its hub — synthetic demo data.
+
+[![Natural · Stellar · 3D · Completa · intermediate zoom](docs/assets/gallery/natural-stellar-3d-complete-zoom-mid.jpg)](docs/assets/gallery/natural-stellar-3d-complete-zoom-mid.jpg)
+
+Natural · Stellar · 3D · Completa, about 3× closer: the same cluster and the relations that reach it — synthetic demo data.
+
+[![Natural · Stellar · 3D · Completa · deep zoom](docs/assets/gallery/natural-stellar-3d-complete-zoom-deep.jpg)](docs/assets/gallery/natural-stellar-3d-complete-zoom-deep.jpg)
+
+Natural · Stellar · 3D · Completa, about 11× closer: inside the cluster, its brightest nodes within dense relations — synthetic demo data.
 
 ### Other topologies at «Completa» (experimental Geometry Lab)
 
@@ -77,24 +97,24 @@ The following captures also use synthetic demo data. Counts are the values recor
 
 | Gallery view | Time to «Completa» |
 |---|---:|
-| Natural · 2D | 5.1 s |
-| Natural · 3D | 3.8 s |
-| Canopy · 2D | 2.9 s |
-| Canopy · 3D | 2.9 s |
-| Sierpiński · 2D | 4.0 s |
-| Sierpiński · 3D | 3.2 s |
-| Llull · 2D | 3.9 s |
-| Llull · 3D | 3.1 s |
-| Julia · 2D | 5.7 s |
-| Julia · 3D | 5.1 s |
-| Neural · 3D · «Cervello» | 7.4 s |
-| Mycelium · 2D | 6.1 s |
-| «Esplorativa» · 3D | 2.9 s |
-| Natural · 2D · «Essenziale» | 1.7 s |
-| Natural · 2D · «Bilanciata» | 1.9 s |
-| Whole page | 3.9 s |
+| Natural · 2D | 4.5 s |
+| Natural · 3D | 3.1 s |
+| Canopy · 2D | 2.4 s |
+| Canopy · 3D | 2.4 s |
+| Sierpiński · 2D | 3.3 s |
+| Sierpiński · 3D | 2.7 s |
+| Llull · 2D | 3.3 s |
+| Llull · 3D | 2.7 s |
+| Julia · 2D | 5.3 s |
+| Julia · 3D | 4.7 s |
+| Neural · 3D · «Cervello» | 7.2 s |
+| Mycelium · 2D | 5.6 s |
+| «Esplorativa» · 3D | 2.7 s |
+| Natural · 2D · «Essenziale» | 1.5 s |
+| Natural · 2D · «Bilanciata» | 1.6 s |
+| Whole page | 3.2 s |
 
-In the paired captures, switching the same page from «Completa» to «Bilanciata» reached «completa» readiness (every requested node and edge drawn at full quality) in 1.6 s (2D) and 0.9 s (3D). Canopy, Sierpiński, Llull and Julia are experimental Geometry Lab topologies.
+In the paired captures, switching the same page from «Completa» to «Bilanciata» reached «completa» readiness (every requested node and edge drawn at full quality) in 1.4 s (2D) and 0.8 s (3D). Canopy, Sierpiński, Llull and Julia are experimental Geometry Lab topologies.
 
 ## Essential architecture
 
