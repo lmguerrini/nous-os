@@ -36,7 +36,7 @@ Notes and search can surface a claim while losing where it came from, when it ap
 
 The interface labels are Italian: «Essenziale» means Essential, «Bilanciata» means Balanced, «Completa» means Complete; «Attestata» means Attested and «Esplorativa» means Exploratory.
 
-The gallery uses invented demo data. Each overview is centred with its nodes filling about 85% of the frame's limiting dimension, measured from the drawn nodes rather than the background stars. Each pair is captured in the same page session and orientation, and each density is framed on its own nodes: Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds.
+The gallery uses invented demo data. Each overview is centred with its graph filling about 85% of the frame's limiting dimension, measured on what is drawn rather than on the background stars; Julia 3D is kept closer so that its relation bundles show. Each pair is captured in the same page session and orientation, and each density is framed on its own nodes: Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds.
 
 ### Natural · Stellar overviews
 
@@ -59,7 +59,7 @@ Natural · Stellar · 2D · Custom (2,000 nodes), centred on another cluster: al
 
 [![Natural · Stellar · 3D · Complete · one source and its proposals](docs/assets/gallery/natural-stellar-3d-complete-detail-source.jpg)](docs/assets/gallery/natural-stellar-3d-complete-detail-source.jpg)
 
-Natural · Stellar · 3D · Complete, rotated by a short drag and centred on one source: its 61 proposals around the source node and their relations.
+Natural · Stellar · 3D · Complete, rotated by a short drag and centred on one source: the source node, its 61 proposals (many overlapping at this distance) and their relations.
 
 ### Other topologies at Complete · experimental Geometry Lab
 
@@ -118,7 +118,7 @@ The command line and stdio JSON-RPC share an operation catalogue, and a proposal
 - **Known limit:** `npm --prefix ui run test:unit` fails from a clean clone in four document suites because generated evidence is absent. [Verification details](docs/VERIFICATION-AND-LIMITS.md)
 - **Known limits:** semantic tests need local ONNX checkpoints; Chromium is the only browser verified; touch, keyboard navigation inside the canvas, and screen readers are unverified. [Full list](docs/VERIFICATION-AND-LIMITS.md)
 - **Not certified:** GPU-backed browser evidence and visual acceptance are not CI checks; six visual acceptance criteria need human inspection.
-- **Other limits:** topology preconditions and certificates, clipping, density calibration, rendering stalls, and the remaining known constraints are listed in [Verification and limits](docs/VERIFICATION-AND-LIMITS.md).
+- **Other limits:** topology preconditions and certificates, clipping, density calibration, rendering stalls, guides that keep an earlier placement after a fit, and the remaining known constraints are listed in [Verification and limits](docs/VERIFICATION-AND-LIMITS.md).
 
 ## Repository layout
 
