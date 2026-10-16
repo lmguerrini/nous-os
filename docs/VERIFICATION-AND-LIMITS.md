@@ -32,7 +32,7 @@ The six assembly-strategy families were compared on a private evaluation corpus:
 These observations used a development build of the review page on a larger private dataset, whose content is not published.
 
 - In a run of the same 60-configuration node-size matrix, 54 configurations mounted: five 3D views were not certified within the 90-second probe, and 2D Julia with Indra and Neural was refused by design. No general performance conclusion follows from the timeouts.
-- 40 of the 54 kept every sampled node within 1% of its Complete radius across presets. The exceptions include 2D Canopy (61–92%, with the sparser presets drawing nodes larger), 3D Sierpiński, Llull and Julia with Indra (up to 23%), and residuals of 1.4–4.5% in other views.
+- 40 of the 54 kept every sampled node within 1% of its Complete radius across presets. The exceptions are 2D Canopy without Indra (61–92%, with the sparser presets drawing nodes larger); 3D Sierpiński, Llull and Julia, Stellar with Indra (up to 23%); and residuals of 1.4–4.5% in eight other 2D views without Indra.
 - After choosing Complete on a large 3D view, the density control and URL can update after the drawing completes.
 
 ## Known limits
