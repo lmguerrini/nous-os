@@ -7,7 +7,9 @@
 // (`node --experimental-strip-types demo/src/cli.ts synth --profile reference --seed 1 --out demo/out/reference`).
 //
 // Every item except `interface` enters the page's real fullscreen mode, keeps the fullscreen brand visible, and captures after stable full readiness. Density pairs
-// share a page session; detail items use real camera zoom in one session per morphology and projection.
+// share a page session. A `frame` setting centres the subject's drawn nodes (the whole graph, a root domain's descendants, or one node and its
+// descendants) and sizes them to a share of the frame's limiting dimension through the page's own camera state; set CAPTURE_FRAME_DEBUG=1 to
+// log each framing iteration.
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
@@ -65,29 +67,32 @@ const base = { indra: 'off', morphology: 'stellar', density: 'complete', reading
 export const GALLERY = [
   { id: 'natural-2d-complete', title: 'Natural · 2D · Completa', view: { ...base, rendering: '2d', topology: 'natural' } },
   { id: 'natural-3d-complete', title: 'Natural · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' } },
-  { id: 'canopy-2d-complete', title: 'Canopy · 2D · Completa', view: { ...base, rendering: '2d', topology: 'canopy-ifs' } },
-  { id: 'canopy-3d-complete', title: 'Canopy · 3D · Completa', view: { ...base, rendering: '3d', topology: 'canopy-ifs' } },
-  { id: 'sierpinski-2d-complete', title: 'Sierpiński · 2D · Completa', view: { ...base, rendering: '2d', topology: 'sierpinski' } },
-  { id: 'sierpinski-3d-complete', title: 'Sierpiński · 3D · Completa', view: { ...base, rendering: '3d', topology: 'sierpinski' } },
-  { id: 'llull-2d-complete', title: 'Llull · 2D · Completa', view: { ...base, rendering: '2d', topology: 'circular-combinatorial' } },
-  { id: 'llull-3d-complete', title: 'Llull · 3D · Completa', view: { ...base, rendering: '3d', topology: 'circular-combinatorial' } },
-  { id: 'julia-2d-complete', title: 'Julia · 2D · Completa', view: { ...base, rendering: '2d', topology: 'julia' } },
+  { id: 'canopy-2d-complete', title: 'Canopy · 2D · Completa', view: { ...base, rendering: '2d', topology: 'canopy-ifs' }, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'canopy-3d-complete', title: 'Canopy · 3D · Completa', view: { ...base, rendering: '3d', topology: 'canopy-ifs' }, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'sierpinski-2d-complete', title: 'Sierpiński · 2D · Completa', view: { ...base, rendering: '2d', topology: 'sierpinski' }, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'sierpinski-3d-complete', title: 'Sierpiński · 3D · Completa', view: { ...base, rendering: '3d', topology: 'sierpinski' }, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'llull-2d-complete', title: 'Llull · 2D · Completa', view: { ...base, rendering: '2d', topology: 'circular-combinatorial' }, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'llull-3d-complete', title: 'Llull · 3D · Completa', view: { ...base, rendering: '3d', topology: 'circular-combinatorial' }, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'julia-2d-complete', title: 'Julia · 2D · Completa', view: { ...base, rendering: '2d', topology: 'julia' }, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'julia-3d-complete', title: 'Julia · 3D · Completa', view: { ...base, rendering: '3d', topology: 'julia' }, camera: [{ op: 'zoomAt', x: 0.5, y: 0.5, steps: 3 }] },
   { id: 'neural-3d-brain', title: 'Neural · 3D · Completa · Cervello', view: { ...base, morphology: 'neural', brain: true, rendering: '3d', topology: 'natural' } },
   { id: 'mycelium-2d-complete', title: 'Mycelium · 2D · Completa', view: { ...base, morphology: 'mycelium', rendering: '2d', topology: 'natural' } },
   { id: 'exploratory-3d-complete', title: 'Esplorativa connections · 3D · Completa', view: { ...base, reading: 'exploratory', rendering: '3d', topology: 'natural' } },
   { id: 'natural-2d-essential', title: 'Natural · 2D · Essenziale', view: { ...base, density: 'essential', rendering: '2d', topology: 'natural' } },
   { id: 'natural-2d-balanced', title: 'Natural · 2D · Bilanciata', view: { ...base, density: 'balanced', rendering: '2d', topology: 'natural' } },
-  { id: 'natural-stellar-2d-complete', title: 'Natural · Stellar · 2D · Completa', view: { ...base, rendering: '2d', topology: 'natural' }, paired: true },
-  { id: 'natural-stellar-2d-balanced', title: 'Natural · Stellar · 2D · Bilanciata', view: { ...base, density: 'balanced', rendering: '2d', topology: 'natural' }, paired: true },
-  { id: 'natural-stellar-3d-complete', title: 'Natural · Stellar · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' }, paired: true },
-  { id: 'natural-stellar-3d-balanced', title: 'Natural · Stellar · 3D · Bilanciata', view: { ...base, density: 'balanced', rendering: '3d', topology: 'natural' }, paired: true },
-  { id: 'natural-stellar-2d-complete-detail-links', title: 'Natural · Stellar · 2D · Completa · small cluster and its links', view: { ...base, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', camera: [{ op: 'zoomAnchor', anchor: 'domain:d1', steps: 7 }] },
-  { id: 'natural-stellar-2d-complete-detail-cluster', title: 'Natural · Stellar · 2D · Completa · nodes of one cluster', view: { ...base, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', camera: [{ op: 'zoomAnchor', anchor: 'domain:d6', steps: 8 }] },
-  { id: 'natural-stellar-3d-complete-detail-oblique', title: 'Natural · Stellar · 3D · Completa · oblique view of one cluster', view: { ...base, rendering: '3d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '3d', camera: [{ op: 'orbit', dx: 120, dy: -50, steps: 10 }, { op: 'zoomAnchor', anchor: 'domain:d6', steps: 30 }] },
-  { id: 'natural-stellar-3d-complete-detail-cluster', title: 'Natural · Stellar · 3D · Completa · nodes of one cluster', view: { ...base, rendering: '3d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '3d', camera: [{ op: 'zoomAnchor', anchor: 'domain:d8', steps: 34 }] },
+  { id: 'natural-stellar-2d-complete', title: 'Natural · Stellar · 2D · Completa', view: { ...base, rendering: '2d', topology: 'natural' }, paired: true, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'natural-stellar-2d-balanced', title: 'Natural · Stellar · 2D · Bilanciata', view: { ...base, density: 'balanced', rendering: '2d', topology: 'natural' }, paired: true, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'natural-stellar-3d-complete', title: 'Natural · Stellar · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' }, paired: true, frame: { subject: 'all', occupancy: 0.85 } },
+  { id: 'natural-stellar-3d-balanced', title: 'Natural · Stellar · 3D · Bilanciata', view: { ...base, density: 'balanced', rendering: '3d', topology: 'natural' }, paired: true, frame: { subject: 'all', occupancy: 0.85 } },
+  // Close-ups (D-119): centred on one cluster. At Balanced a cluster's nodes are spread across the compact Balanced layout, so 2D uses
+  // Custom with 2,000 nodes, where each root domain keeps its own disc; in 3D, Custom draws those nodes faint among long relations,
+  // so 3D stays at Complete on one source and its proposals.
+  { id: 'natural-stellar-2d-custom-detail-links', title: 'Natural · Stellar · 2D · Custom 2000 · small cluster and its links', view: { ...base, density: 'custom', customNodes: 2000, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', camera: [], frame: { subject: { domains: ['d1'] }, occupancy: 0.7 } },
+  { id: 'natural-stellar-2d-custom-detail-cluster', title: 'Natural · Stellar · 2D · Custom 2000 · nodes of one cluster', view: { ...base, density: 'custom', customNodes: 2000, rendering: '2d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '2d', camera: [], frame: { subject: { domains: ['d8'] }, occupancy: 0.7 } },
+  { id: 'natural-stellar-3d-complete-detail-source', title: 'Natural · Stellar · 3D · Completa · one source and its proposals', view: { ...base, rendering: '3d', topology: 'natural' }, detail: true, morphology: 'stellar', dimension: '3d', camera: [{ op: 'orbit', dx: 120, dy: -50, steps: 10 }], frame: { subject: { under: ['source:n061'] }, occupancy: 0.65 } },
   { id: 'interface', title: 'The whole page: Natural · 3D · Completa', view: { ...base, rendering: '3d', topology: 'natural' }, fullPage: true },
 ];
+
 
 const stateUrl = (origin, view) => `${origin}/#experimental=fractal&view2=` + encodeURIComponent(JSON.stringify({ schema: 2, ...view }));
 
@@ -220,9 +225,146 @@ async function resolveCameraAnchor(page, rule, itemId) {
   return anchor;
 }
 
-async function applyCameraProgram(page, program, dimension, itemId) {
+// A subject is 'all', { domains: [...] } (the nodes descending from those root domains) or { under: [...] } (those nodes and their
+// descendants, for example one source and its proposals).
+function subjectNodeIds(subject, hierarchy) {
+  if (subject === 'all') return null;
+  if (subject && Array.isArray(subject.under) && subject.under.length) {
+    const roots = new Set(subject.under);
+    return [...hierarchy.ancestors].filter(([, chain]) => chain.some(id => roots.has(id))).map(([id]) => id);
+  }
+  if (!subject || !Array.isArray(subject.domains) || !subject.domains.length)
+    throw new Error('frame subject must be all, a non-empty domains list or a non-empty under list');
+  const domains = new Set(subject.domains);
+  return [...hierarchy.domains].filter(([, memberships]) => memberships.some(domain => domains.has(domain))).map(([id]) => id);
+}
+
+async function measureFraming(page, subject = 'all', selectedIds = null) {
+  return page.evaluate(({ subject, selectedIds }) => {
+    const witness = window.__d067?.witness?.();
+    const viewportElement = document.getElementById('viewport');
+    const rect = viewportElement?.getBoundingClientRect();
+    if (!witness || !rect) throw new Error('framing witness or fullscreen viewport is unavailable');
+    const selected = selectedIds === null ? null : new Set(selectedIds);
+    // `__d067.witness()` lists every drawn node with its core radius; a painted-id list is used only when the witness carries one.
+    const painted = Array.isArray(witness.paintedNodeIds) && witness.paintedNodeIds.length ? new Set(witness.paintedNodeIds) : null;
+    const candidates = Object.entries(witness.nodeViewport ?? {}).filter(([id, point]) => (!painted || painted.has(id))
+      && (!selected || selected.has(id)) && Number.isFinite(point?.x) && Number.isFinite(point?.y));
+    // A subject turned out of the 3D frustum reports a zero radius; its projected centres still say where it is.
+    const drawn = candidates.filter(([, point]) => (point?.radius ?? 0) > 0);
+    const nodes = drawn.length ? drawn : candidates;
+    if (!nodes.length) throw new Error(`framing subject ${JSON.stringify(subject)} has no projected nodes`);
+    // In 3D a node near the camera can report a perspective footprint far larger than what is drawn (956 px was seen), so the
+    // 3D bounds use node centres; the 2D radius is the drawn ink radius and is kept.
+    const perspective = String(window.__d082?.render?.()?.view ?? '').includes('/3d/');
+    const cores = nodes.map(([id, point]) => ({ id, x: point.x - rect.left, y: point.y - rect.top, r: perspective ? 0 : point.radius ?? 0 }));
+    const left = Math.min(...cores.map(node => node.x - node.r)), top = Math.min(...cores.map(node => node.y - node.r));
+    const right = Math.max(...cores.map(node => node.x + node.r)), bottom = Math.max(...cores.map(node => node.y + node.r));
+    const width = rect.width, height = rect.height, bboxWidth = right - left, bboxHeight = bottom - top;
+    const occupancy = { x: bboxWidth / width, y: bboxHeight / height };
+    return { subject, count: cores.length, drawnOnly: drawn.length > 0, bounds: perspective ? 'node centres' : 'node centres ± drawn radius',
+      bbox: { left, top, right, bottom, width: bboxWidth, height: bboxHeight },
+      viewport: { width, height }, occupancy, limiting: occupancy.x >= occupancy.y ? 'x' : 'y',
+      centreOffset: { x: (left + right) / 2 - width / 2, y: (top + bottom) / 2 - height / 2 },
+      clipped: cores.filter(node => node.x - node.r < 0 || node.y - node.r < 0
+        || node.x + node.r > width || node.y + node.r > height).length };
+  }, { subject, selectedIds });
+}
+
+// Pans through the page's own camera state. A drag carries inertia in 2D (a 60 px drag moved the content about 105 px), so the
+// subject's centre is moved by solving the measured response of its on-screen centre to the camera's x and y.
+async function measurePanResponse(page, subject, ids, base) {
+  const state = await page.evaluate(() => window.__d067.cameraState());
+  const step = 0.01 * (state.ratio ?? 1);
+  const probe = async key => {
+    await page.evaluate(({ state, key, step }) => window.__d067.restoreCameraState({ ...state, [key]: state[key] + step }), { state, key, step });
+    await stableFullReadiness(page);
+    const moved = await measureFraming(page, subject, ids);
+    return { x: (moved.centreOffset.x - base.centreOffset.x) / step, y: (moved.centreOffset.y - base.centreOffset.y) / step };
+  };
+  const alongX = await probe('x'), alongY = await probe('y');
+  await page.evaluate(state => window.__d067.restoreCameraState(state), state);
+  await stableFullReadiness(page);
+  const determinant = alongX.x * alongY.y - alongY.x * alongX.y;
+  if (!(Math.abs(determinant) > 1e-9)) throw new Error('camera state x/y has no measurable effect on the subject');
+  return { alongX, alongY, determinant, step };
+}
+
+async function applyFrame(page, setting, dimension, itemId, idDomains) {
+  const subject = setting.subject ?? 'all', target = setting.occupancy ?? 0.85;
+  const tolerance = setting.tolerance ?? 0.03, maxIterations = setting.maxIterations ?? 12;
+  if (!(target > 0 && target < 1) || !(tolerance >= 0) || !Number.isInteger(maxIterations) || maxIterations < 1)
+    throw new Error(`${itemId}: invalid frame occupancy, tolerance, or maxIterations`);
+  const ids = subjectNodeIds(subject, idDomains), iterations = [];
+  const effectiveTarget = target;
+  let response = null, nearRatio = null, farRatio = null;
+  let measurement = await measureFraming(page, subject, ids);
+  const zoomMetric = async () => {
+    const snapshot = await cameraSnapshot(page);
+    if (dimension === '3d') {
+      const p = snapshot.pose?.position, t = snapshot.pose?.target;
+      return { ratio: snapshot.state?.ratio ?? null, distance: p?.length === 3 && t?.length === 3
+        ? Math.hypot(p[0] - t[0], p[1] - t[1], p[2] - t[2]) : null };
+    }
+    return { ratio: snapshot.state?.ratio ?? null };
+  };
+  for (let index = 0; index < maxIterations; index++) {
+    const entry = { iteration: index + 1, measurementBefore: measurement, cameraBefore: await zoomMetric(),
+      pan: { dx: 0, dy: 0 }, zoom: null };
+    const offset = measurement.centreOffset;
+    if (Math.abs(offset.x) > measurement.viewport.width * 0.005 || Math.abs(offset.y) > measurement.viewport.height * 0.005) {
+      response ??= await measurePanResponse(page, subject, ids, measurement);
+      const { alongX, alongY, determinant } = response;
+      const dx = (-offset.x * alongY.y + offset.y * alongY.x) / determinant;
+      const dy = (-offset.y * alongX.x + offset.x * alongX.y) / determinant;
+      const state = await page.evaluate(() => window.__d067.cameraState());
+      await page.evaluate(({ state, dx, dy }) => window.__d067.restoreCameraState({ ...state, x: state.x + dx, y: state.y + dy }), { state, dx, dy });
+      await stableFullReadiness(page);
+      entry.pan = { method: 'page camera state', offsetBefore: offset, cameraDelta: { x: dx, y: dy } };
+      measurement = await measureFraming(page, subject, ids);
+      // A large pan changes what the zoom bracket was measured on; a subject still off centre cannot be judged for size.
+      if (Math.abs(offset.x) > measurement.viewport.width * 0.05 || Math.abs(offset.y) > measurement.viewport.height * 0.05) nearRatio = farRatio = null;
+      if (Math.abs(measurement.centreOffset.x) > measurement.viewport.width * 0.005
+        || Math.abs(measurement.centreOffset.y) > measurement.viewport.height * 0.005) {
+        entry.cameraAfter = await zoomMetric();
+        entry.measurementAfter = measurement;
+        iterations.push(entry);
+        continue;
+      }
+    }
+    const occupancy = Math.max(measurement.occupancy.x, measurement.occupancy.y);
+    const tooNear = occupancy > target + tolerance || measurement.clipped > 0, tooFar = occupancy < target - tolerance;
+    if (tooNear || tooFar) {
+      // A larger ratio is farther away. Step in proportion, at most x2 either way, and bisect once the band is bracketed: in
+      // perspective a cluster's on-screen size grows faster than the dolly as the camera nears it, so one proportional jump overshoots.
+      const state = await page.evaluate(() => window.__d067.cameraState());
+      if (tooNear) nearRatio = nearRatio === null ? state.ratio : Math.max(nearRatio, state.ratio);
+      else farRatio = farRatio === null ? state.ratio : Math.min(farRatio, state.ratio);
+      let next = state.ratio * Math.min(2, Math.max(0.5, occupancy / target));
+      if (nearRatio !== null && farRatio !== null && !(next > nearRatio && next < farRatio)) next = Math.sqrt(nearRatio * farRatio);
+      const before = await zoomMetric();
+      await page.evaluate(({ state, next }) => window.__d067.restoreCameraState({ ...state, ratio: next }), { state, next });
+      await stableFullReadiness(page);
+      measurement = await measureFraming(page, subject, ids);
+      entry.zoom = { ratioFrom: state.ratio, ratioTo: next, bracket: { near: nearRatio, far: farRatio }, before, after: await zoomMetric() };
+      response = null;
+    }
+    entry.cameraAfter = await zoomMetric();
+    entry.measurementAfter = measurement;
+    iterations.push(entry);
+    if (process.env.CAPTURE_FRAME_DEBUG) console.error(`${itemId} frame ${index + 1}: n=${measurement.count} occ=${measurement.occupancy.x.toFixed(3)}x${measurement.occupancy.y.toFixed(3)} off=${measurement.centreOffset.x.toFixed(1)},${measurement.centreOffset.y.toFixed(1)} clipped=${measurement.clipped} ratio=${entry.cameraAfter.ratio} distance=${entry.cameraAfter.distance ?? ''}`);
+    const finalOccupancy = Math.max(measurement.occupancy.x, measurement.occupancy.y);
+    if (Math.abs(finalOccupancy - effectiveTarget) <= tolerance && measurement.clipped === 0
+      && Math.abs(measurement.centreOffset.x) <= measurement.viewport.width * 0.005
+      && Math.abs(measurement.centreOffset.y) <= measurement.viewport.height * 0.005)
+      return { program: { op: 'frame', subject, occupancy: target, tolerance, maxIterations }, effectiveTarget, iterations, final: measurement };
+  }
+  throw new Error(`${itemId}: frame did not reach target after ${maxIterations} iterations; last measurement ${JSON.stringify(measurement)}`);
+}
+
+async function applyCameraProgram(page, program, dimension, itemId, idDomains) {
   if (!Array.isArray(program)) throw new Error(`${itemId}: camera program must be an array`);
-  const before = await cameraSnapshot(page), zooms = [], orbits = [];
+  const before = await cameraSnapshot(page), zooms = [], orbits = [], frames = [];
   for (let index = 0; index < program.length; index++) {
     const operation = program[index], operationBefore = await cameraSnapshot(page);
     const validateSteps = () => {
@@ -286,10 +428,12 @@ async function applyCameraProgram(page, program, dimension, itemId) {
       const operationAfter = await cameraSnapshot(page);
       zooms.push({ operation: index, ...zoomFromCameras(operationBefore, operationAfter, dimension, itemId), anchor: operation.anchor,
         anchorId: anchor.id, anchorAtStart: anchor.position });
+    } else if (operation?.op === 'frame') {
+      frames.push({ operation: index, ...(await applyFrame(page, operation, dimension, itemId, idDomains)) });
     } else throw new Error(`${itemId}: camera operation ${index} has unsupported op '${operation?.op}'`);
   }
   const after = await cameraSnapshot(page);
-  return { program: JSON.parse(JSON.stringify(program)), before, after, zooms,
+  return { program: JSON.parse(JSON.stringify(program)), before, after, zooms, ...(frames.length ? { frames } : {}),
     ...(orbits.length ? { orbits, orbit: { before: before.state?.orbit ?? null, after: after.state?.orbit ?? null } } : {}) };
 }
 
@@ -399,10 +543,26 @@ function sameDirectory(a, b) {
 }
 
 async function main() {
-  const manifest = JSON.parse(await readFile(path.join(DATASET, 'manifest.json'), 'utf8'));
   if (args.variants === true) throw new Error('--variants needs a JSON file path');
   if (args.variants !== undefined && sameDirectory(OUT, GALLERY_DIR))
     throw new Error('--variants needs --out outside docs/assets/gallery, so variant captures never overwrite the gallery');
+  const manifest = JSON.parse(await readFile(path.join(DATASET, 'manifest.json'), 'utf8'));
+  const datasetIndex = JSON.parse(await readFile(path.join(DATASET, 'index.json'), 'utf8'));
+  // A framing subject's domain is the root its hierarchy descends from: the page places each root domain's descendants in one
+  // cluster, while a node's `domains` field can also name other domains (nine of d1's 153 nodes descend from other roots).
+  const datasetNodes = new Map(datasetIndex.nodes.map(node => [node.id, node]));
+  const ancestorsOf = node => {
+    const chain = [];
+    for (let current = node, hops = 0; current && hops < 64; current = datasetNodes.get(current.parent), hops++) chain.push(current);
+    return chain;
+  };
+  const rootDomain = chain => chain.find(node => node.kind === 'domain')?.id.replace(/^domain:/, '') ?? null;
+  const idDomains = { ancestors: new Map(), domains: new Map() };
+  for (const node of datasetIndex.nodes) {
+    const chain = ancestorsOf(node);
+    idDomains.ancestors.set(node.id, chain.map(item => item.id));
+    idDomains.domains.set(node.id, rootDomain(chain) ? [rootDomain(chain)] : node.domains ?? []);
+  }
   const variants = typeof args.variants === 'string'
     ? JSON.parse(await readFile(path.resolve(ROOT, args.variants), 'utf8')) : null;
   if (variants !== null) {
@@ -417,6 +577,13 @@ async function main() {
       if (!GALLERY.some(item => item.id === variant.base)) throw new Error(`--variants item ${variant.name}: unknown base '${variant.base}'`);
       if (typeof variant.title !== 'string' || !Array.isArray(variant.camera))
         throw new Error(`--variants item ${variant.name} needs title and camera array`);
+      if (variant.view !== undefined && (!variant.view || typeof variant.view !== 'object' || Array.isArray(variant.view)
+        || Object.keys(variant.view).some(key => !['density', 'customNodes'].includes(key))))
+        throw new Error(`--variants item ${variant.name} view override may contain only density and customNodes`);
+      if (variant.view?.density !== undefined && !['balanced', 'custom', 'complete'].includes(variant.view.density))
+        throw new Error(`--variants item ${variant.name} has unsupported density`);
+      if (variant.view?.customNodes !== undefined && (!Number.isSafeInteger(variant.view.customNodes) || variant.view.customNodes < 1))
+        throw new Error(`--variants item ${variant.name} customNodes must be a positive safe integer`);
     }
   }
   let previousGallery = null;
@@ -437,7 +604,19 @@ async function main() {
         return { view: r?.view ?? null, quality: r?.quality ?? null, nodesVisible: s?.nodes?.visible ?? null,
           nodesTotal: s?.nodes?.total ?? null, edgesDrawn: s?.edges?.drawn ?? null, edgesTotal: s?.edges?.total ?? null };
       });
-    const saveRecord = async (page, item, camera, dimensions, timings, pageErrors, state = null, pairRule = null, detail = null, fullscreenInfo = null) => {
+    const assertRequestedDensity = async (page, view, itemId) => {
+      const requested = view.density ?? 'complete', requestedCustomNodes = requested === 'custom' ? view.customNodes ?? null : null;
+      const committed = await page.evaluate(() => ({ density: window.__d067?.density?.() ?? null,
+        view: window.__d082?.render?.()?.view ?? null, custom: window.__d081?.status?.()?.custom ?? null }));
+      if (committed.density !== requested || !committed.view?.includes(`/${requested}/`))
+        throw new Error(`${itemId}: requested density ${requested}, committed ${committed.density} in ${committed.view}`);
+      const committedCustomNodes = committed.custom?.requested ?? null;
+      if (requested === 'custom' && requestedCustomNodes !== null && committedCustomNodes !== null
+        && committedCustomNodes !== requestedCustomNodes)
+        throw new Error(`${itemId}: requested ${requestedCustomNodes} custom nodes, committed ${committedCustomNodes}`);
+      return { requested, committed: committed.density, committedView: committed.view, requestedCustomNodes, committedCustomNodes };
+    };
+    const saveRecord = async (page, item, camera, dimensions, timings, pageErrors, state = null, pairRule = null, detail = null, fullscreenInfo = null, framing = null, density = null) => {
       const record = {
         id: item.id, title: item.title, file: `${item.id}.jpg`, view: item.view, state: state ?? await readState(page),
         completeMs: timings.completeMs, densitySwitchMs: timings.densitySwitchMs,
@@ -448,6 +627,8 @@ async function main() {
         ...(fullscreenInfo ? { fullscreen: true, brandRect: fullscreenInfo.brandRect } : {}),
         ...(pairRule ? { pairRule } : {}),
         ...(detail ? { detail } : {}),
+        ...(framing ? { framing } : {}),
+        density: density ?? await assertRequestedDensity(page, item.view, item.id),
       };
       records.push(record);
       return record;
@@ -469,29 +650,54 @@ async function main() {
         const completeMs = await waitForComplete(page, navigationStartedAt);
         await installCaptureStyle(page, true);
         await enterFullscreenAndFit(page, full.id);
-        const complete = await stableFullReadiness(page);
-        const recordedCamera = await cameraSnapshot(page);
-        if (!recordedCamera.state) throw new Error(`${full.id}: page did not expose cameraState()`);
+        let complete = await stableFullReadiness(page);
+        const completeDensity = await assertRequestedDensity(page, full.view, full.id);
         const pairRule = "same page session and orientation; each density framed by the page's fit()";
-        const completeCapture = requested.includes(full) ? {
-          fullscreenInfo: await assertFullscreenCapture(page, full.id),
-          dimensions: await captureJpeg(page, path.join(OUT, `${full.id}.jpg`), true), state: await readState(page),
-        } : null;
+        let completeCapture = null, completeFrame = null, completeCamera = await cameraSnapshot(page);
+        if (full.frame) {
+          completeFrame = await applyFrame(page, full.frame, dimension, full.id, idDomains);
+          await page.mouse.move(-40, -40);
+          await page.waitForTimeout(300);
+          complete = await stableFullReadiness(page);
+          completeCamera = await cameraSnapshot(page);
+        }
+        if (!completeCamera.state) throw new Error(`${full.id}: page did not expose cameraState()`);
+        if (requested.includes(full)) {
+          const fullscreenInfo = await assertFullscreenCapture(page, full.id);
+          await assertCameraUnchanged(page, completeCamera, full.id);
+          const framingMeasurement = await measureFraming(page, full.frame?.subject ?? 'all',
+            subjectNodeIds(full.frame?.subject ?? 'all', idDomains));
+          const dimensions = await captureJpeg(page, path.join(OUT, `${full.id}.jpg`), true);
+          completeCapture = { fullscreenInfo, dimensions, state: await readState(page),
+            framing: { program: full.frame ? { op: 'frame', ...full.frame } : null, result: completeFrame, measurement: framingMeasurement } };
+        }
         const densitySwitchStartedAt = Date.now();
         await page.evaluate(() => window.__d067.setDensity('balanced'));
         const densitySwitchMs = await waitForComplete(page, densitySwitchStartedAt, '/balanced/');
         await fitAfterResize(page);
-        const balancedReady = await stableFullReadiness(page);
+        let balancedReady = await stableFullReadiness(page);
+        const balancedDensity = await assertRequestedDensity(page, balanced.view, balanced.id);
+        let balancedFrame = null;
+        if (balanced.frame) {
+          balancedFrame = await applyFrame(page, balanced.frame, dimension, balanced.id, idDomains);
+          await page.mouse.move(-40, -40);
+          await page.waitForTimeout(300);
+          balancedReady = await stableFullReadiness(page);
+        }
         const balancedCamera = await cameraSnapshot(page);
-        assertSameOrientation(dimension, recordedCamera, balancedCamera);
-        const pairCamera = { completa: recordedCamera, bilanciata: balancedCamera };
+        assertSameOrientation(dimension, completeCamera, balancedCamera);
+        const pairCamera = { completa: completeCamera, bilanciata: balancedCamera };
         if (completeCapture) pageRecords.push(await saveRecord(page, full, pairCamera, completeCapture.dimensions,
-          { completeMs, densitySwitchMs: null, stableMs: complete.stableMs }, pageErrors, completeCapture.state, pairRule, null, completeCapture.fullscreenInfo));
+          { completeMs, densitySwitchMs: null, stableMs: complete.stableMs }, pageErrors, completeCapture.state, pairRule, null, completeCapture.fullscreenInfo, completeCapture.framing, completeDensity));
         if (requested.includes(balanced)) {
           const fullscreenInfo = await assertFullscreenCapture(page, balanced.id);
+          await assertCameraUnchanged(page, balancedCamera, balanced.id);
+          const framingMeasurement = await measureFraming(page, balanced.frame?.subject ?? 'all',
+            subjectNodeIds(balanced.frame?.subject ?? 'all', idDomains));
           const dimensions = await captureJpeg(page, path.join(OUT, `${balanced.id}.jpg`), true);
           pageRecords.push(await saveRecord(page, balanced, pairCamera, dimensions,
-            { completeMs: null, densitySwitchMs, stableMs: balancedReady.stableMs }, pageErrors, null, pairRule, null, fullscreenInfo));
+            { completeMs: null, densitySwitchMs, stableMs: balancedReady.stableMs }, pageErrors, null, pairRule, null, fullscreenInfo,
+            { program: balanced.frame ? { op: 'frame', ...balanced.frame } : null, result: balancedFrame, measurement: framingMeasurement }, balancedDensity));
         }
       } finally {
         await context.close();
@@ -514,10 +720,12 @@ async function main() {
         await installCaptureStyle(page, true);
         await enterFullscreenAndFit(page, item.id);
         await stableFullReadiness(page);
+        const density = await assertRequestedDensity(page, item.view, item.id);
         const cameraAtFit = await cameraSnapshot(page);
-        const program = item.camera ?? (item.wheelSteps
+        const baseProgram = item.camera ?? (item.wheelSteps
           ? [{ op: 'zoomAnchor', anchor: 'centre-domain', steps: item.wheelSteps }] : []);
-        const execution = await applyCameraProgram(page, program, dimension, item.id);
+        const program = [...baseProgram, ...(item.frame ? [{ op: 'frame', ...item.frame }] : [])];
+        const execution = await applyCameraProgram(page, program, dimension, item.id, idDomains);
         await page.mouse.move(-40, -40);
         await page.waitForTimeout(300);
         let ready = await stableFullReadiness(page);
@@ -552,6 +760,8 @@ async function main() {
         await assertCameraUnchanged(page, cameraAtCapture, item.id);
         const reveal = await page.evaluate(() => window.__d074?.revealWitness?.() ?? null);
         const measuredZoom = zoomFromCameras(cameraAtFit, cameraAtCapture, dimension, item.id);
+        const framingMeasurement = await measureFraming(page, item.frame?.subject ?? 'all',
+          subjectNodeIds(item.frame?.subject ?? 'all', idDomains));
         const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), true);
         const firstAnchor = execution.zooms.find(zoom => zoom.anchorId);
         const detail = { anchorId: firstAnchor?.anchorId ?? null, anchorAtFit: firstAnchor?.anchorAtStart ?? null,
@@ -559,7 +769,8 @@ async function main() {
           revealZoom: Number.isFinite(reveal?.zoom) ? reveal.zoom : null,
           cameraAtFit, cameraAtCapture, tooltipFallbackUsed };
         pageRecords.push(await saveRecord(page, item, execution, dimensions,
-          { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, detail, fullscreenInfo));
+          { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, detail, fullscreenInfo,
+          { program: item.frame ? { op: 'frame', ...item.frame } : null, result: execution.frames?.at(-1) ?? null, measurement: framingMeasurement }, density));
       } finally {
         await context.close();
         for (const record of pageRecords) record.pageErrors = pageErrors.length;
@@ -570,6 +781,7 @@ async function main() {
       for (const variant of variants) {
         if (only && !only.has(variant.name)) continue;
         const baseItem = GALLERY.find(item => item.id === variant.base);
+        const variantView = { ...baseItem.view, ...(variant.view ?? {}) };
         const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DEVICE_SCALE_FACTOR, colorScheme: 'dark' });
         const page = await context.newPage();
         const pageErrors = [], pageRecords = [];
@@ -577,22 +789,26 @@ async function main() {
         page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
         try {
           const navigationStartedAt = Date.now();
-          await page.goto(stateUrl(server.origin, baseItem.view), { waitUntil: 'load' });
+          await page.goto(stateUrl(server.origin, variantView), { waitUntil: 'load' });
           const completeMs = await waitForComplete(page, navigationStartedAt);
           await installCaptureStyle(page, true);
           await enterFullscreenAndFit(page, variant.name);
           await stableFullReadiness(page);
-          const dimension = baseItem.view.rendering ?? '2d';
-          const camera = await applyCameraProgram(page, variant.camera, dimension, variant.name);
+          const density = await assertRequestedDensity(page, variantView, variant.name);
+          const dimension = variantView.rendering ?? '2d';
+          const camera = await applyCameraProgram(page, variant.camera, dimension, variant.name, idDomains);
           await page.mouse.move(-40, -40);
           await page.waitForTimeout(300);
           const ready = await stableFullReadiness(page);
           const fullscreenInfo = await assertFullscreenCapture(page, variant.name);
-          const item = { ...baseItem, id: variant.name, title: variant.title };
+          const item = { ...baseItem, id: variant.name, title: variant.title, view: variantView };
           await assertCameraUnchanged(page, camera.after, variant.name);
+          const variantSubject = variant.camera.filter(operation => operation.op === 'frame').at(-1)?.subject ?? 'all';
+          const framingMeasurement = await measureFraming(page, variantSubject, subjectNodeIds(variantSubject, idDomains));
           const dimensions = await captureJpeg(page, path.join(OUT, `${variant.name}.jpg`), true);
           pageRecords.push(await saveRecord(page, item, camera, dimensions,
-            { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, null, fullscreenInfo));
+            { completeMs, densitySwitchMs: null, stableMs: ready.stableMs }, pageErrors, null, null, null, fullscreenInfo,
+            { program: variant.camera.filter(operation => operation.op === 'frame'), result: camera.frames ?? null, measurement: framingMeasurement }, density));
         } finally {
           await context.close();
           for (const record of pageRecords) record.pageErrors = pageErrors.length;
@@ -620,19 +836,25 @@ async function main() {
           await installCaptureStyle(page, fullWindow);
           if (fullWindow) await enterFullscreenAndFit(page, item.id);
           let settled = await stableFullReadiness(page);
+          const density = await assertRequestedDensity(page, item.view, item.id);
           let camera = { recorded: await cameraSnapshot(page), restored: null };
-          if (item.camera) {
-            camera = await applyCameraProgram(page, item.camera, item.view.rendering ?? '2d', item.id);
+          const program = [...(item.camera ?? []), ...(item.frame ? [{ op: 'frame', ...item.frame }] : [])];
+          if (program.length) {
+            camera = await applyCameraProgram(page, program, item.view.rendering ?? '2d', item.id, idDomains);
             await page.mouse.move(-40, -40);
             await page.waitForTimeout(300);
             settled = await stableFullReadiness(page);
           }
           const fullscreenInfo = fullWindow ? await assertFullscreenCapture(page, item.id) : null;
           if (camera.restored === null) camera.restored = camera.recorded;
-          if (item.camera) await assertCameraUnchanged(page, camera.after, item.id);
+          await assertCameraUnchanged(page, program.length ? camera.after : camera.recorded, item.id);
+          const framingMeasurement = await measureFraming(page, item.frame?.subject ?? 'all',
+            subjectNodeIds(item.frame?.subject ?? 'all', idDomains));
           const dimensions = await captureJpeg(page, path.join(OUT, `${item.id}.jpg`), false, item.fullPage === true);
           pageRecords.push(await saveRecord(page, item, camera, dimensions,
-            { completeMs, densitySwitchMs: null, stableMs: settled.stableMs }, pageErrors, null, null, null, fullscreenInfo));
+            { completeMs, densitySwitchMs: null, stableMs: settled.stableMs }, pageErrors, null, null, null, fullscreenInfo,
+            { program: item.frame ? { op: 'frame', ...item.frame } : null,
+              result: camera.frames?.at(-1) ?? null, measurement: framingMeasurement }, density));
         } finally {
           await context.close();
           for (const record of pageRecords) record.pageErrors = pageErrors.length;
