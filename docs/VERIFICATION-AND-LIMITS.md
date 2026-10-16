@@ -20,16 +20,19 @@ The two excluded semantic modules need local ONNX checkpoints; resolution is loc
 
 The six assembly-strategy families were compared on a private evaluation corpus: five were measured and none beat the plain strategy, which is the default; the sixth could not be measured on that corpus and is recorded as unmeasured rather than as a tie (see `DEFAULT_STRATEGY` in [`src/nous_os/compile.py`](../src/nous_os/compile.py)). Evaluation distinguishes including a source pair from including the cited passages. Retrieval arms are compared separately in [retrieval measurement](CAP-15-RETRIEVAL.md).
 
-## Measured on the synthetic demo
+## Measured on synthetic data
 
 - In a browser matrix on the demo dataset (five topologies × three morphologies × 2D/3D × Indra on/off, 60 configurations, 5 to 21 sampled nodes each, identical camera), all 60 configurations reached Complete, and 46 kept every sampled node within 1% of its Complete radius across presets. The exceptions include 2D Canopy without Indra (up to about twice the Complete size); 3D Sierpiński, Llull and Canopy, Stellar with Indra (up to 23%); 2D Natural and Canopy with Indra (up to 57% and 11% for one sampled node each); 3D Natural Stellar without Indra (up to 7.7%, because layout depth differs); and 2D Natural Mycelium without Indra (1.4%). Full details are in [gallery measurements](GALLERY-AND-MEASUREMENTS.md).
 - In that same matrix, 440 of 561 sampled clicks (78%) selected the intended node; in dense views a click can select a neighbouring node.
-- 3D Complete was reached in a browser in all five topologies on larger synthetic datasets of 15,000 and 20,000 nodes (up to 25,111 drawn relations); the published demo profiles do not generate these sizes.
+- On one machine, 3D Complete was also reached in a browser in all five topologies on larger synthetic datasets of 15,000 and 20,000 nodes (up to 25,111 drawn relations); the published demo profiles do not generate these sizes.
 - Gallery render times and density counts are single-machine synthetic demo measurements, documented in [gallery measurements](GALLERY-AND-MEASUREMENTS.md).
 
 ## Observed on a private dataset
 
-- Five 3D views were not certified within the 90-second probe. No general performance conclusion follows from that observation.
+These observations used a development build of the review page on a larger private dataset, whose content is not published.
+
+- In a run of the same 60-configuration node-size matrix, 54 configurations mounted: five 3D views were not certified within the 90-second probe, and 2D Julia with Indra and Neural was refused by design. No general performance conclusion follows from the timeouts.
+- 40 of the 54 kept every sampled node within 1% of its Complete radius across presets. The exceptions include 2D Canopy (61–92%, with the sparser presets drawing nodes larger), 3D Sierpiński, Llull and Julia with Indra (up to 23%), and residuals of 1.4–4.5% in other views.
 - After choosing Complete on a large 3D view, the density control and URL can update after the drawing completes.
 
 ## Known limits

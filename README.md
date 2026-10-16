@@ -6,7 +6,7 @@ A local-first knowledge system that keeps searchable claims connected to their s
 
 ## What NousOS does
 
-Notes and search can surface a claim while losing where it came from, when it applied, or whether later evidence superseded it. NousOS is a Python library with a local command line, stdio JSON-RPC interface, and browser graph review page. It connects verifiable memory—citations to exact source bytes and human-gated promotion—with visual exploration of the same knowledge as a graph. You can open the synthetic demo graph in a browser and follow a short memory walkthrough on a synthetic corpus.
+Notes and search can surface a claim while losing where it came from, when it applied, or whether later evidence superseded it. NousOS is a Python library with a local command line, stdio JSON-RPC interface, and browser graph review page. It connects verifiable memory—citations to exact source bytes and human-gated promotion—with visual exploration of the same knowledge as a graph: the graph is projected from the cited records, so its nodes and relations keep their evidence links and review details. You can open the synthetic demo graph in a browser and follow a short memory walkthrough on a synthetic corpus.
 
 - Search returns readable hits, including for questions with punctuation; context can be retrieved around a hit.
 - Citations identify byte ranges in immutable snapshots, so quoted text can be checked against the stored source bytes.
@@ -17,11 +17,26 @@ Notes and search can surface a claim while losing where it came from, when it ap
 - This repository contains synthetic data only. It does not include a private corpus.
 - Local by default: store locations come from configuration, nothing guesses where a corpus lives, the command line and stdio JSON-RPC open no network listener, and the review page serves only on loopback.
 
+## What V1 implements
+
+| Area | Implemented capability |
+|---|---|
+| Canonical storage | Stable identity, immutable snapshots, append-only ingest history, citations, and assertion versions. |
+| Derived state | Rebuildable full-text index and optional semantic index. |
+| Time and evidence | Provenance, two time axes, supersession history, and visible disagreement. |
+| Human control | Candidate proposals, discovery, adjudication, and separate human review for promotion. |
+| Context | Deterministic context compilation with recorded inputs. |
+| Interfaces | Command line and stdio JSON-RPC from one operation catalogue. |
+| Projections | Renderer-independent graph projections and validated review dataset builder/server. |
+| Visual review | 2D/3D, Natural and four experimental topologies, Indra organization, three morphologies, density controls, and relation readings. |
+| Demo | Seeded synthetic knowledge base generator and review-page dataset. |
+
+
 ## Gallery
 
 The interface labels are Italian: «Essenziale» means Essential, «Bilanciata» means Balanced, «Completa» means Complete; «Attestata» means Attested and «Esplorativa» means Exploratory.
 
-The gallery uses invented demo data. Each pair is captured in the same page session and orientation; each density is framed by the page's fit. Balanced has its own layout, 7–10× more compact than Complete, measured from the manifest's layout bounds.
+The gallery uses invented demo data. Each pair is captured in the same page session and orientation; each density is framed by the page's fit. Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds.
 
 ### Natural · Stellar overviews
 
@@ -59,7 +74,7 @@ All images use synthetic demo data. Canopy, Sierpiński, Llull, and Julia are ex
 | Canopy | [![Canopy 2D Complete](docs/assets/gallery/canopy-2d-complete.jpg)](docs/assets/gallery/canopy-2d-complete.jpg)<br>Canopy · 2D · Complete | [![Canopy 3D Complete](docs/assets/gallery/canopy-3d-complete.jpg)](docs/assets/gallery/canopy-3d-complete.jpg)<br>Canopy · 3D · Complete |
 | Sierpiński | [![Sierpiński 2D Complete](docs/assets/gallery/sierpinski-2d-complete.jpg)](docs/assets/gallery/sierpinski-2d-complete.jpg)<br>Sierpiński · 2D · Complete | [![Sierpiński 3D Complete](docs/assets/gallery/sierpinski-3d-complete.jpg)](docs/assets/gallery/sierpinski-3d-complete.jpg)<br>Sierpiński · 3D · Complete |
 | Llull | [![Llull 2D Complete](docs/assets/gallery/llull-2d-complete.jpg)](docs/assets/gallery/llull-2d-complete.jpg)<br>Llull · 2D · Complete | [![Llull 3D Complete](docs/assets/gallery/llull-3d-complete.jpg)](docs/assets/gallery/llull-3d-complete.jpg)<br>Llull · 3D · Complete |
-| Julia | [![Julia 2D Complete](docs/assets/gallery/julia-2d-complete.jpg)](docs/assets/gallery/julia-2d-complete.jpg)<br>Julia · 2D · Complete | [![Julia 3D Complete](docs/assets/gallery/julia-3d-complete.jpg)](docs/assets/gallery/julia-3d-complete.jpg)<br>Julia · 3D · Complete (camera ×1.16 closer than the fitted view, which shows the relation bundles) |
+| Julia | [![Julia 2D Complete](docs/assets/gallery/julia-2d-complete.jpg)](docs/assets/gallery/julia-2d-complete.jpg)<br>Julia · 2D · Complete | [![Julia 3D Complete](docs/assets/gallery/julia-3d-complete.jpg)](docs/assets/gallery/julia-3d-complete.jpg)<br>Julia · 3D · Complete (camera ×1.16 closer than the fitted view, where the relation bundles become visible) |
 
 Capture method, render times, density counts, and size-coherence measurements are in [Gallery and measurements](docs/GALLERY-AND-MEASUREMENTS.md).
 
@@ -74,7 +89,7 @@ node --experimental-strip-types demo/src/cli.ts synth --profile reference --seed
 PYTHONPATH=src python3 -m nous_os.graph_review serve --graph demo/out/reference/dataset --port 8766
 ```
 
-The Python package has no third-party runtime dependencies, so `PYTHONPATH=src` runs it from the checkout. Open <http://127.0.0.1:8766/#experimental=fractal>. The flag enables the experimental Geometry Lab topologies; without it, the page offers Natural and Indra. The seeded generator creates invented labels, statements, citations, and passages, then validates the dataset before the review server serves it on loopback. For source ingestion, search, context, and byte-checked citation resolution, follow the [synthetic memory walkthrough](docs/MEMORY-WALKTHROUGH.md).
+The Python package has no third-party runtime dependencies, so `PYTHONPATH=src` runs it from the checkout. Open <http://127.0.0.1:8766/#experimental=fractal>. The flag enables the experimental Geometry Lab topologies; without it, the page offers the Natural topology with optional Indra organization. The seeded generator creates invented labels, statements, citations, and passages, then validates the dataset before the review server serves it on loopback. For source ingestion, search, context, and byte-checked citation resolution, follow the [synthetic memory walkthrough](docs/MEMORY-WALKTHROUGH.md).
 
 ## Architecture
 
@@ -98,31 +113,16 @@ The command line and stdio JSON-RPC share an operation catalogue, and a proposal
 
 ## Verification and limits
 
-- **CI:** runs the Python suite, typecheck, repository checks, and commit contract over history; it does not run GPU browser evidence or visual acceptance. [Verification details](docs/VERIFICATION-AND-LIMITS.md)
-- **Measured on the synthetic demo:** 46 of 60 configurations kept sampled node sizes within 1% across presets; exceptions include about 2× in 2D Canopy without Indra, up to 23% in 3D Sierpiński, Llull and Canopy with Indra, and up to 57% for one 2D Natural sample. [Full matrix](docs/GALLERY-AND-MEASUREMENTS.md)
+- **Verified in CI:** the Python suite, typecheck, repository checks, and the commit contract over history. [Verification details](docs/VERIFICATION-AND-LIMITS.md)
+- **Measured on the synthetic demo:** all 60 view configurations reached Complete, and 46 of them kept sampled node sizes within 1% across presets; exceptions include about 2× in 2D Canopy without Indra, up to 23% in 3D Sierpiński, Llull and Canopy with Indra, and up to 57% for one 2D Natural sample. [Full matrix](docs/GALLERY-AND-MEASUREMENTS.md)
 - **Measured on the synthetic demo:** 440 of 561 sampled clicks selected the intended node. Dense views can select a neighbour. [Measurement details](docs/GALLERY-AND-MEASUREMENTS.md)
-- **Observed on a larger private dataset:** five 3D views were not certified within the 90-second probe. [Limit details](docs/VERIFICATION-AND-LIMITS.md)
+- **Observed on a larger private dataset:** five 3D views were not certified within the 90-second probe; of the 54 views that mounted, 40 kept sampled node sizes within 1% across presets. [Limit details](docs/VERIFICATION-AND-LIMITS.md)
 - **Observed on the same private dataset:** after choosing Complete on a large 3D view, the density control and URL can update after drawing completes.
+- **Measured on a private evaluation corpus:** six assembly-strategy families were compared; five were measured and none beat the plain default, and the sixth is recorded as unmeasured rather than as a tie ([details](docs/VERIFICATION-AND-LIMITS.md#context-compilation)).
 - **Known limit:** `npm --prefix ui run test:unit` fails from a clean clone in four document suites because generated evidence is absent. [Verification details](docs/VERIFICATION-AND-LIMITS.md)
 - **Known limits:** semantic tests need local ONNX checkpoints; Chromium is the only browser verified; touch, keyboard navigation inside the canvas, and screen readers are unverified. [Full list](docs/VERIFICATION-AND-LIMITS.md)
 - **Not certified:** GPU-backed browser evidence and visual acceptance are not CI checks; six visual acceptance criteria need human inspection.
 - **Other limits:** topology preconditions and certificates, clipping, density calibration, rendering stalls, and the remaining known constraints are listed in [Verification and limits](docs/VERIFICATION-AND-LIMITS.md).
-
-Six assembly-strategy families were compared on a private evaluation corpus: five were measured and none beat the plain default; the sixth is recorded as unmeasured rather than as a tie ([details](docs/VERIFICATION-AND-LIMITS.md#context-compilation)).
-
-## What V1 implements
-
-| Area | Implemented capability |
-|---|---|
-| Canonical storage | Stable identity, immutable snapshots, append-only ingest history, citations, and assertion versions. |
-| Derived state | Rebuildable full-text index and optional semantic index. |
-| Time and evidence | Provenance, two time axes, supersession history, and visible disagreement. |
-| Human control | Candidate proposals, discovery, adjudication, and separate human review for promotion. |
-| Context | Deterministic context compilation with recorded inputs. |
-| Interfaces | Command line and stdio JSON-RPC from one operation catalogue. |
-| Projections | Renderer-independent graph projections and validated review dataset builder/server. |
-| Visual review | 2D/3D, Natural and four experimental topologies, Indra organization, three morphologies, density controls, and relation readings. |
-| Demo | Seeded synthetic knowledge base generator and review-page dataset. |
 
 ## Repository layout
 
