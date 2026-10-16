@@ -42,7 +42,7 @@ Density controls select how much of the graph is drawn. In Natural 2D, the galle
 
 ### Natural · Stellar gallery
 
-The gallery uses the invented synthetic demo dataset. Captures use the page's fullscreen view, where only the NousOS title stays visible at the top left; node labels, panels, tooltips, selections and controls are hidden. Each pair is captured in one page session: only the density control changes, the orientation is kept, and the page frames each density with its own fit. «Bilanciata» has its own layout, 7 to 10 times more compact than «Completa» in these captures, so an identical camera would show it as a small cluster. Both camera states are recorded in the manifest.
+The gallery uses the synthetic demo dataset, whose content is invented. Captures use the page's fullscreen view, where only the NousOS title stays visible at the top left; node labels, panels, tooltips, selections and controls are hidden. Each pair is captured in one page session: only the density control changes, the orientation is kept, and the page frames each density with its own fit. «Bilanciata» has its own layout, 7 to 10 times more compact than «Completa» in these captures (measured from the layout bounds recorded in the manifest), so an identical camera would show it as a small cluster. Both camera states are recorded in the manifest.
 
 [![Natural · Stellar · 2D · Bilanciata](docs/assets/gallery/natural-stellar-2d-balanced.jpg)](docs/assets/gallery/natural-stellar-2d-balanced.jpg)
 
@@ -62,23 +62,23 @@ Natural · Stellar · 3D · Completa — synthetic demo data.
 
 ### Explore at different scales
 
-The same synthetic domain cluster, from the overview to its inner nodes. Each image comes from zooming the page's camera on that cluster at «Completa» and waiting for the render to stabilise; nothing is cropped or enlarged. Magnifications are relative to the fitted overview and recorded in the manifest.
+The cluster at the centre of the «Completa» overviews above, from an intermediate zoom down to its inner nodes. Each image comes from zooming the page's camera on that cluster at «Completa» and waiting for the render to stabilise; nothing is cropped or enlarged. Magnifications are relative to the fitted overview and recorded in the manifest.
 
 [![Natural · Stellar · 2D · Completa · intermediate zoom](docs/assets/gallery/natural-stellar-2d-complete-zoom-mid.jpg)](docs/assets/gallery/natural-stellar-2d-complete-zoom-mid.jpg)
 
-Natural · Stellar · 2D · Completa, about 2× closer: the cluster among its neighbours, with individual nodes already distinguishable — synthetic demo data.
+Natural · Stellar · 2D · Completa, camera ×2.0: the cluster among its neighbours, with individual nodes already distinguishable — synthetic demo data.
 
 [![Natural · Stellar · 2D · Completa · deep zoom](docs/assets/gallery/natural-stellar-2d-complete-zoom-deep.jpg)](docs/assets/gallery/natural-stellar-2d-complete-zoom-deep.jpg)
 
-Natural · Stellar · 2D · Completa, about 12× closer: inside the cluster, individual nodes and the relations converging on its hub — synthetic demo data.
+Natural · Stellar · 2D · Completa, camera ×11.6: inside the cluster, individual nodes and the relations converging on its hub — synthetic demo data.
 
 [![Natural · Stellar · 3D · Completa · intermediate zoom](docs/assets/gallery/natural-stellar-3d-complete-zoom-mid.jpg)](docs/assets/gallery/natural-stellar-3d-complete-zoom-mid.jpg)
 
-Natural · Stellar · 3D · Completa, about 3× closer: the same cluster and the relations that reach it — synthetic demo data.
+Natural · Stellar · 3D · Completa, camera ×3.0: the same cluster and the relations that reach it — synthetic demo data.
 
 [![Natural · Stellar · 3D · Completa · deep zoom](docs/assets/gallery/natural-stellar-3d-complete-zoom-deep.jpg)](docs/assets/gallery/natural-stellar-3d-complete-zoom-deep.jpg)
 
-Natural · Stellar · 3D · Completa, about 11× closer: inside the cluster, its brightest nodes within dense relations — synthetic demo data.
+Natural · Stellar · 3D · Completa, camera ×11.0: inside the cluster, its brightest nodes within dense relations — synthetic demo data.
 
 ### Other topologies at «Completa» (experimental Geometry Lab)
 
