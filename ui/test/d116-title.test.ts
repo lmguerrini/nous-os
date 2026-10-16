@@ -15,6 +15,9 @@ test('toolbar title exposes NousOS once and draws the caps wordmark treatment', 
   assert.match(html, /\.brand-title span \{display:inline;margin:0;color:inherit;font-size:\.78em;line-height:inherit;vertical-align:baseline\}/);
   assert.match(html, /\.brand-title \.brand-title-lead \{font-size:1em\}/);
   assert.match(html, /header\.toolbar-collapsed \{--brand-title-size:16px\}/);
+  assert.match(html, /@media\(max-width:760px\) \{:root \{--brand-title-size:16px\}\}/);
+  assert.equal((html.match(/--brand-title-size:16px/g) ?? []).length, 2);
+  assert.equal((html.match(/<span class="brand-title"(?: aria-hidden="true")?>/g) ?? []).length, 2);
   assert.match(html, /header\.toolbar-collapsed \.header-top > :not\(h1\):not\(#toolbar-toggle\):not\(#toolbar-summary\) \{display:none\}/);
 });
 
