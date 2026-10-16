@@ -40,7 +40,7 @@ test('panels share close controls and Escape handling', () => {
 });
 
 test('toolbar hides technical diagnostics, keeps group controls together, and has width breakpoints', () => {
-  assert.match(html, /<h1>NousOS<\/h1>/);
+  assert.match(html, /<h1 class="nous-title"><span class="visually-hidden">NousOS<\/span><span class="brand-title" aria-hidden="true">/);
   assert.match(html, /#status,#counter,#v2-cap,#notice,#arrangement-inspector \{display:none!important\}/);
   assert.match(html, /#review-toolbar\.toolbar-collapsed #toolbar-summary \{display:inline!important\}/);
   assert.doesNotMatch(html.match(/<div class="header-top">([\s\S]*?)<\/div>/)?.[1] ?? '', /layout-v2|Costellazione|predefinita da/);
