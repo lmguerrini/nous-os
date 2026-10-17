@@ -59,15 +59,27 @@ The gallery uses invented demo data. Each overview is centred, with its drawn gr
 
 ### Explore at different scales
 
-Each close-up is centred on one cluster through the page's own camera, after the render stabilised; nothing is cropped or enlarged, and the density, counts and camera of every view are recorded in the manifest. At Balanced a cluster's nodes are spread across the compact Balanced layout, so the 2D close-ups use Custom with 2,000 nodes, where each cluster keeps its own disc.
+These two views show the same cluster at two camera distances. Only the distance changes: the dataset, density, node style, palette and orientation stay the same. Both are real captures through the page's own camera after the render stabilised; nothing is cropped or enlarged, and the manifest records each camera. At Balanced a cluster's nodes are spread across the compact Balanced layout, so this pair uses Custom with 2,000 nodes, where each cluster keeps its own disc.
 
-[![Natural · Stellar · 2D · Custom 2,000 · a small cluster and its links](docs/assets/gallery/natural-stellar-2d-custom-detail-links.jpg)](docs/assets/gallery/natural-stellar-2d-custom-detail-links.jpg)
+[![Natural · Stellar · 2D · Custom 2,000 · one cluster in context](docs/assets/gallery/natural-stellar-2d-custom-scale-cluster.jpg)](docs/assets/gallery/natural-stellar-2d-custom-scale-cluster.jpg)
 
-Natural · Stellar · 2D · Custom (2,000 nodes), centred on a small cluster: all 144 of its nodes and the relations leaving it.
+Natural · Stellar · 2D · Custom (2,000 nodes): one cluster in context, with its 144 nodes at the centre and the relations that leave it for the rest of the graph, below the frame.
 
-[![Natural · Stellar · 2D · Custom 2,000 · nodes of one cluster](docs/assets/gallery/natural-stellar-2d-custom-detail-cluster.jpg)](docs/assets/gallery/natural-stellar-2d-custom-detail-cluster.jpg)
+[![Natural · Stellar · 2D · Custom 2,000 · the same cluster, about 3.8 times closer](docs/assets/gallery/natural-stellar-2d-custom-scale-closer.jpg)](docs/assets/gallery/natural-stellar-2d-custom-scale-closer.jpg)
 
-Natural · Stellar · 2D · Custom (2,000 nodes), centred on another cluster: all 187 of its nodes around its hub.
+The same view about 3.8 times closer, at the same centre: single nodes, the cluster's hub and their links can be told apart. The cluster continues past the top and bottom edges.
+
+### Morphologies
+
+A morphology is the drawing style of nodes and relations. In Natural it also selects the arrangement, so each morphology has its own layout. All six views use the same synthetic dataset at Balanced (400 of 11,199 nodes), in the Natural topology with Indra off and the monochrome palette.
+
+| Morphology | 2D | 3D |
+|---|---|---|
+| Stellar | [![Stellar 2D Balanced](docs/assets/gallery/natural-stellar-2d-balanced.jpg)](docs/assets/gallery/natural-stellar-2d-balanced.jpg)<br>Stellar · 2D · whole graph | [![Stellar 3D Balanced](docs/assets/gallery/natural-stellar-3d-balanced.jpg)](docs/assets/gallery/natural-stellar-3d-balanced.jpg)<br>Stellar · 3D · whole graph |
+| Neural | [![Neural 2D Balanced, closer view](docs/assets/gallery/natural-neural-2d-balanced.jpg)](docs/assets/gallery/natural-neural-2d-balanced.jpg)<br>Neural · 2D · closer view (×2.4) | [![Neural 3D Balanced inside the brain outline](docs/assets/gallery/natural-neural-3d-balanced-brain.jpg)](docs/assets/gallery/natural-neural-3d-balanced-brain.jpg)<br>Neural · 3D · «Cervello» (Brain) on |
+| Mycelium | [![Mycelium 2D Balanced, closer view](docs/assets/gallery/natural-mycelium-2d-balanced.jpg)](docs/assets/gallery/natural-mycelium-2d-balanced.jpg)<br>Mycelium · 2D · closer view (×2) | [![Mycelium 3D Balanced](docs/assets/gallery/natural-mycelium-3d-balanced.jpg)](docs/assets/gallery/natural-mycelium-3d-balanced.jpg)<br>Mycelium · 3D · whole graph |
+
+The camera adapts to each morphology. Stellar and Mycelium 3D show the whole graph. Neural 2D and Mycelium 2D are about 2.4 and 2 times closer than the whole-graph view, at the same centre: from that distance Neural's branches are drawn too faint to see, and Mycelium's threads merge into one tangle. Neural 3D shows the whole brain, a decorative outline around the graph, 1.35 times closer than the page's fitted view.
 
 ### Other topologies at Complete · experimental Geometry Lab
 

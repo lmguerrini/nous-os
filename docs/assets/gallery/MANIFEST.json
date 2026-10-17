@@ -9587,6 +9587,3617 @@
       }
     },
     {
+      "id": "natural-stellar-2d-custom-scale-cluster",
+      "title": "Natural · Stellar · 2D · Custom 2000 · one cluster in context",
+      "file": "natural-stellar-2d-custom-scale-cluster.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "stellar",
+        "density": "custom",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "customNodes": 2000,
+        "rendering": "2d",
+        "topology": "natural"
+      },
+      "state": {
+        "view": "natural/2d/stellar/custom/attested",
+        "quality": "completa",
+        "nodesVisible": 2000,
+        "nodesTotal": 11199,
+        "edgesDrawn": 2947,
+        "edgesTotal": 15801
+      },
+      "completeMs": 2010,
+      "densitySwitchMs": null,
+      "stableMs": 2044,
+      "pageErrors": 0,
+      "camera": {
+        "program": [
+          {
+            "op": "frame",
+            "subject": {
+              "domains": [
+                "d1"
+              ]
+            },
+            "occupancy": 0.3
+          }
+        ],
+        "before": {
+          "state": {
+            "x": 0.5,
+            "y": 0.5085106831108716,
+            "angle": 0,
+            "ratio": 1.091601650962429,
+            "bounds": {
+              "x": [
+                -6930.091621705877,
+                6543.48434689247
+              ],
+              "y": [
+                -5683.225928198155,
+                8394.842221410916
+              ]
+            }
+          },
+          "pose": null
+        },
+        "after": {
+          "state": {
+            "x": 0.5173749657094983,
+            "y": 0.964312000030686,
+            "angle": 0,
+            "ratio": 0.24097124847320217,
+            "bounds": {
+              "x": [
+                -6930.091621705877,
+                6543.48434689247
+              ],
+              "y": [
+                -5683.225928198155,
+                8394.842221410916
+              ]
+            }
+          },
+          "pose": null
+        },
+        "zooms": [],
+        "frames": [
+          {
+            "operation": 0,
+            "program": {
+              "op": "frame",
+              "subject": {
+                "domains": [
+                  "d1"
+                ]
+              },
+              "occupancy": 0.3,
+              "tolerance": 0.03,
+              "maxIterations": 12
+            },
+            "effectiveTarget": 0.3,
+            "iterations": [
+              {
+                "iteration": 1,
+                "measurementBefore": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 782.4229639443741,
+                    "top": 74.95493206555489,
+                    "right": 847.5008528465667,
+                    "bottom": 140.04746390871978,
+                    "width": 65.07788890219251,
+                    "height": 65.09253184316489
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.04067368056387032,
+                    "y": 0.0650925318431649
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": 14.961908395470346,
+                    "y": -392.49880201286265
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 1.091601650962429
+                },
+                "pan": {
+                  "method": "page camera state",
+                  "offsetBefore": {
+                    "x": 14.961908395470346,
+                    "y": -392.49880201286265
+                  },
+                  "cameraDelta": {
+                    "x": 0.017374965709498258,
+                    "y": 0.45580131691981446
+                  }
+                },
+                "zoom": {
+                  "ratioFrom": 1.091601650962429,
+                  "ratioTo": 0.5458008254812144,
+                  "bracket": {
+                    "near": null,
+                    "far": 1.091601650962429
+                  },
+                  "before": {
+                    "ratio": 1.091601650962429
+                  },
+                  "after": {
+                    "ratio": 0.5458008254812144
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 0.5458008254812144
+                },
+                "measurementAfter": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 733.5036285094795,
+                    "top": 433.498105212283,
+                    "right": 866.4948823412145,
+                    "bottom": 566.5524690381764,
+                    "width": 132.99125383173498,
+                    "height": 133.05436382589335
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.08311953364483436,
+                    "y": 0.13305436382589333
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.0007445746530265751,
+                    "y": 0.02528712522968135
+                  },
+                  "clipped": 0
+                }
+              },
+              {
+                "iteration": 2,
+                "measurementBefore": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 733.5036285094795,
+                    "top": 433.498105212283,
+                    "right": 866.4948823412145,
+                    "bottom": 566.5524690381764,
+                    "width": 132.99125383173498,
+                    "height": 133.05436382589335
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.08311953364483436,
+                    "y": 0.13305436382589333
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.0007445746530265751,
+                    "y": 0.02528712522968135
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 0.5458008254812144
+                },
+                "pan": {
+                  "dx": 0,
+                  "dy": 0
+                },
+                "zoom": {
+                  "ratioFrom": 0.5458008254812144,
+                  "ratioTo": 0.2729004127406072,
+                  "bracket": {
+                    "near": null,
+                    "far": 0.5458008254812144
+                  },
+                  "before": {
+                    "ratio": 0.5458008254812144
+                  },
+                  "after": {
+                    "ratio": 0.2729004127406072
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 0.2729004127406072
+                },
+                "measurementAfter": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 667.614340421909,
+                    "top": 367.67179537384834,
+                    "right": 932.3601632354502,
+                    "bottom": 632.5719976709912,
+                    "width": 264.74582281354117,
+                    "height": 264.90020229714287
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.16546613925846324,
+                    "y": 0.2649002022971429
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.01274817132048156,
+                    "y": 0.12189652241977456
+                  },
+                  "clipped": 0
+                }
+              },
+              {
+                "iteration": 3,
+                "measurementBefore": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 667.614340421909,
+                    "top": 367.67179537384834,
+                    "right": 932.3601632354502,
+                    "bottom": 632.5719976709912,
+                    "width": 264.74582281354117,
+                    "height": 264.90020229714287
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.16546613925846324,
+                    "y": 0.2649002022971429
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.01274817132048156,
+                    "y": 0.12189652241977456
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 0.2729004127406072
+                },
+                "pan": {
+                  "dx": 0,
+                  "dy": 0
+                },
+                "zoom": {
+                  "ratioFrom": 0.2729004127406072,
+                  "ratioTo": 0.24097124847320217,
+                  "bracket": {
+                    "near": null,
+                    "far": 0.2729004127406072
+                  },
+                  "before": {
+                    "ratio": 0.2729004127406072
+                  },
+                  "after": {
+                    "ratio": 0.24097124847320217
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 0.24097124847320217
+                },
+                "measurementAfter": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 650.7223519688778,
+                    "top": 350.7802490787418,
+                    "right": 949.2533231527909,
+                    "bottom": 649.4765157464919,
+                    "width": 298.53097118391315,
+                    "height": 298.69626666775014
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.18658185698994573,
+                    "y": 0.2986962666677501
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.01216243916564963,
+                    "y": 0.12838241261687244
+                  },
+                  "clipped": 0
+                }
+              }
+            ],
+            "final": {
+              "subject": {
+                "domains": [
+                  "d1"
+                ]
+              },
+              "count": 144,
+              "drawnOnly": true,
+              "bounds": "node centres ± drawn radius",
+              "bbox": {
+                "left": 650.7223519688778,
+                "top": 350.7802490787418,
+                "right": 949.2533231527909,
+                "bottom": 649.4765157464919,
+                "width": 298.53097118391315,
+                "height": 298.69626666775014
+              },
+              "viewport": {
+                "width": 1600,
+                "height": 1000
+              },
+              "occupancy": {
+                "x": 0.18658185698994573,
+                "y": 0.2986962666677501
+              },
+              "limiting": "y",
+              "centreOffset": {
+                "x": -0.01216243916564963,
+                "y": 0.12838241261687244
+              },
+              "clipped": 0
+            }
+          }
+        ]
+      },
+      "width": 3200,
+      "height": 2000,
+      "jpegQuality": 90,
+      "fullscreen": true,
+      "brandRect": {
+        "x": 16,
+        "y": 12,
+        "width": 82.765625,
+        "height": 23
+      },
+      "detail": {
+        "anchorId": null,
+        "anchorAtFit": null,
+        "wheelSteps": null,
+        "zoom": 4.5300078655807905,
+        "zoomSource": "cameraState ratio",
+        "revealZoom": 4.5300078655807905,
+        "cameraAtFit": {
+          "state": {
+            "x": 0.5,
+            "y": 0.5085106831108716,
+            "angle": 0,
+            "ratio": 1.091601650962429,
+            "bounds": {
+              "x": [
+                -6930.091621705877,
+                6543.48434689247
+              ],
+              "y": [
+                -5683.225928198155,
+                8394.842221410916
+              ]
+            }
+          },
+          "pose": null
+        },
+        "cameraAtCapture": {
+          "state": {
+            "x": 0.5173749657094983,
+            "y": 0.964312000030686,
+            "angle": 0,
+            "ratio": 0.24097124847320217,
+            "bounds": {
+              "x": [
+                -6930.091621705877,
+                6543.48434689247
+              ],
+              "y": [
+                -5683.225928198155,
+                8394.842221410916
+              ]
+            }
+          },
+          "pose": null
+        },
+        "tooltipFallbackUsed": false
+      },
+      "framing": {
+        "program": {
+          "op": "frame",
+          "subject": {
+            "domains": [
+              "d1"
+            ]
+          },
+          "occupancy": 0.3
+        },
+        "result": {
+          "operation": 0,
+          "program": {
+            "op": "frame",
+            "subject": {
+              "domains": [
+                "d1"
+              ]
+            },
+            "occupancy": 0.3,
+            "tolerance": 0.03,
+            "maxIterations": 12
+          },
+          "effectiveTarget": 0.3,
+          "iterations": [
+            {
+              "iteration": 1,
+              "measurementBefore": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 782.4229639443741,
+                  "top": 74.95493206555489,
+                  "right": 847.5008528465667,
+                  "bottom": 140.04746390871978,
+                  "width": 65.07788890219251,
+                  "height": 65.09253184316489
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.04067368056387032,
+                  "y": 0.0650925318431649
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": 14.961908395470346,
+                  "y": -392.49880201286265
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 1.091601650962429
+              },
+              "pan": {
+                "method": "page camera state",
+                "offsetBefore": {
+                  "x": 14.961908395470346,
+                  "y": -392.49880201286265
+                },
+                "cameraDelta": {
+                  "x": 0.017374965709498258,
+                  "y": 0.45580131691981446
+                }
+              },
+              "zoom": {
+                "ratioFrom": 1.091601650962429,
+                "ratioTo": 0.5458008254812144,
+                "bracket": {
+                  "near": null,
+                  "far": 1.091601650962429
+                },
+                "before": {
+                  "ratio": 1.091601650962429
+                },
+                "after": {
+                  "ratio": 0.5458008254812144
+                }
+              },
+              "cameraAfter": {
+                "ratio": 0.5458008254812144
+              },
+              "measurementAfter": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 733.5036285094795,
+                  "top": 433.498105212283,
+                  "right": 866.4948823412145,
+                  "bottom": 566.5524690381764,
+                  "width": 132.99125383173498,
+                  "height": 133.05436382589335
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.08311953364483436,
+                  "y": 0.13305436382589333
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.0007445746530265751,
+                  "y": 0.02528712522968135
+                },
+                "clipped": 0
+              }
+            },
+            {
+              "iteration": 2,
+              "measurementBefore": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 733.5036285094795,
+                  "top": 433.498105212283,
+                  "right": 866.4948823412145,
+                  "bottom": 566.5524690381764,
+                  "width": 132.99125383173498,
+                  "height": 133.05436382589335
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.08311953364483436,
+                  "y": 0.13305436382589333
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.0007445746530265751,
+                  "y": 0.02528712522968135
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 0.5458008254812144
+              },
+              "pan": {
+                "dx": 0,
+                "dy": 0
+              },
+              "zoom": {
+                "ratioFrom": 0.5458008254812144,
+                "ratioTo": 0.2729004127406072,
+                "bracket": {
+                  "near": null,
+                  "far": 0.5458008254812144
+                },
+                "before": {
+                  "ratio": 0.5458008254812144
+                },
+                "after": {
+                  "ratio": 0.2729004127406072
+                }
+              },
+              "cameraAfter": {
+                "ratio": 0.2729004127406072
+              },
+              "measurementAfter": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 667.614340421909,
+                  "top": 367.67179537384834,
+                  "right": 932.3601632354502,
+                  "bottom": 632.5719976709912,
+                  "width": 264.74582281354117,
+                  "height": 264.90020229714287
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.16546613925846324,
+                  "y": 0.2649002022971429
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.01274817132048156,
+                  "y": 0.12189652241977456
+                },
+                "clipped": 0
+              }
+            },
+            {
+              "iteration": 3,
+              "measurementBefore": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 667.614340421909,
+                  "top": 367.67179537384834,
+                  "right": 932.3601632354502,
+                  "bottom": 632.5719976709912,
+                  "width": 264.74582281354117,
+                  "height": 264.90020229714287
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.16546613925846324,
+                  "y": 0.2649002022971429
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.01274817132048156,
+                  "y": 0.12189652241977456
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 0.2729004127406072
+              },
+              "pan": {
+                "dx": 0,
+                "dy": 0
+              },
+              "zoom": {
+                "ratioFrom": 0.2729004127406072,
+                "ratioTo": 0.24097124847320217,
+                "bracket": {
+                  "near": null,
+                  "far": 0.2729004127406072
+                },
+                "before": {
+                  "ratio": 0.2729004127406072
+                },
+                "after": {
+                  "ratio": 0.24097124847320217
+                }
+              },
+              "cameraAfter": {
+                "ratio": 0.24097124847320217
+              },
+              "measurementAfter": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 650.7223519688778,
+                  "top": 350.7802490787418,
+                  "right": 949.2533231527909,
+                  "bottom": 649.4765157464919,
+                  "width": 298.53097118391315,
+                  "height": 298.69626666775014
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.18658185698994573,
+                  "y": 0.2986962666677501
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.01216243916564963,
+                  "y": 0.12838241261687244
+                },
+                "clipped": 0
+              }
+            }
+          ],
+          "final": {
+            "subject": {
+              "domains": [
+                "d1"
+              ]
+            },
+            "count": 144,
+            "drawnOnly": true,
+            "bounds": "node centres ± drawn radius",
+            "bbox": {
+              "left": 650.7223519688778,
+              "top": 350.7802490787418,
+              "right": 949.2533231527909,
+              "bottom": 649.4765157464919,
+              "width": 298.53097118391315,
+              "height": 298.69626666775014
+            },
+            "viewport": {
+              "width": 1600,
+              "height": 1000
+            },
+            "occupancy": {
+              "x": 0.18658185698994573,
+              "y": 0.2986962666677501
+            },
+            "limiting": "y",
+            "centreOffset": {
+              "x": -0.01216243916564963,
+              "y": 0.12838241261687244
+            },
+            "clipped": 0
+          }
+        },
+        "measurement": {
+          "subject": {
+            "domains": [
+              "d1"
+            ]
+          },
+          "count": 144,
+          "drawnOnly": true,
+          "bounds": "node centres ± drawn radius",
+          "bbox": {
+            "left": 650.7223519688778,
+            "top": 350.7802490787418,
+            "right": 949.2533231527909,
+            "bottom": 649.4765157464919,
+            "width": 298.53097118391315,
+            "height": 298.69626666775014
+          },
+          "viewport": {
+            "width": 1600,
+            "height": 1000
+          },
+          "occupancy": {
+            "x": 0.18658185698994573,
+            "y": 0.2986962666677501
+          },
+          "limiting": "y",
+          "centreOffset": {
+            "x": -0.01216243916564963,
+            "y": 0.12838241261687244
+          },
+          "clipped": 0
+        }
+      },
+      "density": {
+        "requested": "custom",
+        "committed": "custom",
+        "committedView": "natural/2d/stellar/custom/attested",
+        "requestedCustomNodes": 2000,
+        "committedCustomNodes": 2000
+      }
+    },
+    {
+      "id": "natural-stellar-2d-custom-scale-closer",
+      "title": "Natural · Stellar · 2D · Custom 2000 · the same cluster, closer",
+      "file": "natural-stellar-2d-custom-scale-closer.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "stellar",
+        "density": "custom",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "customNodes": 2000,
+        "rendering": "2d",
+        "topology": "natural"
+      },
+      "state": {
+        "view": "natural/2d/stellar/custom/attested",
+        "quality": "completa",
+        "nodesVisible": 2000,
+        "nodesTotal": 11199,
+        "edgesDrawn": 2947,
+        "edgesTotal": 15803
+      },
+      "completeMs": 2032,
+      "densitySwitchMs": null,
+      "stableMs": 2036,
+      "pageErrors": 0,
+      "camera": {
+        "program": [
+          {
+            "op": "frame",
+            "subject": {
+              "domains": [
+                "d1"
+              ]
+            },
+            "occupancy": 0.3
+          },
+          {
+            "op": "zoomAt",
+            "x": 0.5,
+            "y": 0.5,
+            "steps": 6
+          }
+        ],
+        "before": {
+          "state": {
+            "x": 0.5,
+            "y": 0.5085106831108716,
+            "angle": 0,
+            "ratio": 1.091601650962429,
+            "bounds": {
+              "x": [
+                -6930.091621705877,
+                6543.48434689247
+              ],
+              "y": [
+                -5683.225928198155,
+                8394.842221410916
+              ]
+            }
+          },
+          "pose": null
+        },
+        "after": {
+          "state": {
+            "x": 0.5173749657094983,
+            "y": 0.964312000030686,
+            "angle": 0,
+            "ratio": 0.06316916695975913,
+            "bounds": {
+              "x": [
+                -6930.091621705877,
+                6543.48434689247
+              ],
+              "y": [
+                -5683.225928198155,
+                8394.842221410916
+              ]
+            }
+          },
+          "pose": null
+        },
+        "zooms": [
+          {
+            "operation": 1,
+            "factor": 3.8146972656249987,
+            "source": "cameraState ratio",
+            "point": {
+              "x": 800,
+              "y": 500
+            }
+          }
+        ],
+        "frames": [
+          {
+            "operation": 0,
+            "program": {
+              "op": "frame",
+              "subject": {
+                "domains": [
+                  "d1"
+                ]
+              },
+              "occupancy": 0.3,
+              "tolerance": 0.03,
+              "maxIterations": 12
+            },
+            "effectiveTarget": 0.3,
+            "iterations": [
+              {
+                "iteration": 1,
+                "measurementBefore": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 782.4229639443741,
+                    "top": 74.95493206555489,
+                    "right": 847.5008528465667,
+                    "bottom": 140.04746390871978,
+                    "width": 65.07788890219251,
+                    "height": 65.09253184316489
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.04067368056387032,
+                    "y": 0.0650925318431649
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": 14.961908395470346,
+                    "y": -392.49880201286265
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 1.091601650962429
+                },
+                "pan": {
+                  "method": "page camera state",
+                  "offsetBefore": {
+                    "x": 14.961908395470346,
+                    "y": -392.49880201286265
+                  },
+                  "cameraDelta": {
+                    "x": 0.017374965709498258,
+                    "y": 0.45580131691981446
+                  }
+                },
+                "zoom": {
+                  "ratioFrom": 1.091601650962429,
+                  "ratioTo": 0.5458008254812144,
+                  "bracket": {
+                    "near": null,
+                    "far": 1.091601650962429
+                  },
+                  "before": {
+                    "ratio": 1.091601650962429
+                  },
+                  "after": {
+                    "ratio": 0.5458008254812144
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 0.5458008254812144
+                },
+                "measurementAfter": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 732.7497238056814,
+                    "top": 432.7474979506936,
+                    "right": 867.2467179595454,
+                    "bottom": 567.3205578129898,
+                    "width": 134.49699415386408,
+                    "height": 134.5730598622962
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.08406062134616504,
+                    "y": 0.1345730598622962
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.0017791173866044119,
+                    "y": 0.03402788184172323
+                  },
+                  "clipped": 0
+                }
+              },
+              {
+                "iteration": 2,
+                "measurementBefore": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 732.7497238056814,
+                    "top": 432.7474979506936,
+                    "right": 867.2467179595454,
+                    "bottom": 567.3205578129898,
+                    "width": 134.49699415386408,
+                    "height": 134.5730598622962
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.08406062134616504,
+                    "y": 0.1345730598622962
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.0017791173866044119,
+                    "y": 0.03402788184172323
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 0.5458008254812144
+                },
+                "pan": {
+                  "dx": 0,
+                  "dy": 0
+                },
+                "zoom": {
+                  "ratioFrom": 0.5458008254812144,
+                  "ratioTo": 0.2729004127406072,
+                  "bracket": {
+                    "near": null,
+                    "far": 0.5458008254812144
+                  },
+                  "before": {
+                    "ratio": 0.5458008254812144
+                  },
+                  "after": {
+                    "ratio": 0.2729004127406072
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 0.2729004127406072
+                },
+                "measurementAfter": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 667.614340421909,
+                    "top": 367.67179537384834,
+                    "right": 932.3601632354502,
+                    "bottom": 632.5719976709912,
+                    "width": 264.74582281354117,
+                    "height": 264.90020229714287
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.16546613925846324,
+                    "y": 0.2649002022971429
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.01274817132048156,
+                    "y": 0.12189652241977456
+                  },
+                  "clipped": 0
+                }
+              },
+              {
+                "iteration": 3,
+                "measurementBefore": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 667.614340421909,
+                    "top": 367.67179537384834,
+                    "right": 932.3601632354502,
+                    "bottom": 632.5719976709912,
+                    "width": 264.74582281354117,
+                    "height": 264.90020229714287
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.16546613925846324,
+                    "y": 0.2649002022971429
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.01274817132048156,
+                    "y": 0.12189652241977456
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 0.2729004127406072
+                },
+                "pan": {
+                  "dx": 0,
+                  "dy": 0
+                },
+                "zoom": {
+                  "ratioFrom": 0.2729004127406072,
+                  "ratioTo": 0.24097124847320217,
+                  "bracket": {
+                    "near": null,
+                    "far": 0.2729004127406072
+                  },
+                  "before": {
+                    "ratio": 0.2729004127406072
+                  },
+                  "after": {
+                    "ratio": 0.24097124847320217
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 0.24097124847320217
+                },
+                "measurementAfter": {
+                  "subject": {
+                    "domains": [
+                      "d1"
+                    ]
+                  },
+                  "count": 144,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 650.7223519688778,
+                    "top": 350.7802490787418,
+                    "right": 949.2533231527909,
+                    "bottom": 649.4765157464919,
+                    "width": 298.53097118391315,
+                    "height": 298.69626666775014
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.18658185698994573,
+                    "y": 0.2986962666677501
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.01216243916564963,
+                    "y": 0.12838241261687244
+                  },
+                  "clipped": 0
+                }
+              }
+            ],
+            "final": {
+              "subject": {
+                "domains": [
+                  "d1"
+                ]
+              },
+              "count": 144,
+              "drawnOnly": true,
+              "bounds": "node centres ± drawn radius",
+              "bbox": {
+                "left": 650.7223519688778,
+                "top": 350.7802490787418,
+                "right": 949.2533231527909,
+                "bottom": 649.4765157464919,
+                "width": 298.53097118391315,
+                "height": 298.69626666775014
+              },
+              "viewport": {
+                "width": 1600,
+                "height": 1000
+              },
+              "occupancy": {
+                "x": 0.18658185698994573,
+                "y": 0.2986962666677501
+              },
+              "limiting": "y",
+              "centreOffset": {
+                "x": -0.01216243916564963,
+                "y": 0.12838241261687244
+              },
+              "clipped": 0
+            }
+          }
+        ]
+      },
+      "width": 3200,
+      "height": 2000,
+      "jpegQuality": 90,
+      "fullscreen": true,
+      "brandRect": {
+        "x": 16,
+        "y": 12,
+        "width": 82.765625,
+        "height": 23
+      },
+      "detail": {
+        "anchorId": null,
+        "anchorAtFit": null,
+        "wheelSteps": null,
+        "zoom": 17.280608618090778,
+        "zoomSource": "cameraState ratio",
+        "revealZoom": 17.280608618090778,
+        "cameraAtFit": {
+          "state": {
+            "x": 0.5,
+            "y": 0.5085106831108716,
+            "angle": 0,
+            "ratio": 1.091601650962429,
+            "bounds": {
+              "x": [
+                -6930.091621705877,
+                6543.48434689247
+              ],
+              "y": [
+                -5683.225928198155,
+                8394.842221410916
+              ]
+            }
+          },
+          "pose": null
+        },
+        "cameraAtCapture": {
+          "state": {
+            "x": 0.5173749657094983,
+            "y": 0.964312000030686,
+            "angle": 0,
+            "ratio": 0.06316916695975913,
+            "bounds": {
+              "x": [
+                -6930.091621705877,
+                6543.48434689247
+              ],
+              "y": [
+                -5683.225928198155,
+                8394.842221410916
+              ]
+            }
+          },
+          "pose": null
+        },
+        "tooltipFallbackUsed": false
+      },
+      "framing": {
+        "program": null,
+        "result": {
+          "operation": 0,
+          "program": {
+            "op": "frame",
+            "subject": {
+              "domains": [
+                "d1"
+              ]
+            },
+            "occupancy": 0.3,
+            "tolerance": 0.03,
+            "maxIterations": 12
+          },
+          "effectiveTarget": 0.3,
+          "iterations": [
+            {
+              "iteration": 1,
+              "measurementBefore": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 782.4229639443741,
+                  "top": 74.95493206555489,
+                  "right": 847.5008528465667,
+                  "bottom": 140.04746390871978,
+                  "width": 65.07788890219251,
+                  "height": 65.09253184316489
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.04067368056387032,
+                  "y": 0.0650925318431649
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": 14.961908395470346,
+                  "y": -392.49880201286265
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 1.091601650962429
+              },
+              "pan": {
+                "method": "page camera state",
+                "offsetBefore": {
+                  "x": 14.961908395470346,
+                  "y": -392.49880201286265
+                },
+                "cameraDelta": {
+                  "x": 0.017374965709498258,
+                  "y": 0.45580131691981446
+                }
+              },
+              "zoom": {
+                "ratioFrom": 1.091601650962429,
+                "ratioTo": 0.5458008254812144,
+                "bracket": {
+                  "near": null,
+                  "far": 1.091601650962429
+                },
+                "before": {
+                  "ratio": 1.091601650962429
+                },
+                "after": {
+                  "ratio": 0.5458008254812144
+                }
+              },
+              "cameraAfter": {
+                "ratio": 0.5458008254812144
+              },
+              "measurementAfter": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 732.7497238056814,
+                  "top": 432.7474979506936,
+                  "right": 867.2467179595454,
+                  "bottom": 567.3205578129898,
+                  "width": 134.49699415386408,
+                  "height": 134.5730598622962
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.08406062134616504,
+                  "y": 0.1345730598622962
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.0017791173866044119,
+                  "y": 0.03402788184172323
+                },
+                "clipped": 0
+              }
+            },
+            {
+              "iteration": 2,
+              "measurementBefore": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 732.7497238056814,
+                  "top": 432.7474979506936,
+                  "right": 867.2467179595454,
+                  "bottom": 567.3205578129898,
+                  "width": 134.49699415386408,
+                  "height": 134.5730598622962
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.08406062134616504,
+                  "y": 0.1345730598622962
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.0017791173866044119,
+                  "y": 0.03402788184172323
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 0.5458008254812144
+              },
+              "pan": {
+                "dx": 0,
+                "dy": 0
+              },
+              "zoom": {
+                "ratioFrom": 0.5458008254812144,
+                "ratioTo": 0.2729004127406072,
+                "bracket": {
+                  "near": null,
+                  "far": 0.5458008254812144
+                },
+                "before": {
+                  "ratio": 0.5458008254812144
+                },
+                "after": {
+                  "ratio": 0.2729004127406072
+                }
+              },
+              "cameraAfter": {
+                "ratio": 0.2729004127406072
+              },
+              "measurementAfter": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 667.614340421909,
+                  "top": 367.67179537384834,
+                  "right": 932.3601632354502,
+                  "bottom": 632.5719976709912,
+                  "width": 264.74582281354117,
+                  "height": 264.90020229714287
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.16546613925846324,
+                  "y": 0.2649002022971429
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.01274817132048156,
+                  "y": 0.12189652241977456
+                },
+                "clipped": 0
+              }
+            },
+            {
+              "iteration": 3,
+              "measurementBefore": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 667.614340421909,
+                  "top": 367.67179537384834,
+                  "right": 932.3601632354502,
+                  "bottom": 632.5719976709912,
+                  "width": 264.74582281354117,
+                  "height": 264.90020229714287
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.16546613925846324,
+                  "y": 0.2649002022971429
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.01274817132048156,
+                  "y": 0.12189652241977456
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 0.2729004127406072
+              },
+              "pan": {
+                "dx": 0,
+                "dy": 0
+              },
+              "zoom": {
+                "ratioFrom": 0.2729004127406072,
+                "ratioTo": 0.24097124847320217,
+                "bracket": {
+                  "near": null,
+                  "far": 0.2729004127406072
+                },
+                "before": {
+                  "ratio": 0.2729004127406072
+                },
+                "after": {
+                  "ratio": 0.24097124847320217
+                }
+              },
+              "cameraAfter": {
+                "ratio": 0.24097124847320217
+              },
+              "measurementAfter": {
+                "subject": {
+                  "domains": [
+                    "d1"
+                  ]
+                },
+                "count": 144,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 650.7223519688778,
+                  "top": 350.7802490787418,
+                  "right": 949.2533231527909,
+                  "bottom": 649.4765157464919,
+                  "width": 298.53097118391315,
+                  "height": 298.69626666775014
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.18658185698994573,
+                  "y": 0.2986962666677501
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.01216243916564963,
+                  "y": 0.12838241261687244
+                },
+                "clipped": 0
+              }
+            }
+          ],
+          "final": {
+            "subject": {
+              "domains": [
+                "d1"
+              ]
+            },
+            "count": 144,
+            "drawnOnly": true,
+            "bounds": "node centres ± drawn radius",
+            "bbox": {
+              "left": 650.7223519688778,
+              "top": 350.7802490787418,
+              "right": 949.2533231527909,
+              "bottom": 649.4765157464919,
+              "width": 298.53097118391315,
+              "height": 298.69626666775014
+            },
+            "viewport": {
+              "width": 1600,
+              "height": 1000
+            },
+            "occupancy": {
+              "x": 0.18658185698994573,
+              "y": 0.2986962666677501
+            },
+            "limiting": "y",
+            "centreOffset": {
+              "x": -0.01216243916564963,
+              "y": 0.12838241261687244
+            },
+            "clipped": 0
+          }
+        },
+        "measurement": {
+          "subject": "all",
+          "count": 2000,
+          "drawnOnly": true,
+          "bounds": "node centres ± drawn radius",
+          "bbox": {
+            "left": -6606.206244072723,
+            "top": -50.60264755414659,
+            "right": 7680.996007496184,
+            "bottom": 14876.126327493785,
+            "width": 14287.202251568906,
+            "height": 14926.72897504793
+          },
+          "viewport": {
+            "width": 1600,
+            "height": 1000
+          },
+          "occupancy": {
+            "x": 8.929501407230566,
+            "y": 14.926728975047931
+          },
+          "limiting": "y",
+          "centreOffset": {
+            "x": -262.60511828826975,
+            "y": 6912.761839969819
+          },
+          "clipped": 1865
+        }
+      },
+      "density": {
+        "requested": "custom",
+        "committed": "custom",
+        "committedView": "natural/2d/stellar/custom/attested",
+        "requestedCustomNodes": 2000,
+        "committedCustomNodes": 2000
+      }
+    },
+    {
+      "id": "natural-neural-2d-balanced",
+      "title": "Natural · Neural · 2D · Bilanciata",
+      "file": "natural-neural-2d-balanced.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "neural",
+        "density": "balanced",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "rendering": "2d",
+        "topology": "natural"
+      },
+      "state": {
+        "view": "natural/2d/neural/balanced/attested",
+        "quality": "completa",
+        "nodesVisible": 400,
+        "nodesTotal": 11199,
+        "edgesDrawn": 359,
+        "edgesTotal": 15800
+      },
+      "completeMs": 3496,
+      "densitySwitchMs": null,
+      "stableMs": 2020,
+      "pageErrors": 0,
+      "camera": {
+        "program": [
+          {
+            "op": "frame",
+            "subject": "all",
+            "occupancy": 0.85
+          },
+          {
+            "op": "zoomAt",
+            "x": 0.5,
+            "y": 0.5,
+            "steps": 4
+          }
+        ],
+        "before": {
+          "state": {
+            "x": 0.5009519946106946,
+            "y": 0.516787169045859,
+            "angle": 0,
+            "ratio": 1.0411781537492149,
+            "bounds": {
+              "x": [
+                -1101.3251746276753,
+                1015.0840408547333
+              ],
+              "y": [
+                -1030.1550080661386,
+                848.6365313722265
+              ]
+            }
+          },
+          "pose": null
+        },
+        "after": {
+          "state": {
+            "x": 0.5009519436773804,
+            "y": 0.5092319255901312,
+            "angle": 0,
+            "ratio": 0.4264665717756785,
+            "bounds": {
+              "x": [
+                -1101.3251746276753,
+                1015.0840408547333
+              ],
+              "y": [
+                -1030.1550080661386,
+                848.6365313722265
+              ]
+            }
+          },
+          "pose": null
+        },
+        "zooms": [
+          {
+            "operation": 1,
+            "factor": 2.4414062499999996,
+            "source": "cameraState ratio",
+            "point": {
+              "x": 800,
+              "y": 500
+            }
+          }
+        ],
+        "frames": [
+          {
+            "operation": 0,
+            "program": {
+              "op": "frame",
+              "subject": "all",
+              "occupancy": 0.85,
+              "tolerance": 0.03,
+              "maxIterations": 12
+            },
+            "effectiveTarget": 0.85,
+            "iterations": [
+              {
+                "iteration": 1,
+                "measurementBefore": {
+                  "subject": "all",
+                  "count": 400,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 298.00914485076254,
+                    "top": 76.4738518172077,
+                    "right": 1301.9907515503396,
+                    "bottom": 938.8936621722472,
+                    "width": 1003.981606699577,
+                    "height": 862.4198103550395
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.6274885041872357,
+                    "y": 0.8624198103550396
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.00005179944889732724,
+                    "y": 7.683756994727446
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 1.0411781537492149
+                },
+                "pan": {
+                  "method": "page camera state",
+                  "offsetBefore": {
+                    "x": -0.00005179944889732724,
+                    "y": 7.683756994727446
+                  },
+                  "cameraDelta": {
+                    "x": -5.093331425287146e-8,
+                    "y": -0.00755524345572777
+                  }
+                },
+                "zoom": null,
+                "cameraAfter": {
+                  "ratio": 1.0411781537492149
+                },
+                "measurementAfter": {
+                  "subject": "all",
+                  "count": 400,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 298.0092402181942,
+                    "top": 68.79009784992255,
+                    "right": 1301.9908469177713,
+                    "bottom": 931.2099082049621,
+                    "width": 1003.981606699577,
+                    "height": 862.4198103550395
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.6274885041872357,
+                    "y": 0.8624198103550396
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": 0.00004356798274329776,
+                    "y": 0.0000030274422897491604
+                  },
+                  "clipped": 0
+                }
+              }
+            ],
+            "final": {
+              "subject": "all",
+              "count": 400,
+              "drawnOnly": true,
+              "bounds": "node centres ± drawn radius",
+              "bbox": {
+                "left": 298.0092402181942,
+                "top": 68.79009784992255,
+                "right": 1301.9908469177713,
+                "bottom": 931.2099082049621,
+                "width": 1003.981606699577,
+                "height": 862.4198103550395
+              },
+              "viewport": {
+                "width": 1600,
+                "height": 1000
+              },
+              "occupancy": {
+                "x": 0.6274885041872357,
+                "y": 0.8624198103550396
+              },
+              "limiting": "y",
+              "centreOffset": {
+                "x": 0.00004356798274329776,
+                "y": 0.0000030274422897491604
+              },
+              "clipped": 0
+            }
+          }
+        ]
+      },
+      "width": 1600,
+      "height": 1000,
+      "jpegQuality": 85,
+      "fullscreen": true,
+      "brandRect": {
+        "x": 16,
+        "y": 12,
+        "width": 82.765625,
+        "height": 23
+      },
+      "framing": {
+        "program": null,
+        "result": {
+          "operation": 0,
+          "program": {
+            "op": "frame",
+            "subject": "all",
+            "occupancy": 0.85,
+            "tolerance": 0.03,
+            "maxIterations": 12
+          },
+          "effectiveTarget": 0.85,
+          "iterations": [
+            {
+              "iteration": 1,
+              "measurementBefore": {
+                "subject": "all",
+                "count": 400,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 298.00914485076254,
+                  "top": 76.4738518172077,
+                  "right": 1301.9907515503396,
+                  "bottom": 938.8936621722472,
+                  "width": 1003.981606699577,
+                  "height": 862.4198103550395
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.6274885041872357,
+                  "y": 0.8624198103550396
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.00005179944889732724,
+                  "y": 7.683756994727446
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 1.0411781537492149
+              },
+              "pan": {
+                "method": "page camera state",
+                "offsetBefore": {
+                  "x": -0.00005179944889732724,
+                  "y": 7.683756994727446
+                },
+                "cameraDelta": {
+                  "x": -5.093331425287146e-8,
+                  "y": -0.00755524345572777
+                }
+              },
+              "zoom": null,
+              "cameraAfter": {
+                "ratio": 1.0411781537492149
+              },
+              "measurementAfter": {
+                "subject": "all",
+                "count": 400,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 298.0092402181942,
+                  "top": 68.79009784992255,
+                  "right": 1301.9908469177713,
+                  "bottom": 931.2099082049621,
+                  "width": 1003.981606699577,
+                  "height": 862.4198103550395
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.6274885041872357,
+                  "y": 0.8624198103550396
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": 0.00004356798274329776,
+                  "y": 0.0000030274422897491604
+                },
+                "clipped": 0
+              }
+            }
+          ],
+          "final": {
+            "subject": "all",
+            "count": 400,
+            "drawnOnly": true,
+            "bounds": "node centres ± drawn radius",
+            "bbox": {
+              "left": 298.0092402181942,
+              "top": 68.79009784992255,
+              "right": 1301.9908469177713,
+              "bottom": 931.2099082049621,
+              "width": 1003.981606699577,
+              "height": 862.4198103550395
+            },
+            "viewport": {
+              "width": 1600,
+              "height": 1000
+            },
+            "occupancy": {
+              "x": 0.6274885041872357,
+              "y": 0.8624198103550396
+            },
+            "limiting": "y",
+            "centreOffset": {
+              "x": 0.00004356798274329776,
+              "y": 0.0000030274422897491604
+            },
+            "clipped": 0
+          }
+        },
+        "measurement": {
+          "subject": "all",
+          "count": 400,
+          "drawnOnly": true,
+          "bounds": "node centres ± drawn radius",
+          "bbox": {
+            "left": -429.4049094205828,
+            "top": -556.5680158972025,
+            "right": 2029.2504987561929,
+            "bottom": 1556.638472853773,
+            "width": 2458.655408176776,
+            "height": 2113.2064887509755
+          },
+          "viewport": {
+            "width": 1600,
+            "height": 1000
+          },
+          "occupancy": {
+            "x": 1.536659630110485,
+            "y": 2.1132064887509756
+          },
+          "limiting": "y",
+          "centreOffset": {
+            "x": -0.07720533219492154,
+            "y": 0.0352284782852621
+          },
+          "clipped": 213
+        }
+      },
+      "density": {
+        "requested": "balanced",
+        "committed": "balanced",
+        "committedView": "natural/2d/neural/balanced/attested",
+        "requestedCustomNodes": null,
+        "committedCustomNodes": null
+      }
+    },
+    {
+      "id": "natural-neural-3d-balanced-brain",
+      "title": "Natural · Neural · 3D · Bilanciata · Cervello",
+      "file": "natural-neural-3d-balanced-brain.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "neural",
+        "density": "balanced",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": true,
+        "rendering": "3d",
+        "topology": "natural"
+      },
+      "state": {
+        "view": "natural/3d/neural/balanced/attested",
+        "quality": "completa",
+        "nodesVisible": 400,
+        "nodesTotal": 11199,
+        "edgesDrawn": 359,
+        "edgesTotal": 15800
+      },
+      "completeMs": 3860,
+      "densitySwitchMs": null,
+      "stableMs": 2043,
+      "pageErrors": 0,
+      "camera": {
+        "program": [
+          {
+            "op": "zoomAt",
+            "x": 0.5,
+            "y": 0.5,
+            "steps": 6
+          }
+        ],
+        "before": {
+          "state": {
+            "x": 0.7711149041163066,
+            "y": 0.6161149780519981,
+            "angle": 0,
+            "ratio": 2.475256315875165,
+            "bounds": {
+              "x": [
+                -431.7834470022131,
+                398.7807986344652
+              ],
+              "y": [
+                -387.56332495110746,
+                363.77155770800505
+              ]
+            },
+            "orbit": [
+              -0.5213338044735968,
+              -0.21263110997159385,
+              -0.477714417108261,
+              0.6743797232066278
+            ],
+            "targetZ": -6.583282470704489,
+            "framingTangent": 0.39051517844200134,
+            "framingCenterZ": -6.583282470703125
+          },
+          "pose": {
+            "position": [
+              1574.7195727893165,
+              1078.9427202542759,
+              2359.4718214307118
+            ],
+            "target": [
+              208.6770216343466,
+              84.54506553132607,
+              -6.583282470704489
+            ],
+            "up": [
+              0.21130913087034986,
+              0.9063077870366498,
+              0.3659981507706671
+            ],
+            "fov": 42.66279959684757
+          }
+        },
+        "after": {
+          "state": {
+            "x": 0.7718593094017364,
+            "y": 0.61702528901466,
+            "angle": 0,
+            "ratio": 1.833714979657824,
+            "bounds": {
+              "x": [
+                -431.7834470022131,
+                398.7807986344652
+              ],
+              "y": [
+                -387.56332495110746,
+                363.77155770800505
+              ]
+            },
+            "orbit": [
+              -0.5213338044735968,
+              -0.21263110997159385,
+              -0.477714417108261,
+              0.6743797232066278
+            ],
+            "targetZ": -7.258003803611018,
+            "framingTangent": 0.39051517844200134,
+            "framingCenterZ": -6.583282470703125
+          },
+          "pose": {
+            "position": [
+              1221.2845101708272,
+              821.9690384912531,
+              1745.5587283035331
+            ],
+            "target": [
+              209.2952980486876,
+              85.30113726932416,
+              -7.258003803611018
+            ],
+            "up": [
+              0.21130913087034986,
+              0.9063077870366498,
+              0.3659981507706671
+            ],
+            "fov": 42.66279959684757
+          }
+        },
+        "zooms": [
+          {
+            "operation": 0,
+            "factor": 1.3498588075760032,
+            "source": "camera position-target distance",
+            "point": {
+              "x": 800,
+              "y": 500
+            }
+          }
+        ]
+      },
+      "width": 1600,
+      "height": 1000,
+      "jpegQuality": 85,
+      "fullscreen": true,
+      "brandRect": {
+        "x": 16,
+        "y": 12,
+        "width": 82.765625,
+        "height": 23
+      },
+      "framing": {
+        "program": null,
+        "result": null,
+        "measurement": {
+          "subject": "all",
+          "count": 400,
+          "drawnOnly": true,
+          "bounds": "node centres",
+          "bbox": {
+            "left": 500.10551796874586,
+            "top": 303.3367647937389,
+            "right": 896.085375130126,
+            "bottom": 733.5653765575947,
+            "width": 395.9798571613801,
+            "height": 430.22861176385584
+          },
+          "viewport": {
+            "width": 1600,
+            "height": 1000
+          },
+          "occupancy": {
+            "x": 0.24748741072586256,
+            "y": 0.43022861176385585
+          },
+          "limiting": "y",
+          "centreOffset": {
+            "x": -101.9045534505641,
+            "y": 18.45107067566687
+          },
+          "clipped": 0
+        }
+      },
+      "density": {
+        "requested": "balanced",
+        "committed": "balanced",
+        "committedView": "natural/3d/neural/balanced/attested",
+        "requestedCustomNodes": null,
+        "committedCustomNodes": null
+      }
+    },
+    {
+      "id": "natural-mycelium-2d-balanced",
+      "title": "Natural · Mycelium · 2D · Bilanciata",
+      "file": "natural-mycelium-2d-balanced.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "mycelium",
+        "density": "balanced",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "rendering": "2d",
+        "topology": "natural"
+      },
+      "state": {
+        "view": "natural/2d/mycelium/balanced/attested",
+        "quality": "completa",
+        "nodesVisible": 400,
+        "nodesTotal": 11199,
+        "edgesDrawn": 359,
+        "edgesTotal": 15800
+      },
+      "completeMs": 2710,
+      "densitySwitchMs": null,
+      "stableMs": 2027,
+      "pageErrors": 0,
+      "camera": {
+        "program": [
+          {
+            "op": "frame",
+            "subject": "all",
+            "occupancy": 0.85
+          },
+          {
+            "op": "zoomAt",
+            "x": 0.5,
+            "y": 0.5,
+            "steps": 3
+          }
+        ],
+        "before": {
+          "state": {
+            "x": 0.5071400371043416,
+            "y": 0.49919173731516814,
+            "angle": 0,
+            "ratio": 1,
+            "bounds": {
+              "x": [
+                -655.3869178151305,
+                703.1936255681767
+              ],
+              "y": [
+                -618.6106420740804,
+                586.4053429494534
+              ]
+            }
+          },
+          "pose": null
+        },
+        "after": {
+          "state": {
+            "x": 0.5071316311112307,
+            "y": 0.491748885963618,
+            "angle": 0,
+            "ratio": 0.5421611015140967,
+            "bounds": {
+              "x": [
+                -655.3869178151305,
+                703.1936255681767
+              ],
+              "y": [
+                -618.6106420740804,
+                586.4053429494534
+              ]
+            }
+          },
+          "pose": null
+        },
+        "zooms": [
+          {
+            "operation": 1,
+            "factor": 1.9531249999999996,
+            "source": "cameraState ratio",
+            "point": {
+              "x": 800,
+              "y": 500
+            }
+          }
+        ],
+        "frames": [
+          {
+            "operation": 0,
+            "program": {
+              "op": "frame",
+              "subject": "all",
+              "occupancy": 0.85,
+              "tolerance": 0.03,
+              "maxIterations": 12
+            },
+            "effectiveTarget": 0.85,
+            "iterations": [
+              {
+                "iteration": 1,
+                "measurementBefore": {
+                  "subject": "all",
+                  "count": 400,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 274.64976473322207,
+                    "top": 57.8518217828981,
+                    "right": 1325.3324180976565,
+                    "bottom": 957.92396296841,
+                    "width": 1050.6826533644344,
+                    "height": 900.0721411855119
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.6566766583527714,
+                    "y": 0.9000721411855119
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.008908584560685995,
+                    "y": 7.887892375654076
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 1
+                },
+                "pan": {
+                  "method": "page camera state",
+                  "offsetBefore": {
+                    "x": -0.008908584560685995,
+                    "y": 7.887892375654076
+                  },
+                  "cameraDelta": {
+                    "x": -0.000008405993110860436,
+                    "y": -0.007442851351550149
+                  }
+                },
+                "zoom": {
+                  "ratioFrom": 1,
+                  "ratioTo": 1.0589084013947199,
+                  "bracket": {
+                    "near": 1,
+                    "far": null
+                  },
+                  "before": {
+                    "ratio": 1
+                  },
+                  "after": {
+                    "ratio": 1.0589084013947199
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 1.0589084013947199
+                },
+                "measurementAfter": {
+                  "subject": "all",
+                  "count": 400,
+                  "drawnOnly": true,
+                  "bounds": "node centres ± drawn radius",
+                  "bbox": {
+                    "left": 303.80127993972303,
+                    "top": 74.91768355052758,
+                    "right": 1296.1982774316125,
+                    "bottom": 925.0762080510522,
+                    "width": 992.3969974918895,
+                    "height": 850.1585245005245
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.620248123432431,
+                    "y": 0.8501585245005245
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -0.00022131433229333197,
+                    "y": -0.003054199210112074
+                  },
+                  "clipped": 0
+                }
+              }
+            ],
+            "final": {
+              "subject": "all",
+              "count": 400,
+              "drawnOnly": true,
+              "bounds": "node centres ± drawn radius",
+              "bbox": {
+                "left": 303.80127993972303,
+                "top": 74.91768355052758,
+                "right": 1296.1982774316125,
+                "bottom": 925.0762080510522,
+                "width": 992.3969974918895,
+                "height": 850.1585245005245
+              },
+              "viewport": {
+                "width": 1600,
+                "height": 1000
+              },
+              "occupancy": {
+                "x": 0.620248123432431,
+                "y": 0.8501585245005245
+              },
+              "limiting": "y",
+              "centreOffset": {
+                "x": -0.00022131433229333197,
+                "y": -0.003054199210112074
+              },
+              "clipped": 0
+            }
+          }
+        ]
+      },
+      "width": 1600,
+      "height": 1000,
+      "jpegQuality": 85,
+      "fullscreen": true,
+      "brandRect": {
+        "x": 16,
+        "y": 12,
+        "width": 82.765625,
+        "height": 23
+      },
+      "framing": {
+        "program": null,
+        "result": {
+          "operation": 0,
+          "program": {
+            "op": "frame",
+            "subject": "all",
+            "occupancy": 0.85,
+            "tolerance": 0.03,
+            "maxIterations": 12
+          },
+          "effectiveTarget": 0.85,
+          "iterations": [
+            {
+              "iteration": 1,
+              "measurementBefore": {
+                "subject": "all",
+                "count": 400,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 274.64976473322207,
+                  "top": 57.8518217828981,
+                  "right": 1325.3324180976565,
+                  "bottom": 957.92396296841,
+                  "width": 1050.6826533644344,
+                  "height": 900.0721411855119
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.6566766583527714,
+                  "y": 0.9000721411855119
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.008908584560685995,
+                  "y": 7.887892375654076
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 1
+              },
+              "pan": {
+                "method": "page camera state",
+                "offsetBefore": {
+                  "x": -0.008908584560685995,
+                  "y": 7.887892375654076
+                },
+                "cameraDelta": {
+                  "x": -0.000008405993110860436,
+                  "y": -0.007442851351550149
+                }
+              },
+              "zoom": {
+                "ratioFrom": 1,
+                "ratioTo": 1.0589084013947199,
+                "bracket": {
+                  "near": 1,
+                  "far": null
+                },
+                "before": {
+                  "ratio": 1
+                },
+                "after": {
+                  "ratio": 1.0589084013947199
+                }
+              },
+              "cameraAfter": {
+                "ratio": 1.0589084013947199
+              },
+              "measurementAfter": {
+                "subject": "all",
+                "count": 400,
+                "drawnOnly": true,
+                "bounds": "node centres ± drawn radius",
+                "bbox": {
+                  "left": 303.80127993972303,
+                  "top": 74.91768355052758,
+                  "right": 1296.1982774316125,
+                  "bottom": 925.0762080510522,
+                  "width": 992.3969974918895,
+                  "height": 850.1585245005245
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.620248123432431,
+                  "y": 0.8501585245005245
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -0.00022131433229333197,
+                  "y": -0.003054199210112074
+                },
+                "clipped": 0
+              }
+            }
+          ],
+          "final": {
+            "subject": "all",
+            "count": 400,
+            "drawnOnly": true,
+            "bounds": "node centres ± drawn radius",
+            "bbox": {
+              "left": 303.80127993972303,
+              "top": 74.91768355052758,
+              "right": 1296.1982774316125,
+              "bottom": 925.0762080510522,
+              "width": 992.3969974918895,
+              "height": 850.1585245005245
+            },
+            "viewport": {
+              "width": 1600,
+              "height": 1000
+            },
+            "occupancy": {
+              "x": 0.620248123432431,
+              "y": 0.8501585245005245
+            },
+            "limiting": "y",
+            "centreOffset": {
+              "x": -0.00022131433229333197,
+              "y": -0.003054199210112074
+            },
+            "clipped": 0
+          }
+        },
+        "measurement": {
+          "subject": "all",
+          "count": 400,
+          "drawnOnly": true,
+          "bounds": "node centres ± drawn radius",
+          "bbox": {
+            "left": -170.50041330373207,
+            "top": -331.58090482809484,
+            "right": 1770.4882430422194,
+            "bottom": 1331.8505849355008,
+            "width": 1940.9886563459515,
+            "height": 1663.4314897635957
+          },
+          "viewport": {
+            "width": 1600,
+            "height": 1000
+          },
+          "occupancy": {
+            "x": 1.2131179102162197,
+            "y": 1.6634314897635956
+          },
+          "limiting": "y",
+          "centreOffset": {
+            "x": -0.006085130756332546,
+            "y": 0.13484005370298746
+          },
+          "clipped": 122
+        }
+      },
+      "density": {
+        "requested": "balanced",
+        "committed": "balanced",
+        "committedView": "natural/2d/mycelium/balanced/attested",
+        "requestedCustomNodes": null,
+        "committedCustomNodes": null
+      }
+    },
+    {
+      "id": "natural-mycelium-3d-balanced",
+      "title": "Natural · Mycelium · 3D · Bilanciata",
+      "file": "natural-mycelium-3d-balanced.jpg",
+      "view": {
+        "indra": "off",
+        "morphology": "mycelium",
+        "density": "balanced",
+        "reading": "attested",
+        "colour": "bw",
+        "labels": false,
+        "brain": false,
+        "rendering": "3d",
+        "topology": "natural"
+      },
+      "state": {
+        "view": "natural/3d/mycelium/balanced/attested",
+        "quality": "completa",
+        "nodesVisible": 400,
+        "nodesTotal": 11199,
+        "edgesDrawn": 359,
+        "edgesTotal": 15800
+      },
+      "completeMs": 3223,
+      "densitySwitchMs": null,
+      "stableMs": 2029,
+      "pageErrors": 0,
+      "camera": {
+        "program": [
+          {
+            "op": "frame",
+            "subject": "all",
+            "bounds": "visible",
+            "occupancy": 0.85
+          }
+        ],
+        "before": {
+          "state": {
+            "x": 0.47477552172798304,
+            "y": 0.5717578348534289,
+            "angle": 0,
+            "ratio": 1.2847368400067116,
+            "bounds": {
+              "x": [
+                -218.8008273011073,
+                288.16466286007847
+              ],
+              "y": [
+                -224.72144729468465,
+                230.64863356658984
+              ]
+            },
+            "orbit": [
+              -0.5213338044735968,
+              -0.21263110997159385,
+              -0.477714417108261,
+              0.6743797232066278
+            ],
+            "targetZ": -17.71286773681686,
+            "framingTangent": 0.3755786418914795,
+            "framingCenterZ": -17.712867736816406
+          },
+          "pose": {
+            "position": [
+              454.6702021258782,
+              354.37766656934286,
+              731.8775411237779
+            ],
+            "target": [
+              21.89397778825233,
+              39.3423390553266,
+              -17.71286773681686
+            ],
+            "up": [
+              0.21130913087034986,
+              0.9063077870366498,
+              0.3659981507706671
+            ],
+            "fov": 41.17021195933925
+          }
+        },
+        "after": {
+          "state": {
+            "x": 0.44941802674451337,
+            "y": 0.49808689553187885,
+            "angle": 0,
+            "ratio": 0.9853122489824211,
+            "bounds": {
+              "x": [
+                -218.8008273011073,
+                288.16466286007847
+              ],
+              "y": [
+                -224.72144729468465,
+                230.64863356658984
+              ]
+            },
+            "orbit": [
+              -0.5213338044735968,
+              -0.21263110997159385,
+              -0.477714417108261,
+              0.6743797232066278
+            ],
+            "targetZ": -17.712867736816065,
+            "framingTangent": 0.3755786418914795,
+            "framingCenterZ": -17.712867736816406
+          },
+          "pose": {
+            "position": [
+              340.95071256199276,
+              243.60597179977262,
+              557.1757698196711
+            ],
+            "target": [
+              9.038602914697819,
+              1.9937151915419984,
+              -17.712867736816065
+            ],
+            "up": [
+              0.21130913087034986,
+              0.9063077870366498,
+              0.3659981507706671
+            ],
+            "fov": 41.17021195933925
+          }
+        },
+        "zooms": [],
+        "frames": [
+          {
+            "operation": 0,
+            "program": {
+              "op": "frame",
+              "subject": "all",
+              "bounds": "visible",
+              "occupancy": 0.85,
+              "tolerance": 0.03,
+              "maxIterations": 12
+            },
+            "effectiveTarget": 0.85,
+            "iterations": [
+              {
+                "iteration": 1,
+                "measurementBefore": {
+                  "subject": "visible",
+                  "count": 17591,
+                  "bounds": "visible structure (stars, background glow and title excluded)",
+                  "bbox": {
+                    "left": 382,
+                    "top": 256,
+                    "right": 1166,
+                    "bottom": 866,
+                    "width": 784,
+                    "height": 610
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.49,
+                    "y": 0.61
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -26,
+                    "y": 61
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 1.2847368400067116,
+                  "distance": 921.1016767923009
+                },
+                "pan": {
+                  "method": "page camera state",
+                  "offsetBefore": {
+                    "x": -26,
+                    "y": 61
+                  },
+                  "cameraDelta": {
+                    "x": 0.009601717435839631,
+                    "y": -0.08600975055202825
+                  }
+                },
+                "zoom": null,
+                "cameraAfter": {
+                  "ratio": 1.284736840006712,
+                  "distance": 921.1016767923011
+                },
+                "measurementAfter": {
+                  "subject": "visible",
+                  "count": 18085,
+                  "bounds": "visible structure (stars, background glow and title excluded)",
+                  "bbox": {
+                    "left": 366,
+                    "top": 182,
+                    "right": 1164,
+                    "bottom": 796,
+                    "width": 798,
+                    "height": 614
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.49875,
+                    "y": 0.614
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -35,
+                    "y": -11
+                  },
+                  "clipped": 0
+                }
+              },
+              {
+                "iteration": 2,
+                "measurementBefore": {
+                  "subject": "visible",
+                  "count": 18085,
+                  "bounds": "visible structure (stars, background glow and title excluded)",
+                  "bbox": {
+                    "left": 366,
+                    "top": 182,
+                    "right": 1164,
+                    "bottom": 796,
+                    "width": 798,
+                    "height": 614
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.49875,
+                    "y": 0.614
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -35,
+                    "y": -11
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 1.284736840006712,
+                  "distance": 921.1016767923011
+                },
+                "pan": {
+                  "method": "page camera state",
+                  "offsetBefore": {
+                    "x": -35,
+                    "y": -11
+                  },
+                  "cameraDelta": {
+                    "x": -0.05003711903184034,
+                    "y": 0.01014265926321088
+                  }
+                },
+                "zoom": null,
+                "cameraAfter": {
+                  "ratio": 1.284736840006712,
+                  "distance": 921.1016767923011
+                },
+                "measurementAfter": {
+                  "subject": "visible",
+                  "count": 18571,
+                  "bounds": "visible structure (stars, background glow and title excluded)",
+                  "bbox": {
+                    "left": 396,
+                    "top": 194,
+                    "right": 1210,
+                    "bottom": 820,
+                    "width": 814,
+                    "height": 626
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.50875,
+                    "y": 0.626
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": 3,
+                    "y": 7
+                  },
+                  "clipped": 0
+                }
+              },
+              {
+                "iteration": 3,
+                "measurementBefore": {
+                  "subject": "visible",
+                  "count": 18571,
+                  "bounds": "visible structure (stars, background glow and title excluded)",
+                  "bbox": {
+                    "left": 396,
+                    "top": 194,
+                    "right": 1210,
+                    "bottom": 820,
+                    "width": 814,
+                    "height": 626
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.50875,
+                    "y": 0.626
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": 3,
+                    "y": 7
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 1.284736840006712,
+                  "distance": 921.1016767923011
+                },
+                "pan": {
+                  "method": "page camera state",
+                  "offsetBefore": {
+                    "x": 3,
+                    "y": 7
+                  },
+                  "cameraDelta": {
+                    "x": 0.008384598324254328,
+                    "y": -0.009060775608468387
+                  }
+                },
+                "zoom": {
+                  "ratioFrom": 1.284736840006712,
+                  "ratioTo": 0.9431479860755156,
+                  "bracket": {
+                    "near": null,
+                    "far": 1.284736840006712
+                  },
+                  "before": {
+                    "ratio": 1.284736840006712,
+                    "distance": 921.1016767923011
+                  },
+                  "after": {
+                    "ratio": 0.9431479860755156,
+                    "distance": 676.196995668701
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 0.9431479860755156,
+                  "distance": 676.196995668701
+                },
+                "measurementAfter": {
+                  "subject": "visible",
+                  "count": 31398,
+                  "bounds": "visible structure (stars, background glow and title excluded)",
+                  "bbox": {
+                    "left": 222,
+                    "top": 44,
+                    "right": 1386,
+                    "bottom": 934,
+                    "width": 1164,
+                    "height": 890
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.7275,
+                    "y": 0.89
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": 4,
+                    "y": -11
+                  },
+                  "clipped": 0
+                }
+              },
+              {
+                "iteration": 4,
+                "measurementBefore": {
+                  "subject": "visible",
+                  "count": 31398,
+                  "bounds": "visible structure (stars, background glow and title excluded)",
+                  "bbox": {
+                    "left": 222,
+                    "top": 44,
+                    "right": 1386,
+                    "bottom": 934,
+                    "width": 1164,
+                    "height": 890
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.7275,
+                    "y": 0.89
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": 4,
+                    "y": -11
+                  },
+                  "clipped": 0
+                },
+                "cameraBefore": {
+                  "ratio": 0.9431479860755156,
+                  "distance": 676.196995668701
+                },
+                "pan": {
+                  "method": "page camera state",
+                  "offsetBefore": {
+                    "x": 4,
+                    "y": -11
+                  },
+                  "cameraDelta": {
+                    "x": 0.006693308288277852,
+                    "y": 0.011256927575740023
+                  }
+                },
+                "zoom": {
+                  "ratioFrom": 0.9431479860755156,
+                  "ratioTo": 0.985312248982421,
+                  "bracket": {
+                    "near": 0.9431479860755156,
+                    "far": 1.284736840006712
+                  },
+                  "before": {
+                    "ratio": 0.9431479860755156,
+                    "distance": 676.196995668701
+                  },
+                  "after": {
+                    "ratio": 0.9853122489824211,
+                    "distance": 706.4269790044782
+                  }
+                },
+                "cameraAfter": {
+                  "ratio": 0.9853122489824211,
+                  "distance": 706.4269790044782
+                },
+                "measurementAfter": {
+                  "subject": "visible",
+                  "count": 29097,
+                  "bounds": "visible structure (stars, background glow and title excluded)",
+                  "bbox": {
+                    "left": 252,
+                    "top": 80,
+                    "right": 1344,
+                    "bottom": 922,
+                    "width": 1092,
+                    "height": 842
+                  },
+                  "viewport": {
+                    "width": 1600,
+                    "height": 1000
+                  },
+                  "occupancy": {
+                    "x": 0.6825,
+                    "y": 0.842
+                  },
+                  "limiting": "y",
+                  "centreOffset": {
+                    "x": -2,
+                    "y": 1
+                  },
+                  "clipped": 0
+                }
+              }
+            ],
+            "final": {
+              "subject": "visible",
+              "count": 29097,
+              "bounds": "visible structure (stars, background glow and title excluded)",
+              "bbox": {
+                "left": 252,
+                "top": 80,
+                "right": 1344,
+                "bottom": 922,
+                "width": 1092,
+                "height": 842
+              },
+              "viewport": {
+                "width": 1600,
+                "height": 1000
+              },
+              "occupancy": {
+                "x": 0.6825,
+                "y": 0.842
+              },
+              "limiting": "y",
+              "centreOffset": {
+                "x": -2,
+                "y": 1
+              },
+              "clipped": 0
+            }
+          }
+        ]
+      },
+      "width": 1600,
+      "height": 1000,
+      "jpegQuality": 85,
+      "fullscreen": true,
+      "brandRect": {
+        "x": 16,
+        "y": 12,
+        "width": 82.765625,
+        "height": 23
+      },
+      "framing": {
+        "program": {
+          "op": "frame",
+          "subject": "all",
+          "bounds": "visible",
+          "occupancy": 0.85
+        },
+        "result": {
+          "operation": 0,
+          "program": {
+            "op": "frame",
+            "subject": "all",
+            "bounds": "visible",
+            "occupancy": 0.85,
+            "tolerance": 0.03,
+            "maxIterations": 12
+          },
+          "effectiveTarget": 0.85,
+          "iterations": [
+            {
+              "iteration": 1,
+              "measurementBefore": {
+                "subject": "visible",
+                "count": 17591,
+                "bounds": "visible structure (stars, background glow and title excluded)",
+                "bbox": {
+                  "left": 382,
+                  "top": 256,
+                  "right": 1166,
+                  "bottom": 866,
+                  "width": 784,
+                  "height": 610
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.49,
+                  "y": 0.61
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -26,
+                  "y": 61
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 1.2847368400067116,
+                "distance": 921.1016767923009
+              },
+              "pan": {
+                "method": "page camera state",
+                "offsetBefore": {
+                  "x": -26,
+                  "y": 61
+                },
+                "cameraDelta": {
+                  "x": 0.009601717435839631,
+                  "y": -0.08600975055202825
+                }
+              },
+              "zoom": null,
+              "cameraAfter": {
+                "ratio": 1.284736840006712,
+                "distance": 921.1016767923011
+              },
+              "measurementAfter": {
+                "subject": "visible",
+                "count": 18085,
+                "bounds": "visible structure (stars, background glow and title excluded)",
+                "bbox": {
+                  "left": 366,
+                  "top": 182,
+                  "right": 1164,
+                  "bottom": 796,
+                  "width": 798,
+                  "height": 614
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.49875,
+                  "y": 0.614
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -35,
+                  "y": -11
+                },
+                "clipped": 0
+              }
+            },
+            {
+              "iteration": 2,
+              "measurementBefore": {
+                "subject": "visible",
+                "count": 18085,
+                "bounds": "visible structure (stars, background glow and title excluded)",
+                "bbox": {
+                  "left": 366,
+                  "top": 182,
+                  "right": 1164,
+                  "bottom": 796,
+                  "width": 798,
+                  "height": 614
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.49875,
+                  "y": 0.614
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -35,
+                  "y": -11
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 1.284736840006712,
+                "distance": 921.1016767923011
+              },
+              "pan": {
+                "method": "page camera state",
+                "offsetBefore": {
+                  "x": -35,
+                  "y": -11
+                },
+                "cameraDelta": {
+                  "x": -0.05003711903184034,
+                  "y": 0.01014265926321088
+                }
+              },
+              "zoom": null,
+              "cameraAfter": {
+                "ratio": 1.284736840006712,
+                "distance": 921.1016767923011
+              },
+              "measurementAfter": {
+                "subject": "visible",
+                "count": 18571,
+                "bounds": "visible structure (stars, background glow and title excluded)",
+                "bbox": {
+                  "left": 396,
+                  "top": 194,
+                  "right": 1210,
+                  "bottom": 820,
+                  "width": 814,
+                  "height": 626
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.50875,
+                  "y": 0.626
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": 3,
+                  "y": 7
+                },
+                "clipped": 0
+              }
+            },
+            {
+              "iteration": 3,
+              "measurementBefore": {
+                "subject": "visible",
+                "count": 18571,
+                "bounds": "visible structure (stars, background glow and title excluded)",
+                "bbox": {
+                  "left": 396,
+                  "top": 194,
+                  "right": 1210,
+                  "bottom": 820,
+                  "width": 814,
+                  "height": 626
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.50875,
+                  "y": 0.626
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": 3,
+                  "y": 7
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 1.284736840006712,
+                "distance": 921.1016767923011
+              },
+              "pan": {
+                "method": "page camera state",
+                "offsetBefore": {
+                  "x": 3,
+                  "y": 7
+                },
+                "cameraDelta": {
+                  "x": 0.008384598324254328,
+                  "y": -0.009060775608468387
+                }
+              },
+              "zoom": {
+                "ratioFrom": 1.284736840006712,
+                "ratioTo": 0.9431479860755156,
+                "bracket": {
+                  "near": null,
+                  "far": 1.284736840006712
+                },
+                "before": {
+                  "ratio": 1.284736840006712,
+                  "distance": 921.1016767923011
+                },
+                "after": {
+                  "ratio": 0.9431479860755156,
+                  "distance": 676.196995668701
+                }
+              },
+              "cameraAfter": {
+                "ratio": 0.9431479860755156,
+                "distance": 676.196995668701
+              },
+              "measurementAfter": {
+                "subject": "visible",
+                "count": 31398,
+                "bounds": "visible structure (stars, background glow and title excluded)",
+                "bbox": {
+                  "left": 222,
+                  "top": 44,
+                  "right": 1386,
+                  "bottom": 934,
+                  "width": 1164,
+                  "height": 890
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.7275,
+                  "y": 0.89
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": 4,
+                  "y": -11
+                },
+                "clipped": 0
+              }
+            },
+            {
+              "iteration": 4,
+              "measurementBefore": {
+                "subject": "visible",
+                "count": 31398,
+                "bounds": "visible structure (stars, background glow and title excluded)",
+                "bbox": {
+                  "left": 222,
+                  "top": 44,
+                  "right": 1386,
+                  "bottom": 934,
+                  "width": 1164,
+                  "height": 890
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.7275,
+                  "y": 0.89
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": 4,
+                  "y": -11
+                },
+                "clipped": 0
+              },
+              "cameraBefore": {
+                "ratio": 0.9431479860755156,
+                "distance": 676.196995668701
+              },
+              "pan": {
+                "method": "page camera state",
+                "offsetBefore": {
+                  "x": 4,
+                  "y": -11
+                },
+                "cameraDelta": {
+                  "x": 0.006693308288277852,
+                  "y": 0.011256927575740023
+                }
+              },
+              "zoom": {
+                "ratioFrom": 0.9431479860755156,
+                "ratioTo": 0.985312248982421,
+                "bracket": {
+                  "near": 0.9431479860755156,
+                  "far": 1.284736840006712
+                },
+                "before": {
+                  "ratio": 0.9431479860755156,
+                  "distance": 676.196995668701
+                },
+                "after": {
+                  "ratio": 0.9853122489824211,
+                  "distance": 706.4269790044782
+                }
+              },
+              "cameraAfter": {
+                "ratio": 0.9853122489824211,
+                "distance": 706.4269790044782
+              },
+              "measurementAfter": {
+                "subject": "visible",
+                "count": 29097,
+                "bounds": "visible structure (stars, background glow and title excluded)",
+                "bbox": {
+                  "left": 252,
+                  "top": 80,
+                  "right": 1344,
+                  "bottom": 922,
+                  "width": 1092,
+                  "height": 842
+                },
+                "viewport": {
+                  "width": 1600,
+                  "height": 1000
+                },
+                "occupancy": {
+                  "x": 0.6825,
+                  "y": 0.842
+                },
+                "limiting": "y",
+                "centreOffset": {
+                  "x": -2,
+                  "y": 1
+                },
+                "clipped": 0
+              }
+            }
+          ],
+          "final": {
+            "subject": "visible",
+            "count": 29097,
+            "bounds": "visible structure (stars, background glow and title excluded)",
+            "bbox": {
+              "left": 252,
+              "top": 80,
+              "right": 1344,
+              "bottom": 922,
+              "width": 1092,
+              "height": 842
+            },
+            "viewport": {
+              "width": 1600,
+              "height": 1000
+            },
+            "occupancy": {
+              "x": 0.6825,
+              "y": 0.842
+            },
+            "limiting": "y",
+            "centreOffset": {
+              "x": -2,
+              "y": 1
+            },
+            "clipped": 0
+          }
+        },
+        "measurement": {
+          "subject": "visible",
+          "count": 29097,
+          "bounds": "visible structure (stars, background glow and title excluded)",
+          "bbox": {
+            "left": 252,
+            "top": 80,
+            "right": 1344,
+            "bottom": 922,
+            "width": 1092,
+            "height": 842
+          },
+          "viewport": {
+            "width": 1600,
+            "height": 1000
+          },
+          "occupancy": {
+            "x": 0.6825,
+            "y": 0.842
+          },
+          "limiting": "y",
+          "centreOffset": {
+            "x": -2,
+            "y": 1
+          },
+          "clipped": 0
+        }
+      },
+      "density": {
+        "requested": "balanced",
+        "committed": "balanced",
+        "committedView": "natural/3d/mycelium/balanced/attested",
+        "requestedCustomNodes": null,
+        "committedCustomNodes": null
+      }
+    },
+    {
       "id": "interface",
       "title": "The whole page: Natural · 3D · Completa",
       "file": "interface.jpg",
