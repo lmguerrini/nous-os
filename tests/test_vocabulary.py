@@ -139,7 +139,7 @@ UNDETECTED_VOCABULARY_SHAPES = (
 #: structural-change check diffs against this fixed point rather than a moving
 #: branch tip, so that a later commit cannot silently widen what "no structural
 #: change" is measured against.
-CAPABILITY_BASE_SHA = "7783dbaf64adc16f7aec01c71974a5d751dc545d"
+CAPABILITY_BASE_SHA = "6b86ea6ff2c97e731e283afe24a26f321e199f09"
 
 #: The commit this capability's work ENDED at. Pinned for the same reason the
 #: base is: the claim being checked is that *this* capability's adoption moved
@@ -148,7 +148,7 @@ CAPABILITY_BASE_SHA = "7783dbaf64adc16f7aec01c71974a5d751dc545d"
 #: report every later capability's legitimate work as a violation of a claim
 #: that was never made about it — a check turning red while nothing is wrong,
 #: which costs exactly as much trust as one that cannot turn red at all.
-CAPABILITY_HEAD_SHA = "0e4c52633515973c9be50b868b9cce23608facf9"
+CAPABILITY_HEAD_SHA = "b77a66e267ac22873fbf8a4b7bd8e4abd08b02cb"
 
 #: Every closed-vocabulary base the standard ``enum`` module exports. A class
 #: deriving from any of these, under an alias or dotted (``enum.StrEnum``), is
