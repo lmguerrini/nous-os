@@ -59,7 +59,7 @@ The gallery uses invented demo data. Each overview is centred, with its drawn gr
 
 ### Explore at different scales
 
-Each close-up is centred on one cluster through the page's own camera, after the render stabilised; nothing is cropped or enlarged, and the density, counts and camera of every view are recorded in the manifest. At Balanced a cluster's nodes are spread across the compact Balanced layout, so the 2D close-ups use Custom with 2,000 nodes, where each cluster keeps its own disc. In 3D, Custom draws those nodes faintly among long relations, so the 3D close-up stays at Complete.
+Each close-up is centred on one cluster through the page's own camera, after the render stabilised; nothing is cropped or enlarged, and the density, counts and camera of every view are recorded in the manifest. At Balanced a cluster's nodes are spread across the compact Balanced layout, so the 2D close-ups use Custom with 2,000 nodes, where each cluster keeps its own disc.
 
 [![Natural · Stellar · 2D · Custom 2,000 · a small cluster and its links](docs/assets/gallery/natural-stellar-2d-custom-detail-links.jpg)](docs/assets/gallery/natural-stellar-2d-custom-detail-links.jpg)
 
@@ -68,10 +68,6 @@ Natural · Stellar · 2D · Custom (2,000 nodes), centred on a small cluster: al
 [![Natural · Stellar · 2D · Custom 2,000 · nodes of one cluster](docs/assets/gallery/natural-stellar-2d-custom-detail-cluster.jpg)](docs/assets/gallery/natural-stellar-2d-custom-detail-cluster.jpg)
 
 Natural · Stellar · 2D · Custom (2,000 nodes), centred on another cluster: all 187 of its nodes around its hub.
-
-[![Natural · Stellar · 3D · Complete · one source and its proposals](docs/assets/gallery/natural-stellar-3d-complete-detail-source.jpg)](docs/assets/gallery/natural-stellar-3d-complete-detail-source.jpg)
-
-Natural · Stellar · 3D · Complete, rotated by a short drag and centred on one source: the source node, its 61 proposals (many overlapping at this distance) and their relations.
 
 ### Other topologies at Complete · experimental Geometry Lab
 
