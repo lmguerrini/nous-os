@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
-
-import pytest
 
 from benchmarks.report import generate_report, render_report
 from tests.test_metrics import _artifact
@@ -20,10 +19,10 @@ def test_report_is_a_fixed_point(tmp_path: Path) -> None:
     assert first == second == output_path.read_text(encoding="utf-8")
 
 
-def test_tracked_report_matches_its_repo_artifact_when_both_exist() -> None:
-    report_path = Path("docs/CAP-15-RETRIEVAL.md")
-    if not report_path.exists():
-        pytest.skip("tracked report is not present")
+def test_no_retrieval_artifact_or_generated_report_is_tracked() -> None:
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], check=True, capture_output=True
+    ).stdout.decode("utf-8").split("\0")
     required = {
         "corpus",
         "bridges",
@@ -34,18 +33,18 @@ def test_tracked_report_matches_its_repo_artifact_when_both_exist() -> None:
         "arms",
     }
     matches = []
-    for candidate in Path(".").glob("**/*.json"):
-        if ".git" in candidate.parts or "node_modules" in candidate.parts:
+    for relative in tracked:
+        if not relative.endswith(".json"):
             continue
+        candidate = Path(relative)
         try:
             payload = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         if isinstance(payload, dict) and required <= payload.keys():
-            matches.append((candidate, payload))
-    assert len(matches) == 1, "a tracked report needs exactly one retrieval artifact"
-    _, artifact = matches[0]
-    assert report_path.read_text(encoding="utf-8") == render_report(artifact)
+            matches.append(candidate)
+    assert not matches, f"retrieval artifacts must not be tracked: {matches}"
+    assert "docs/CAP-15-RETRIEVAL.md" not in tracked
 
 
 def test_report_comparison_detects_a_changed_measured_number() -> None:

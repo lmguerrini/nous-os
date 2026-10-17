@@ -18,7 +18,7 @@ The two excluded semantic modules need local ONNX checkpoints; resolution is loc
 
 ## Context compilation
 
-The six assembly-strategy families were compared on a private evaluation corpus: five were measured and none beat the plain strategy, which is the default; the sixth could not be measured on that corpus and is recorded as unmeasured rather than as a tie (see `DEFAULT_STRATEGY` in [`src/nous_os/compile.py`](../src/nous_os/compile.py)). Evaluation distinguishes including a source pair from including the cited passages. Retrieval arms are compared separately in [retrieval measurement](CAP-15-RETRIEVAL.md).
+The six assembly-strategy families were compared on a private evaluation corpus: five were measured and none beat the plain strategy, which is the default; the sixth could not be measured on that corpus and is recorded as unmeasured rather than as a tie (see `DEFAULT_STRATEGY` in [`src/nous_os/compile.py`](../src/nous_os/compile.py)). Evaluation distinguishes including a source pair from including the cited passages. Retrieval arms are compared separately in [retrieval measurement](RETRIEVAL-MEASUREMENT.md).
 
 ## Measured on synthetic data
 

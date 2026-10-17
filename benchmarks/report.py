@@ -264,7 +264,7 @@ def render_report(artifact: Mapping[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def generate_report(artifact_path: Path, output_path: Path = Path("docs/CAP-15-RETRIEVAL.md")) -> str:
+def generate_report(artifact_path: Path, output_path: Path) -> str:
     """Load one artifact and write its generated Markdown report atomically enough for tests."""
     try:
         artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -277,11 +277,11 @@ def generate_report(artifact_path: Path, output_path: Path = Path("docs/CAP-15-R
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Generate the fixed report path from the one required artifact argument."""
+    """Generate a report from an artifact at an explicit output path."""
     arguments = sys.argv[1:] if argv is None else argv
-    if len(arguments) != 1:
-        raise ReportError("usage: python3 benchmarks/report.py ARTIFACT.json")
-    generate_report(Path(arguments[0]))
+    if len(arguments) != 2:
+        raise ReportError("usage: python3 benchmarks/report.py ARTIFACT.json OUTPUT.md")
+    generate_report(Path(arguments[0]), Path(arguments[1]))
     return 0
 
 
