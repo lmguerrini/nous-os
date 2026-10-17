@@ -59,7 +59,7 @@ The gallery uses invented demo data. Each overview is centred, with its drawn gr
 
 ### Explore at different scales
 
-These two views show the same cluster at two camera distances. Only the distance changes: the dataset, density, node style, palette and orientation stay the same. Both are real captures through the page's own camera after the render stabilised; nothing is cropped or enlarged, and the manifest records each camera. At Balanced a cluster's nodes are spread across the compact Balanced layout, so this pair uses Custom with 2,000 nodes, where each cluster keeps its own disc.
+These two views show the same cluster at two camera distances. Only the distance changes: the dataset, density, node style, palette and orientation stay the same. Both are real captures through the page's own camera after the render stabilised; nothing is cropped or enlarged, and the manifest records each camera. At Balanced a cluster's nodes are spread across the compact Balanced layout, so this pair uses the Custom density set to 2,000 nodes, where each cluster is drawn as a separate disc.
 
 [![Natural · Stellar · 2D · Custom 2,000 · one cluster in context](docs/assets/gallery/natural-stellar-2d-custom-scale-cluster.jpg)](docs/assets/gallery/natural-stellar-2d-custom-scale-cluster.jpg)
 
@@ -79,7 +79,7 @@ A morphology is the drawing style of nodes and relations. In Natural it also sel
 | Neural | [![Neural 2D Balanced, closer view](docs/assets/gallery/natural-neural-2d-balanced.jpg)](docs/assets/gallery/natural-neural-2d-balanced.jpg)<br>Neural · 2D · closer view (×2.4) | [![Neural 3D Balanced inside the brain outline](docs/assets/gallery/natural-neural-3d-balanced-brain.jpg)](docs/assets/gallery/natural-neural-3d-balanced-brain.jpg)<br>Neural · 3D · «Cervello» (Brain) on |
 | Mycelium | [![Mycelium 2D Balanced, closer view](docs/assets/gallery/natural-mycelium-2d-balanced.jpg)](docs/assets/gallery/natural-mycelium-2d-balanced.jpg)<br>Mycelium · 2D · closer view (×2) | [![Mycelium 3D Balanced](docs/assets/gallery/natural-mycelium-3d-balanced.jpg)](docs/assets/gallery/natural-mycelium-3d-balanced.jpg)<br>Mycelium · 3D · whole graph |
 
-The camera adapts to each morphology. Stellar and Mycelium 3D show the whole graph. Neural 2D and Mycelium 2D are about 2.4 and 2 times closer than the whole-graph view, at the same centre: from that distance Neural's branches are drawn too faint to see, and Mycelium's threads merge into one tangle. Neural 3D shows the whole brain, a decorative outline around the graph, 1.35 times closer than the page's fitted view.
+The camera adapts to each morphology. Both Stellar views and Mycelium 3D show the whole graph. Neural 2D and Mycelium 2D are about 2.4 and 2 times closer than the whole-graph view, at the same centre: from that distance Neural's branches are drawn too faint to see, and Mycelium's threads merge into one tangle. Neural 3D shows the whole brain, a decorative outline around the graph, 1.35 times closer than the page's automatic framing.
 
 ### Other topologies at Complete · experimental Geometry Lab
 
@@ -164,7 +164,7 @@ nous-os/
 - **Node sizes and clicks, on synthetic data.** A browser test covered 60 combinations of arrangement, node style, 2D or 3D, and the nested grouping called Indra, on or off. All 60 reached Complete. In 46, node sizes stayed within 1% when the density changed; in the others the largest change was about twice the size (2D Canopy without Indra). Clicks selected the intended node 440 times out of 561; in dense views a click can select a neighbour.
 - **Larger synthetic graphs.** On one machine, every arrangement also reached Complete in 3D on synthetic graphs of 15,000 and 20,000 nodes. This is one local measurement, not a performance guarantee.
 - **A larger private graph.** On a private dataset larger than the demo, 54 of the 60 combinations opened and could be measured: five 3D views did not reach Complete within a 90-second test, and one 2D combination (Julia with Indra and the Neural style) is refused by design. Node sizes stayed within 1% in 40 of the 54. After choosing Complete on a large 3D view, the density control and the URL could update only after the drawing finished.
-- **Display details.** Some arrangement guides can stay in an earlier position after the page fits the view, until the camera next moves. Nodes outside the camera can be clipped.
+- **Display details.** Some arrangement guides can stay in an earlier position after the page fits the view, until the camera next moves. Nodes outside the camera can be clipped. In 2D at Balanced, the Neural style seen from the whole-graph distance draws its branches almost black; they appear about twice as close.
 - **What was not checked.** Only Chromium was tested; touch screens, keyboard navigation inside the graph and screen readers were not. Six visual checks still need a person to judge the rendered images. The automated checks (CI) run the Python tests, the type check and the commit-message check, not the browser tests, which need a real graphics card. The semantic search tests need model files stored on your machine. More detail is in [verification and limits](docs/VERIFICATION-AND-LIMITS.md).
 
 ## Documentation

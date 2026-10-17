@@ -44,6 +44,7 @@ These observations used a development build of the review page on a larger priva
 - Only Chromium was verified for the review page. Touch devices, keyboard navigation inside the canvas, and screen readers were not verified.
 - In 3D Julia with Indra, a node's glow halo can vary with which nodes the atlas admits; its core size and centre do not.
 - Nodes outside the camera can be clipped.
+- In 2D Neural at Balanced on the demo dataset, the view from the whole-graph distance is almost black (mean brightness about 2% of white); the branches become visible about twice as close, as in the gallery's Neural 2D view.
 - After the page fits the view or restores a camera without a gesture (for example on entering fullscreen), Llull's figure, Sierpiński's outline and Julia's rays can keep an earlier placement until the camera next moves.
 - Llull requires exactly nine root domains.
 - Julia with Indra is refused when the atlas cannot be certified legible at its mounted scale. With labels hidden, its legibility certificate can fail because the «+N» badges are hidden.
