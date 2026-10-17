@@ -11,11 +11,11 @@
   "deviceScaleFactor": 2,
   "browser": "Chromium 151.0.7922.34",
   "platform": "darwin arm64",
-  "capturedOn": "2026-10-16",
+  "capturedOn": "2026-10-17",
   "images": [
     {
       "id": "natural-2d-complete",
-      "title": "Natural \u00b7 2D \u00b7 Completa",
+      "title": "Natural · 2D · Completa",
       "file": "natural-2d-complete.jpg",
       "view": {
         "indra": "off",
@@ -93,7 +93,7 @@
     },
     {
       "id": "natural-3d-complete",
-      "title": "Natural \u00b7 3D \u00b7 Completa",
+      "title": "Natural · 3D · Completa",
       "file": "natural-3d-complete.jpg",
       "view": {
         "indra": "off",
@@ -221,7 +221,7 @@
     },
     {
       "id": "canopy-2d-complete",
-      "title": "Canopy \u00b7 2D \u00b7 Completa",
+      "title": "Canopy · 2D · Completa",
       "file": "canopy-2d-complete.jpg",
       "view": {
         "indra": "off",
@@ -311,7 +311,7 @@
                   "subject": "all",
                   "count": 11199,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 168.0130531719862,
                     "top": 166.65793765892178,
@@ -370,7 +370,7 @@
                   "subject": "all",
                   "count": 11199,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 120.0348150740864,
                     "top": 137.29806526585097,
@@ -400,7 +400,7 @@
               "subject": "all",
               "count": 11199,
               "drawnOnly": true,
-              "bounds": "node centres \u00b1 drawn radius",
+              "bounds": "node centres ± drawn radius",
               "bbox": {
                 "left": 120.0348150740864,
                 "top": 137.29806526585097,
@@ -460,7 +460,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 168.0130531719862,
                   "top": 166.65793765892178,
@@ -519,7 +519,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 120.0348150740864,
                   "top": 137.29806526585097,
@@ -549,7 +549,7 @@
             "subject": "all",
             "count": 11199,
             "drawnOnly": true,
-            "bounds": "node centres \u00b1 drawn radius",
+            "bounds": "node centres ± drawn radius",
             "bbox": {
               "left": 120.0348150740864,
               "top": 137.29806526585097,
@@ -578,7 +578,7 @@
           "subject": "all",
           "count": 11199,
           "drawnOnly": true,
-          "bounds": "node centres \u00b1 drawn radius",
+          "bounds": "node centres ± drawn radius",
           "bbox": {
             "left": 120.0348150740864,
             "top": 137.29806526585097,
@@ -613,7 +613,7 @@
     },
     {
       "id": "canopy-3d-complete",
-      "title": "Canopy \u00b7 3D \u00b7 Completa",
+      "title": "Canopy · 3D · Completa",
       "file": "canopy-3d-complete.jpg",
       "view": {
         "indra": "off",
@@ -1223,7 +1223,7 @@
     },
     {
       "id": "sierpinski-2d-complete",
-      "title": "Sierpi\u0144ski \u00b7 2D \u00b7 Completa",
+      "title": "Sierpiński · 2D · Completa",
       "file": "sierpinski-2d-complete.jpg",
       "view": {
         "indra": "off",
@@ -1313,7 +1313,7 @@
                   "subject": "all",
                   "count": 11199,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 331.7599681691755,
                     "top": 44.01067772344037,
@@ -1359,7 +1359,7 @@
                   "subject": "all",
                   "count": 11199,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 331.12639463707103,
                     "top": 66.1961523576109,
@@ -1378,8 +1378,8 @@
                   },
                   "limiting": "y",
                   "centreOffset": {
-                    "x": -2.5849853955151048e-06,
-                    "y": -1.4343753434786777e-05
+                    "x": -0.0000025849853955151048,
+                    "y": -0.000014343753434786777
                   },
                   "clipped": 0
                 }
@@ -1389,7 +1389,7 @@
               "subject": "all",
               "count": 11199,
               "drawnOnly": true,
-              "bounds": "node centres \u00b1 drawn radius",
+              "bounds": "node centres ± drawn radius",
               "bbox": {
                 "left": 331.12639463707103,
                 "top": 66.1961523576109,
@@ -1408,8 +1408,8 @@
               },
               "limiting": "y",
               "centreOffset": {
-                "x": -2.5849853955151048e-06,
-                "y": -1.4343753434786777e-05
+                "x": -0.0000025849853955151048,
+                "y": -0.000014343753434786777
               },
               "clipped": 0
             }
@@ -1449,7 +1449,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 331.7599681691755,
                   "top": 44.01067772344037,
@@ -1495,7 +1495,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 331.12639463707103,
                   "top": 66.1961523576109,
@@ -1514,8 +1514,8 @@
                 },
                 "limiting": "y",
                 "centreOffset": {
-                  "x": -2.5849853955151048e-06,
-                  "y": -1.4343753434786777e-05
+                  "x": -0.0000025849853955151048,
+                  "y": -0.000014343753434786777
                 },
                 "clipped": 0
               }
@@ -1525,7 +1525,7 @@
             "subject": "all",
             "count": 11199,
             "drawnOnly": true,
-            "bounds": "node centres \u00b1 drawn radius",
+            "bounds": "node centres ± drawn radius",
             "bbox": {
               "left": 331.12639463707103,
               "top": 66.1961523576109,
@@ -1544,8 +1544,8 @@
             },
             "limiting": "y",
             "centreOffset": {
-              "x": -2.5849853955151048e-06,
-              "y": -1.4343753434786777e-05
+              "x": -0.0000025849853955151048,
+              "y": -0.000014343753434786777
             },
             "clipped": 0
           }
@@ -1554,7 +1554,7 @@
           "subject": "all",
           "count": 11199,
           "drawnOnly": true,
-          "bounds": "node centres \u00b1 drawn radius",
+          "bounds": "node centres ± drawn radius",
           "bbox": {
             "left": 331.12639463707103,
             "top": 66.1961523576109,
@@ -1573,8 +1573,8 @@
           },
           "limiting": "y",
           "centreOffset": {
-            "x": -2.5849853955151048e-06,
-            "y": -1.4343753434786777e-05
+            "x": -0.0000025849853955151048,
+            "y": -0.000014343753434786777
           },
           "clipped": 0
         }
@@ -1589,7 +1589,7 @@
     },
     {
       "id": "sierpinski-3d-complete",
-      "title": "Sierpi\u0144ski \u00b7 3D \u00b7 Completa",
+      "title": "Sierpiński · 3D · Completa",
       "file": "sierpinski-3d-complete.jpg",
       "view": {
         "indra": "off",
@@ -2346,7 +2346,7 @@
     },
     {
       "id": "llull-2d-complete",
-      "title": "Llull \u00b7 2D \u00b7 Completa",
+      "title": "Llull · 2D · Completa",
       "file": "llull-2d-complete.jpg",
       "view": {
         "indra": "off",
@@ -2436,7 +2436,7 @@
                   "subject": "all",
                   "count": 11199,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 352.4434979342567,
                     "top": 95.51415742069263,
@@ -2495,7 +2495,7 @@
                   "subject": "all",
                   "count": 11199,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 368.378010516255,
                     "top": 74.78246704919432,
@@ -2514,8 +2514,8 @@
                   },
                   "limiting": "y",
                   "centreOffset": {
-                    "x": 4.76837158203125e-05,
-                    "y": -6.206734849456552e-05
+                    "x": 0.0000476837158203125,
+                    "y": -0.00006206734849456552
                   },
                   "clipped": 0
                 }
@@ -2525,7 +2525,7 @@
               "subject": "all",
               "count": 11199,
               "drawnOnly": true,
-              "bounds": "node centres \u00b1 drawn radius",
+              "bounds": "node centres ± drawn radius",
               "bbox": {
                 "left": 368.378010516255,
                 "top": 74.78246704919432,
@@ -2544,8 +2544,8 @@
               },
               "limiting": "y",
               "centreOffset": {
-                "x": 4.76837158203125e-05,
-                "y": -6.206734849456552e-05
+                "x": 0.0000476837158203125,
+                "y": -0.00006206734849456552
               },
               "clipped": 0
             }
@@ -2585,7 +2585,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 352.4434979342567,
                   "top": 95.51415742069263,
@@ -2644,7 +2644,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 368.378010516255,
                   "top": 74.78246704919432,
@@ -2663,8 +2663,8 @@
                 },
                 "limiting": "y",
                 "centreOffset": {
-                  "x": 4.76837158203125e-05,
-                  "y": -6.206734849456552e-05
+                  "x": 0.0000476837158203125,
+                  "y": -0.00006206734849456552
                 },
                 "clipped": 0
               }
@@ -2674,7 +2674,7 @@
             "subject": "all",
             "count": 11199,
             "drawnOnly": true,
-            "bounds": "node centres \u00b1 drawn radius",
+            "bounds": "node centres ± drawn radius",
             "bbox": {
               "left": 368.378010516255,
               "top": 74.78246704919432,
@@ -2693,8 +2693,8 @@
             },
             "limiting": "y",
             "centreOffset": {
-              "x": 4.76837158203125e-05,
-              "y": -6.206734849456552e-05
+              "x": 0.0000476837158203125,
+              "y": -0.00006206734849456552
             },
             "clipped": 0
           }
@@ -2703,7 +2703,7 @@
           "subject": "all",
           "count": 11199,
           "drawnOnly": true,
-          "bounds": "node centres \u00b1 drawn radius",
+          "bounds": "node centres ± drawn radius",
           "bbox": {
             "left": 368.378010516255,
             "top": 74.78246704919432,
@@ -2722,8 +2722,8 @@
           },
           "limiting": "y",
           "centreOffset": {
-            "x": 4.76837158203125e-05,
-            "y": -6.206734849456552e-05
+            "x": 0.0000476837158203125,
+            "y": -0.00006206734849456552
           },
           "clipped": 0
         }
@@ -2738,7 +2738,7 @@
     },
     {
       "id": "llull-3d-complete",
-      "title": "Llull \u00b7 3D \u00b7 Completa",
+      "title": "Llull · 3D · Completa",
       "file": "llull-3d-complete.jpg",
       "view": {
         "indra": "off",
@@ -3190,7 +3190,7 @@
     },
     {
       "id": "julia-2d-complete",
-      "title": "Julia \u00b7 2D \u00b7 Completa",
+      "title": "Julia · 2D · Completa",
       "file": "julia-2d-complete.jpg",
       "view": {
         "indra": "off",
@@ -3280,7 +3280,7 @@
                   "subject": "all",
                   "count": 11199,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 395.0401569410064,
                     "top": 101.24768729112864,
@@ -3332,7 +3332,7 @@
                   "subject": "all",
                   "count": 11199,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 371.32877610291916,
                     "top": 77.8926774814669,
@@ -3362,7 +3362,7 @@
               "subject": "all",
               "count": 11199,
               "drawnOnly": true,
-              "bounds": "node centres \u00b1 drawn radius",
+              "bounds": "node centres ± drawn radius",
               "bbox": {
                 "left": 371.32877610291916,
                 "top": 77.8926774814669,
@@ -3422,7 +3422,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 395.0401569410064,
                   "top": 101.24768729112864,
@@ -3474,7 +3474,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 371.32877610291916,
                   "top": 77.8926774814669,
@@ -3504,7 +3504,7 @@
             "subject": "all",
             "count": 11199,
             "drawnOnly": true,
-            "bounds": "node centres \u00b1 drawn radius",
+            "bounds": "node centres ± drawn radius",
             "bbox": {
               "left": 371.32877610291916,
               "top": 77.8926774814669,
@@ -3533,7 +3533,7 @@
           "subject": "all",
           "count": 11199,
           "drawnOnly": true,
-          "bounds": "node centres \u00b1 drawn radius",
+          "bounds": "node centres ± drawn radius",
           "bbox": {
             "left": 371.32877610291916,
             "top": 77.8926774814669,
@@ -3568,7 +3568,7 @@
     },
     {
       "id": "julia-3d-complete",
-      "title": "Julia \u00b7 3D \u00b7 Completa",
+      "title": "Julia · 3D · Completa",
       "file": "julia-3d-complete.jpg",
       "view": {
         "indra": "off",
@@ -3589,12 +3589,18 @@
         "edgesDrawn": 14050,
         "edgesTotal": 15800
       },
-      "completeMs": 5826,
+      "completeMs": 4815,
       "densitySwitchMs": null,
-      "stableMs": 2248,
+      "stableMs": 2230,
       "pageErrors": 0,
       "camera": {
         "program": [
+          {
+            "op": "orbit",
+            "dx": 0,
+            "dy": 110,
+            "steps": 10
+          },
           {
             "op": "zoomAt",
             "x": 0.5,
@@ -3624,6 +3630,7 @@
               -0.477714417108261,
               0.6743797232066278
             ],
+            "targetZ": 1,
             "framingTangent": 0.39427515864372253,
             "framingCenterZ": 1
           },
@@ -3648,8 +3655,8 @@
         },
         "after": {
           "state": {
-            "x": 0.5601622678746457,
-            "y": 0.566079848773635,
+            "x": 0.560162267874645,
+            "y": 0.5660798487736359,
             "angle": 0,
             "ratio": 0.8607079764250579,
             "bounds": {
@@ -3663,60 +3670,131 @@
               ]
             },
             "orbit": [
-              -0.5213338044735968,
-              -0.21263110997159385,
-              -0.477714417108261,
-              0.6743797232066278
+              -0.5957038027506156,
+              -0.3254103885212513,
+              -0.38096847558355246,
+              0.6277802792716956
             ],
-            "targetZ": 1,
+            "targetZ": 0.9999999999999947,
             "framingTangent": 0.39427515864372253,
             "framingCenterZ": 1
           },
           "pose": {
             "position": [
-              7.282611314309113,
-              5.5006949701357035,
-              12.319522010378249
+              6.090503562643439,
+              9.646972809627778,
+              10.254730816396606
             ],
             "target": [
-              0.7472822345193393,
-              0.7433644577800902,
-              1
+              0.7472822345193304,
+              0.7433644577801004,
+              0.9999999999999947
             ],
             "up": [
-              0.21130913087034986,
-              0.9063077870366498,
-              0.3659981507706671
+              0.04531629009889032,
+              0.9958843986159703,
+              0.07849011686180773
             ],
             "fov": 43.03617178716777
           }
         },
         "zooms": [
           {
-            "operation": 0,
-            "factor": 1.1618342427282828,
+            "operation": 1,
+            "factor": 1.1618342427282833,
             "source": "camera position-target distance",
             "point": {
               "x": 800,
               "y": 500
             }
           }
-        ]
+        ],
+        "orbits": [
+          {
+            "operation": 0,
+            "before": [
+              -0.5213338044735968,
+              -0.21263110997159385,
+              -0.477714417108261,
+              0.6743797232066278
+            ],
+            "after": [
+              -0.5957038027506156,
+              -0.3254103885212513,
+              -0.38096847558355246,
+              0.6277802792716956
+            ]
+          }
+        ],
+        "orbit": {
+          "before": [
+            -0.5213338044735968,
+            -0.21263110997159385,
+            -0.477714417108261,
+            0.6743797232066278
+          ],
+          "after": [
+            -0.5957038027506156,
+            -0.3254103885212513,
+            -0.38096847558355246,
+            0.6277802792716956
+          ]
+        }
       },
       "width": 1600,
       "height": 1000,
-      "jpegQuality": 85,
+      "jpegQuality": 84,
+      "jpegQualityReason": "byte-level safety pattern in the encoded bytes",
       "fullscreen": true,
       "brandRect": {
         "x": 16,
         "y": 12,
         "width": 82.765625,
         "height": 23
+      },
+      "framing": {
+        "program": null,
+        "result": null,
+        "measurement": {
+          "subject": "all",
+          "count": 11199,
+          "drawnOnly": true,
+          "bounds": "node centres",
+          "bbox": {
+            "left": 319.7748390127376,
+            "top": 69.42504759102702,
+            "right": 1230.6294543822687,
+            "bottom": 928.2478090530393,
+            "width": 910.8546153695311,
+            "height": 858.8227614620123
+          },
+          "viewport": {
+            "width": 1600,
+            "height": 1000
+          },
+          "occupancy": {
+            "x": 0.569284134605957,
+            "y": 0.8588227614620123
+          },
+          "limiting": "y",
+          "centreOffset": {
+            "x": -24.797853302496833,
+            "y": -1.1635716779668428
+          },
+          "clipped": 0
+        }
+      },
+      "density": {
+        "requested": "complete",
+        "committed": "complete",
+        "committedView": "lab/julia/3d/stellar/complete/attested",
+        "requestedCustomNodes": null,
+        "committedCustomNodes": null
       }
     },
     {
       "id": "neural-3d-brain",
-      "title": "Neural \u00b7 3D \u00b7 Completa \u00b7 Cervello",
+      "title": "Neural · 3D · Completa · Cervello",
       "file": "neural-3d-brain.jpg",
       "view": {
         "indra": "off",
@@ -3844,7 +3922,7 @@
     },
     {
       "id": "mycelium-2d-complete",
-      "title": "Mycelium \u00b7 2D \u00b7 Completa",
+      "title": "Mycelium · 2D · Completa",
       "file": "mycelium-2d-complete.jpg",
       "view": {
         "indra": "off",
@@ -3922,7 +4000,7 @@
     },
     {
       "id": "exploratory-3d-complete",
-      "title": "Esplorativa connections \u00b7 3D \u00b7 Completa",
+      "title": "Esplorativa connections · 3D · Completa",
       "file": "exploratory-3d-complete.jpg",
       "view": {
         "indra": "off",
@@ -4050,7 +4128,7 @@
     },
     {
       "id": "natural-2d-essential",
-      "title": "Natural \u00b7 2D \u00b7 Essenziale",
+      "title": "Natural · 2D · Essenziale",
       "file": "natural-2d-essential.jpg",
       "view": {
         "indra": "off",
@@ -4128,7 +4206,7 @@
     },
     {
       "id": "natural-2d-balanced",
-      "title": "Natural \u00b7 2D \u00b7 Bilanciata",
+      "title": "Natural · 2D · Bilanciata",
       "file": "natural-2d-balanced.jpg",
       "view": {
         "indra": "off",
@@ -4206,7 +4284,7 @@
     },
     {
       "id": "natural-stellar-2d-complete",
-      "title": "Natural \u00b7 Stellar \u00b7 2D \u00b7 Completa",
+      "title": "Natural · Stellar · 2D · Completa",
       "file": "natural-stellar-2d-complete.jpg",
       "view": {
         "indra": "off",
@@ -4304,7 +4382,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 423.55018802480953,
                   "top": 113.1918501273349,
@@ -4356,7 +4434,7 @@
                 "subject": "all",
                 "count": 11199,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 388.9299141207349,
                   "top": 77.6165286224071,
@@ -4386,7 +4464,7 @@
             "subject": "all",
             "count": 11199,
             "drawnOnly": true,
-            "bounds": "node centres \u00b1 drawn radius",
+            "bounds": "node centres ± drawn radius",
             "bbox": {
               "left": 388.9299141207349,
               "top": 77.6165286224071,
@@ -4415,7 +4493,7 @@
           "subject": "all",
           "count": 11199,
           "drawnOnly": true,
-          "bounds": "node centres \u00b1 drawn radius",
+          "bounds": "node centres ± drawn radius",
           "bbox": {
             "left": 388.9299141207349,
             "top": 77.6165286224071,
@@ -4450,7 +4528,7 @@
     },
     {
       "id": "natural-stellar-2d-balanced",
-      "title": "Natural \u00b7 Stellar \u00b7 2D \u00b7 Bilanciata",
+      "title": "Natural · Stellar · 2D · Bilanciata",
       "file": "natural-stellar-2d-balanced.jpg",
       "view": {
         "indra": "off",
@@ -4548,7 +4626,7 @@
                 "subject": "all",
                 "count": 400,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 282.2207825245858,
                   "top": 74.2553173440879,
@@ -4582,7 +4660,7 @@
                   "y": 7.608134548624889
                 },
                 "cameraDelta": {
-                  "x": -2.4628455628781373e-05,
+                  "x": -0.000024628455628781373,
                   "y": -0.00690782877949729
                 }
               },
@@ -4594,7 +4672,7 @@
                 "subject": "all",
                 "count": 400,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 282.2478668751717,
                   "top": 66.64714206637794,
@@ -4613,8 +4691,8 @@
                 },
                 "limiting": "y",
                 "centreOffset": {
-                  "x": -4.104243862457224e-05,
-                  "y": -4.072908507168904e-05
+                  "x": -0.00004104243862457224,
+                  "y": -0.00004072908507168904
                 },
                 "clipped": 0
               }
@@ -4624,7 +4702,7 @@
             "subject": "all",
             "count": 400,
             "drawnOnly": true,
-            "bounds": "node centres \u00b1 drawn radius",
+            "bounds": "node centres ± drawn radius",
             "bbox": {
               "left": 282.2478668751717,
               "top": 66.64714206637794,
@@ -4643,8 +4721,8 @@
             },
             "limiting": "y",
             "centreOffset": {
-              "x": -4.104243862457224e-05,
-              "y": -4.072908507168904e-05
+              "x": -0.00004104243862457224,
+              "y": -0.00004072908507168904
             },
             "clipped": 0
           }
@@ -4653,7 +4731,7 @@
           "subject": "all",
           "count": 400,
           "drawnOnly": true,
-          "bounds": "node centres \u00b1 drawn radius",
+          "bounds": "node centres ± drawn radius",
           "bbox": {
             "left": 282.2478668751717,
             "top": 66.64714206637794,
@@ -4672,8 +4750,8 @@
           },
           "limiting": "y",
           "centreOffset": {
-            "x": -4.104243862457224e-05,
-            "y": -4.072908507168904e-05
+            "x": -0.00004104243862457224,
+            "y": -0.00004072908507168904
           },
           "clipped": 0
         }
@@ -4688,7 +4766,7 @@
     },
     {
       "id": "natural-stellar-3d-complete",
-      "title": "Natural \u00b7 Stellar \u00b7 3D \u00b7 Completa",
+      "title": "Natural · Stellar · 3D · Completa",
       "file": "natural-stellar-3d-complete.jpg",
       "view": {
         "indra": "off",
@@ -4995,7 +5073,7 @@
     },
     {
       "id": "natural-stellar-3d-balanced",
-      "title": "Natural \u00b7 Stellar \u00b7 3D \u00b7 Bilanciata",
+      "title": "Natural · Stellar · 3D · Bilanciata",
       "file": "natural-stellar-3d-balanced.jpg",
       "view": {
         "indra": "off",
@@ -5287,7 +5365,7 @@
     },
     {
       "id": "natural-stellar-2d-custom-detail-links",
-      "title": "Natural \u00b7 Stellar \u00b7 2D \u00b7 Custom 2000 \u00b7 small cluster and its links",
+      "title": "Natural · Stellar · 2D · Custom 2000 · small cluster and its links",
       "file": "natural-stellar-2d-custom-detail-links.jpg",
       "view": {
         "indra": "off",
@@ -5390,7 +5468,7 @@
                   },
                   "count": 144,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 782.4229639443741,
                     "top": 74.95493206555489,
@@ -5453,7 +5531,7 @@
                   },
                   "count": 144,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 732.7497238056814,
                     "top": 432.7474979506936,
@@ -5488,7 +5566,7 @@
                   },
                   "count": 144,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 732.7497238056814,
                     "top": 432.7474979506936,
@@ -5544,7 +5622,7 @@
                   },
                   "count": 144,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 667.614340421909,
                     "top": 367.67179537384834,
@@ -5579,7 +5657,7 @@
                   },
                   "count": 144,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 667.614340421909,
                     "top": 367.67179537384834,
@@ -5635,7 +5713,7 @@
                   },
                   "count": 144,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 540.7975861955655,
                     "top": 240.8509972627497,
@@ -5670,7 +5748,7 @@
                   },
                   "count": 144,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 540.7975861955655,
                     "top": 240.8509972627497,
@@ -5726,7 +5804,7 @@
                   },
                   "count": 144,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 452.67248203101246,
                     "top": 152.71619858455887,
@@ -5760,7 +5838,7 @@
               },
               "count": 144,
               "drawnOnly": true,
-              "bounds": "node centres \u00b1 drawn radius",
+              "bounds": "node centres ± drawn radius",
               "bbox": {
                 "left": 452.67248203101246,
                 "top": 152.71619858455887,
@@ -5880,7 +5958,7 @@
                 },
                 "count": 144,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 782.4229639443741,
                   "top": 74.95493206555489,
@@ -5943,7 +6021,7 @@
                 },
                 "count": 144,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 732.7497238056814,
                   "top": 432.7474979506936,
@@ -5978,7 +6056,7 @@
                 },
                 "count": 144,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 732.7497238056814,
                   "top": 432.7474979506936,
@@ -6034,7 +6112,7 @@
                 },
                 "count": 144,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 667.614340421909,
                   "top": 367.67179537384834,
@@ -6069,7 +6147,7 @@
                 },
                 "count": 144,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 667.614340421909,
                   "top": 367.67179537384834,
@@ -6125,7 +6203,7 @@
                 },
                 "count": 144,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 540.7975861955655,
                   "top": 240.8509972627497,
@@ -6160,7 +6238,7 @@
                 },
                 "count": 144,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 540.7975861955655,
                   "top": 240.8509972627497,
@@ -6216,7 +6294,7 @@
                 },
                 "count": 144,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 452.67248203101246,
                   "top": 152.71619858455887,
@@ -6250,7 +6328,7 @@
             },
             "count": 144,
             "drawnOnly": true,
-            "bounds": "node centres \u00b1 drawn radius",
+            "bounds": "node centres ± drawn radius",
             "bbox": {
               "left": 452.67248203101246,
               "top": 152.71619858455887,
@@ -6283,7 +6361,7 @@
           },
           "count": 144,
           "drawnOnly": true,
-          "bounds": "node centres \u00b1 drawn radius",
+          "bounds": "node centres ± drawn radius",
           "bbox": {
             "left": 452.67248203101246,
             "top": 152.71619858455887,
@@ -6318,7 +6396,7 @@
     },
     {
       "id": "natural-stellar-2d-custom-detail-cluster",
-      "title": "Natural \u00b7 Stellar \u00b7 2D \u00b7 Custom 2000 \u00b7 nodes of one cluster",
+      "title": "Natural · Stellar · 2D · Custom 2000 · nodes of one cluster",
       "file": "natural-stellar-2d-custom-detail-cluster.jpg",
       "view": {
         "indra": "off",
@@ -6421,7 +6499,7 @@
                   },
                   "count": 187,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 860.4102203122068,
                     "top": 863.216927404724,
@@ -6484,7 +6562,7 @@
                   },
                   "count": 187,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 726.070297865583,
                     "top": 426.1890036199725,
@@ -6519,7 +6597,7 @@
                   },
                   "count": 187,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 726.070297865583,
                     "top": 426.1890036199725,
@@ -6575,7 +6653,7 @@
                   },
                   "count": 187,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 654.0727986785898,
                     "top": 354.2694434543642,
@@ -6610,7 +6688,7 @@
                   },
                   "count": 187,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 654.0727986785898,
                     "top": 354.2694434543642,
@@ -6666,7 +6744,7 @@
                   },
                   "count": 187,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 513.5228697446736,
                     "top": 213.93836652856896,
@@ -6701,7 +6779,7 @@
                   },
                   "count": 187,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 513.5228697446736,
                     "top": 213.93836652856896,
@@ -6757,7 +6835,7 @@
                   },
                   "count": 187,
                   "drawnOnly": true,
-                  "bounds": "node centres \u00b1 drawn radius",
+                  "bounds": "node centres ± drawn radius",
                   "bbox": {
                     "left": 450.89677052228774,
                     "top": 151.41155372104504,
@@ -6791,7 +6869,7 @@
               },
               "count": 187,
               "drawnOnly": true,
-              "bounds": "node centres \u00b1 drawn radius",
+              "bounds": "node centres ± drawn radius",
               "bbox": {
                 "left": 450.89677052228774,
                 "top": 151.41155372104504,
@@ -6910,7 +6988,7 @@
                 },
                 "count": 187,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 860.4102203122068,
                   "top": 863.216927404724,
@@ -6973,7 +7051,7 @@
                 },
                 "count": 187,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 726.070297865583,
                   "top": 426.1890036199725,
@@ -7008,7 +7086,7 @@
                 },
                 "count": 187,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 726.070297865583,
                   "top": 426.1890036199725,
@@ -7064,7 +7142,7 @@
                 },
                 "count": 187,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 654.0727986785898,
                   "top": 354.2694434543642,
@@ -7099,7 +7177,7 @@
                 },
                 "count": 187,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 654.0727986785898,
                   "top": 354.2694434543642,
@@ -7155,7 +7233,7 @@
                 },
                 "count": 187,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 513.5228697446736,
                   "top": 213.93836652856896,
@@ -7190,7 +7268,7 @@
                 },
                 "count": 187,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 513.5228697446736,
                   "top": 213.93836652856896,
@@ -7246,7 +7324,7 @@
                 },
                 "count": 187,
                 "drawnOnly": true,
-                "bounds": "node centres \u00b1 drawn radius",
+                "bounds": "node centres ± drawn radius",
                 "bbox": {
                   "left": 450.89677052228774,
                   "top": 151.41155372104504,
@@ -7280,7 +7358,7 @@
             },
             "count": 187,
             "drawnOnly": true,
-            "bounds": "node centres \u00b1 drawn radius",
+            "bounds": "node centres ± drawn radius",
             "bbox": {
               "left": 450.89677052228774,
               "top": 151.41155372104504,
@@ -7313,7 +7391,7 @@
           },
           "count": 187,
           "drawnOnly": true,
-          "bounds": "node centres \u00b1 drawn radius",
+          "bounds": "node centres ± drawn radius",
           "bbox": {
             "left": 450.89677052228774,
             "top": 151.41155372104504,
@@ -7348,7 +7426,7 @@
     },
     {
       "id": "natural-stellar-3d-complete-detail-source",
-      "title": "Natural \u00b7 Stellar \u00b7 3D \u00b7 Completa \u00b7 one source and its proposals",
+      "title": "Natural · Stellar · 3D · Completa · one source and its proposals",
       "file": "natural-stellar-3d-complete-detail-source.jpg",
       "view": {
         "indra": "off",
@@ -8016,7 +8094,7 @@
                     "y": -25.123088833791826
                   },
                   "cameraDelta": {
-                    "x": 5.5674626702741605e-05,
+                    "x": 0.000055674626702741605,
                     "y": 0.0006252644532343944
                   }
                 },
@@ -9084,7 +9162,7 @@
                   "y": -25.123088833791826
                 },
                 "cameraDelta": {
-                  "x": 5.5674626702741605e-05,
+                  "x": 0.000055674626702741605,
                   "y": 0.0006252644532343944
                 }
               },
@@ -9510,7 +9588,7 @@
     },
     {
       "id": "interface",
-      "title": "The whole page: Natural \u00b7 3D \u00b7 Completa",
+      "title": "The whole page: Natural · 3D · Completa",
       "file": "interface.jpg",
       "view": {
         "indra": "off",

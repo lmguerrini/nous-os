@@ -75,7 +75,7 @@ export const GALLERY = [
   { id: 'llull-2d-complete', title: 'Llull · 2D · Completa', view: { ...base, rendering: '2d', topology: 'circular-combinatorial' }, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'llull-3d-complete', title: 'Llull · 3D · Completa', view: { ...base, rendering: '3d', topology: 'circular-combinatorial' }, frame: { subject: 'all', occupancy: 0.85 } },
   { id: 'julia-2d-complete', title: 'Julia · 2D · Completa', view: { ...base, rendering: '2d', topology: 'julia' }, frame: { subject: 'all', occupancy: 0.85 } },
-  { id: 'julia-3d-complete', title: 'Julia · 3D · Completa', view: { ...base, rendering: '3d', topology: 'julia' }, camera: [{ op: 'zoomAt', x: 0.5, y: 0.5, steps: 3 }] },
+  { id: 'julia-3d-complete', title: 'Julia · 3D · Completa', view: { ...base, rendering: '3d', topology: 'julia' }, camera: [{ op: 'orbit', dx: 0, dy: 110, steps: 10 }, { op: 'zoomAt', x: 0.5, y: 0.5, steps: 3 }] },
   { id: 'neural-3d-brain', title: 'Neural · 3D · Completa · Cervello', view: { ...base, morphology: 'neural', brain: true, rendering: '3d', topology: 'natural' } },
   { id: 'mycelium-2d-complete', title: 'Mycelium · 2D · Completa', view: { ...base, morphology: 'mycelium', rendering: '2d', topology: 'natural' } },
   { id: 'exploratory-3d-complete', title: 'Esplorativa connections · 3D · Completa', view: { ...base, reading: 'exploratory', rendering: '3d', topology: 'natural' } },
