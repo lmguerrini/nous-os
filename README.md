@@ -18,9 +18,9 @@ The same knowledge can be explored as an interactive graph. You can view it in t
 
 Information often gets separated from its evidence. A note may repeat a statement without its source, lose the date when it applied, or hide a later correction. Search can also return a fragment that is hard to interpret without its surrounding passage. These gaps make it difficult to check what is known and how it changed.
 
-NousOS closes those gaps: each statement keeps its source, its dates and its history, so it can be checked rather than taken on trust.
+NousOS helps close those gaps: each statement keeps its source, its dates and its history, so it can be checked rather than taken on trust.
 
-Bringing memory and visual exploration together is the point: the graph shows clusters and possible connections at a glance, and every node still leads back to its sources. That makes NousOS useful both for finding evidence and for seeing the shape of a body of knowledge.
+Bringing memory and visual exploration together is the point: the graph shows clusters and possible connections at a glance, and the records in it still lead back to their sources. That makes NousOS useful both for finding evidence and for seeing the shape of a body of knowledge.
 
 ## What you can do
 
