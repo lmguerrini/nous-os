@@ -289,11 +289,10 @@ def test_the_scanner_detects_what_it_claims_to() -> None:
 # check.
 
 
-def _readme_layout_entries() -> set[str]:
-    """Module filenames named inside the README's layout block."""
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    inside = text.split("```", 2)
-    block = next((part for part in inside if "src/" in part and "nous_os/" in part), "")
+def _repository_layout_module_entries() -> set[str]:
+    """Module filenames named in the full repository layout document."""
+    text = (REPO_ROOT / "docs" / "REPOSITORY-LAYOUT.md").read_text(encoding="utf-8")
+    block = next((part for part in text.split("```") if "__init__.py" in part), "")
     return {
         word
         for line in block.splitlines()
@@ -302,24 +301,47 @@ def _readme_layout_entries() -> set[str]:
     }
 
 
-def test_the_readme_layout_names_every_tracked_module() -> None:
+def test_the_repository_layout_names_every_tracked_module() -> None:
     tracked = {
         path.name
         for path in (REPO_ROOT / "src" / "nous_os").glob("*.py")
         if path.name != "__init__.py" or True
     }
-    described = _readme_layout_entries()
+    described = _repository_layout_module_entries()
     missing = tracked - described
     assert not missing, (
-        f"the README's layout omits modules that exist: {sorted(missing)}. "
+        f"the repository layout omits modules that exist: {sorted(missing)}. "
         "The document claims to describe what exists."
     )
 
 
-def test_the_readme_layout_names_nothing_that_does_not_exist() -> None:
+def test_the_repository_layout_names_nothing_that_does_not_exist() -> None:
     tracked = {path.name for path in (REPO_ROOT / "src" / "nous_os").glob("*.py")}
-    invented = _readme_layout_entries() - tracked
-    assert not invented, f"the README's layout names files that do not exist: {sorted(invented)}"
+    invented = _repository_layout_module_entries() - tracked
+    assert not invented, f"the repository layout names files that do not exist: {sorted(invented)}"
+
+
+def test_the_readme_layout_paths_exist_in_the_repository() -> None:
+    """Every visible path in the short README tree resolves in this checkout."""
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    section = text.split("## Repository layout", 1)[1].split("\n## ", 1)[0]
+    block = next((part for part in section.split("```") if "# " in part), "")
+    stack: list[tuple[int, str]] = []
+    paths: set[str] = set()
+    for line in block.splitlines():
+        if "── " not in line:
+            continue
+        marker = min(i for i in (line.find("├──"), line.find("└──")) if i >= 0)
+        depth = marker // 4
+        item = line.split("── ", 1)[1].split("  # ", 1)[0].strip().rstrip("/")
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        path = "/".join([part for _, part in stack] + [item])
+        paths.add(path)
+        if line.split("  # ", 1)[0].rstrip().endswith("/"):
+            stack.append((depth, item))
+    missing = sorted(path for path in paths if not (REPO_ROOT / path).exists())
+    assert not missing, f"the README layout names paths that do not exist: {missing}"
 
 
 def test_the_readme_does_not_call_a_shipped_area_unbuilt() -> None:

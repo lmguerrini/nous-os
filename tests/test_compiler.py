@@ -828,9 +828,10 @@ def test_the_default_strategy_is_named_and_is_the_measured_one() -> None:
     )
 
 
-def test_the_readme_does_not_claim_the_unmeasured_family_was_beaten() -> None:
-    """The public text reported an unmeasured family as a tie, reversing a
-    distinction the measurement deliberately drew."""
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "unmeasured rather than as a tie" in text
-    assert "six were compared, none beat" not in text
+def test_public_text_keeps_the_unmeasured_family_distinct() -> None:
+    """Keep the unmeasured family distinct from the measured outcomes."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    limits = (REPO_ROOT / "docs" / "VERIFICATION-AND-LIMITS.md").read_text(encoding="utf-8")
+    assert "unmeasured rather than as a tie" in limits
+    assert "six were compared, none beat" not in readme
+    assert "six were compared, none beat" not in limits

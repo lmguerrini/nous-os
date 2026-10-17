@@ -1,42 +1,54 @@
 # NousOS
 
-A local-first knowledge system that keeps searchable claims connected to their sources, history, and relationships.
+A knowledge system that keeps every statement connected to its source, its history and its relationships, and lets you explore them as an interactive 2D or 3D graph.
 
-[![Natural · Stellar · 3D · Complete](docs/assets/gallery/natural-stellar-3d-complete.jpg)](docs/assets/gallery/natural-stellar-3d-complete.jpg)
+[![NousOS · Natural · Stellar · 3D · Complete](docs/assets/gallery/natural-stellar-3d-complete.jpg)](docs/assets/gallery/natural-stellar-3d-complete.jpg)
 
-## What NousOS does
+*The Natural arrangement in 3D at Complete density, drawn from invented demo data.*
 
-Notes and search can surface a claim while losing where it came from, when it applied, or whether later evidence superseded it. NousOS is a Python library with a local command line, stdio JSON-RPC interface, and browser graph review page. It connects verifiable memory—citations to exact source bytes and human-gated promotion—with visual exploration of the same knowledge as a graph: the graph is projected from the cited records, so its nodes and relations keep their evidence links and review details. You can open the synthetic demo graph in a browser and follow a short memory walkthrough on a synthetic corpus.
+## What it is
 
-- Search returns readable hits, including for questions with punctuation; context can be retrieved around a hit.
-- Citations identify byte ranges in immutable snapshots, so quoted text can be checked against the stored source bytes.
-- Claims retain valid time (when they applied) and recording time (when learned); superseded claims remain in history and disagreements appear as conflicts.
-- A proposal never becomes canon automatically. A person decides whether to promote it through a separate review action.
-- Attested connections are backed by cited records. Exploratory connections are inferences with explanations; drawing one does not make it evidence.
-- Explore the graph across Natural and experimental Geometry Lab topologies, three node morphologies, 2D and 3D views, and density presets.
-- This repository contains synthetic data only. It does not include a private corpus.
-- Local by default: store locations come from configuration, nothing guesses where a corpus lives, the command line and stdio JSON-RPC open no network listener, and the review page serves only on loopback.
+NousOS is a tool for keeping useful knowledge together with where it came from. It helps people search notes and documents, check the source behind a statement, and explore how pieces of knowledge relate to one another.
 
-## What V1 implements
+A search result is more than a line of text. Each quotation points to the exact bytes in an unchanged copy of its source. That makes it possible to check the wording against the original. A claim can also say when it was true and when it was learned. Older versions remain in its history. A suggestion does not become accepted knowledge until a person reviews and approves it.
 
-| Area | Implemented capability |
-|---|---|
-| Canonical storage | Stable identity, immutable snapshots, append-only ingest history, citations, and assertion versions. |
-| Derived state | Rebuildable full-text index and optional semantic index. |
-| Time and evidence | Provenance, two time axes, supersession history, and visible disagreement. |
-| Human control | Candidate proposals, discovery, adjudication, and separate human review for promotion. |
-| Context | Deterministic context compilation with recorded inputs. |
-| Interfaces | Command line and stdio JSON-RPC from one operation catalogue. |
-| Projections | Renderer-independent graph projections and validated review dataset builder/server. |
-| Visual review | 2D/3D, Natural and four experimental topologies, Indra organization, three morphologies, density controls, and relation readings. |
-| Demo | Seeded synthetic knowledge base generator and review-page dataset. |
+The same knowledge can be explored as an interactive graph. You can view it in two or three dimensions, choose different arrangements and node styles, and adjust how many nodes appear—from a light overview to every node. The graph is another way to explore the cited records, not a replacement for their sources.
 
+## Why it matters
+
+Information often gets separated from its evidence. A note may repeat a statement without its source, lose the date when it applied, or hide a later correction. Search can also return a fragment that is hard to interpret without its surrounding passage. These gaps make it difficult to check what is known and how it changed.
+
+NousOS closes those gaps: each statement keeps its source, its dates and its history, so it can be checked rather than taken on trust.
+
+Bringing memory and visual exploration together is the point: the graph shows clusters and possible connections at a glance, and every node still leads back to its sources. That makes NousOS useful both for finding evidence and for seeing the shape of a body of knowledge.
+
+## What you can do
+
+- Add source material and create records that quote or refer to it.
+- Search for readable passages and retrieve context around a result.
+- Check a quotation against the exact source bytes it cites.
+- Keep track of when a claim applied, when it was learned, and how it changed.
+- Review proposed knowledge before approving it.
+- Explore the same records in an interactive 2D or 3D graph.
+- Change the graph arrangement (called a topology), node style, and density.
+- Use the command line, a standard input/output JSON-RPC interface, or the browser review page.
+
+The repository includes invented sample material, not a private corpus. Files stay where configured. The command line and JSON-RPC interface do not open a network listener; the demo page is served locally.
+
+### Key terms
+
+- **Citation:** a reference to a specific span of source text. Its byte range can be checked against the unchanged snapshot.
+- **Snapshot:** a preserved copy of a source as it was captured. Later changes to the original do not rewrite that copy.
+- **Attested connection:** a graph link supported by cited records. **Exploratory connection:** a possible relationship shown for investigation, with an explanation; it is not source evidence.
+- **Proposal and review:** a suggested record or change that a person examines and either approves or declines.
+- **Topology:** the rule or arrangement used to place graph nodes. The project offers several arrangements, including experimental ones.
+- **Density:** how many nodes the view draws. A light setting gives an overview; Complete aims to show all nodes, and Custom lets you choose a count.
 
 ## Gallery
 
 The interface labels are Italian: «Essenziale» means Essential, «Bilanciata» means Balanced, «Completa» means Complete; «Attestata» means Attested and «Esplorativa» means Exploratory.
 
-The gallery uses invented demo data. Each overview is centred with its graph filling about 85% of the frame's limiting dimension, measured on what is drawn rather than on the background stars; Julia 3D is kept closer so that its relation bundles show. Each pair is captured in the same page session and orientation, and each density is framed on its own nodes: Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds.
+The gallery uses invented demo data. Each overview is centred, with its drawn graph (nodes, relations and visible guides, not the background stars) filling about 80–90% of the frame's limiting dimension. Paired images use the same orientation, and each density is framed on its own nodes: Balanced has its own layout, 7–10× more compact than Complete in these captures, measured from the manifest's layout bounds.
 
 ### Natural · Stellar overviews
 
@@ -63,20 +75,20 @@ Natural · Stellar · 3D · Complete, rotated by a short drag and centred on one
 
 ### Other topologies at Complete · experimental Geometry Lab
 
-All images use synthetic demo data. Canopy, Sierpiński, Llull, and Julia are experimental topologies.
+All images use synthetic demo data and the Stellar node style. Canopy, Sierpiński, Llull, and Julia are experimental topologies.
 
 | Topology | 2D | 3D |
 |---|---|---|
 | Canopy | [![Canopy 2D Complete](docs/assets/gallery/canopy-2d-complete.jpg)](docs/assets/gallery/canopy-2d-complete.jpg)<br>Canopy · 2D · Complete | [![Canopy 3D Complete](docs/assets/gallery/canopy-3d-complete.jpg)](docs/assets/gallery/canopy-3d-complete.jpg)<br>Canopy · 3D · Complete |
 | Sierpiński | [![Sierpiński 2D Complete](docs/assets/gallery/sierpinski-2d-complete.jpg)](docs/assets/gallery/sierpinski-2d-complete.jpg)<br>Sierpiński · 2D · Complete | [![Sierpiński 3D Complete](docs/assets/gallery/sierpinski-3d-complete.jpg)](docs/assets/gallery/sierpinski-3d-complete.jpg)<br>Sierpiński · 3D · Complete |
 | Llull | [![Llull 2D Complete](docs/assets/gallery/llull-2d-complete.jpg)](docs/assets/gallery/llull-2d-complete.jpg)<br>Llull · 2D · Complete | [![Llull 3D Complete](docs/assets/gallery/llull-3d-complete.jpg)](docs/assets/gallery/llull-3d-complete.jpg)<br>Llull · 3D · Complete |
-| Julia | [![Julia 2D Complete](docs/assets/gallery/julia-2d-complete.jpg)](docs/assets/gallery/julia-2d-complete.jpg)<br>Julia · 2D · Complete | [![Julia 3D Complete](docs/assets/gallery/julia-3d-complete.jpg)](docs/assets/gallery/julia-3d-complete.jpg)<br>Julia · 3D · Complete (camera ×1.16 closer than the fitted view, where the relation bundles become visible) |
+| Julia | [![Julia 2D Complete](docs/assets/gallery/julia-2d-complete.jpg)](docs/assets/gallery/julia-2d-complete.jpg)<br>Julia · 2D · Complete | [![Julia 3D Complete](docs/assets/gallery/julia-3d-complete.jpg)](docs/assets/gallery/julia-3d-complete.jpg)<br>Julia · 3D · Complete (tilted by a short drag and ×1.16 closer than the fitted view, where the relation bundles become visible) |
 
 Capture method, render times, density counts, and size-coherence measurements are in [Gallery and measurements](docs/GALLERY-AND-MEASUREMENTS.md).
 
 ## Quickstart: public demo
 
-The demo requires **Node.js 24** and **Python 3.11 or newer**. From the repository root, run:
+You need Node.js 24 and Python 3.11 or newer. Run these commands from the repository root. The first two prepare the review page, the third creates an invented sample dataset, and the fourth starts a local web server.
 
 ```bash
 npm --prefix ui ci
@@ -85,103 +97,67 @@ node --experimental-strip-types demo/src/cli.ts synth --profile reference --seed
 PYTHONPATH=src python3 -m nous_os.graph_review serve --graph demo/out/reference/dataset --port 8766
 ```
 
-The Python package has no third-party runtime dependencies, so `PYTHONPATH=src` runs it from the checkout. Open <http://127.0.0.1:8766/#experimental=fractal>. The flag enables the experimental Geometry Lab topologies; without it, the page offers the Natural topology with optional Indra organization. The seeded generator creates invented labels, statements, citations, and passages, then validates the dataset before the review server serves it on loopback. For source ingestion, search, context, and byte-checked citation resolution, follow the [synthetic memory walkthrough](docs/MEMORY-WALKTHROUGH.md).
+Open <http://127.0.0.1:8766/#experimental=fractal> in a browser. The page shows the generated knowledge graph; the URL enables experimental Geometry Lab arrangements. Without that flag, the page offers the standard Natural arrangement. The Python package has no third-party runtime dependencies. For a guided example of adding sources, searching, and checking citations, see the [memory walkthrough](docs/MEMORY-WALKTHROUGH.md).
 
-## Architecture
+## How it works
 
-Canonical plain files are authoritative; snapshots and the append-only ledger feed cited assertions with two time axes. Rebuildable indexes support search, candidates require human review, and a deterministic compiler creates context packs; renderer-independent projections carry the knowledge into the graph view.
+Source files are copied into snapshots, and an append-only ledger records captures and changes. Records keep citations and both time points: when a claim applied and when it was learned. Search indexes can be rebuilt. A person reviews proposals. Projections carry records into the graph view, where arrangement and density can change.
 
 ```mermaid
 flowchart LR
-    SRC["Source files"] --> SNAP["Immutable snapshots"] --> LEDGER["Append-only ledger"] --> CANON["Canonical assertion record"]
-    CANON --> IDX["Rebuildable full-text and optional semantic indexes"]
-    IDX --> CAND["Human-gated candidate layer"]
-    CAND -->|"human decision"| CANON
-    IDX --> CC["Deterministic context compiler"]
-    CANON --> PROJ["Renderer-independent projections"]
-    CAND -. "discovery view" .-> PROJ
-    CC --> CLI["Command line"]
-    CC --> RPC["stdio JSON-RPC"]
-    PROJ --> ENGINE["Visual engine"] --> RENDER["2D and 3D renderers"] --> REVIEW["Graph review page"]
+    S[Sources] --> P[Preserved snapshots] --> L[Ledger]
+    L --> R[Records with citations and dates]
+    R --> I[Search indexes] --> Q[Readable search passages]
+    I --> N[Proposals] --> H[Human review]
+    H --> R
+    R --> G[Graph projections] --> V[Interactive 2D and 3D view]
+    N -. exploratory links .-> G
+    R --> C[Command line]
+    R --> J[stdio JSON-RPC]
 ```
 
-The command line and stdio JSON-RPC share an operation catalogue, and a proposal cannot become canonical through either. The graph view draws with Sigma over WebGL in 2D and Three.js with React Three Fiber in 3D. Identifiers, citations, quoted byte spans, and both time axes stay attached to records, so changing a layout changes none of them. The review page reads a validated dataset and does not add semantic relations; visual containers, bundles, and geometric guides help read the drawing but add no source relations.
-
-## Verification and limits
-
-- **Verified in CI:** the Python suite, typecheck, repository checks, and the commit contract over history. [Verification details](docs/VERIFICATION-AND-LIMITS.md)
-- **Measured on the synthetic demo:** all 60 view configurations reached Complete, and 46 of them kept sampled node sizes within 1% across presets; exceptions include about 2× in 2D Canopy without Indra, up to 23% in 3D Sierpiński, Llull and Canopy with Indra, and up to 57% for one 2D Natural sample. [Full matrix](docs/GALLERY-AND-MEASUREMENTS.md)
-- **Measured on the synthetic demo:** 440 of 561 sampled clicks selected the intended node. Dense views can select a neighbour. [Measurement details](docs/GALLERY-AND-MEASUREMENTS.md)
-- **Observed on a larger private dataset:** five 3D views were not certified within the 90-second probe; of the 54 views that mounted, 40 kept sampled node sizes within 1% across presets. [Limit details](docs/VERIFICATION-AND-LIMITS.md)
-- **Observed on the same private dataset:** after choosing Complete on a large 3D view, the density control and URL can update after drawing completes.
-- **Measured on a private evaluation corpus:** six assembly-strategy families were compared; five were measured and none beat the plain default, and the sixth is recorded as unmeasured rather than as a tie ([details](docs/VERIFICATION-AND-LIMITS.md#context-compilation)).
-- **Known limit:** `npm --prefix ui run test:unit` fails from a clean clone in four document suites because generated evidence is absent. [Verification details](docs/VERIFICATION-AND-LIMITS.md)
-- **Known limits:** semantic tests need local ONNX checkpoints; Chromium is the only browser verified; touch, keyboard navigation inside the canvas, and screen readers are unverified. [Full list](docs/VERIFICATION-AND-LIMITS.md)
-- **Not certified:** GPU-backed browser evidence and visual acceptance are not CI checks; six visual acceptance criteria need human inspection.
-- **Other limits:** topology preconditions and certificates, clipping, density calibration, rendering stalls, guides that keep an earlier placement after a fit, and the remaining known constraints are listed in [Verification and limits](docs/VERIFICATION-AND-LIMITS.md).
+The 2D view is drawn with Sigma over WebGL, and the 3D view with Three.js and React Three Fiber. The graph view helps people inspect records and relationships. A layout guide can help arrange the drawing, but it does not add a source-backed connection. The command line and JSON-RPC interface use the same operations; neither turns a proposal into approved knowledge without review.
 
 ## Repository layout
 
-| Path | Contents |
-|---|---|
-| `src/nous_os/` | Canonical records, indexing, compilation, transports, and graph projections. |
-| `ui/src/` | Visual engine, review page, topologies, and 2D/3D renderers. |
-| `ui/test/` | UI unit, renderer, and browser suites. |
-| `demo/` | Synthetic dataset generator and its tests. |
-| `tests/` | Python test suite. |
-| `docs/` | Architecture, interface, retrieval, renderer, review, gallery, and verification documentation. |
-| `docs/assets/gallery/` | Review-page captures and their manifest. |
-
-<details><summary>Full repository layout</summary>
+The main folders and files are shown here; the code folders include a few representative entries, and the [repository layout](docs/REPOSITORY-LAYOUT.md) lists every Python module.
 
 ```text
-src/
-└── nous_os/
-    ├── __init__.py
-    ├── __main__.py
-    ├── ablation.py
-    ├── adjudication.py
-    ├── aliases.py
-    ├── artifact.py
-    ├── assistant_export.py
-    ├── attribution.py
-    ├── candidate_search.py
-    ├── candidates.py
-    ├── canonical.py
-    ├── capability.py
-    ├── capture_bundle.py
-    ├── chunking.py
-    ├── cli.py
-    ├── compile.py
-    ├── config.py
-    ├── core.py
-    ├── derived.py
-    ├── discovery.py
-    ├── extraction.py
-    ├── graph_drawer.py
-    ├── graph_review.py
-    ├── graph_view.py
-    ├── identity.py
-    ├── ledger.py
-    ├── mapping_export.py
-    ├── mcp.py
-    ├── measure.py
-    ├── operations.py
-    ├── projection.py
-    ├── provenance.py
-    ├── reconciliation.py
-    ├── review.py
-    ├── review_graph.py
-    ├── semantic.py
-    ├── semantic_index.py
-    ├── snapshots.py
-    ├── sources.py
-    ├── temporal.py
-    ├── text_projection.py
-    └── untrusted.py
+nous-os/
+├── .github/                              # CI configuration
+│   └── workflows/ci.yml                  # Automated checks
+├── benchmarks/                           # Benchmarking tools
+├── demo/                                 # Synthetic demo and tests
+│   ├── README.md                         # Demo instructions
+│   ├── src/                              # Demo generator source
+│   └── test/                             # Demo tests
+├── docs/                                 # Guides and technical references
+│   ├── assets/gallery/                   # Gallery images
+│   ├── MEMORY-WALKTHROUGH.md             # Memory walkthrough
+│   └── VERIFICATION-AND-LIMITS.md        # Evidence and constraints
+├── fixtures/synthetic/                   # Invented example data
+├── src/nous_os/                          # Python memory and search package
+│   ├── cli.py                            # Command line
+│   ├── graph_review.py                   # Graph review server
+│   └── ledger.py                         # Knowledge history
+├── tests/                                # Python test suite
+├── tools/                                # Repository maintenance tools
+├── ui/                                   # Interactive graph review app
+│   ├── review/index.html                 # Browser entry page
+│   └── src/                              # Graph and rendering code
+├── .gitignore                            # Ignored local files
+├── pyproject.toml                        # Python package settings
+└── README.md                             # Project overview
 ```
 
-</details>
+
+## Limits
+
+- **Node sizes and clicks, on synthetic data.** A browser test covered 60 combinations of arrangement, node style, 2D or 3D, and the nested grouping called Indra, on or off. All 60 reached Complete. In 46, node sizes stayed within 1% when the density changed; in the others the largest change was about twice the size (2D Canopy without Indra). Clicks selected the intended node 440 times out of 561; in dense views a click can select a neighbour.
+- **Larger synthetic graphs.** On one machine, every arrangement also reached Complete in 3D on synthetic graphs of 15,000 and 20,000 nodes. This is one local measurement, not a performance guarantee.
+- **A larger private graph.** On a private dataset larger than the demo, 54 of the 60 combinations opened and could be measured: five 3D views did not reach Complete within a 90-second test, and one 2D combination (Julia with Indra and the Neural style) is refused by design. Node sizes stayed within 1% in 40 of the 54. After choosing Complete on a large 3D view, the density control and the URL could update only after the drawing finished.
+- **Display details.** Some arrangement guides can stay in an earlier position after the page fits the view, until the camera next moves. Nodes outside the camera can be clipped.
+- **What was not checked.** Only Chromium was tested; touch screens, keyboard navigation inside the graph and screen readers were not. Six visual checks still need a person to judge the rendered images. The automated checks (CI) run the Python tests, the type check and the commit-message check, not the browser tests, which need a real graphics card. The semantic search tests need model files stored on your machine. More detail is in [verification and limits](docs/VERIFICATION-AND-LIMITS.md).
 
 ## Documentation
 
@@ -192,7 +168,7 @@ src/
 - [Interoperability and transports](docs/INTEROPERABILITY.md)
 - [Renderer comparison](docs/RENDERER-COMPARISON.md)
 - [2D/3D comparison](docs/CAP-14-COMPARISON.md)
-- [Retrieval measurement](docs/CAP-15-RETRIEVAL.md)
+- [Retrieval measurement](docs/RETRIEVAL-MEASUREMENT.md)
 - [Graph review export and page](docs/GRAPH-REVIEW.md)
 - [Graph viewer](docs/GRAPH-VIEWER.md)
 - [Candidate search](docs/CANDIDATE-SEARCH.md)
@@ -202,11 +178,3 @@ src/
 - [Deferred views](docs/views/deferred-views.md)
 - [View limits](docs/views/limits.md)
 - [Synthetic demo and dataset schema](demo/README.md)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and repository contribution conventions.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
