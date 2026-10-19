@@ -113,7 +113,7 @@ NousOS starts with original documents and notes, kept as unchanged copies. Sourc
 
 <picture>
   <source media="(max-width: 599px)" srcset="docs/diagrams/how-it-works-narrow.svg">
-  <img src="docs/diagrams/how-it-works.svg" alt="How NousOS works: original sources, kept as unchanged copies, lead to source-backed knowledge, records that cite their sources. People search it and explore it in a 2D or 3D graph. Exploratory suggestions, possible links that are not evidence, go to a person who approves or declines them; approved ones join the source-backed knowledge.">
+  <img src="docs/diagrams/how-it-works.svg" alt="How NousOS works: original sources, kept as unchanged copies, lead to records that cite them. People search these records and explore them in a 2D or 3D graph. Exploratory suggestions, possible links that are not evidence, go to a person who approves or declines them; an approval is recorded as a decision, not as source evidence.">
 </picture>
 
 ## Repository layout

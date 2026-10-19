@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" role="img" width="360" height="620" viewBox="0 0 360 620" aria-labelledby="title desc">
   <title id="title">How NousOS works</title>
-  <desc id="desc">Original sources lead to source-backed knowledge for search and exploration; exploratory suggestions go to a person for review, and approved suggestions join the knowledge.</desc>
+  <desc id="desc">Original sources lead to records that cite them; people search these records and explore them in a graph; exploratory suggestions, which are not evidence, go to a person, whose approval is recorded as a decision, not as source evidence.</desc>
   <style>
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
     .card { fill: #161b22; stroke: #30363d; stroke-width: 1; }
@@ -24,10 +24,10 @@
   <text class="title" x="148" y="53">Original sources</text>
   <text class="subtitle" x="148" y="76">kept as unchanged copies</text>
 
-  <!-- Box 2: Source-backed knowledge. -->
+  <!-- Box 2: Accepted knowledge (cited records and approved decisions). -->
   <rect class="box" x="22" y="124" width="252" height="74" rx="10" />
-  <text class="title" x="148" y="155">Source-backed knowledge</text>
-  <text class="subtitle" x="148" y="178">records cite their sources</text>
+  <text class="title" x="148" y="155">Accepted knowledge</text>
+  <text class="subtitle" x="148" y="178">cited records · approved decisions</text>
 
   <!-- Box 3: Search and exploration. -->
   <rect class="box" x="22" y="226" width="252" height="74" rx="10" />
@@ -44,7 +44,7 @@
   <text class="title" x="148" y="461">A person reviews</text>
   <text class="subtitle" x="148" y="484">approves or declines</text>
 
-  <!-- Arrow 1 to 2: source-backed records derive from original sources. -->
+  <!-- Arrow 1 to 2: records cite the original sources. -->
   <path class="arrow" d="M 148 96 V 124" />
   <!-- Arrow 2 to 3: records are searchable and explorable. -->
   <path class="arrow" d="M 148 198 V 226" />
@@ -52,11 +52,11 @@
   <path class="arrow exploratory" d="M 148 300 V 328" />
   <!-- Arrow 4 to 5: suggestions go to a person for review. -->
   <path class="arrow" d="M 148 402 V 430" />
-  <!-- Arrow 5 to 2: approved suggestions join source-backed knowledge. -->
+  <!-- Arrow 5 to 2: an approval is recorded as a decision, not as source evidence. -->
   <path class="arrow" d="M 274 467 H 306 V 161 H 274" />
   <text class="arrow-label" x="322" y="314" transform="rotate(-90 322 314)">approved</text>
 
   <text class="legend" x="180" y="548">Dashed arrow: a suggestion, not evidence.</text>
-  <text class="legend" x="180" y="569">Nothing suggested is accepted</text>
-  <text class="legend" x="180" y="590">until a person approves it.</text>
+  <text class="legend" x="180" y="569">Approval is recorded as a person's</text>
+  <text class="legend" x="180" y="590">decision, not as source evidence.</text>
 </svg>
