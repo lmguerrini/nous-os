@@ -70,6 +70,12 @@ jobs:
       - name: Install the TypeScript toolchain
         run: npm --prefix ui ci
 
+      - name: Install Poppler tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes poppler-utils
+          pdftotext -v
+
       # The two excluded modules need the two ONNX checkpoints `semantic.py`
       # names to be already present in a local Hugging Face cache. Resolution
       # passes `local_files_only`, so nothing is downloaded and nothing can be:
