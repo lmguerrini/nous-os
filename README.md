@@ -109,11 +109,11 @@ Open <http://127.0.0.1:8766/#experimental=fractal> in a browser. The page shows 
 
 ## How it works
 
-NousOS starts with original documents and notes, kept as unchanged copies. Verified knowledge consists of records that quote or cite those sources, so readers can check where a statement came from; attested connections are backed by these records. People search those records and explore them in a graph to find related ideas. Exploratory connections are possible relationships suggested for investigation; they are shown separately from verified knowledge and are not evidence. Nothing suggested becomes accepted knowledge until a person reviews and approves it. For more detail, see the [memory walkthrough](docs/MEMORY-WALKTHROUGH.md) and [graph review guide](docs/GRAPH-REVIEW.md).
+NousOS starts with original documents and notes, kept as unchanged copies. Source-backed knowledge consists of records that quote or cite those sources, so anyone can check a statement against the source it comes from; attested connections are backed by these records. People search those records and explore them in a graph to find related ideas. Exploratory connections are possible relationships suggested for investigation; they are shown separately from source-backed knowledge and are not evidence. Nothing suggested becomes accepted knowledge until a person reviews and approves it. For more detail, see the [memory walkthrough](docs/MEMORY-WALKTHROUGH.md) and [graph review guide](docs/GRAPH-REVIEW.md).
 
 ```mermaid
 flowchart TD
-    S["Original sources<br>unchanged copies"] --> K["Verified knowledge<br>records cite sources"]
+    S["Original sources<br>unchanged copies"] --> K["Source-backed knowledge<br>records cite sources"]
     K --> X["Search and graph exploration"]
     X -.-> P["Exploratory suggestions<br>possible links, not evidence"]
     P --> H["A person reviews"]
@@ -156,7 +156,7 @@ nous-os/
 ## Limits
 
 - **Experimental features.** Geometry Lab arrangements (Canopy, Sierpiński, Llull and Julia), enabled by the `#experimental=fractal` URL flag, are experimental.
-- **Dense views.** At high densities, nodes can overlap and a click can select a neighbouring node. Some node styles are hard to see from far away until you move closer, and in some arrangements node sizes change as the density changes. Very large graphs, especially in 3D, can take a long time to reach Complete; controls may respond only after drawing finishes. These performance observations come from one machine and are not a guarantee.
+- **Dense views.** At high densities, a click can select a neighbouring node. Some node styles are hard to see from far away until you move closer, and in some arrangements node sizes change as the density changes. On a larger graph, a 90-second test could not confirm that five 3D views reached Complete, and after choosing Complete the density control and the URL may update only once drawing finishes. These performance observations come from one machine and are not a guarantee.
 - **Compatibility and access.** Only Chromium on a desktop was tested. Touch screens, keyboard navigation inside the graph and screen readers have not been tested.
 
 See [Verification and limits](docs/VERIFICATION-AND-LIMITS.md) for measurements and test details.
