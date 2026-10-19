@@ -59,7 +59,7 @@ assumes it, and a node with two children yields two records naming one parent.
 from __future__ import annotations
 
 import json
-import math
+import math, os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -205,10 +205,15 @@ def _reraise(error: OSError) -> None:
 
 def _files(root: Path) -> Iterator[Path]:
     """Every regular file under ``root``, in a fixed order, without following links."""
-    for directory, dirnames, filenames in root.walk(on_error=_reraise, follow_symlinks=False):
+    for directory, dirnames, filenames in os.walk(
+        root, topdown=True, onerror=_reraise, followlinks=False
+    ):
         dirnames.sort()
+        # os.walk keeps directory symlinks in dirnames even when it will not
+        # follow them; Path.walk reports them with filenames instead.
+        dirnames[:] = [name for name in dirnames if not (Path(directory) / name).is_symlink()]
         for name in sorted(filenames):
-            path = directory / name
+            path = Path(directory) / name
             if path.is_symlink():
                 continue
             yield path
