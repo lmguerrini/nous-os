@@ -111,14 +111,10 @@ Open <http://127.0.0.1:8766/#experimental=fractal> in a browser. The page shows 
 
 NousOS starts with original documents and notes, kept as unchanged copies. Source-backed knowledge consists of records that quote or cite those sources, so anyone can check a statement against the source it comes from; attested connections are backed by these records. People search those records and explore them in a graph to find related ideas. Exploratory connections are possible relationships suggested for investigation; they are shown separately from source-backed knowledge and are not evidence. Nothing suggested becomes accepted knowledge until a person reviews and approves it. For more detail, see the [memory walkthrough](docs/MEMORY-WALKTHROUGH.md) and [graph review guide](docs/GRAPH-REVIEW.md).
 
-```mermaid
-flowchart TD
-    S["Original sources<br>unchanged copies"] --> K["Source-backed knowledge<br>records cite sources"]
-    K --> X["Search and graph exploration"]
-    X -.-> P["Exploratory suggestions<br>possible links, not evidence"]
-    P --> H["A person reviews"]
-    H -->|"approved"| K
-```
+<picture>
+  <source media="(max-width: 599px)" srcset="docs/diagrams/how-it-works-narrow.svg">
+  <img src="docs/diagrams/how-it-works.svg" alt="How NousOS works: original sources, kept as unchanged copies, lead to source-backed knowledge, records that cite their sources. People search it and explore it in a 2D or 3D graph. Exploratory suggestions, possible links that are not evidence, go to a person who approves or declines them; approved ones join the source-backed knowledge.">
+</picture>
 
 ## Repository layout
 
