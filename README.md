@@ -112,13 +112,12 @@ Open <http://127.0.0.1:8766/#experimental=fractal> in a browser. The page shows 
 NousOS starts with original documents and notes, kept as unchanged copies. Verified knowledge consists of records that quote or cite those sources, so readers can check where a statement came from; attested connections are backed by these records. People search those records and explore them in a graph to find related ideas. Exploratory connections are possible relationships suggested for investigation; they are shown separately from verified knowledge and are not evidence. Nothing suggested becomes accepted knowledge until a person reviews and approves it. For more detail, see the [memory walkthrough](docs/MEMORY-WALKTHROUGH.md) and [graph review guide](docs/GRAPH-REVIEW.md).
 
 ```mermaid
-flowchart LR
-    S["Original sources<br>unchanged copies"] --> K["Verified knowledge<br>records quote or cite sources"]
+flowchart TD
+    S["Original sources<br>unchanged copies"] --> K["Verified knowledge<br>records cite sources"]
     K --> X["Search and graph exploration"]
-    X -.-> P["Exploratory suggestions<br>possible relationships, not evidence"]
+    X -.-> P["Exploratory suggestions<br>possible links, not evidence"]
     P --> H["A person reviews"]
-    H --> A["Approved knowledge"]
-    A --> K
+    H -->|"approved"| K
 ```
 
 ## Repository layout
