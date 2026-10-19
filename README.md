@@ -156,23 +156,3 @@ nous-os/
 - **Compatibility and access.** Only Chromium on a desktop was tested. Touch screens, keyboard navigation inside the graph and screen readers have not been tested.
 
 See [Verification and limits](docs/VERIFICATION-AND-LIMITS.md) for measurements and test details.
-
-## Documentation
-
-- [Memory walkthrough on a synthetic corpus](docs/MEMORY-WALKTHROUGH.md)
-- [Gallery and measurements](docs/GALLERY-AND-MEASUREMENTS.md)
-- [Verification and limits](docs/VERIFICATION-AND-LIMITS.md)
-- [Vocabulary](docs/VOCABULARY.md)
-- [Interoperability and transports](docs/INTEROPERABILITY.md)
-- [Renderer comparison](docs/RENDERER-COMPARISON.md)
-- [2D/3D comparison](docs/CAP-14-COMPARISON.md)
-- [Retrieval measurement](docs/RETRIEVAL-MEASUREMENT.md)
-- [Graph review export and page](docs/GRAPH-REVIEW.md)
-- [Graph viewer](docs/GRAPH-VIEWER.md)
-- [Candidate search](docs/CANDIDATE-SEARCH.md)
-- [View architecture](docs/views/architecture.md)
-- [View manual](docs/views/manual.md)
-- [Geometry Lab](docs/views/GEOMETRY-LAB.md)
-- [Deferred views](docs/views/deferred-views.md)
-- [View limits](docs/views/limits.md)
-- [Synthetic demo and dataset schema](demo/README.md)
