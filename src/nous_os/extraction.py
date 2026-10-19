@@ -661,12 +661,11 @@ def _archive_structure_accounting(
 def _zipfile_parse_bytes(data: bytes) -> bytes:
     """Normalize a ZIP64 tail only while asking ``zipfile`` to parse its directory.
 
-    The standard-library parser assumes both that the ZIP64 record is adjacent
-    to its locator and that the record is exactly its 56-byte minimum.  Keep
-    the real bytes for declaration validation and structural accounting, but
-    remove a tail gap and then an extensible data sector from the parser copy.
-    That leaves all directory and local-header offsets unchanged for the later
-    confirmation against the real declaration.
+    Keep the real bytes for declaration validation and structural accounting,
+    but remove a tail gap and the extensible data sector from the parser copy.
+    Set its ZIP64 record size to the 44-byte minimum so Python versions that
+    validate the record length see the normalized structure. The directory and
+    local-header offsets remain unchanged for confirmation against real bytes.
     """
     eocd_offset, _comment_length = _end_of_central_directory(data)
     locator_offset = eocd_offset - _ZIP64_LOCATOR_SIZE
@@ -681,10 +680,11 @@ def _zipfile_parse_bytes(data: bytes) -> bytes:
         parse_data = data[:record_end] + data[locator_offset:]
         parse_locator_offset = record_end
     if record_size > 44:
-        return (
-            parse_data[: record_offset + _ZIP64_EOCD_MINIMUM_SIZE]
-            + parse_data[parse_locator_offset:]
-        )
+        parse_data = parse_data[: record_offset + _ZIP64_EOCD_MINIMUM_SIZE] + parse_data[parse_locator_offset:]
+    if record_size != 44 or record_end < locator_offset:
+        normalized = bytearray(parse_data)
+        normalized[record_offset + 4 : record_offset + 12] = (44).to_bytes(8, "little")
+        return bytes(normalized)
     return parse_data
 
 
