@@ -154,5 +154,3 @@ nous-os/
 - **Experimental features.** Geometry Lab arrangements (Canopy, Sierpiński, Llull and Julia), enabled by the `#experimental=fractal` URL flag, are experimental.
 - **Dense views.** At high densities, a click can select a neighbouring node. Some node styles are hard to see from far away until you move closer, and in some arrangements node sizes change as the density changes. On a larger graph, a 90-second test could not confirm that five 3D views reached Complete, and after choosing Complete the density control and the URL may update only once drawing finishes. These performance observations come from one machine and are not a guarantee.
 - **Compatibility and access.** Only Chromium on a desktop was tested. Touch screens, keyboard navigation inside the graph and screen readers have not been tested.
-
-See [Verification and limits](docs/VERIFICATION-AND-LIMITS.md) for measurements and test details.
