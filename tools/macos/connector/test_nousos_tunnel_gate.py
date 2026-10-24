@@ -54,7 +54,8 @@ for line in sys.stdin:
     request_id = request["id"]
     method = request.get("method")
     if method == "initialize":
-        emit({{"jsonrpc":"2.0","id":request_id,"result":{{"protocolVersion":"2024-11-05"}}}})
+        response_id = request_id + 1 if request.get("params", {{}}).get("mismatch") else request_id
+        emit({{"jsonrpc":"2.0","id":response_id,"result":{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{"listChanged":False}}}},"instructions":"child instructions"}}}})
     elif method == "tools/list":
         emit({{"jsonrpc":"2.0","id":request_id,"result":{{"tools":[
             {{"name":name,"description":"fake","inputSchema":{{"type":"object","properties":{{
@@ -226,9 +227,39 @@ class GateTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["query"]["maxLength"], 256)
         self.assertEqual(schema["properties"]["include_replaced"]["enum"], [False])
         self.assertEqual(schema["properties"]["ranking"]["enum"], ["text", "text_relevance"])
+        self.assertNotIn("source_semantic", schema["properties"]["ranking"]["description"])
         self.assertIn("query", schema["required"])
         self.assertIn("recorded proposal, not a decision", candidate["description"])
-        self.assertIn("canonical_status and epistemic_label", candidate["description"])
+        self.assertIn("epistemic_label and canonical_status", candidate["description"])
+        expected = [
+            "knowledge.search", "knowledge.semantic", "knowledge.context",
+            "provenance.span", "canon.assertions", "candidate.search",
+        ]
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec = spec_from_file_location("nousos_tunnel_gate", GATE)
+        assert spec and spec.loader
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual([tool["description"] for tool in tools], [
+            module.CHATGPT_TOOL_DESCRIPTIONS[name] for name in expected
+        ])
+        self.assertTrue(all(tool["description"] != "fake" for tool in tools))
+        self.assertIn("original", tools[0]["description"])
+        self.assertIn("not proposals or decisions", tools[0]["description"])
+        self.assertIn("not verified facts or approved decisions", candidate["description"])
+        self.assertIn("not instead of it", candidate["description"])
+
+    def test_initialize_instructions_preserve_fields_and_match_id(self) -> None:
+        self.gate.send({"jsonrpc": "2.0", "id": 101, "method": "initialize", "params": {}})
+        result = self.gate.response(101)["result"]
+        self.assertEqual(result["protocolVersion"], "2024-11-05")
+        self.assertEqual(result["capabilities"], {"tools": {"listChanged": False}})
+        self.assertIn("three kinds", result["instructions"])
+        self.assertIn("Never present proposals as verified facts", result["instructions"])
+
+        self.gate.send({"jsonrpc": "2.0", "id": 102, "method": "initialize", "params": {"mismatch": True}})
+        response = self.gate.response(103)
+        self.assertEqual(response["result"]["instructions"], "child instructions")
 
     def test_candidate_search_alias_defaults_caps_and_dotted_name(self) -> None:
         self.gate.send(self.call(70, "candidate_search", {"query": "PRIVATE_SEARCH_QUERY"}))

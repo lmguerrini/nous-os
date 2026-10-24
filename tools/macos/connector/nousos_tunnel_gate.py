@@ -36,6 +36,56 @@ PRODUCT_TO_ALIAS = {name: name.replace(".", "_") for name in READ_TOOLS}
 ALIAS_TO_PRODUCT = {alias: product for product, alias in PRODUCT_TO_ALIAS.items()}
 PUBLISHED_ALIASES = tuple(PRODUCT_TO_ALIAS[name] for name in READ_TOOLS)
 
+CHATGPT_TOOL_DESCRIPTIONS = {
+    "knowledge.search": (
+        "Returns original historical conversation and attachment text, not proposals or "
+        "decisions. Use for exact words, names, and dates; pair with candidate_search for "
+        "questions about decisions or how ideas evolved."
+    ),
+    "knowledge.semantic": (
+        "Returns original historical conversation and attachment text found by meaning, not "
+        "proposals or decisions. Use for a meaning-based search or paraphrase; pair with "
+        "candidate_search for questions about decisions or how ideas evolved."
+    ),
+    "knowledge.context": (
+        "Returns surrounding original conversation messages, not proposals or decisions. Use to"
+        " read context around a source passage; pair with candidate_search for questions about "
+        "decisions or how ideas evolved."
+    ),
+    "provenance.span": (
+        "Returns the exact cited bytes from original source text, not a proposal or decision. "
+        "Use to verify a candidate_search citation before describing what the sources say."
+    ),
+    "canon.assertions": (
+        "Returns approved canonical decisions, not historical source text or unapproved "
+        "proposals. Use when asking what is an approved decision; use source search for its "
+        "original wording and context."
+    ),
+    "candidate.search": (
+        "Returns cited recorded proposals distilled from sources and approved decisions marked "
+        "canonical. Proposals are not verified facts or approved decisions. Use for what was "
+        "decided, proposed, preferred, or concluded, how ideas evolved, and how topics or "
+        "conversations connect. Run alongside source search, not instead of it. Quote "
+        "epistemic_label and canonical_status; a label such as DECISION_STATED_BY_PERSON means "
+        "a person stated it in a conversation, not that it was approved. Before stating "
+        "proposal content as what the sources say, check citations with provenance_span or read"
+        " around them with knowledge_context. Every non-canonical result is a recorded "
+        "proposal, not a decision."
+    ),
+}
+
+CHATGPT_SERVER_INSTRUCTIONS = (
+    "Keep three kinds of material distinct: original sources are historical conversation "
+    "and attachment text, not decisions; recorded proposals are distilled statements with "
+    "citations, not verified facts or approved decisions; approved decisions are "
+    "canon_assertions and candidate_search hits marked canonical. For decision, evolution, "
+    "or connection questions, use source search alongside candidate_search. Verify proposal"
+    " citations with provenance_span or read around them with knowledge_context. In your "
+    "answer, say which kind each statement comes from. Never present proposals as verified "
+    "facts."
+)
+
+
 CAPS: dict[str, dict[str, int]] = {
     "knowledge.search": {"limit": 20},
     "knowledge.semantic": {"limit": 10},
@@ -391,7 +441,11 @@ class Gate:
                             "query": {"maxLength": 256},
                             "limit": {"maximum": 10, "default": 10},
                             "include_replaced": {"enum": [False], "default": False},
-                            "ranking": {"enum": ["text", "text_relevance"]},
+                            "ranking": {
+                                "enum": ["text", "text_relevance"],
+                                "description": "text (default: standing first among best "
+                                "text matches) or text_relevance (plain BM25)",
+                            },
                         }.items():
                             field = properties.get(argument)
                             field = dict(field) if isinstance(field, dict) else {}
@@ -407,25 +461,22 @@ class Gate:
                 tool["inputSchema"] = schema
 
             tool["annotations"] = dict(READ_ANNOTATIONS)
-            if product_name == "canon.assertions":
-                suffix = " Returns promoted canonical decisions (state canonical)."
-            elif product_name == "candidate.search":
-                suffix = (
-                    " Every non-canonical result is a recorded proposal, not a decision."
-                    " Read canonical_status and epistemic_label for each result."
-                )
-            else:
-                suffix = (
-                    " Returns historical source text (conversations and attachments) "
-                    "with its role and date; never a decision."
-                )
-
-            description = tool.get("description", "")
-            tool["description"] = (description if isinstance(description, str) else "") + suffix
+            tool["description"] = CHATGPT_TOOL_DESCRIPTIONS[product_name]
             exposed.append(tool)
 
         replacement = dict(result)
         replacement["tools"] = exposed
+        response = dict(response)
+        response["result"] = replacement
+        return response
+
+    @staticmethod
+    def _rewrite_initialize(response: dict[str, Any]) -> dict[str, Any]:
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return response
+        replacement = dict(result)
+        replacement["instructions"] = CHATGPT_SERVER_INSTRUCTIONS
         response = dict(response)
         response["result"] = replacement
         return response
@@ -472,6 +523,8 @@ class Gate:
                     and isinstance(response["result"].get("tools"), list)
                 ):
                     response = self._rewrite_list(response)
+                elif pending and pending["method"] == "initialize":
+                    response = self._rewrite_initialize(response)
 
                 if isinstance(response.get("error"), dict):
                     code = response["error"].get("code")
