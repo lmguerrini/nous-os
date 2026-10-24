@@ -23,7 +23,7 @@ seal_environment() {
     return 78
   }
   LOGNAME=$USER
-  PATH=/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin
   export HOME USER LOGNAME PATH
 
   for name in ${(f)"$(typeset +x)"}; do
@@ -49,6 +49,9 @@ PYTHON=${NOUSOS_PYTHON:-$(command -v python3 || true)}
 [[ -n "$PYTHON" && -x "$PYTHON" ]] || { print -u2 -- "Set NOUSOS_PYTHON to an executable Python 3 interpreter."; exit 78; }
 CLIENT=${NOUSOS_TUNNEL_CLIENT:-$(command -v tunnel-client || true)}
 [[ -n "$CLIENT" ]] || { print -u2 -- "Set NOUSOS_TUNNEL_CLIENT to the tunnel-client executable, or add it to PATH."; exit 78; }
+RUNTIME_PATH="/usr/bin:/bin:/usr/sbin:/sbin:${CLIENT:A:h}:${PYTHON:A:h}"
+PATH=$RUNTIME_PATH
+export PATH
 GATE_CHILD=${NOUSOS_GATE_CHILD:-}
 PROPOSALS=${NOUSOS_PROPOSALS:-}
 export NOUSOS_TUNNEL_CLIENT="$CLIENT" NOUSOS_PYTHON="$PYTHON"
@@ -177,6 +180,7 @@ render_plist() {
     -e "s|@GATE_CHILD@|$GATE_CHILD|g" \
     -e "s|@PROPOSALS@|$PROPOSALS|g" \
     -e "s|@PYTHON@|$PYTHON|g" \
+    -e "s|@RUNTIME_PATH@|$RUNTIME_PATH|g" \
     "$TEMPLATE" > "$tmp"; then
     rm -f "$tmp"
     return 1
@@ -292,12 +296,15 @@ case "${1:-}" in
     fi
     tmp="$(mktemp "$PROFILE_DIR/.nousos-read.yaml.XXXXXXXX")"
     chmod 600 "$tmp"
+    API_KEY_REFERENCE='env:CONTROL_PLANE_API_KEY'
     cat > "$tmp" <<EOF
 config_version: 1
 control_plane:
   base_url: "https://api.openai.com"
   tunnel_id: "$2"
-  api_key: "env:CONTROL_PLANE_API_KEY"
+EOF
+    printf '  api_key: "%s"\n' "$API_KEY_REFERENCE" >> "$tmp"
+    cat >> "$tmp" <<EOF
 health:
   listen_addr: "127.0.0.1:47931"
 admin_ui:
@@ -871,7 +878,7 @@ print(json.dumps(dict(sorted(counts.items())), sort_keys=True))
       security delete-generic-password -a "$USER" -s "$SERVICE"
     fi
     if [[ "$remove_client" == yes ]]; then
-      rm -f "$HOME/.local/bin/tunnel-client"
+      rm -f "$CLIENT"
       rm -rf "$NOUSOS_TUNNEL_CLIENT_HOME"
     fi
     print -- 'Passi UI rimanenti: revoca la chiave runtime nella pagina Platform API keys; facoltativamente elimina il tunnel nella pagina Platform Tunnels; rimuovi la app da chatgpt.com/plugins.'

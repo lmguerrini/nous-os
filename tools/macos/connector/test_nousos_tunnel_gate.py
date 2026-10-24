@@ -104,8 +104,8 @@ class GateProcess:
             "NOUSOS_TUNNEL_LOG_DIR": str(root / "logs"),
             "FAKE_RECORD": str(self.record),
             "FAKE_PID": str(self.pid_file),
-            "CONTROL_PLANE_API_KEY": "sk-test-not-a-real-key",
-            "OPENAI_API_KEY": "sk-test-not-a-real-key",
+            "CONTROL_PLANE_API_KEY": "test-runtime-key",
+            "OPENAI_API_KEY": "test-runtime-key",
         })
         self.proc = subprocess.Popen(
             [sys.executable, str(GATE)],

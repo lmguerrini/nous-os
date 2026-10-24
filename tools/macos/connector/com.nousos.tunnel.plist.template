@@ -30,7 +30,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/bin:/bin:/usr/sbin:/sbin:@HOME@/.local/bin</string>
+    <string>@RUNTIME_PATH@</string>
     <key>NOUSOS_TUNNEL_CLIENT</key>
     <string>@CLIENT@</string>
     <key>NOUSOS_GATE_CHILD</key>
