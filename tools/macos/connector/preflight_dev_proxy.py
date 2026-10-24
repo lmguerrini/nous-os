@@ -28,6 +28,7 @@ EXPECTED_TOOLS = [
     "provenance_span",
     "canon_assertions",
     "candidate_search",
+    "reconcile_relations",
 ]
 
 
@@ -299,7 +300,7 @@ def main() -> int:
                 })
                 tools = response.get("result", {}).get("tools", [])
                 names = [tool.get("name") for tool in tools if isinstance(tool, dict)]
-                ok = status == 200 and len(names) == 6 and names == EXPECTED_TOOLS
+                ok = status == 200 and len(names) == 7 and names == EXPECTED_TOOLS
                 record("tools_list", ok, f"http={status} tools={len(names)}")
                 mandatory_ok &= ok
 

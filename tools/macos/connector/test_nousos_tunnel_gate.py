@@ -61,7 +61,8 @@ for line in sys.stdin:
             {{"name":name,"description":"fake","inputSchema":{{"type":"object","properties":{{
                 "limit":{{"type":"integer"}},"before":{{"type":"integer"}},"after":{{"type":"integer"}},
                 "query":{{"type":"string"}},"include_replaced":{{"type":"boolean"}},
-                "ranking":{{"type":"string"}}
+                "ranking":{{"type":"string"}},"source_id":{{"type":"string"}},
+                "relation_class":{{"type":"string"}}
             }}}}}} for name in names
         ]}}}})
     elif method == "tools/call":
@@ -214,6 +215,7 @@ class GateTests(unittest.TestCase):
             [
                 "knowledge_search", "knowledge_semantic", "knowledge_context",
                 "provenance_span", "canon_assertions", "candidate_search",
+                "reconcile_relations",
             ],
         )
         self.assertTrue(all(tool["annotations"]["readOnlyHint"] for tool in tools))
@@ -233,7 +235,7 @@ class GateTests(unittest.TestCase):
         self.assertIn("epistemic_label and canonical_status", candidate["description"])
         expected = [
             "knowledge.search", "knowledge.semantic", "knowledge.context",
-            "provenance.span", "canon.assertions", "candidate.search",
+            "provenance.span", "canon.assertions", "candidate.search", "reconcile.relations",
         ]
         from importlib.util import spec_from_file_location, module_from_spec
         spec = spec_from_file_location("nousos_tunnel_gate", GATE)
@@ -244,6 +246,17 @@ class GateTests(unittest.TestCase):
             module.CHATGPT_TOOL_DESCRIPTIONS[name] for name in expected
         ])
         self.assertTrue(all(tool["description"] != "fake" for tool in tools))
+        relation = tools[6]
+        self.assertTrue(relation["annotations"]["readOnlyHint"])
+        schema = relation["inputSchema"]
+        self.assertIn("source_id", schema["required"])
+        self.assertEqual(schema["properties"]["source_id"]["pattern"], r"^src_[0-9A-Z]{26}$")
+        self.assertEqual(schema["properties"]["relation_class"]["enum"], [
+            "same_source", "revision", "restatement", "related",
+            "contradiction", "unknown",
+        ])
+        self.assertIn("not approved decisions and not verified facts", relation["description"])
+        self.assertIn("Exploratory interpretations are not included", relation["description"])
         self.assertIn("original", tools[0]["description"])
         self.assertIn("not proposals or decisions", tools[0]["description"])
         self.assertIn("not verified facts or approved decisions", candidate["description"])
@@ -254,7 +267,9 @@ class GateTests(unittest.TestCase):
         result = self.gate.response(101)["result"]
         self.assertEqual(result["protocolVersion"], "2024-11-05")
         self.assertEqual(result["capabilities"], {"tools": {"listChanged": False}})
-        self.assertIn("three kinds", result["instructions"])
+        self.assertIn("four kinds", result["instructions"])
+        self.assertIn("recorded relations", result["instructions"])
+        self.assertLess(len(result["instructions"]), 900)
         self.assertIn("Never present proposals as verified facts", result["instructions"])
 
         self.gate.send({"jsonrpc": "2.0", "id": 102, "method": "initialize", "params": {"mismatch": True}})
@@ -293,10 +308,28 @@ class GateTests(unittest.TestCase):
             self.assertEqual(self.gate.response(request_id)["error"]["code"], -32602)
         self.assertEqual(self.gate.received(), [])
 
+    def test_relations_forward_and_refuse_unbounded_arguments(self) -> None:
+        source_id = "src_" + "A" * 26
+        valid = {"source_id": source_id, "relation_class": "related"}
+        self.gate.send(self.call(90, "reconcile_relations", valid))
+        self.assertEqual(self.gate.response(90)["result"]["received"], valid)
+        invalid = [
+            None, [], {}, {"source_id": 3}, {"source_id": "bad"},
+            {"source_id": source_id, "relation_class": "bad"},
+            {"source_id": source_id, "extra": True},
+        ]
+        for request_id, arguments in enumerate(invalid, start=91):
+            self.gate.send(self.call(request_id, "reconcile_relations", arguments))
+            self.assertEqual(self.gate.response(request_id)["error"]["code"], -32602)
+        self.assertEqual(
+            [item["name"] for item in self.gate.received()], ["reconcile.relations"]
+        )
+
     def test_other_candidate_tools_remain_unpublished(self) -> None:
         for request_id, name in enumerate((
             "candidate_discover", "candidate.adjudicate", "candidate_proposals",
-            "candidate_propose", "candidate.propose",
+            "candidate_propose", "candidate.propose", "reconcile_propose",
+            "reconcile.verify",
         ), start=80):
             self.gate.send(self.call(request_id, name, {}))
             self.assertIn("NotExposed", self.gate.response(request_id)["error"]["message"])
@@ -397,6 +430,7 @@ class GateTests(unittest.TestCase):
             [
                 "knowledge_search", "knowledge_semantic", "knowledge_context",
                 "provenance_span", "canon_assertions", "candidate_search",
+                "reconcile_relations",
             ],
         )
 

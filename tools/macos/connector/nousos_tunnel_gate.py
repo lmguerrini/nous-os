@@ -31,6 +31,7 @@ READ_TOOLS = (
     "provenance.span",
     "canon.assertions",
     "candidate.search",
+    "reconcile.relations",
 )
 PRODUCT_TO_ALIAS = {name: name.replace(".", "_") for name in READ_TOOLS}
 ALIAS_TO_PRODUCT = {alias: product for product, alias in PRODUCT_TO_ALIAS.items()}
@@ -72,14 +73,27 @@ CHATGPT_TOOL_DESCRIPTIONS = {
         " around them with knowledge_context. Every non-canonical result is a recorded "
         "proposal, not a decision."
     ),
+    "reconcile.relations": (
+        "Returns recorded relations between two cited source passages for one source_id. "
+        "Each relation carries relation_class, origin, bases, producer, notes, proposed_at, "
+        "and the cited spans of both ends. These are recorded links whose ends and citations "
+        "resolve to the sources, not approved decisions and not verified facts. A related "
+        "relation with origin model is a model's reading that two passages bear on each "
+        "other. Exploratory interpretations are not included. Use it to find passages linked "
+        "to one found by search, in the same conversation or another; read both ends with "
+        "knowledge_context or provenance_span before describing the link; quote "
+        "relation_class and origin."
+    ),
 }
 
 CHATGPT_SERVER_INSTRUCTIONS = (
-    "Keep three kinds of material distinct: original sources are historical conversation "
+    "Keep four kinds of material distinct: original sources are historical conversation "
     "and attachment text, not decisions; recorded proposals are distilled statements with "
     "citations, not verified facts or approved decisions; approved decisions are "
-    "canon_assertions and candidate_search hits marked canonical. For decision, evolution, "
-    "or connection questions, use source search alongside candidate_search. Verify proposal"
+    "canon_assertions and candidate_search hits marked canonical; recorded relations link "
+    "two cited passages; they are not facts or decisions. For decision or evolution questions, "
+    "use source search alongside candidate_search. For connection questions, "
+    "reconcile_relations can be called with a source_id from a search hit. Verify proposal"
     " citations with provenance_span or read around them with knowledge_context. In your "
     "answer, say which kind each statement comes from. Never present proposals as verified "
     "facts."
@@ -126,6 +140,7 @@ LOG_ARGUMENTS = {
     "cursor",
     "include_replaced",
     "ranking",
+    "relation_class",
 }
 
 
@@ -451,12 +466,35 @@ class Gate:
                             field = dict(field) if isinstance(field, dict) else {}
                             field.update(updates)
                             properties[argument] = field
+                    if product_name == "reconcile.relations":
+                        field = dict(properties.get("source_id", {}))
+                        field.update({
+                            "type": "string",
+                            "pattern": "^src_[0-9A-Z]{26}$",
+                            "maxLength": 30,
+                            "description": (
+                                "Use a source_id from a search, context or proposal result."
+                            ),
+                        })
+                        properties["source_id"] = field
+                        field = dict(properties.get("relation_class", {}))
+                        field["enum"] = [
+                            "same_source", "revision", "restatement",
+                            "related", "contradiction", "unknown",
+                        ]
+                        properties["relation_class"] = field
                     schema["properties"] = properties
                 if product_name == "candidate.search":
                     required = schema.get("required")
                     required = list(required) if isinstance(required, list) else []
                     if "query" not in required:
                         required.append("query")
+                    schema["required"] = required
+                if product_name == "reconcile.relations":
+                    required = schema.get("required")
+                    required = list(required) if isinstance(required, list) else []
+                    if "source_id" not in required:
+                        required.append("source_id")
                     schema["required"] = required
                 tool["inputSchema"] = schema
 
@@ -704,6 +742,39 @@ class Gate:
                     not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
                 ):
                     self._invalid(request_id, method, -32602, "invalid candidate search limit")
+                    return
+
+            if tool == "reconcile.relations":
+                classes = (
+                    "same_source", "revision", "restatement", "related",
+                    "contradiction", "unknown",
+                )
+                if not isinstance(arguments, dict):
+                    self._invalid(
+                        request_id, method, -32602, "invalid relation arguments",
+                        "refuse_relations_unbounded",
+                    )
+                    return
+                source_id = arguments.get("source_id")
+                if not isinstance(source_id, str) or not re.fullmatch(
+                    r"src_[0-9A-Z]{26}", source_id
+                ):
+                    self._invalid(
+                        request_id, method, -32602, "invalid relation source_id",
+                        "refuse_relations_unbounded",
+                    )
+                    return
+                if "relation_class" in arguments and arguments["relation_class"] not in classes:
+                    self._invalid(
+                        request_id, method, -32602, "invalid relation class",
+                        "refuse_relations_unbounded",
+                    )
+                    return
+                if set(arguments) - {"source_id", "relation_class"}:
+                    self._invalid(
+                        request_id, method, -32602, "unsupported relation arguments",
+                        "refuse_relations_unbounded",
+                    )
                     return
 
             if tool == "provenance.span" and isinstance(arguments, dict):
