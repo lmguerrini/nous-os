@@ -140,6 +140,7 @@ nous-os/
 │   └── ledger.py                         # Knowledge history
 ├── tests/                                # Python test suite
 ├── tools/                                # Repository maintenance tools
+│   └── macos/                            # macOS tunnel kit and menu bar app
 ├── ui/                                   # Interactive graph review app
 │   ├── review/index.html                 # Browser entry page
 │   └── src/                              # Graph and rendering code
