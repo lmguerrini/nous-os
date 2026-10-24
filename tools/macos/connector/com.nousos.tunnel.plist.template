@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nousos.tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>@SCRIPT@</string>
+    <string>launchd-run</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>WorkingDirectory</key>
+  <string>@HOME@</string>
+  <key>StandardOutPath</key>
+  <string>@LOGDIR@/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@LOGDIR@/launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin:@HOME@/.local/bin</string>
+    <key>NOUSOS_TUNNEL_CLIENT</key>
+    <string>@CLIENT@</string>
+    <key>NOUSOS_GATE_CHILD</key>
+    <string>@GATE_CHILD@</string>
+    <key>NOUSOS_PROPOSALS</key>
+    <string>@PROPOSALS@</string>
+    <key>NOUSOS_PYTHON</key>
+    <string>@PYTHON@</string>
+  </dict>
+</dict>
+</plist>
