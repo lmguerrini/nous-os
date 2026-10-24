@@ -28,7 +28,7 @@ seal_environment() {
 
   for name in ${(f)"$(typeset +x)"}; do
     case "$name" in
-      HOME|USER|LOGNAME|SHELL|PATH|TMPDIR|LANG|LC_ALL|LC_CTYPE|__CF_USER_TEXT_ENCODING|NOUSOS_TUNNEL_CLIENT|NOUSOS_GATE_CHILD|NOUSOS_PROPOSALS|NOUSOS_PYTHON) ;;
+      HOME|USER|LOGNAME|SHELL|PATH|TMPDIR|LANG|LC_ALL|LC_CTYPE|__CF_USER_TEXT_ENCODING|NOUSOS_TUNNEL_CLIENT|NOUSOS_TUNNEL_CLIENT_HOME|NOUSOS_GATE_CHILD|NOUSOS_PROPOSALS|NOUSOS_PYTHON) ;;
       *) unset "$name" 2>/dev/null || true ;;
     esac
   done
@@ -842,6 +842,16 @@ print(json.dumps(dict(sorted(counts.items())), sort_keys=True))
         *) usage ;;
       esac
     done
+    if [[ "$remove_client" == yes ]]; then
+      if [[ -z "${NOUSOS_TUNNEL_CLIENT_HOME:-}" ]]; then
+        print -u2 -- "Set NOUSOS_TUNNEL_CLIENT_HOME to the tunnel-client install directory before using --remove-client."
+        exit 1
+      fi
+      if [[ "$NOUSOS_TUNNEL_CLIENT_HOME" == / || "$NOUSOS_TUNNEL_CLIENT_HOME" == "$HOME" || ! -d "$NOUSOS_TUNNEL_CLIENT_HOME" ]]; then
+        print -u2 -- "NOUSOS_TUNNEL_CLIENT_HOME must name an existing directory other than / or your home directory."
+        exit 1
+      fi
+    fi
     if ! do_stop; then
       print -u2 -- "Rollback aborted: matching processes are still running."
       exit 1
@@ -862,7 +872,7 @@ print(json.dumps(dict(sorted(counts.items())), sort_keys=True))
     fi
     if [[ "$remove_client" == yes ]]; then
       rm -f "$HOME/.local/bin/tunnel-client"
-      rm -rf "$HOME/.local/opt/tunnel-client/"
+      rm -rf "$NOUSOS_TUNNEL_CLIENT_HOME"
     fi
     print -- 'Passi UI rimanenti: revoca la chiave runtime nella pagina Platform API keys; facoltativamente elimina il tunnel nella pagina Platform Tunnels; rimuovi la app da chatgpt.com/plugins.'
     ;;

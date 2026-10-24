@@ -7,6 +7,7 @@ This folder contains a macOS tunnel kit and a small menu bar controller. The kit
 Use macOS, a Swift toolchain with AppKit, Python 3, and the tunnel client executable. Set these variables in the environment used to start the kit:
 
 - `NOUSOS_TUNNEL_CLIENT`: path to the tunnel client. If unset, the kit searches `PATH` for `tunnel-client`.
+- `NOUSOS_TUNNEL_CLIENT_HOME`: directory containing the installed tunnel client, required by `rollback --remove-client`. Set it to `<install directory>`; it must be an existing directory other than `/` or your home directory.
 - `NOUSOS_GATE_CHILD`: executable wrapper launched by the read-only gate. This is required.
 - `NOUSOS_PROPOSALS`: proposals file used by the development proxy preflight.
 - `NOUSOS_PYTHON`: Python 3 executable. If unset, the kit searches `PATH` for `python3`.
