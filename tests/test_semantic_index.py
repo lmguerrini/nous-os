@@ -530,6 +530,7 @@ def test_search_pins_ranking_distinct_tip_selection_and_citations(tmp_path: Path
 
 
 def test_semantic_role_filter_metadata_and_argument_validation(tmp_path: Path) -> None:
+    _require_dense_en()
     _store, derived_path = _semantic_canon(tmp_path)
     index_path = tmp_path / "semantic"
     semantic_index.build(derived_path, index_path, DENSE_EN)
