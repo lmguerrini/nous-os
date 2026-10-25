@@ -198,6 +198,32 @@ def _minimal_generation(
     return generation
 
 
+def _fake_search_generation(index_path: Path, vectors, source_ids: list[str]) -> Path:
+    """Make a small structurally valid generation for deterministic ranking tests."""
+    import numpy as np
+
+    generation = _minimal_generation(index_path, include_chunk=True, projection="v2")
+    values = np.asarray(vectors, dtype=np.float32)
+    ids = [f"{_sid('RANK')}#{number:04d}" for number in range(len(source_ids))]
+    (generation / "vectors.f32").write_bytes(values.tobytes())
+    connection = sqlite3.connect(generation / "index.sqlite3")
+    try:
+        connection.execute("DELETE FROM chunk")
+        connection.executemany(
+            "INSERT INTO chunk VALUES (?, ?, ?, ?, '[]', ?, NULL, NULL, 'absent')",
+            [
+                (chunk_id, source_id, "0" * 64, number, f"rank text {number}")
+                for number, (chunk_id, source_id) in enumerate(zip(ids, source_ids))
+            ],
+        )
+        connection.execute("UPDATE meta SET value = ? WHERE key = 'chunks'", (str(len(ids)),))
+        connection.execute("UPDATE meta SET value = ? WHERE key = 'dimension'", (str(values.shape[1]),))
+        connection.commit()
+    finally:
+        connection.close()
+    return generation
+
+
 def _workspace(
     tmp_path: Path, semantic_path: Path | None = None, derived_path: Path | None = None
 ) -> core.Workspace:
@@ -467,6 +493,142 @@ def test_search_pins_ranking_distinct_tip_selection_and_citations(tmp_path: Path
             seen.add(hit["source_id"])
             expected.append(hit["chunk_id"])
     assert [hit["chunk_id"] for hit in distinct["hits"]] == expected
+
+
+def test_numpy_search_matches_previous_ranking_with_ties_and_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ranking remains byte-for-byte stable across limits, duplicate sources, and sidecars."""
+    import numpy as np
+
+    rng = np.random.default_rng(441)
+    source_ids = [_sid(f"R{number // 2:03d}") for number in range(24)]
+    vectors = rng.integers(-2, 3, size=(24, 6)).astype(np.float32)
+    # Deliberate score ties are common, while repeated source ids exercise
+    # source-level best-chunk selection and chunk-level duplicate retention.
+    index_path = tmp_path / "ranking"
+    generation = _fake_search_generation(index_path, vectors, source_ids)
+
+    class FakeBackend:
+        checkpoint_digest = "0" * 64
+
+        def encode(self, texts):
+            seed = sum(texts[0].encode("utf-8"))
+            return np.random.default_rng(seed).integers(-2, 3, size=(1, 6)).astype(np.float32)
+
+    backend = FakeBackend()
+    monkeypatch.setattr(semantic_index, "_backend_for", lambda _meta: (backend, None))
+    monkeypatch.setattr(semantic_index, "lexical_search", lambda *_args, **_kwargs: [])
+    turns = [(source_ids[i], source_ids[i + 12]) for i in range(12)]
+    turn_vectors = rng.integers(-2, 3, size=(12, 6)).astype(np.float32)
+    monkeypatch.setattr(
+        semantic_index, "_read_turn_pairs", lambda *_args, **_kwargs: (turns, turn_vectors)
+    )
+
+    connection = sqlite3.connect(generation / "index.sqlite3")
+    try:
+        rows = connection.execute("SELECT chunk_id, source_id FROM chunk ORDER BY chunk_id").fetchall()
+    finally:
+        connection.close()
+
+    def old_ranking(query: str, limit: int, distinct: bool, augmented: bool):
+        """Verbatim ranking operations from search before NumPy selection."""
+        query_vector = backend.encode(("query: " + query,))[0]
+        scores = vectors @ query_vector
+        candidates = sorted(
+            ((float(score), row) for score, row in zip(scores, rows)),
+            key=lambda item: (-item[0], item[1][0]),
+        )
+        if distinct:
+            seen: set[str] = set()
+            candidates = [
+                candidate
+                for candidate in candidates
+                if not (candidate[1][1] in seen or seen.add(candidate[1][1]))
+            ]
+        selected = candidates[:limit]
+        rrf_scores: dict[str, float] = {}
+        if distinct and augmented:
+            raw_sources = [candidate[1][1] for candidate in candidates[:200]]
+            reply_to_user = {assistant_source: user_source for user_source, assistant_source in turns}
+            reply_sources = list(dict.fromkeys(
+                reply_to_user[assistant_source]
+                for assistant_source in raw_sources
+                if assistant_source in reply_to_user
+            ))
+            turn_scores = turn_vectors @ query_vector
+            turn_sources = [
+                source_id for _score, source_id in sorted(
+                    ((float(score), source_id) for score, (source_id, _assistant) in zip(turn_scores, turns)),
+                    key=lambda item: (-item[0], item[1]),
+                )[:200]
+            ]
+            for ranked in ([], raw_sources, turn_sources, reply_sources):
+                for position, source_id in enumerate(ranked, start=1):
+                    rrf_scores[source_id] = rrf_scores.get(source_id, 0.0) + 1.0 / (60 + position)
+            fused = sorted(rrf_scores, key=lambda source_id: (-rrf_scores[source_id], source_id))
+            best_by_source = {}
+            for candidate in candidates:
+                best_by_source.setdefault(candidate[1][1], candidate)
+            selected = [best_by_source[source_id] for source_id in fused[:limit] if source_id in best_by_source]
+        return selected, rrf_scores
+
+    semantic_index.clear_search_cache()
+    for query_number in range(9):
+        query = f"random query {query_number}"
+        for limit in (1, 2, 7, 13, 40):
+            for distinct in (False, True):
+                for augmented in (False, True):
+                    semantic_index.clear_search_cache()
+                    expected, expected_rrf = old_ranking(query, limit, distinct, augmented)
+                    answer = semantic_index.search(
+                        index_path, query, limit=limit, distinct=distinct,
+                        derived_path=tmp_path / "derived" if augmented else None,
+                    )
+                    hits = answer["hits"]
+                    assert [hit["chunk_id"] for hit in hits] == [row[1][0] for row in expected], (query, limit, distinct, augmented, hits, expected)
+                    assert [hit["score"] for hit in hits] == [row[0] for row in expected], (query, limit, distinct, augmented, hits, expected)
+                    if distinct and augmented:
+                        assert answer["ranking"] == "turn-reply-rrf-k60"
+                        assert [hit["rrf_score"] for hit in hits] == [
+                            expected_rrf[row[1][1]] for row in expected
+                        ]
+                    else:
+                        assert "ranking" not in answer
+
+
+def test_search_cache_reuse_and_invalidation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backend is retained for a generation and reloaded after CURRENT or vector changes."""
+    import numpy as np
+
+    class FakeBackend:
+        checkpoint_digest = "0" * 64
+
+        def encode(self, _texts):
+            return np.ones((1, 1), dtype=np.float32)
+
+    backend = FakeBackend()
+    calls = []
+    monkeypatch.setattr(semantic_index, "_backend_for", lambda _meta: (calls.append(1) or backend, None))
+    root = tmp_path / "cache"
+    first = _fake_search_generation(root, np.ones((1, 1), dtype=np.float32), [_sid("ONE")])
+    semantic_index.clear_search_cache()
+    semantic_index.search(root, "query")
+    semantic_index.search(root, "query")
+    assert len(calls) == 1
+    import shutil
+
+    second = root / "gen-second"
+    shutil.copytree(first, second)
+    (root / "CURRENT").write_text(second.name + "\n", encoding="utf-8")
+    semantic_index.search(root, "query")
+    assert len(calls) == 2
+    # Restore CURRENT to the first generation and alter its same-sized vector file.
+    (root / "CURRENT").write_text(first.name + "\n", encoding="utf-8")
+    vector_path = first / "vectors.f32"
+    vector_path.write_bytes(np.array([2.0], dtype=np.float32).tobytes())
+    semantic_index.search(root, "query")
+    assert len(calls) == 3
 
 
 def test_turn_rrf_sidecar_is_validated_and_keeps_two_citations(tmp_path: Path) -> None:

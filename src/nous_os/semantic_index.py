@@ -192,6 +192,97 @@ class _OneSnapshotStore:
         raise SnapshotNotFound(f"no snapshot {digest} for {source_id}")
 
 
+@dataclass(slots=True)
+class _SearchCache:
+    key: tuple[object, ...]
+    backend: object | None
+    backend_reason: str | None
+    vectors: object
+    chunk_ids: tuple[str, ...]
+    source_codes: object
+    source_ids: tuple[str, ...]
+    group_order: object
+    group_offsets: object
+    sidecar_key: tuple[object, ...] = ()
+    sidecar: object = None
+
+
+_SEARCH_CACHE: _SearchCache | None = None
+
+
+def clear_search_cache() -> None:
+    """Drop the one-generation search cache (primarily useful to tests)."""
+    global _SEARCH_CACHE
+    _SEARCH_CACHE = None
+
+
+def _file_stamp(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
+def _search_cache_for(name: str, generation: Path, meta: dict[str, str]) -> _SearchCache:
+    global _SEARCH_CACHE
+    import numpy as np
+
+    vector_path = generation / "vectors.f32"
+    database_path = generation / "index.sqlite3"
+    key = (
+        generation.resolve(), meta["state_digest"],
+        _file_stamp(vector_path), _file_stamp(database_path),
+    )
+    if _SEARCH_CACHE is not None and _SEARCH_CACHE.key == key:
+        return _SEARCH_CACHE
+    chunks = _integer_meta(meta, "chunks")
+    dimension = _integer_meta(meta, "dimension", minimum=1)
+    vectors = np.memmap(vector_path, dtype=np.float32, mode="r", shape=(chunks, dimension))
+    try:
+        connection = sqlite3.connect(f"file:{database_path.resolve()}?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT chunk_id, source_id FROM chunk ORDER BY chunk_id"
+            ).fetchall()
+        finally:
+            connection.close()
+    except sqlite3.DatabaseError as error:
+        raise SemanticIndexUnusable(f"sqlite: {error}") from error
+    if len(rows) != chunks:
+        raise SemanticIndexUnusable("chunks: metadata does not equal chunk row count")
+    chunk_ids = tuple(row[0] for row in rows)
+    source_values = np.asarray([row[1] for row in rows], dtype=str)
+    source_ids = tuple(np.unique(source_values).tolist())
+    source_codes = np.searchsorted(source_ids, source_values).astype(np.int32, copy=False)
+    group_order = np.argsort(source_codes, kind="stable").astype(np.int32, copy=False)
+    counts = np.bincount(source_codes, minlength=len(source_ids))
+    group_offsets = np.concatenate((np.array([0], dtype=np.int64), np.cumsum(counts)))
+    backend, backend_reason = _backend_for(meta)
+    _SEARCH_CACHE = _SearchCache(
+        key, backend, backend_reason, vectors, chunk_ids, source_codes,
+        source_ids, group_order, group_offsets,
+    )
+    return _SEARCH_CACHE
+
+
+def _top_indices(scores, count: int):
+    """Select an exact top window, resolving boundary ties by ascending id."""
+    import numpy as np
+
+    size = int(scores.size)
+    if count >= size:
+        pool = np.arange(size, dtype=np.int64)
+    else:
+        pivot = size - count
+        partition = np.argpartition(scores, pivot)
+        cutoff = scores[partition[pivot]]
+        above = np.flatnonzero(scores > cutoff)
+        tied = np.flatnonzero(scores == cutoff)
+        pool = np.concatenate((above, tied[: max(0, count - above.size)]))
+    return pool[np.lexsort((pool, -scores[pool]))].astype(np.int64, copy=False)
+
+
 def record_parts(body: str) -> tuple[str, ...]:
     """Select one derived record body's text parts; projections v1 and v2 share this step.
 
@@ -840,7 +931,8 @@ def search(
     if current is None:
         return _not_run(f"no CURRENT generation at {path}")
     _name, generation, meta = _check_generation(path)
-    backend, reason = _backend_for(meta)
+    cache = _search_cache_for(_name, generation, meta)
+    backend, reason = cache.backend, cache.backend_reason
     if backend is None:
         return _not_run(f"backend {meta['backend']!r} could not be loaded: {reason}")
     if backend.checkpoint_digest != meta["checkpoint_digest"]:
@@ -848,31 +940,39 @@ def search(
             "checkpoint digest differs: index "
             f"{meta['checkpoint_digest']}, loaded {backend.checkpoint_digest}"
         )
+    chunks = _integer_meta(meta, "chunks")
     import numpy as np
 
-    chunks = _integer_meta(meta, "chunks")
-    dimension = _integer_meta(meta, "dimension", minimum=1)
-    vectors = np.fromfile(generation / "vectors.f32", dtype=np.float32).reshape((chunks, dimension))
     query_vector = backend.encode((meta.get("query_prefix", "") + query,))[0]
-    scores = vectors @ query_vector
+    scores = cache.vectors @ query_vector
     try:
         connection = sqlite3.connect(f"file:{(generation / 'index.sqlite3').resolve()}?mode=ro", uri=True)
         try:
-            rows = connection.execute("SELECT chunk_id, source_id FROM chunk ORDER BY chunk_id").fetchall()
-            if len(rows) != chunks:
-                raise SemanticIndexUnusable("chunks: metadata does not equal chunk row count")
-            candidates = sorted(
-                ((float(score), row) for score, row in zip(scores, rows)),
-                key=lambda item: (-item[0], item[1][0]),
-            )
+            chunk_order = _top_indices(scores, min(limit, chunks))
+            best_indices = None
+            max_scores = None
+            source_order = None
             if distinct:
-                seen: set[str] = set()
-                candidates = [
-                    candidate
-                    for candidate in candidates
-                    if not (candidate[1][1] in seen or seen.add(candidate[1][1]))
+                max_scores = np.full(len(cache.source_ids), -np.inf, dtype=np.float32)
+                np.maximum.at(max_scores, cache.source_codes, scores)
+                best_indices = np.full(len(cache.source_ids), chunks, dtype=np.int64)
+                equal_max = scores == max_scores[cache.source_codes]
+                np.minimum.at(
+                    best_indices, cache.source_codes,
+                    np.where(equal_max, np.arange(chunks, dtype=np.int64), chunks),
+                )
+                source_count = min(len(cache.source_ids), max(limit, 200 if derived_path is not None else limit))
+                source_order = _top_indices(max_scores, source_count)
+                selected = [
+                    (float(max_scores[i]), (cache.chunk_ids[int(best_indices[i])], cache.source_ids[int(i)]))
+                    for i in source_order[:limit]
                 ]
-            selected = candidates[:limit]
+            else:
+                candidates = [
+                    (float(scores[i]), (cache.chunk_ids[int(i)], cache.source_ids[int(cache.source_codes[i])]))
+                    for i in chunk_order
+                ]
+                selected = candidates
             contexts: dict[str, str] = {}
             context_chunk_ids: dict[str, str] = {}
             rrf_scores: dict[str, float] = {}
@@ -881,12 +981,21 @@ def search(
             # the established dense-only result; the governed user route asks
             # for distinct source hits by default.
             if distinct and derived_path is not None:
-                sidecar = _read_turn_pairs(
-                    path, _name, meta, {source_id for _chunk_id, source_id in rows}
+                sidecar_key = (
+                    _name,
+                    _file_stamp(path / "turn-pairs" / "COMPLETE.json"),
+                    _file_stamp(path / "turn-pairs" / "index.sqlite3"),
+                    _file_stamp(path / "turn-pairs" / "vectors.f32"),
                 )
+                if cache.sidecar_key != sidecar_key:
+                    cache.sidecar = _read_turn_pairs(
+                        path, _name, meta, set(cache.source_ids)
+                    )
+                    cache.sidecar_key = sidecar_key
+                sidecar = cache.sidecar
                 if sidecar is not None:
                     turns, turn_vectors = sidecar
-                    raw_sources = [candidate[1][1] for candidate in candidates[:200]]
+                    raw_sources = [cache.source_ids[int(i)] for i in source_order[:200]]
                     reply_to_user = {assistant_source: user_source for user_source, assistant_source in turns}
                     reply_sources = list(dict.fromkeys(
                         reply_to_user[assistant_source]
@@ -902,12 +1011,8 @@ def search(
                     except (QueryError, DerivedStoreError):
                         lexical_sources = []
                     turn_scores = turn_vectors @ query_vector
-                    turn_sources = [
-                        source_id for _score, source_id in sorted(
-                            ((float(score), source_id) for score, (source_id, _assistant) in zip(turn_scores, turns)),
-                            key=lambda item: (-item[0], item[1]),
-                        )[:200]
-                    ]
+                    turn_indices = _top_indices(turn_scores, min(200, len(turns)))
+                    turn_sources = [turns[int(i)][0] for i in turn_indices]
                     # A retrieved assistant response can generalise to the
                     # immediately preceding user question. The sidecar has
                     # already validated the mapping is one-to-one and non-self; its
@@ -916,11 +1021,22 @@ def search(
                     for ranked in (lexical_sources, raw_sources, turn_sources, reply_sources):
                         for position, source_id in enumerate(ranked, start=1):
                             rrf_scores[source_id] = rrf_scores.get(source_id, 0.0) + 1.0 / (_RRF_K + position)
-                    fused = sorted(rrf_scores, key=lambda source_id: (-rrf_scores[source_id], source_id))
-                    best_by_source: dict[str, tuple[float, tuple[str, str]]] = {}
-                    for candidate in candidates:
-                        best_by_source.setdefault(candidate[1][1], candidate)
-                    selected = [best_by_source[source_id] for source_id in fused[:limit] if source_id in best_by_source]
+                    fused_ids = np.asarray(tuple(rrf_scores), dtype=str)
+                    fused_scores = np.fromiter(
+                        (rrf_scores[source_id] for source_id in fused_ids),
+                        dtype=np.float64, count=len(fused_ids),
+                    )
+                    fused_order = np.lexsort((fused_ids, -fused_scores))
+                    fused = [str(fused_ids[index]) for index in fused_order]
+                    selected = []
+                    for source_id in fused[:limit]:
+                        source_index = int(np.searchsorted(cache.source_ids, source_id))
+                        if source_index < len(cache.source_ids) and cache.source_ids[source_index] == source_id:
+                            chunk_index = int(best_indices[source_index])
+                            selected.append((
+                                float(max_scores[source_index]),
+                                (cache.chunk_ids[chunk_index], source_id),
+                            ))
                     contexts = dict(turns)
                     augmented = True
             details: dict[str, tuple[object, ...]] = {}
@@ -929,13 +1045,13 @@ def search(
                 context_sources = {
                     contexts[source_id] for _score, (_chunk_id, source_id) in selected if source_id in contexts
                 }
-                for _score, (chunk_id, source_id) in candidates:
-                    if source_id in context_sources:
+                for source_id in context_sources:
+                    source_index = int(np.searchsorted(cache.source_ids, source_id))
+                    if source_index < len(cache.source_ids) and cache.source_ids[source_index] == source_id:
+                        chunk_index = int(best_indices[source_index])
+                        chunk_id = cache.chunk_ids[chunk_index]
                         context_chunk_ids[source_id] = chunk_id
                         detail_ids.add(chunk_id)
-                        context_sources.remove(source_id)
-                    if not context_sources:
-                        break
             for chunk_id in detail_ids:
                 detail = connection.execute(
                     "SELECT snapshot_digest, ordinal, heading_path, text, start_byte, end_byte,"
