@@ -61,7 +61,7 @@ for line in sys.stdin:
             {{"name":name,"description":"fake","inputSchema":{{"type":"object","properties":{{
                 "limit":{{"type":"integer"}},"before":{{"type":"integer"}},"after":{{"type":"integer"}},
                 "query":{{"type":"string"}},"include_replaced":{{"type":"boolean"}},
-                "ranking":{{"type":"string"}},"source_id":{{"type":"string"}},
+                "ranking":{{"type":"string"}},"role":{{"type":"string"}},"view":{{"type":"string"}},"max_chars":{{"type":"integer"}},"source_id":{{"type":"string"}},
                 "relation_class":{{"type":"string"}}
             }}}}}} for name in names
         ]}}}})
@@ -222,14 +222,25 @@ class GateTests(unittest.TestCase):
         self.assertEqual(tools[0]["inputSchema"]["properties"]["limit"]["maximum"], 20)
         self.assertEqual(tools[1]["inputSchema"]["properties"]["limit"]["maximum"], 10)
         self.assertEqual(tools[2]["inputSchema"]["properties"]["limit"]["maximum"], 30)
+        search_props = tools[0]["inputSchema"]["properties"]
+        semantic_props = tools[1]["inputSchema"]["properties"]
+        context_props = tools[2]["inputSchema"]["properties"]
+        self.assertEqual(search_props["role"]["enum"], ["user", "assistant"])
+        self.assertEqual(semantic_props["role"]["enum"], ["user", "assistant"])
+        self.assertEqual(context_props["view"]["enum"], ["full", "text"])
+        self.assertEqual(context_props["max_chars"]["minimum"], 200)
+        self.assertEqual(context_props["max_chars"]["maximum"], 8000)
         candidate = tools[5]
         schema = candidate["inputSchema"]
         self.assertEqual(schema["properties"]["limit"]["maximum"], 10)
         self.assertEqual(schema["properties"]["limit"]["default"], 10)
         self.assertEqual(schema["properties"]["query"]["maxLength"], 256)
         self.assertEqual(schema["properties"]["include_replaced"]["enum"], [False])
-        self.assertEqual(schema["properties"]["ranking"]["enum"], ["text", "text_relevance"])
-        self.assertNotIn("source_semantic", schema["properties"]["ranking"]["description"])
+        self.assertEqual(
+            schema["properties"]["ranking"]["enum"],
+            ["text", "text_relevance", "source_semantic"],
+        )
+        self.assertIn("source_semantic", schema["properties"]["ranking"]["description"])
         self.assertIn("query", schema["required"])
         self.assertIn("recorded proposal, not a decision", candidate["description"])
         self.assertIn("epistemic_label and canonical_status", candidate["description"])
@@ -261,6 +272,9 @@ class GateTests(unittest.TestCase):
         self.assertIn("not proposals or decisions", tools[0]["description"])
         self.assertIn("not verified facts or approved decisions", candidate["description"])
         self.assertIn("not instead of it", candidate["description"])
+        for tool in tools[:2]:
+            self.assertIn("omit role otherwise", tool["description"])
+            self.assertNotIn("Use role user", tool["description"])
 
     def test_initialize_instructions_preserve_fields_and_match_id(self) -> None:
         self.gate.send({"jsonrpc": "2.0", "id": 101, "method": "initialize", "params": {}})
@@ -271,6 +285,8 @@ class GateTests(unittest.TestCase):
         self.assertIn("recorded relations", result["instructions"])
         self.assertLess(len(result["instructions"]), 900)
         self.assertIn("Never present proposals as verified facts", result["instructions"])
+        self.assertIn("omit role otherwise", result["instructions"])
+        self.assertNotIn("Use role user", result["instructions"])
 
         self.gate.send({"jsonrpc": "2.0", "id": 102, "method": "initialize", "params": {"mismatch": True}})
         response = self.gate.response(103)
@@ -368,7 +384,7 @@ class GateTests(unittest.TestCase):
         self.gate.send(self.call(7, "knowledge_context", {"before": 9, "after": 6}))
         self.assertEqual(
             self.gate.response(7)["result"]["received"],
-            {"before": 5, "after": 5, "limit": 30},
+            {"before": 5, "after": 5, "limit": 30, "view": "text"},
         )
         self.gate.send({"jsonrpc": "2.0", "id": 8, "method": "ping"})
         self.assertEqual(self.gate.response(8)["result"], {})
@@ -378,6 +394,61 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.gate.response(None)["error"]["code"], -32700)
         self.gate.send({"jsonrpc": "2.0", "id": 10, "method": "unknown"})
         self.assertEqual(self.gate.response(10)["error"]["code"], -32601)
+
+    def test_context_options_caps_and_refusals(self) -> None:
+        self.gate.send(self.call(110, "knowledge_context", {"before": 2}))
+        defaulted = self.gate.response(110)["result"]["received"]
+        self.assertEqual(defaulted["view"], "text")
+        self.assertTrue(any(
+            row.get("decision") == "capped"
+            for row in map(json.loads, self.gate.log_text().splitlines())
+        ))
+
+        full = {"view": "full", "before": 1}
+        self.gate.send(self.call(111, "knowledge_context", full))
+        full_received = self.gate.response(111)["result"]["received"]
+        self.assertEqual(full_received["view"], "full")
+        self.assertEqual(full_received["before"], 1)
+        self.assertNotIn("max_chars", full_received)
+
+        self.gate.send(self.call(112, "knowledge_context", {
+            "view": "text", "max_chars": 9000,
+        }))
+        self.assertEqual(
+            self.gate.response(112)["result"]["received"]["max_chars"], 8000,
+        )
+        log_rows = list(map(json.loads, self.gate.log_text().splitlines()))
+        self.assertTrue(any(
+            row.get("tool") == "knowledge.context"
+            and row.get("decision") == "capped"
+            and "max_chars" in row.get("arg_keys", [])
+            for row in log_rows
+        ))
+
+        invalid = [
+            ("knowledge_search", {"role": "system"}),
+            ("knowledge_context", {"view": "raw"}),
+            ("knowledge_context", {"max_chars": "x"}),
+            ("knowledge_context", {"max_chars": 100}),
+            ("knowledge_context", {"max_chars": True}),
+            ("knowledge_context", {"view": "full", "max_chars": 200}),
+            ("candidate_search", {"query": "q", "ranking": "bogus"}),
+        ]
+        first_id = 113
+        for request_id, (name, arguments) in enumerate(invalid, start=first_id):
+            self.gate.send(self.call(request_id, name, arguments))
+            self.assertEqual(self.gate.response(request_id)["error"]["code"], -32602)
+
+        self.gate.send(self.call(120, "candidate_search", {
+            "query": "q", "ranking": "source_semantic",
+        }))
+        self.assertEqual(
+            self.gate.response(120)["result"]["received"]["ranking"], "source_semantic",
+        )
+        self.assertEqual(
+            [item["name"] for item in self.gate.received()],
+            ["knowledge.context", "knowledge.context", "knowledge.context", "candidate.search"],
+        )
 
     def test_notifications_only_and_notification_call_is_dropped(self) -> None:
         self.gate.send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})

@@ -41,17 +41,22 @@ CHATGPT_TOOL_DESCRIPTIONS = {
     "knowledge.search": (
         "Returns original historical conversation and attachment text, not proposals or "
         "decisions. Use for exact words, names, and dates; pair with candidate_search for "
-        "questions about decisions or how ideas evolved."
+        "questions about decisions or how ideas evolved; optionally filter with role user when "
+        "asking what the person said, or role assistant for what an assistant answered; omit role "
+        "otherwise."
     ),
     "knowledge.semantic": (
         "Returns original historical conversation and attachment text found by meaning, not "
         "proposals or decisions. Use for a meaning-based search or paraphrase; pair with "
-        "candidate_search for questions about decisions or how ideas evolved."
+        "candidate_search for questions about decisions or how ideas evolved; optionally filter "
+        "with role user when asking what the person said, or role assistant for what an assistant "
+        "answered; omit role otherwise."
     ),
     "knowledge.context": (
         "Returns surrounding original conversation messages, not proposals or decisions. Use to"
         " read context around a source passage; pair with candidate_search for questions about "
-        "decisions or how ideas evolved."
+        "decisions or how ideas evolved. Compact text view is the default; use view full for the "
+        "exact stored body. Citations always refer to source bytes."
     ),
     "provenance.span": (
         "Returns the exact cited bytes from original source text, not a proposal or decision. "
@@ -66,7 +71,8 @@ CHATGPT_TOOL_DESCRIPTIONS = {
         "Returns cited recorded proposals distilled from sources and approved decisions marked "
         "canonical. Proposals are not verified facts or approved decisions. Use for what was "
         "decided, proposed, preferred, or concluded, how ideas evolved, and how topics or "
-        "conversations connect. Run alongside source search, not instead of it. Quote "
+        "conversations connect. Use source_semantic for whole questions and text for names and "
+        "keywords. Run alongside source search, not instead of it. Quote "
         "epistemic_label and canonical_status; a label such as DECISION_STATED_BY_PERSON means "
         "a person stated it in a conversation, not that it was approved. Before stating "
         "proposal content as what the sources say, check citations with provenance_span or read"
@@ -87,15 +93,17 @@ CHATGPT_TOOL_DESCRIPTIONS = {
 }
 
 CHATGPT_SERVER_INSTRUCTIONS = (
-    "Keep four kinds of material distinct: original sources are historical conversation "
-    "and attachment text, not decisions; recorded proposals are distilled statements with "
+    "Distinguish four kinds: original sources are historical conversation/attachment "
+    "text, not decisions; recorded proposals are distilled statements with "
     "citations, not verified facts or approved decisions; approved decisions are "
-    "canon_assertions and candidate_search hits marked canonical; recorded relations link "
+    "canonical canon_assertions and candidate_search hits; recorded relations link "
     "two cited passages; they are not facts or decisions. For decision or evolution questions, "
     "use source search alongside candidate_search. For connection questions, "
-    "reconcile_relations can be called with a source_id from a search hit. Verify proposal"
+    "use reconcile_relations with a source_id from a search hit. Verify proposal"
     " citations with provenance_span or read around them with knowledge_context. In your "
-    "answer, say which kind each statement comes from. Never present proposals as verified "
+    "answer, say which kind each statement comes from. Optionally filter with role user when "
+    "asking what the person said, or role assistant for what an assistant answered; omit role "
+    "otherwise. Use source_semantic for whole questions. Never present proposals as verified "
     "facts."
 )
 
@@ -103,7 +111,7 @@ CHATGPT_SERVER_INSTRUCTIONS = (
 CAPS: dict[str, dict[str, int]] = {
     "knowledge.search": {"limit": 20},
     "knowledge.semantic": {"limit": 10},
-    "knowledge.context": {"before": 5, "after": 5, "limit": 30},
+    "knowledge.context": {"before": 5, "after": 5, "limit": 30, "max_chars": 8000},
     "candidate.search": {"limit": 10},
 }
 
@@ -140,6 +148,9 @@ LOG_ARGUMENTS = {
     "cursor",
     "include_replaced",
     "ranking",
+    "role",
+    "view",
+    "max_chars",
     "relation_class",
 }
 
@@ -451,15 +462,28 @@ class Gate:
                                 else maximum
                             )
                             properties[argument] = field
+                    if product_name in {"knowledge.search", "knowledge.semantic"}:
+                        field = dict(properties.get("role", {}))
+                        field.update({"type": "string", "enum": ["user", "assistant"]})
+                        properties["role"] = field
+                    if product_name == "knowledge.context":
+                        field = dict(properties.get("view", {}))
+                        field.update({"type": "string", "enum": ["full", "text"]})
+                        properties["view"] = field
+                        field = dict(properties.get("max_chars", {}))
+                        field.update({"type": "integer", "minimum": 200, "maximum": 8000})
+                        properties["max_chars"] = field
                     if product_name == "candidate.search":
                         for argument, updates in {
                             "query": {"maxLength": 256},
                             "limit": {"maximum": 10, "default": 10},
                             "include_replaced": {"enum": [False], "default": False},
                             "ranking": {
-                                "enum": ["text", "text_relevance"],
-                                "description": "text (default: standing first among best "
-                                "text matches) or text_relevance (plain BM25)",
+                                "enum": ["text", "text_relevance", "source_semantic"],
+                                "description": "text (default: decisions first among keyword "
+                                "matches), text_relevance (plain keyword relevance), or "
+                                "source_semantic (meaning of the cited passages; best for whole "
+                                "questions or wording that differs from the proposals)",
                             },
                         }.items():
                             field = properties.get(argument)
@@ -734,7 +758,9 @@ class Gate:
                 if "include_replaced" in arguments and arguments["include_replaced"] is not False:
                     self._invalid(request_id, method, -32602, "replaced candidates are not exposed")
                     return
-                if "ranking" in arguments and arguments["ranking"] not in ("text", "text_relevance"):
+                if "ranking" in arguments and arguments["ranking"] not in (
+                    "text", "text_relevance", "source_semantic"
+                ):
                     self._invalid(request_id, method, -32602, "invalid candidate search ranking")
                     return
                 limit = arguments.get("limit")
@@ -815,6 +841,31 @@ class Gate:
                     arguments = dict(arguments)
                     params["arguments"] = arguments
                     capped: list[str] = []
+                    if (
+                        tool in {"knowledge.search", "knowledge.semantic"}
+                        and "role" in arguments
+                        and arguments["role"] not in ("user", "assistant")
+                    ):
+                        self._invalid(request_id, method, -32602, "invalid role")
+                        return
+                    if tool == "knowledge.context":
+                        if "view" not in arguments:
+                            arguments["view"] = "text"
+                            capped.append("view")
+                        if arguments["view"] not in ("full", "text"):
+                            self._invalid(request_id, method, -32602, "invalid view")
+                            return
+                        if "max_chars" in arguments:
+                            value = arguments["max_chars"]
+                            if not isinstance(value, int) or isinstance(value, bool) or value < 200:
+                                self._invalid(request_id, method, -32602, "invalid max_chars")
+                                return
+                            if arguments["view"] == "full":
+                                self._invalid(
+                                    request_id, method, -32602,
+                                    "max_chars requires text view",
+                                )
+                                return
                     for key, maximum in CAPS.get(tool, {}).items():
                         value = arguments.get(key)
                         if isinstance(value, int) and not isinstance(value, bool) and value > maximum:
