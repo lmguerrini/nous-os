@@ -233,6 +233,23 @@ def test_search_finds_content_and_is_stable() -> None:
     assert {hit.source_id for hit in hits} == {SOURCE_B}
 
 
+def test_search_role_filter_is_applied_before_limit_and_validated() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("UPDATE record SET role = 'assistant' WHERE source_id = ?", (SOURCE_C,))
+        connection.execute("UPDATE record SET role = 'user' WHERE source_id = ?", (SOURCE_D,))
+        connection.commit()
+    finally:
+        connection.close()
+    assert search(path, "coral", limit=1, role="user")[0].source_id == SOURCE_D
+    assert search(path, "coral", limit=1, role="assistant")[0].source_id == SOURCE_C
+    with pytest.raises(DerivedStoreError, match="role"):
+        search(path, "coral", role="system")
+
+
 def test_equally_ranked_results_come_back_in_a_fixed_order() -> None:
     """Two rows the index ranks identically must still have one order.
 

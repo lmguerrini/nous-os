@@ -854,6 +854,7 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
             ParameterSpec(
                 "limit", "integer", False, "maximum number of hits to return; defaults to 10"
             ),
+            ParameterSpec("role", "string", False, "filter hits to user or assistant records"),
         ),
     ),
     _descriptor(
@@ -866,6 +867,8 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
             ParameterSpec("before", "integer", False, "records before a source target; defaults to 2"),
             ParameterSpec("after", "integer", False, "records after a source target; defaults to 2"),
             ParameterSpec("limit", "integer", False, "maximum container records to return; defaults to 200"),
+            ParameterSpec("view", "string", False, "'full' source bytes or 'text' readable projection; defaults to 'full'"),
+            ParameterSpec("max_chars", "integer", False, "text projection limit, 200 to 20000 characters; defaults to 4000"),
         ),
     ),
     _descriptor(
@@ -881,6 +884,7 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
                 False,
                 "one hit per source, the best chunk; defaults to true",
             ),
+            ParameterSpec("role", "string", False, "filter hits to user or assistant records"),
         ),
     ),
     _descriptor(
@@ -1465,14 +1469,15 @@ def _compile_strategy(value: object) -> CohesionStrategy:
 
 def _bind_search(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     kwargs: dict[str, object] = {"path": workspace.derived_path, "query": arguments["query"]}
-    if "limit" in arguments:
-        kwargs["limit"] = arguments["limit"]
+    for name in ("limit", "role"):
+        if name in arguments:
+            kwargs[name] = arguments[name]
     return kwargs
 
 
 def _bind_context(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     kwargs: dict[str, object] = {"path": workspace.derived_path}
-    for name in ("source_id", "container", "before", "after", "limit"):
+    for name in ("source_id", "container", "before", "after", "limit", "view", "max_chars"):
         if name in arguments:
             kwargs[name] = arguments[name]
     return kwargs
@@ -1485,7 +1490,7 @@ def _bind_semantic(workspace: Workspace, arguments: dict[str, object]) -> dict[s
         "query": arguments["query"],
         "distinct": arguments.get("distinct", True),
     }
-    for name in ("limit",):
+    for name in ("limit", "role"):
         if name in arguments:
             kwargs[name] = arguments[name]
     return kwargs

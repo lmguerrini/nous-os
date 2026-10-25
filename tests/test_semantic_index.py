@@ -75,6 +75,16 @@ def _require_dense_en() -> OnnxBackend:
     return _require_backend(DENSE_EN)
 
 
+def _without_tip_metadata(answer: dict[str, object]) -> dict[str, object]:
+    """Compare rankings when one call intentionally adds tip fields."""
+    payload = dict(answer)
+    payload["hits"] = [
+        {key: value for key, value in hit.items() if key not in {"role", "created_at"}}
+        for hit in answer["hits"]
+    ]
+    return payload
+
+
 def _message(parts: list[object]) -> str:
     return json.dumps({"payload": {"message": {"content": {"parts": parts}}}}, ensure_ascii=False)
 
@@ -451,6 +461,8 @@ def test_search_pins_ranking_distinct_tip_selection_and_citations(tmp_path: Path
     answer = semantic_index.search(index_path, "beacon navigation for ships entering a harbour", limit=100)
     assert answer["status"] == "complete"
     hits = answer["hits"]
+    assert "collapsed_same_text" not in answer
+    assert all("same_text_source_ids" not in hit for hit in hits)
     assert hits[0]["source_id"] == LIGHTHOUSE
     assert [hit["rank"] for hit in hits] == list(range(1, len(hits) + 1))
     assert all("obsolete draft" not in hit["text"] for hit in hits)
@@ -486,13 +498,125 @@ def test_search_pins_ranking_distinct_tip_selection_and_citations(tmp_path: Path
     distinct = semantic_index.search(
         index_path, "beacon navigation for ships entering a harbour", limit=100, distinct=True
     )
-    expected = []
-    seen: set[str] = set()
+    source_ranked = []
+    seen_sources: set[str] = set()
     for hit in hits:
-        if hit["source_id"] not in seen:
-            seen.add(hit["source_id"])
-            expected.append(hit["chunk_id"])
-    assert [hit["chunk_id"] for hit in distinct["hits"]] == expected
+        if hit["source_id"] not in seen_sources:
+            seen_sources.add(hit["source_id"])
+            source_ranked.append(hit)
+    expected = []
+    by_text: dict[str, dict[str, object]] = {}
+    dropped = 0
+    for hit in source_ranked:
+        normalized = " ".join(hit["text"].split()).casefold()
+        if normalized in by_text:
+            by_text[normalized].setdefault("same_text_source_ids", []).append(hit["source_id"])
+            dropped += 1
+        else:
+            by_text[normalized] = dict(hit)
+            expected.append(by_text[normalized])
+    assert [hit["chunk_id"] for hit in distinct["hits"]] == [hit["chunk_id"] for hit in expected]
+    assert [hit["rank"] for hit in distinct["hits"]] == list(range(1, len(expected) + 1))
+    assert distinct["collapsed_same_text"] == dropped > 0
+    assert [hit.get("same_text_source_ids") for hit in distinct["hits"]] == [
+        hit.get("same_text_source_ids") for hit in expected
+    ]
+    refilled = semantic_index.search(
+        index_path, "beacon navigation for ships entering a harbour", limit=3, distinct=True
+    )
+    assert len(refilled["hits"]) == 3
+    assert [hit["chunk_id"] for hit in refilled["hits"]] == [hit["chunk_id"] for hit in expected[:3]]
+    assert [hit["rank"] for hit in refilled["hits"]] == [1, 2, 3]
+
+
+def test_semantic_role_filter_metadata_and_argument_validation(tmp_path: Path) -> None:
+    _store, derived_path = _semantic_canon(tmp_path)
+    index_path = tmp_path / "semantic"
+    semantic_index.build(derived_path, index_path, DENSE_EN)
+    connection = sqlite3.connect(derived_path)
+    try:
+        connection.execute("UPDATE record SET role = 'user', created_at = '2026-01-02' WHERE source_id = ?", (LIGHTHOUSE,))
+        connection.execute("UPDATE record SET role = 'assistant' WHERE source_id = ?", (BAKING,))
+        connection.commit()
+    finally:
+        connection.close()
+    user = semantic_index.search(index_path, "beacon navigation harbour", limit=10, distinct=True,
+                                 derived_path=derived_path, role="user")
+    assert user["hits"] and all(hit["role"] == "user" for hit in user["hits"])
+    lighthouse = next(hit for hit in user["hits"] if hit["source_id"] == LIGHTHOUSE)
+    assert lighthouse["created_at"] == "2026-01-02"
+    plain = semantic_index.search(index_path, "beacon", limit=1)
+    assert "role" not in plain["hits"][0] and "created_at" not in plain["hits"][0]
+    with pytest.raises(semantic_index.SemanticIndexError, match="derived_path"):
+        semantic_index.search(index_path, "beacon", role="user")
+    with pytest.raises(semantic_index.SemanticIndexError, match="role"):
+        semantic_index.search(index_path, "beacon", role="system")
+
+
+def test_role_window_is_filled_after_filtering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+
+    sources = [_sid(f"AS{number:03d}") for number in range(201)] + [_sid("USER1"), _sid("USER2")]
+    vectors = np.arange(len(sources), 0, -1, dtype=np.float32)[:, None]
+    index_path = tmp_path / "role-window"
+    _fake_search_generation(index_path, vectors, sources)
+    class FakeBackend:
+        checkpoint_digest = "0" * 64
+        def encode(self, _texts):
+            return np.ones((1, 1), dtype=np.float32)
+    monkeypatch.setattr(semantic_index, "_backend_for", lambda _meta: (FakeBackend(), None))
+    monkeypatch.setattr(semantic_index, "_tip_role_dates", lambda *_args, **_kwargs: {
+        source: ("user" if source in sources[-2:] else "assistant", None) for source in sources
+    })
+    monkeypatch.setattr(semantic_index, "_read_turn_pairs", lambda *_args, **_kwargs: ([], np.empty((0, 1))))
+    monkeypatch.setattr(semantic_index, "lexical_search", lambda *_args, **_kwargs: [])
+    derived = tmp_path / "derived.sqlite"
+    derived.touch()
+    answer = semantic_index.search(index_path, "query", limit=10, derived_path=derived, role="user")
+    assert {hit["source_id"] for hit in answer["hits"]} == set(sources[-2:])
+
+
+def test_role_filter_requires_readable_record_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+
+    index_path = tmp_path / "role-missing-store"
+    _fake_search_generation(index_path, np.ones((1, 1), dtype=np.float32), [_sid("ONE")])
+    class FakeBackend:
+        checkpoint_digest = "0" * 64
+        def encode(self, _texts):
+            return np.ones((1, 1), dtype=np.float32)
+    monkeypatch.setattr(semantic_index, "_backend_for", lambda _meta: (FakeBackend(), None))
+    missing = tmp_path / "missing.sqlite"
+    with pytest.raises(semantic_index.SemanticIndexError, match="derived store.*role metadata"):
+        semantic_index.search(index_path, "query", derived_path=missing, role="user")
+    malformed = tmp_path / "malformed.sqlite"
+    sqlite3.connect(malformed).close()
+    with pytest.raises(semantic_index.SemanticIndexError, match="record table"):
+        semantic_index.search(index_path, "query", derived_path=malformed, role="user")
+
+
+def test_augmented_search_refills_past_unindexed_lexical_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import numpy as np
+
+    sources = [_sid("INDEX1"), _sid("INDEX2")]
+    index_path = tmp_path / "refill"
+    _fake_search_generation(index_path, np.array([[2.0], [1.0]], dtype=np.float32), sources)
+    class FakeBackend:
+        checkpoint_digest = "0" * 64
+        def encode(self, _texts):
+            return np.ones((1, 1), dtype=np.float32)
+    monkeypatch.setattr(semantic_index, "_backend_for", lambda _meta: (FakeBackend(), None))
+    monkeypatch.setattr(semantic_index, "_tip_role_dates", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(semantic_index, "_read_turn_pairs", lambda *_args, **_kwargs: ([], np.empty((0, 1))))
+    monkeypatch.setattr(semantic_index, "lexical_search", lambda *_args, **_kwargs: [
+        type("LexicalHit", (), {"source_id": _sid("AAALEX")})()
+    ])
+    derived = tmp_path / "derived.sqlite"
+    derived.touch()
+    answer = semantic_index.search(index_path, "query", limit=2, derived_path=derived)
+    assert [hit["source_id"] for hit in answer["hits"]] == sources
 
 
 def test_numpy_search_matches_previous_ranking_with_ties_and_turns(
@@ -586,6 +710,22 @@ def test_numpy_search_matches_previous_ranking_with_ties_and_turns(
                         derived_path=tmp_path / "derived" if augmented else None,
                     )
                     hits = answer["hits"]
+                    if distinct:
+                        connection = sqlite3.connect(generation / "index.sqlite3")
+                        try:
+                            chunk_text = dict(connection.execute("SELECT chunk_id, text FROM chunk"))
+                        finally:
+                            connection.close()
+                        collapsed = []
+                        seen_text = set()
+                        for row in expected:
+                            normalized = " ".join(chunk_text[row[1][0]].split()).casefold()
+                            if normalized not in seen_text:
+                                seen_text.add(normalized)
+                                collapsed.append(row)
+                            if len(collapsed) == limit:
+                                break
+                        expected = collapsed
                     assert [hit["chunk_id"] for hit in hits] == [row[1][0] for row in expected], (query, limit, distinct, augmented, hits, expected)
                     assert [hit["score"] for hit in hits] == [row[0] for row in expected], (query, limit, distinct, augmented, hits, expected)
                     if distinct and augmented:
@@ -623,10 +763,16 @@ def test_search_cache_reuse_and_invalidation(tmp_path: Path, monkeypatch: pytest
     (root / "CURRENT").write_text(second.name + "\n", encoding="utf-8")
     semantic_index.search(root, "query")
     assert len(calls) == 2
-    # Restore CURRENT to the first generation and alter its same-sized vector file.
+    # Restore CURRENT, then replace vectors with same-sized content and restore its mtime.
     (root / "CURRENT").write_text(first.name + "\n", encoding="utf-8")
     vector_path = first / "vectors.f32"
-    vector_path.write_bytes(np.array([2.0], dtype=np.float32).tobytes())
+    import os
+    original_stat = vector_path.stat()
+    replacement = first / "replacement.f32"
+    replacement.write_bytes(np.array([2.0], dtype=np.float32).tobytes())
+    os.utime(replacement, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    os.replace(replacement, vector_path)
+    os.utime(vector_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
     semantic_index.search(root, "query")
     assert len(calls) == 3
 
@@ -672,13 +818,13 @@ def test_turn_rrf_sidecar_is_validated_and_keeps_two_citations(tmp_path: Path) -
     ordinary_dough = semantic_index.search(
         index_path, "how do I knead bread dough before baking", limit=1, distinct=True
     )
-    assert semantic_index.search(
+    assert _without_tip_metadata(semantic_index.search(
         index_path,
         "how do I knead bread dough before baking",
         limit=1,
         distinct=True,
         derived_path=derived_path,
-    ) == ordinary_dough
+    )) == ordinary_dough
     database = sqlite3.connect(index_path / "turn-pairs" / "index.sqlite3")
     try:
         database.execute("UPDATE turn SET source_id = ?", (LIGHTHOUSE,))
@@ -701,15 +847,15 @@ def test_turn_rrf_sidecar_is_validated_and_keeps_two_citations(tmp_path: Path) -
     complete["pairs"] = 2
     complete["vector_bytes"] *= 2
     complete_path.write_text(json.dumps(complete), encoding="utf-8")
-    assert semantic_index.search(
+    assert _without_tip_metadata(semantic_index.search(
         index_path, query, limit=3, distinct=True, derived_path=derived_path
-    ) == ordinary
+    )) == ordinary
     complete_path = index_path / "turn-pairs" / "COMPLETE.json"
     complete["base_generation"] = "gen-not-current"
     complete_path.write_text(json.dumps(complete), encoding="utf-8")
-    assert semantic_index.search(
+    assert _without_tip_metadata(semantic_index.search(
         index_path, query, limit=3, distinct=True, derived_path=derived_path
-    ) == ordinary
+    )) == ordinary
 
 
 def test_turn_rrf_sidecar_falls_back_when_a_user_source_is_duplicated(tmp_path: Path) -> None:
@@ -749,7 +895,7 @@ def test_turn_rrf_sidecar_falls_back_when_a_user_source_is_duplicated(tmp_path: 
     )
 
     assert "ranking" not in answer
-    assert answer == ordinary
+    assert _without_tip_metadata(answer) == ordinary
 
 
 def test_turn_rrf_sidecar_falls_back_for_a_self_pair(tmp_path: Path) -> None:
@@ -773,7 +919,7 @@ def test_turn_rrf_sidecar_falls_back_for_a_self_pair(tmp_path: Path) -> None:
     )
 
     assert "ranking" not in answer
-    assert answer == ordinary
+    assert _without_tip_metadata(answer) == ordinary
 
 
 def test_turn_rrf_sidecar_falls_back_for_non_finite_vectors(tmp_path: Path) -> None:
@@ -793,7 +939,7 @@ def test_turn_rrf_sidecar_falls_back_for_non_finite_vectors(tmp_path: Path) -> N
     )
 
     assert "ranking" not in answer
-    assert answer == ordinary
+    assert _without_tip_metadata(answer) == ordinary
 
 
 def test_core_semantic_defaults_to_distinct_rrf_when_sidecar_is_published(tmp_path: Path) -> None:
@@ -891,7 +1037,7 @@ def test_transports_workspace_health_and_module_cli_pin_the_new_read(tmp_path: P
     capabilities = core.invoke(grant, "system.capabilities", workspace, {})
     descriptor = next(item for item in capabilities["operations"] if item["name"] == "knowledge.semantic")
     assert [(item["name"], item["type"], item["required"]) for item in descriptor["parameters"]] == [
-        ("query", "string", True), ("limit", "integer", False), ("distinct", "boolean", False)
+        ("query", "string", True), ("limit", "integer", False), ("distinct", "boolean", False), ("role", "string", False)
     ]
     tools = mcp._handle_tools_list({})["tools"]
     tool = next(item for item in tools if item["name"] == "knowledge.semantic")

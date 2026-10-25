@@ -230,10 +230,10 @@ def _workspace(tmp_path: Path) -> core.Workspace:
 
 
 def test_context_catalogue_parameters_match_through_both_transports(tmp_path: Path) -> None:
-    """O4: both catalogue readers expose all five context parameters in order."""
+    """O4: both catalogue readers expose context parameters in order."""
     workspace = _workspace(tmp_path)
     grant = Grant("reader", frozenset({Tier.READ}))
-    expected = ("source_id", "container", "before", "after", "limit")
+    expected = ("source_id", "container", "before", "after", "limit", "view", "max_chars")
     direct = core.invoke(grant, "system.capabilities", workspace, {})
     direct_context = next(item for item in direct["operations"] if item["name"] == "knowledge.context")
     assert tuple(parameter["name"] for parameter in direct_context["parameters"]) == expected
@@ -252,3 +252,48 @@ def test_context_catalogue_parameters_match_through_both_transports(tmp_path: Pa
     payload = json.loads(response["result"]["content"][0]["text"])
     mcp_context = next(item for item in payload["operations"] if item["name"] == "knowledge.context")
     assert tuple(parameter["name"] for parameter in mcp_context["parameters"]) == expected
+
+
+def test_context_text_view_projects_and_truncates_source_and_container_records(tmp_path: Path) -> None:
+    store, ledger, base = _context_canon(tmp_path)
+    path = base / "derived.sqlite"
+    derived.build(store, ledger, path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("UPDATE search_plain SET body = ? WHERE source_id = ?", ("x" * 250, M2))
+        connection.commit()
+    finally:
+        connection.close()
+
+    full = derived.context(path, source_id=M2)
+    text = derived.context(path, source_id=M2, view="text", max_chars=200)
+    assert text["target"]["source_id"] == full["target"]["source_id"]
+    assert "body" not in text["target"]
+    assert text["target"]["text"] == "x" * 200
+    assert text["target"]["text_chars"] == 250
+    assert text["target"]["text_truncated"] is True
+    assert text["view"]["name"] == "text"
+    assert all("body" not in record and isinstance(record["text"], str) for record in text["before"] + text["after"])
+
+    container = derived.context(path, container="C1", view="text", max_chars=200)
+    assert all("body" not in record and "text_chars" in record for record in container["records"])
+    assert all(len(record["text"]) <= 200 for record in container["records"])
+
+
+def test_context_text_missing_projection_and_invalid_arguments(tmp_path: Path) -> None:
+    store, ledger, base = _context_canon(tmp_path)
+    path = base / "derived.sqlite"
+    derived.build(store, ledger, path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("DELETE FROM search_plain WHERE source_id = ?", (NO_CONTAINER,))
+        connection.commit()
+    finally:
+        connection.close()
+    absent = derived.context(path, source_id=NO_CONTAINER, view="text")
+    assert absent["target"]["text"] is None
+    assert absent["target"]["text_chars"] is None
+    assert absent["target"]["text_truncated"] is False
+    for kwargs in ({"view": "compact"}, {"view": "full", "max_chars": 300}, {"view": "text", "max_chars": 199}):
+        with pytest.raises(derived.QueryError):
+            derived.context(path, source_id=M1, **kwargs)

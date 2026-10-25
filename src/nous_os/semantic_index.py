@@ -205,6 +205,9 @@ class _SearchCache:
     group_offsets: object
     sidecar_key: tuple[object, ...] = ()
     sidecar: object = None
+    role_key: tuple[object, ...] = ()
+    role_map: dict[str, tuple[str | None, str | None]] | None = None
+    source_index: dict[str, int] | None = None
 
 
 _SEARCH_CACHE: _SearchCache | None = None
@@ -216,12 +219,33 @@ def clear_search_cache() -> None:
     _SEARCH_CACHE = None
 
 
-def _file_stamp(path: Path) -> tuple[int, int] | None:
+def _file_stamp(path: Path) -> tuple[int, int, int, int] | None:
     try:
         stat = path.stat()
     except OSError:
         return None
-    return stat.st_size, stat.st_mtime_ns
+    return stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _tip_role_dates(path: Path, *, required: bool = False) -> dict[str, tuple[str | None, str | None]]:
+    """Read role and date from each source's current derived tip record."""
+    if not Path(path).is_file():
+        if required:
+            raise SemanticIndexError(f"the derived store could not be read for role metadata: missing file {path}")
+        return {}
+    try:
+        connection = sqlite3.connect(f"file:{Path(path).resolve()}?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT r.source_id, r.role, r.created_at FROM record r "
+                "JOIN version v ON v.source_id = r.source_id AND v.snapshot_digest = r.snapshot_digest "
+                "WHERE v.sequence = (SELECT MAX(t.sequence) FROM version t WHERE t.source_id = v.source_id)"
+            ).fetchall()
+        finally:
+            connection.close()
+    except sqlite3.DatabaseError as error:
+        raise SemanticIndexError(f"the derived store could not be read for role metadata (record table required): {error}") from error
+    return {source_id: (role, created_at) for source_id, role, created_at in rows}
 
 
 def _search_cache_for(name: str, generation: Path, meta: dict[str, str]) -> _SearchCache:
@@ -262,6 +286,7 @@ def _search_cache_for(name: str, generation: Path, meta: dict[str, str]) -> _Sea
     _SEARCH_CACHE = _SearchCache(
         key, backend, backend_reason, vectors, chunk_ids, source_codes,
         source_ids, group_order, group_offsets,
+        source_index={source_id: index for index, source_id in enumerate(source_ids)},
     )
     return _SEARCH_CACHE
 
@@ -899,6 +924,7 @@ def search(
     limit: int = 10,
     distinct: bool = False,
     derived_path: Path | None = None,
+    role: str | None = None,
 ) -> dict[str, object]:
     """Search a structurally checked local index, or record why no dense search ran.
 
@@ -919,6 +945,10 @@ def search(
         raise SemanticIndexError(f"limit must be a positive integer, not {limit!r}")
     if type(distinct) is not bool:
         raise SemanticIndexError(f"distinct must be a boolean, not {type(distinct).__name__}")
+    if role is not None and (type(role) is not str or role not in {"user", "assistant"}):
+        raise SemanticIndexError("role must be 'user', 'assistant', or None")
+    if role is not None and derived_path is None:
+        raise SemanticIndexError("role filtering requires derived_path")
     if index_path is None:
         return _not_run(
             "no semantic index location is configured (NOUS_OS_SEMANTIC_INDEX_PATH or --semantic-index-path)"
@@ -932,6 +962,15 @@ def search(
         return _not_run(f"no CURRENT generation at {path}")
     _name, generation, meta = _check_generation(path)
     cache = _search_cache_for(_name, generation, meta)
+    if derived_path is not None:
+        derived_file = Path(derived_path)
+        role_key = (derived_file.resolve(), _file_stamp(derived_file))
+        if cache.role_key != role_key or cache.role_map is None:
+            cache.role_map = _tip_role_dates(derived_file, required=role is not None)
+            cache.role_key = role_key
+        role_map = cache.role_map
+    else:
+        role_map = None
     backend, reason = cache.backend, cache.backend_reason
     if backend is None:
         return _not_run(f"backend {meta['backend']!r} could not be loaded: {reason}")
@@ -948,7 +987,7 @@ def search(
     try:
         connection = sqlite3.connect(f"file:{(generation / 'index.sqlite3').resolve()}?mode=ro", uri=True)
         try:
-            chunk_order = _top_indices(scores, min(limit, chunks))
+            chunk_order = _top_indices(scores, chunks if role is not None else min(limit, chunks))
             best_indices = None
             max_scores = None
             source_order = None
@@ -961,18 +1000,22 @@ def search(
                     best_indices, cache.source_codes,
                     np.where(equal_max, np.arange(chunks, dtype=np.int64), chunks),
                 )
-                source_count = min(len(cache.source_ids), max(limit, 200 if derived_path is not None else limit))
+                source_count = len(cache.source_ids) if distinct else min(len(cache.source_ids), limit)
                 source_order = _top_indices(max_scores, source_count)
+                ranked_sources = [int(i) for i in source_order]
+                if role is not None:
+                    ranked_sources = [i for i in ranked_sources if role_map.get(cache.source_ids[i], (None, None))[0] == role]
                 selected = [
                     (float(max_scores[i]), (cache.chunk_ids[int(best_indices[i])], cache.source_ids[int(i)]))
-                    for i in source_order[:limit]
+                    for i in ranked_sources
                 ]
             else:
                 candidates = [
                     (float(scores[i]), (cache.chunk_ids[int(i)], cache.source_ids[int(cache.source_codes[i])]))
                     for i in chunk_order
+                    if role is None or role_map.get(cache.source_ids[int(cache.source_codes[i])], (None, None))[0] == role
                 ]
-                selected = candidates
+                selected = candidates[:limit]
             contexts: dict[str, str] = {}
             context_chunk_ids: dict[str, str] = {}
             rrf_scores: dict[str, float] = {}
@@ -995,24 +1038,29 @@ def search(
                 sidecar = cache.sidecar
                 if sidecar is not None:
                     turns, turn_vectors = sidecar
-                    raw_sources = [cache.source_ids[int(i)] for i in source_order[:200]]
+                    ranked_raw = [cache.source_ids[int(i)] for i in source_order
+                                  if role is None or role_map.get(cache.source_ids[int(i)], (None, None))[0] == role]
+                    raw_sources = ranked_raw[:200]
                     reply_to_user = {assistant_source: user_source for user_source, assistant_source in turns}
                     reply_sources = list(dict.fromkeys(
                         reply_to_user[assistant_source]
                         for assistant_source in raw_sources
                         if assistant_source in reply_to_user
+                        and (role is None or role_map.get(reply_to_user[assistant_source], (None, None))[0] == role)
                     ))
                     try:
                         lexical_query = _lexical_prefix_query(query)
                         lexical_sources = (
-                            list(dict.fromkeys(hit.source_id for hit in lexical_search(Path(derived_path), lexical_query, limit=50)))
+                            list(dict.fromkeys(hit.source_id for hit in lexical_search(Path(derived_path), lexical_query, limit=50, role=role)))
                             if lexical_query else []
                         )
                     except (QueryError, DerivedStoreError):
                         lexical_sources = []
                     turn_scores = turn_vectors @ query_vector
-                    turn_indices = _top_indices(turn_scores, min(200, len(turns)))
-                    turn_sources = [turns[int(i)][0] for i in turn_indices]
+                    turn_indices = _top_indices(turn_scores, len(turns) if role is not None else min(200, len(turns)))
+                    ranked_turns = [turns[int(i)][0] for i in turn_indices
+                                    if role is None or role_map.get(turns[int(i)][0], (None, None))[0] == role]
+                    turn_sources = ranked_turns[:200]
                     # A retrieved assistant response can generalise to the
                     # immediately preceding user question. The sidecar has
                     # already validated the mapping is one-to-one and non-self; its
@@ -1029,14 +1077,19 @@ def search(
                     fused_order = np.lexsort((fused_ids, -fused_scores))
                     fused = [str(fused_ids[index]) for index in fused_order]
                     selected = []
-                    for source_id in fused[:limit]:
-                        source_index = int(np.searchsorted(cache.source_ids, source_id))
-                        if source_index < len(cache.source_ids) and cache.source_ids[source_index] == source_id:
+                    # Refill past fused sources without indexed chunks so limit counts actual hits.
+                    for source_id in fused:
+                        if role is not None and role_map.get(source_id, (None, None))[0] != role:
+                            continue
+                        source_index = cache.source_index.get(source_id)
+                        if source_index is not None:
                             chunk_index = int(best_indices[source_index])
                             selected.append((
                                 float(max_scores[source_index]),
                                 (cache.chunk_ids[chunk_index], source_id),
                             ))
+                            if len(selected) >= limit and not distinct:
+                                break
                     contexts = dict(turns)
                     augmented = True
             details: dict[str, tuple[object, ...]] = {}
@@ -1046,21 +1099,26 @@ def search(
                     contexts[source_id] for _score, (_chunk_id, source_id) in selected if source_id in contexts
                 }
                 for source_id in context_sources:
-                    source_index = int(np.searchsorted(cache.source_ids, source_id))
-                    if source_index < len(cache.source_ids) and cache.source_ids[source_index] == source_id:
+                    source_index = cache.source_index.get(source_id)
+                    if source_index is not None:
                         chunk_index = int(best_indices[source_index])
                         chunk_id = cache.chunk_ids[chunk_index]
                         context_chunk_ids[source_id] = chunk_id
                         detail_ids.add(chunk_id)
-            for chunk_id in detail_ids:
-                detail = connection.execute(
-                    "SELECT snapshot_digest, ordinal, heading_path, text, start_byte, end_byte,"
-                    " citation_state FROM chunk WHERE chunk_id = ?",
-                    (chunk_id,),
-                ).fetchone()
-                if detail is None:
+            # One query per batch rather than per chunk: a distinct search may
+            # read several hundred refill candidates.
+            wanted = sorted(detail_ids)
+            for start in range(0, len(wanted), 500):
+                batch = wanted[start:start + 500]
+                for row in connection.execute(
+                    "SELECT chunk_id, snapshot_digest, ordinal, heading_path, text, start_byte, end_byte,"
+                    f" citation_state FROM chunk WHERE chunk_id IN ({','.join('?' * len(batch))})",
+                    batch,
+                ):
+                    details[row[0]] = tuple(row[1:])
+            for chunk_id in wanted:
+                if chunk_id not in details:
                     raise SemanticIndexUnusable(f"chunk: {chunk_id} vanished between ranking and reading")
-                details[chunk_id] = detail
         finally:
             connection.close()
     except SemanticIndexUnusable:
@@ -1110,7 +1168,29 @@ def search(
                     if ctx_state == "located"
                     else None
                 )
+        if role_map is not None:
+            tip_role, tip_created_at = role_map.get(source_id, (None, None))
+            hit["role"] = tip_role
+            hit["created_at"] = tip_created_at
         hits.append(hit)
+    collapsed_same_text = 0
+    if distinct:
+        kept: list[dict[str, object]] = []
+        text_positions: dict[str, int] = {}
+        for hit in hits:
+            normalized_text = " ".join(str(hit["text"]).split()).casefold()
+            previous = text_positions.get(normalized_text)
+            if previous is not None:
+                kept[previous].setdefault("same_text_source_ids", []).append(hit["source_id"])
+                collapsed_same_text += 1
+                continue
+            if len(kept) >= limit:
+                break
+            text_positions[normalized_text] = len(kept)
+            kept.append(hit)
+        hits = kept[:limit]
+        for rank, hit in enumerate(hits, start=1):
+            hit["rank"] = rank
     result: dict[str, object] = {
         "status": "complete",
         "backend": meta["backend"],
@@ -1121,6 +1201,8 @@ def search(
     }
     if augmented:
         result["ranking"] = "turn-reply-rrf-k60"
+    if distinct:
+        result["collapsed_same_text"] = collapsed_same_text
     return result
 
 

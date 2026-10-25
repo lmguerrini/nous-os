@@ -361,7 +361,7 @@ def state_digest(path: Path) -> str:
     return digest_bytes(Path(path).read_bytes())
 
 
-def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
+def search(path: Path, query: str, limit: int = 10, role: str | None = None) -> tuple[SearchHit, ...]:
     """Full-text search, ordered deterministically.
 
     Ranked by relevance, then by digest and source, so equally-ranked rows have
@@ -379,6 +379,8 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
         raise DerivedStoreError("a search needs a query")
     if type(limit) is not int or isinstance(limit, bool) or limit < 1:
         raise DerivedStoreError(f"limit must be a positive integer, not {limit!r}")
+    if role is not None and (type(role) is not str or role not in {"user", "assistant"}):
+        raise DerivedStoreError("role must be 'user', 'assistant', or None")
     # Natural-language punctuation is not FTS syntax. Retry only parser errors,
     # quoting each unicode61 token and OR-ing them so a question remains useful
     # when not every word appears in one message. OR is intentional here: implicit
@@ -417,15 +419,17 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
             "  AND c.source_id = s.source_id"
             f"{record_join}"
             " WHERE search_plain MATCH ?"
-            " ORDER BY rank, s.snapshot_digest, s.source_id"
-            " LIMIT ?"
+            + (" AND r.role = ?" if role is not None else "")
+            + " ORDER BY rank, s.snapshot_digest, s.source_id LIMIT ?"
         )
+        parameters = (query, role, limit) if role is not None else (query, limit)
         try:
-            rows = connection.execute(statement, (query, limit)).fetchall()
+            rows = connection.execute(statement, parameters).fetchall()
         except sqlite3.OperationalError as error:
             if "fts5: syntax error" not in str(error).lower() or not fallback_query:
                 raise
-            rows = connection.execute(statement, (fallback_query, limit)).fetchall()
+            parameters = (fallback_query, role, limit) if role is not None else (fallback_query, limit)
+            rows = connection.execute(statement, parameters).fetchall()
     except sqlite3.OperationalError as error:
         # A malformed query is this module's failure to report, not the storage
         # engine's to leak.
@@ -523,6 +527,23 @@ def _record_answer(row: tuple) -> dict[str, object]:
     }
 
 
+def _text_record_answer(connection: sqlite3.Connection, row: tuple, max_chars: int) -> dict[str, object]:
+    """Render a record with its indexed plain-text projection instead of its body."""
+    answer = _record_answer(row)
+    answer.pop("body")
+    projection = connection.execute(
+        "SELECT body FROM search_plain WHERE source_id = ? AND snapshot_digest = ?",
+        (row[0], row[1]),
+    ).fetchone()
+    full_text = None if projection is None else projection[0]
+    answer.update({
+        "text": None if full_text is None else full_text[:max_chars],
+        "text_chars": None if full_text is None else len(full_text),
+        "text_truncated": full_text is not None and len(full_text) > max_chars,
+    })
+    return answer
+
+
 _RECORD_SELECT = (
     "SELECT r.source_id, r.snapshot_digest, r.kind, r.provider, r.external_id,"
     " r.container_external_id, r.parent_external_id, r.role, r.created_at,"
@@ -552,6 +573,8 @@ def context(
     before: int = 2,
     after: int = 2,
     limit: int = 200,
+    view: str = "full",
+    max_chars: int | None = None,
 ) -> dict[str, object]:
     """Read a source's conversation neighbourhood or a container's tip records.
 
@@ -561,10 +584,28 @@ def context(
     """
     if (source_id is None) == (container is None):
         raise QueryError("context requires exactly one of source_id or container")
+    if view not in ("full", "text"):
+        raise QueryError("view must be 'full' or 'text'")
+    if view == "full" and max_chars is not None:
+        raise QueryError("max_chars is only valid with view='text'")
+    if max_chars is None:
+        max_chars = 4000
+    if type(max_chars) is not int or isinstance(max_chars, bool) or not 200 <= max_chars <= 20000:
+        raise QueryError("max_chars must be an integer from 200 to 20000")
     _validate_context_window(before, after, limit)
     verify(path)
     connection = _open_for_reading(path)
     try:
+        render = _record_answer if view == "full" else lambda row: _text_record_answer(connection, row, max_chars)
+        def finish(answer: dict[str, object]) -> dict[str, object]:
+            if view == "text":
+                answer["view"] = {
+                    "name": "text",
+                    "max_chars": max_chars,
+                    "full_text": "call knowledge.context with view full, or provenance.span with a citation, for the exact source bytes",
+                    "basis": "text is a plain projection; citations refer to the source bytes",
+                }
+            return answer
         if source_id is not None:
             tip = connection.execute(
                 "SELECT snapshot_digest FROM version WHERE source_id = ?"
@@ -579,17 +620,17 @@ def context(
             ).fetchone()
             if target is None:
                 raise StoreUnusable("the derived store is missing the source's tip record")
-            target_answer = _record_answer(target)
+            target_answer = render(target)
             target_container = target[5]
             if target_container is None:
-                return {
+                return finish({
                     "source_id": source_id,
                     "container": None,
                     "target": target_answer,
                     "before": [],
                     "after": [],
                     "note": "no container recorded",
-                }
+                })
             rows = connection.execute(_TIP_CONTAINER_RECORDS, (target_container,)).fetchall()
             position = next(
                 (
@@ -603,24 +644,24 @@ def context(
                 raise StoreUnusable(
                     "the derived store's tip record is absent from its container query"
                 )
-            return {
+            return finish({
                 "source_id": source_id,
                 "container": target_container,
                 "position": position,
                 "total": len(rows),
                 "target": target_answer,
-                "before": [_record_answer(row) for row in rows[max(0, position - before) : position]],
-                "after": [_record_answer(row) for row in rows[position + 1 : position + 1 + after]],
-            }
+                "before": [render(row) for row in rows[max(0, position - before) : position]],
+                "after": [render(row) for row in rows[position + 1 : position + 1 + after]],
+            })
         rows = connection.execute(_TIP_CONTAINER_RECORDS + " LIMIT ?", (container, limit)).fetchall()
         total = connection.execute(
             "SELECT COUNT(*) FROM (" + _TIP_CONTAINER_RECORDS + ")", (container,)
         ).fetchone()[0]
-        return {
+        return finish({
             "container": container,
             "total": total,
-            "records": [_record_answer(row) for row in rows],
-        }
+            "records": [render(row) for row in rows],
+        })
     except sqlite3.DatabaseError as error:
         raise StoreUnusable(f"the store could not be read: {error}") from error
     finally:
