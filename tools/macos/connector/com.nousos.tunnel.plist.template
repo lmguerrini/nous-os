@@ -20,7 +20,7 @@
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Standard</string>
   <key>WorkingDirectory</key>
   <string>@HOME@</string>
   <key>StandardOutPath</key>
