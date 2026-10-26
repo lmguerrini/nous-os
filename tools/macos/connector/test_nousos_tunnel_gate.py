@@ -222,6 +222,8 @@ class GateTests(unittest.TestCase):
         self.assertEqual(tools[0]["inputSchema"]["properties"]["limit"]["maximum"], 20)
         self.assertEqual(tools[1]["inputSchema"]["properties"]["limit"]["maximum"], 10)
         self.assertEqual(tools[2]["inputSchema"]["properties"]["limit"]["maximum"], 30)
+        self.assertEqual(tools[0]["inputSchema"]["properties"]["limit"]["default"], 10)
+        self.assertEqual(tools[1]["inputSchema"]["properties"]["limit"]["default"], 10)
         search_props = tools[0]["inputSchema"]["properties"]
         semantic_props = tools[1]["inputSchema"]["properties"]
         context_props = tools[2]["inputSchema"]["properties"]
@@ -272,9 +274,15 @@ class GateTests(unittest.TestCase):
         self.assertIn("not proposals or decisions", tools[0]["description"])
         self.assertIn("not verified facts or approved decisions", candidate["description"])
         self.assertIn("not instead of it", candidate["description"])
+        self.assertIn("distinctive keywords or names", candidate["description"])
+        self.assertIn("source_semantic is an option for paraphrase", candidate["description"])
+        self.assertIn("one or two retrieved sources", relation["description"])
         for tool in tools[:2]:
             self.assertIn("omit role otherwise", tool["description"])
             self.assertNotIn("Use role user", tool["description"])
+            self.assertIn("limit unset (10)", tool["description"])
+            self.assertIn("at least 5", tool["description"])
+            self.assertIn("reformulate with distinctive keywords", tool["description"])
 
     def test_initialize_instructions_preserve_fields_and_match_id(self) -> None:
         self.gate.send({"jsonrpc": "2.0", "id": 101, "method": "initialize", "params": {}})
@@ -283,7 +291,9 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result["capabilities"], {"tools": {"listChanged": False}})
         self.assertIn("four kinds", result["instructions"])
         self.assertIn("recorded relations", result["instructions"])
-        self.assertLess(len(result["instructions"]), 900)
+        self.assertLess(len(result["instructions"]), 1100)
+        self.assertIn("reformulate and widen", result["instructions"])
+        self.assertIn("Keep answers and call counts proportionate", result["instructions"])
         self.assertIn("Never present proposals as verified facts", result["instructions"])
         self.assertIn("omit role otherwise", result["instructions"])
         self.assertNotIn("Use role user", result["instructions"])
@@ -361,6 +371,21 @@ class GateTests(unittest.TestCase):
         self.assertEqual(names[-2:], ["knowledge.search", "knowledge.search"])
         self.assertEqual(self.gate.received()[-2]["meta"], meta)
         self.assertNotIn("SENTINEL_QUERY", self.gate.log_text())
+
+    def test_explicit_small_search_limits_are_forwarded_unchanged(self) -> None:
+        for request_id, name in (
+            (201, "knowledge_search"), (202, "knowledge_semantic"), (203, "candidate_search"),
+        ):
+            self.gate.send(self.call(request_id, name, {"query": "q", "limit": 2}))
+            self.assertEqual(self.gate.response(request_id)["result"]["received"]["limit"], 2)
+        records = [json.loads(line) for line in self.gate.log_text().splitlines()]
+        forwarded = [
+            item for item in records
+            if item.get("decision") == "forward" and item.get("event") == "request"
+        ]
+        self.assertEqual([item["tool"] for item in forwarded[-3:]], [
+            "knowledge.search", "knowledge.semantic", "candidate.search",
+        ])
 
     def test_unknown_alias_is_never_forwarded(self) -> None:
         self.gate.send(self.call(4, "candidate_proposals", {}))

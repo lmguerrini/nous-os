@@ -41,16 +41,22 @@ CHATGPT_TOOL_DESCRIPTIONS = {
     "knowledge.search": (
         "Returns original historical conversation and attachment text, not proposals or "
         "decisions. Use for exact words, names, and dates; pair with candidate_search for "
-        "questions about decisions or how ideas evolved; optionally filter with role user when "
-        "asking what the person said, or role assistant for what an assistant answered; omit role "
-        "otherwise."
+        "questions about decisions or how ideas evolved. Leave limit unset (10) or use at least 5 "
+        "for questions about decisions, evolution or connections. If results are insufficient, "
+        "reformulate with distinctive keywords and search again rather than concluding nothing "
+        "exists. Optionally filter "
+        "with role user when asking what the person said, or role assistant for what an assistant "
+        "answered; omit role otherwise."
     ),
     "knowledge.semantic": (
         "Returns original historical conversation and attachment text found by meaning, not "
         "proposals or decisions. Use for a meaning-based search or paraphrase; pair with "
-        "candidate_search for questions about decisions or how ideas evolved; optionally filter "
-        "with role user when asking what the person said, or role assistant for what an assistant "
-        "answered; omit role otherwise."
+        "candidate_search for questions about decisions or how ideas evolved. Leave limit unset "
+        "(10) or use at least 5 for questions about decisions, evolution or connections. If "
+        "results are insufficient, reformulate with distinctive keywords and search again "
+        "rather than concluding nothing exists. Optionally "
+        "filter with role user when asking what the person said, or role assistant for what an "
+        "assistant answered; omit role otherwise."
     ),
     "knowledge.context": (
         "Returns surrounding original conversation messages, not proposals or decisions. Use to"
@@ -71,7 +77,10 @@ CHATGPT_TOOL_DESCRIPTIONS = {
         "Returns cited recorded proposals distilled from sources and approved decisions marked "
         "canonical. Proposals are not verified facts or approved decisions. Use for what was "
         "decided, proposed, preferred, or concluded, how ideas evolved, and how topics or "
-        "conversations connect. Use source_semantic for whole questions and text for names and "
+        "conversations connect. For long natural questions, prefer distinctive keywords or names "
+        "with the default text ranking; source_semantic is an option for paraphrases and "
+        "wording that differs from the proposals, and text_relevance for plain keyword ranking "
+        "of names and "
         "keywords. Run alongside source search, not instead of it. Quote "
         "epistemic_label and canonical_status; a label such as DECISION_STATED_BY_PERSON means "
         "a person stated it in a conversation, not that it was approved. Before stating "
@@ -85,7 +94,9 @@ CHATGPT_TOOL_DESCRIPTIONS = {
         "and the cited spans of both ends. These are recorded links whose ends and citations "
         "resolve to the sources, not approved decisions and not verified facts. A related "
         "relation with origin model is a model's reading that two passages bear on each "
-        "other. Exploratory interpretations are not included. Use it to find passages linked "
+        "other. Exploratory interpretations are not included. For questions about connections, "
+        "change over time or two conversations, call it on the one or two retrieved sources that "
+        "best answer the question, not every hit. Use it to find passages linked "
         "to one found by search, in the same conversation or another; read both ends with "
         "knowledge_context or provenance_span before describing the link; quote "
         "relation_class and origin."
@@ -93,17 +104,20 @@ CHATGPT_TOOL_DESCRIPTIONS = {
 }
 
 CHATGPT_SERVER_INSTRUCTIONS = (
-    "Distinguish four kinds: original sources are historical conversation/attachment "
-    "text, not decisions; recorded proposals are distilled statements with "
-    "citations, not verified facts or approved decisions; approved decisions are "
-    "canonical canon_assertions and candidate_search hits; recorded relations link "
+        "Distinguish four kinds: original sources are historical conversation/attachment "
+        "text, not decisions; recorded proposals are distilled statements with citations, "
+        "not verified facts or approved decisions; approved decisions are canon_assertions "
+        "and candidate_search hits marked canonical; recorded relations link "
     "two cited passages; they are not facts or decisions. For decision or evolution questions, "
-    "use source search alongside candidate_search. For connection questions, "
-    "use reconcile_relations with a source_id from a search hit. Verify proposal"
-    " citations with provenance_span or read around them with knowledge_context. In your "
-    "answer, say which kind each statement comes from. Optionally filter with role user when "
+        "use source search alongside candidate_search. For connection questions, "
+        "use reconcile_relations with a search hit source_id. Verify proposal citations with "
+        "provenance_span or read around them with knowledge_context. Say which kind each "
+        "statement comes from. Optionally filter with role user when "
     "asking what the person said, or role assistant for what an assistant answered; omit role "
-    "otherwise. Use source_semantic for whole questions. Never present proposals as verified "
+        "otherwise. Prefer keywords; source_semantic suits paraphrases. If results are insufficient, "
+        "reformulate and widen; for connection or evolution questions, check relations "
+        "of the most relevant retrieved sources. Keep answers and call counts proportionate. "
+        "Never present proposals as verified "
     "facts."
 )
 
@@ -462,6 +476,12 @@ class Gate:
                                 else maximum
                             )
                             properties[argument] = field
+                    if product_name in {
+                        "knowledge.search", "knowledge.semantic", "candidate.search"
+                    }:
+                        field = dict(properties.get("limit", {}))
+                        field["default"] = 10
+                        properties["limit"] = field
                     if product_name in {"knowledge.search", "knowledge.semantic"}:
                         field = dict(properties.get("role", {}))
                         field.update({"type": "string", "enum": ["user", "assistant"]})
@@ -482,8 +502,8 @@ class Gate:
                                 "enum": ["text", "text_relevance", "source_semantic"],
                                 "description": "text (default: decisions first among keyword "
                                 "matches), text_relevance (plain keyword relevance), or "
-                                "source_semantic (meaning of the cited passages; best for whole "
-                                "questions or wording that differs from the proposals)",
+                                "source_semantic (meaning of the cited passages; an option for "
+                                "paraphrases or wording that differs from the proposals)",
                             },
                         }.items():
                             field = properties.get(argument)
