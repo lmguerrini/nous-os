@@ -77,7 +77,10 @@ def _query(raw: str) -> tuple[str, str]:
         _refuse("QueryTooComplex")
     query = _normal(trimmed)
     parts: list[str] = []
+    legacy_parts: list[str] = []
     term_count = 0
+    quoted_count = 0
+    seen_unquoted: set[str] = set()
     position = 0
     while position < len(query):
         if query[position].isspace():
@@ -88,16 +91,17 @@ def _query(raw: str) -> tuple[str, str]:
             if end < 0:
                 _refuse("InvalidQuery")
             part = query[position + 1:end]
+            quoted_count += 1
             position = end + 1
+            quoted = True
         else:
             end = position
             while end < len(query) and not query[end].isspace() and query[end] != '"':
                 end += 1
             part = query[position:end]
             position = end
+            quoted = False
         term_count += 1
-        if term_count > 16:
-            _refuse("QueryTooComplex")
         # unicode61 splits punctuation, including both kinds of apostrophe.
         # Only letters, marks and digits are passed to MATCH, always quoted.
         tokens: list[str] = []
@@ -111,9 +115,21 @@ def _query(raw: str) -> tuple[str, str]:
         if current:
             tokens.append(current)
         if tokens:
-            parts.append('"' + " ".join(tokens).replace('"', '""') + '"')
+            legacy_parts.append('"' + " ".join(tokens).replace('"', '""') + '"')
+            if quoted:
+                parts.append('"' + " ".join(tokens).replace('"', '""') + '"')
+            else:
+                for token in tokens:
+                    if token not in seen_unquoted:
+                        seen_unquoted.add(token)
+                        parts.append('"' + token.replace('"', '""') + '"')
     if not parts:
         _refuse("InvalidQuery")
+    if term_count <= 16:
+        return query, " OR ".join(legacy_parts)
+    if quoted_count > 16:
+        _refuse("QueryTooComplex")
+    # Long questions use individual alternatives so every word can contribute.
     return query, " OR ".join(parts)
 
 

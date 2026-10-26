@@ -67,13 +67,74 @@ def test_query_operators_phrases_unicode_and_escaped_spans(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("query,code", [('', "InvalidQuery"), ('"unclosed', "InvalidQuery"),
-    ('* : ^', "InvalidQuery"), ('x ' * 17, "QueryTooComplex"),
-    ('* ' * 17 + 'x', "QueryTooComplex"), ('x' * 257, "QueryTooComplex"),
+    ('* : ^', "InvalidQuery"), ('"x" ' * 17, "QueryTooComplex"), ('x' * 257, "QueryTooComplex"),
     ('x' + ' ' * 256 + 'y', "QueryTooComplex")])
 def test_query_limits(tmp_path: Path, query: str, code: str) -> None:
     store, manifest = _paths(tmp_path)
     with pytest.raises(search.CandidateSearchError, match=f"^{code}$"):
         _search(store, manifest, query)
+
+
+def test_long_unquoted_question_is_searched_and_deduplicated(tmp_path: Path) -> None:
+    store, manifest = _paths(tmp_path)
+    words = "Café l’amour opens" + " " + "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+    _write(store, [(OLD, _content(words))])
+    query = "Café café l’amour opens one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+    assert _search(store, manifest, query)["total_matched"] == 1
+    normalized, match = search._query(query)
+    assert normalized == " ".join(query.split())
+    assert match.casefold().count('"café"') == 2
+    assert '"l" "amour"' not in match
+
+
+def test_quoted_phrase_limit_remains_sixteen() -> None:
+    with pytest.raises(search.CandidateSearchError, match="^QueryTooComplex$"):
+        search._query('"x" ' * 17)
+
+
+def test_long_query_boundary_and_operator_literals() -> None:
+    assert search._query("a b c d e f g h i j k l m n o p")[1] == '"a" OR "b" OR "c" OR "d" OR "e" OR "f" OR "g" OR "h" OR "i" OR "j" OR "k" OR "l" OR "m" OR "n" OR "o" OR "p"'
+    assert search._query("a b c d e f g h i j k l m n o p q")[1] == '"a" OR "b" OR "c" OR "d" OR "e" OR "f" OR "g" OR "h" OR "i" OR "j" OR "k" OR "l" OR "m" OR "n" OR "o" OR "p" OR "q"'
+    assert search._query('a-b"c" d e f g h i j k l m n o p q r')[1] == '"a" OR "b" OR "c" OR "d" OR "e" OR "f" OR "g" OR "h" OR "i" OR "j" OR "k" OR "l" OR "m" OR "n" OR "o" OR "p" OR "q" OR "r"'
+    assert search._query('one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "kept phrase"')[1].endswith('"kept phrase"')
+    operators = 'word word word word word one two three four five six seven eight NOT OR AND NEAR * ^ :'
+    operator_match = search._query(operators)[1]
+    assert '"NOT"' in operator_match and '"OR"' in operator_match
+    assert '"AND"' in operator_match and '"NEAR"' in operator_match
+    assert '*' not in operator_match and '^' not in operator_match and ':' not in operator_match
+    with pytest.raises(search.CandidateSearchError, match="^InvalidQuery$"):
+        search._query("* : ^ * : ^ * : ^ * : ^ * : ^")
+    assert search._query("a\u0301 b")[1] == '"á" OR "b"'
+
+
+def test_long_unicode_tokens_remain_distinct(tmp_path: Path) -> None:
+    store, manifest = _paths(tmp_path)
+    _write(store, [(OLD, _content("strasse"))])
+    query = "straße strasse one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+    assert [hit["candidate_id"] for hit in _search(store, manifest, query)["hits"]] == [OLD]
+
+
+def test_short_query_digest_and_cursor_keep_legacy_construction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, manifest = _paths(tmp_path)
+    _write(store, [(OLD, _content("one two")), (NEW, _content("one three"))])
+    captured: list[tuple[str, str, int]] = []
+    original = search._cursor
+
+    def capture(cursor: str | None, generation: str, request: str) -> int:
+        captured.append((generation, request, 0))
+        return original(cursor, generation, request)
+
+    monkeypatch.setattr(search, "_cursor", capture)
+    response = _search(store, manifest, "one two", limit=1)
+    normalized = "one two"
+    match = '"one" OR "two"'  # original <=16-term MATCH form
+    assert search._query(normalized) == (normalized, match)
+    generation, request, _ = captured[-1]
+    old_request_fields = {"query": normalized, "ranking": "text", "include_replaced": False,
+        "replacement": hashlib.sha256(manifest.read_bytes()).hexdigest(), "canon": []}
+    expected_digest = hashlib.sha256(canonical_bytes(old_request_fields)).hexdigest()
+    assert request == expected_digest
+    assert response["next_cursor"] == search._next_cursor(generation, expected_digest, 1)
 
 
 def test_labels_and_exact_canon_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
