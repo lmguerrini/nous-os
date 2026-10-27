@@ -387,6 +387,7 @@ def search_candidates(*, store_path: Path, replacement_path: Path | None,
             if time.monotonic() > deadline:
                 _refuse("SearchTimeout")
             request_fields = {"query": normalized, "ranking": ranking,
+                "ordering_version": 2,
                 "include_replaced": include_replaced, "replacement": replacement_digest,
                 "canon": sorted((key, value) for key, value in canon.items())}
             request = hashlib.sha256(canonical_bytes(request_fields)).hexdigest()
@@ -480,8 +481,9 @@ def search_candidates(*, store_path: Path, replacement_path: Path | None,
                     if (candidate.proposal.proposal_id, candidate.version) in canon:
                         return 0
                     return 1 if _label(candidate, False)[0] == "DECISION_STATED_BY_PERSON" else 2
+                # Standing breaks equal-score ties only inside the BM25/id-selected first 100.
                 order[:100] = sorted(order[:100], key=lambda index: (
-                    standing(index), text_scores[index], candidates[index].proposal.proposal_id,
+                    text_scores[index], standing(index), candidates[index].proposal.proposal_id,
                     candidates[index].version))
             else:
                 order = [entry[-1] for entry in text_ranked]

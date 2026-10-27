@@ -114,7 +114,7 @@ def test_long_unicode_tokens_remain_distinct(tmp_path: Path) -> None:
     assert [hit["candidate_id"] for hit in _search(store, manifest, query)["hits"]] == [OLD]
 
 
-def test_short_query_digest_and_cursor_keep_legacy_construction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_short_query_digest_and_cursor_include_ordering_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store, manifest = _paths(tmp_path)
     _write(store, [(OLD, _content("one two")), (NEW, _content("one three"))])
     captured: list[tuple[str, str, int]] = []
@@ -130,11 +130,24 @@ def test_short_query_digest_and_cursor_keep_legacy_construction(tmp_path: Path, 
     match = '"one" OR "two"'  # original <=16-term MATCH form
     assert search._query(normalized) == (normalized, match)
     generation, request, _ = captured[-1]
-    old_request_fields = {"query": normalized, "ranking": "text", "include_replaced": False,
+    request_fields = {"query": normalized, "ranking": "text", "ordering_version": 2, "include_replaced": False,
         "replacement": hashlib.sha256(manifest.read_bytes()).hexdigest(), "canon": []}
-    expected_digest = hashlib.sha256(canonical_bytes(old_request_fields)).hexdigest()
+    expected_digest = hashlib.sha256(canonical_bytes(request_fields)).hexdigest()
     assert request == expected_digest
     assert response["next_cursor"] == search._next_cursor(generation, expected_digest, 1)
+
+
+def test_old_ordering_cursor_is_stale(tmp_path: Path) -> None:
+    store, manifest = _paths(tmp_path)
+    _write(store, [(OLD, _content("one two")), (NEW, _content("one three"))])
+    response = _search(store, manifest, "one two", limit=1)
+    normalized, _ = search._query("one two")
+    old_fields = {"query": normalized, "ranking": "text", "include_replaced": False,
+        "replacement": hashlib.sha256(manifest.read_bytes()).hexdigest(), "canon": []}
+    old_request = hashlib.sha256(canonical_bytes(old_fields)).hexdigest()
+    old_cursor = search._next_cursor(response["store_generation"], old_request, 1)
+    with pytest.raises(search.CandidateSearchError, match="^StaleCursor$"):
+        _search(store, manifest, "one two", limit=1, cursor=old_cursor)
 
 
 def test_labels_and_exact_canon_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -432,7 +445,7 @@ def test_blocked_dense_backend_times_out_and_refuses_concurrent_dense_call(
     assert not search._DENSE_LOCK.locked()
 
 
-def test_text_standing_first_and_text_relevance_is_pure_bm25(
+def test_text_relevance_first_and_text_relevance_is_pure_bm25(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store, manifest = _paths(tmp_path)
     _write(store, [(OLD, _content("alpha alpha alpha proposal", notes="facet: PROPOSAL")),
@@ -453,14 +466,52 @@ def test_text_standing_first_and_text_relevance_is_pure_bm25(
         canon_root=canon_root, semantic_index_path=None, derived_path=None,
         query="alpha", ranking="text_relevance")
     assert result["ranking"] == "text" and relevance["ranking"] == "text_relevance"
-    assert [hit["candidate_id"] for hit in result["hits"]] == [THIRD, NEW, OLD]
+    assert [hit["candidate_id"] for hit in result["hits"]] == [OLD, THIRD, NEW]
     assert relevance["hits"][0]["candidate_id"] == OLD
     assert [hit["score"] for hit in relevance["hits"]] == sorted(
         hit["score"] for hit in relevance["hits"])
     assert [hit["epistemic_label"] for hit in result["hits"]] == [
-        "CANONICAL", "DECISION_STATED_BY_PERSON", "PROPOSAL_NOT_APPROVED"]
-    assert result["hits"][1]["wording"].startswith("Recorded candidate proposal: ")
-    assert result["hits"][1]["is_asserted"] is False
+        "PROPOSAL_NOT_APPROVED", "CANONICAL", "DECISION_STATED_BY_PERSON"]
+    canonical = next(hit for hit in result["hits"] if hit["candidate_id"] == THIRD)
+    assert canonical["canonical_status"] == "canonical" and canonical["is_asserted"] is True
+
+
+def test_text_equal_bm25_uses_standing_then_candidate_id(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, manifest = _paths(tmp_path)
+    _write(store, [(OLD, _content("alpha equal", notes="facet: PROPOSAL")),
+                   (NEW, _content("alpha equal")),
+                   (THIRD, _content("alpha equal", notes="facet: PROPOSAL"))])
+    initial = _search(store, manifest, "alpha")
+    canonical_version = next(hit["candidate_version"] for hit in initial["hits"]
+                             if hit["candidate_id"] == THIRD)
+    monkeypatch.setattr(search, "canon_index", lambda _root: (
+        SimpleNamespace(candidate_id=THIRD, candidate_version=canonical_version,
+                        assertion=SimpleNamespace(id="asr_synthetic")),))
+    canon_root = tmp_path / "canon"
+    canon_root.mkdir()
+    result = search.search_candidates(store_path=store, replacement_path=manifest,
+        canon_root=canon_root, semantic_index_path=None, derived_path=None, query="alpha")
+    assert [hit["candidate_id"] for hit in result["hits"]] == [THIRD, NEW, OLD]
+    assert len({hit["score"] for hit in result["hits"]}) == 1
+
+
+def test_text_equal_standing_ties_use_candidate_id_not_insertion_order(tmp_path: Path) -> None:
+    store, manifest = _paths(tmp_path)
+    _write(store, [(THIRD, _content("alpha identical", notes="facet: PROPOSAL")),
+                   (OLD, _content("alpha identical", notes="facet: PROPOSAL"))])
+    result = _search(store, manifest, "alpha")
+    assert [hit["candidate_id"] for hit in result["hits"]] == sorted([THIRD, OLD])
+
+
+@pytest.mark.parametrize("query", ['"Café l’amour"', "Café", "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen"])
+def test_text_relevance_preserves_phrase_short_and_long_query_behavior(
+        tmp_path: Path, query: str) -> None:
+    store, manifest = _paths(tmp_path)
+    _write(store, [(OLD, _content("Café l’amour one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen"))])
+    result = _search(store, manifest, query, ranking="text_relevance")
+    assert result["ranking"] == "text_relevance"
+    assert [hit["candidate_id"] for hit in result["hits"]] == [OLD]
 
 
 @pytest.mark.parametrize("ranking", ["text", "text_relevance", "source_semantic"])

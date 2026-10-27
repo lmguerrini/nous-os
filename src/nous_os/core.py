@@ -1039,7 +1039,7 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
             ParameterSpec("cursor", "string", False, "opaque next-page cursor"),
             ParameterSpec("include_replaced", "boolean", False, "include superseded proposals; defaults to false"),
             ParameterSpec("ranking", "string", False,
-                          "text (default: standing first among best text matches), "
+                          "text (default: the best 100 matches by BM25, then candidate id and version; within them standing breaks equal-score ties), "
                           "text_relevance (plain BM25), or source_semantic (cited-source rank)"),
         ),
     ),
