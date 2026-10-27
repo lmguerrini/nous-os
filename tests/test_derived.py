@@ -490,6 +490,173 @@ def test_syntax_error_fallback_can_return_no_match() -> None:
     assert search(path, "NEAR(") == ()
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "IDF: bay", "IDF: bay OOV:", "IDF: (bay!)", "TF-IDF bay", "UTF-8 bay",
+        "näme: bay", "✈: bay", "{a b}: bay",
+    ],
+)
+def test_unknown_column_filter_retries_with_the_existing_fallback(query: str) -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    assert {hit.source_id for hit in search(path, query)} == {SOURCE_A}
+
+
+def test_fallback_keeps_private_use_unicode61_tokens() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    connection = sqlite3.connect(path)
+    try:
+        body = "\ue000needle formula"
+        digest = "private-use-test"
+        connection.execute(
+            "INSERT INTO content VALUES (?, ?, ?, ?)", (digest, SOURCE_A, len(body), body)
+        )
+        connection.execute(
+            "INSERT INTO search_plain(body, snapshot_digest, source_id) VALUES (?, ?, ?)",
+            (body, digest, SOURCE_A),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    assert any(hit.snapshot_digest == "private-use-test" for hit in search(path, "\ue000: formula"))
+
+
+def test_hyphenated_fallback_terms_are_each_searchable(monkeypatch) -> None:
+    import sys
+
+    original = _CANON
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_CANON",
+        original + (
+            (SOURCE_A, 2, "TF-IDF"),
+            (SOURCE_B, 2, "UTF-8"),
+        ),
+    )
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    tfidf = search(path, "TF-IDF")
+    utf8 = search(path, "UTF-8")
+    assert {hit.text for hit in tfidf} == {"TF-IDF"}
+    assert {hit.text for hit in utf8} == {"UTF-8"}
+
+
+def test_unknown_column_filter_fallback_keeps_role_filter() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("UPDATE record SET role = 'assistant' WHERE source_id = ?", (SOURCE_C,))
+        connection.execute("UPDATE record SET role = 'user' WHERE source_id = ?", (SOURCE_D,))
+        connection.commit()
+    finally:
+        connection.close()
+    hits = search(path, "IDF: coral", role="user")
+    assert {hit.source_id for hit in hits} == {SOURCE_D}
+
+
+def test_missing_query_selector_in_incompatible_fts_schema_does_not_retry() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("DROP TABLE search_plain")
+        connection.execute("CREATE VIRTUAL TABLE search_plain USING fts5(title)")
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(QueryError, match="no such column"):
+        search(path, "body: bay")
+
+
+def test_missing_rank_in_fts4_does_not_retry(tmp_path: Path, monkeypatch) -> None:
+    from nous_os import derived
+
+    store, ledger, base = _canon(tmp_path)
+    path = base / "derived.db"
+    build(store, ledger, path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("DROP TABLE search_plain")
+        connection.execute(
+            "CREATE VIRTUAL TABLE search_plain USING fts4(body, snapshot_digest, source_id)"
+        )
+        connection.execute(
+            "INSERT INTO search_plain(body, snapshot_digest, source_id) VALUES ('bay', 'd', ?) ",
+            (SOURCE_A,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    real_open = derived._open_for_reading
+
+    class _TrackedConnection:
+        def __init__(self, inner):
+            self.inner = inner
+            self.match_calls = 0
+
+        def execute(self, statement, parameters=()):
+            if " MATCH ?" in statement:
+                self.match_calls += 1
+            return self.inner.execute(statement, parameters)
+
+        def close(self):
+            self.inner.close()
+
+    tracked = _TrackedConnection(real_open(path))
+    monkeypatch.setattr(derived, "_open_for_reading", lambda _path: tracked)
+    with pytest.raises(QueryError, match="rank"):
+        search(path, "bay")
+    assert tracked.match_calls == 1
+
+
+def test_rank_as_fts5_query_column_retries_with_fallback() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    connection = sqlite3.connect(path)
+    try:
+        body = "rank bay"
+        digest = "rank-query-test"
+        connection.execute(
+            "INSERT INTO content VALUES (?, ?, ?, ?)", (digest, SOURCE_A, len(body), body)
+        )
+        connection.execute(
+            "INSERT INTO search_plain(body, snapshot_digest, source_id) VALUES (?, ?, ?)",
+            (body, digest, SOURCE_A),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    assert any(hit.snapshot_digest == "rank-query-test" for hit in search(path, "rank: bay"))
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ('"bay fills"', {SOURCE_A}),
+        ("coral NOT bravo", {SOURCE_C}),
+        ("coral OR lighthouse", {SOURCE_B, SOURCE_C, SOURCE_D}),
+        ("lighth*", {SOURCE_B}),
+        ("body:bay", {SOURCE_A}),
+        ("NEAR(coral reef)", {SOURCE_C, SOURCE_D}),
+    ],
+)
+def test_successful_fts_queries_keep_their_existing_semantics(query: str, expected: set[str]) -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    assert {hit.source_id for hit in search(path, query)} == expected
+
+
 def test_non_syntax_operational_error_does_not_retry(tmp_path: Path, monkeypatch) -> None:
     from nous_os import derived
 
@@ -516,6 +683,40 @@ def test_non_syntax_operational_error_does_not_retry(tmp_path: Path, monkeypatch
     monkeypatch.setattr(derived, "_open_for_reading", lambda _path: connection)
     with pytest.raises(QueryError, match="database is locked"):
         search(tmp_path / "unused.db", "can't find this?")
+    assert connection.match_calls == 1
+
+
+def test_projection_column_error_does_not_retry(tmp_path: Path, monkeypatch) -> None:
+    from nous_os import derived
+
+    class _Result:
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return [(0, "body", "", 0, None, 0)]
+
+    class _ProjectionErrorConnection:
+        def __init__(self):
+            self.match_calls = 0
+
+        def execute(self, statement, parameters=()):
+            if "sqlite_master" in statement:
+                return _Result()
+            if " MATCH ?" in statement:
+                self.match_calls += 1
+                raise sqlite3.OperationalError("no such column: c.body")
+            if "PRAGMA table_info(search_plain)" in statement:
+                return _Result()
+            raise AssertionError(f"unexpected SQL: {statement}")
+
+        def close(self):
+            pass
+
+    connection = _ProjectionErrorConnection()
+    monkeypatch.setattr(derived, "_open_for_reading", lambda _path: connection)
+    with pytest.raises(QueryError, match="no such column: c.body"):
+        search(tmp_path / "unused.db", "body: bay")
     assert connection.match_calls == 1
 
 

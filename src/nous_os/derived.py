@@ -388,7 +388,7 @@ def search(path: Path, query: str, limit: int = 10, role: str | None = None) -> 
     tokens: list[str] = []
     token = ""
     for char in query:
-        if char.isalnum() or unicodedata.category(char).startswith("M"):
+        if char.isalnum() or unicodedata.category(char).startswith(("M", "Co")):
             token += char
         elif token:
             tokens.append(token)
@@ -426,7 +426,29 @@ def search(path: Path, query: str, limit: int = 10, role: str | None = None) -> 
         try:
             rows = connection.execute(statement, parameters).fetchall()
         except sqlite3.OperationalError as error:
-            if "fts5: syntax error" not in str(error).lower() or not fallback_query:
+            error_text = str(error).lower()
+            parser_error = "fts5: syntax error" in error_text
+            if error_text.startswith("no such column:"):
+                reported_column = error_text.partition(":")[2].strip()
+                table_definition = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE name='search_plain'"
+                ).fetchone()
+                is_fts5 = bool(
+                    table_definition
+                    and table_definition[0]
+                    and "using fts5" in table_definition[0].lower()
+                )
+                fts_columns = {
+                    row[1].lower()
+                    for row in connection.execute("PRAGMA table_info(search_plain)").fetchall()
+                }
+                # FTS5 supplies rank, so its missing-column error can come from MATCH.
+                parser_error = (
+                    "." not in reported_column
+                    and (reported_column != "rank" or is_fts5)
+                    and "body" in fts_columns
+                )
+            if not parser_error or not fallback_query:
                 raise
             parameters = (fallback_query, role, limit) if role is not None else (fallback_query, limit)
             rows = connection.execute(statement, parameters).fetchall()
