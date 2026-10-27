@@ -483,6 +483,33 @@ def test_syntax_error_with_tokens_returns_the_expected_hit() -> None:
     assert "bay" in hits[0].text
 
 
+def test_unbalanced_ascii_quote_retries(monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "_CANON", _CANON + (
+        (SOURCE_A, 3, 'Docker compose notes'),
+        (SOURCE_B, 3, 'notes without that word'),
+    ))
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    # SQLite reports "unterminated string" for this input.
+    assert {hit.source_id for hit in search(path, '"Docker')} == {SOURCE_A}
+
+
+def test_typographic_quotes_are_ordinary_fts_punctuation(monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "_CANON", _CANON + (
+        (SOURCE_A, 3, 'bay fills'),
+        (SOURCE_B, 3, 'bay x fills'),
+    ))
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    assert {hit.source_id for hit in search(path, "“bay fills”")} == {SOURCE_A, SOURCE_B}
+
+
 def test_syntax_error_fallback_can_return_no_match() -> None:
     store, ledger, base = _canon()
     path = base / "derived.db"

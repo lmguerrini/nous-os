@@ -427,7 +427,7 @@ def search(path: Path, query: str, limit: int = 10, role: str | None = None) -> 
             rows = connection.execute(statement, parameters).fetchall()
         except sqlite3.OperationalError as error:
             error_text = str(error).lower()
-            parser_error = "fts5: syntax error" in error_text
+            parser_error = "fts5: syntax error" in error_text or "unterminated string" in error_text
             if error_text.startswith("no such column:"):
                 reported_column = error_text.partition(":")[2].strip()
                 table_definition = connection.execute(
