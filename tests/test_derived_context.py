@@ -162,6 +162,11 @@ def test_context_by_source_and_container_uses_tip_records_in_created_order(tmp_p
 
     container = derived.context(path, container="C1", limit=8)
     assert container["total"] == 8
+    assert container["offset"] == 0
+    assert container["limit"] == 8
+    assert container["returned"] == 8
+    assert container["has_more"] is False
+    assert container["next_offset"] is None
     assert [record["external_id"] for record in container["records"]] == [
         "m1",
         "m2",
@@ -176,6 +181,80 @@ def test_context_by_source_and_container_uses_tip_records_in_created_order(tmp_p
         MISSING_CREATED_AT,
         NUMERIC_CREATED_AT,
     ]
+
+
+def test_context_container_pages_walk_stable_order_and_validate_offset(tmp_path: Path) -> None:
+    store, ledger, base = _context_canon(tmp_path)
+    path = base / "derived.sqlite"
+    derived.build(store, ledger, path)
+    expected = [
+        "m1", "m2", "tie-low", "tie-high", "m3", "m2b", "missing-created-at", "numeric-created-at",
+    ]
+    page = derived.context(path, container="C1", limit=3)
+    seen: list[str] = []
+    while True:
+        seen.extend(record["external_id"] for record in page["records"])
+        if not page["has_more"]:
+            assert page["next_offset"] is None
+            break
+        page = derived.context(path, container="C1", limit=3, offset=page["next_offset"])
+    assert seen == expected
+    assert page["offset"] == 6
+    assert page["returned"] == 2
+    for offset in (8, 12, 2**63):
+        empty = derived.context(path, container="C1", offset=offset)
+        assert empty["records"] == []
+        assert empty["has_more"] is False
+        assert empty["next_offset"] is None
+    for offset in (-1, True, 1.5, "1"):
+        with pytest.raises(derived.QueryError, match="offset"):
+            derived.context(path, container="C1", offset=offset)
+    with pytest.raises(derived.QueryError, match="only valid with container"):
+        derived.context(path, source_id=M1, offset=1)
+
+
+def test_context_container_pages_more_than_default_limit(tmp_path: Path) -> None:
+    store, ledger, base = _context_canon(tmp_path)
+    for index in range(31):
+        source_id = f"src_01CRZ3NDEKTSV4RRFFQ69G5F{index:02X}"
+        ingest(
+            store,
+            ledger,
+            source_id,
+            UntrustedText(_header(
+                kind="message",
+                provider="adapter",
+                external_id=f"bulk-{index:02d}",
+                container_external_id="bulk-container",
+                role="user",
+                created_at=f"2026-02-01T00:{index:02d}:00Z",
+            )),
+            T0 + timedelta(minutes=index),
+        )
+    path = base / "derived.sqlite"
+    derived.build(store, ledger, path)
+    first = derived.context(path, container="bulk-container", limit=30)
+    second = derived.context(path, container="bulk-container", limit=30, offset=first["next_offset"])
+    records = first["records"] + second["records"]
+    assert first["limit"] == second["limit"] == 30
+    assert first["returned"] == 30
+    assert first["has_more"] is True
+    assert second["returned"] == 1
+    assert second["has_more"] is False
+    assert second["next_offset"] is None
+    assert [record["external_id"] for record in records] == [f"bulk-{index:02d}" for index in range(31)]
+    assert len({record["source_id"] for record in records}) == 31
+
+
+def test_context_offset_catalogue_and_core_binding(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    grant = Grant("reader", frozenset({Tier.READ}))
+    expected = ("source_id", "container", "before", "after", "limit", "offset", "view", "max_chars")
+    direct = core.invoke(grant, "system.capabilities", workspace, {})
+    operation = next(item for item in direct["operations"] if item["name"] == "knowledge.context")
+    assert tuple(parameter["name"] for parameter in operation["parameters"]) == expected
+    bound = core._bind_context(workspace, {"container": "C1", "offset": 4})
+    assert bound["offset"] == 4
 
 
 def test_context_refusals_missing_headers_and_legacy_index_are_named(
@@ -233,7 +312,7 @@ def test_context_catalogue_parameters_match_through_both_transports(tmp_path: Pa
     """O4: both catalogue readers expose context parameters in order."""
     workspace = _workspace(tmp_path)
     grant = Grant("reader", frozenset({Tier.READ}))
-    expected = ("source_id", "container", "before", "after", "limit", "view", "max_chars")
+    expected = ("source_id", "container", "before", "after", "limit", "offset", "view", "max_chars")
     direct = core.invoke(grant, "system.capabilities", workspace, {})
     direct_context = next(item for item in direct["operations"] if item["name"] == "knowledge.context")
     assert tuple(parameter["name"] for parameter in direct_context["parameters"]) == expected

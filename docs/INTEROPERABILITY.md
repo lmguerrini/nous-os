@@ -67,7 +67,7 @@ way:
 | `system.capabilities` | read | List every operation this contract offers, with its tier and parameters. | (none) |
 | `system.health` | read | Report whether each configured store location is readable, absent, or unknown. | (none) |
 | `knowledge.search` | read | Full-text search over the derived index. | query, limit?, role? |
-| `knowledge.context` | read | Read a source's conversation neighbourhood, or a conversation's ordered records, from the derived index. | source_id?, container?, before?, after?, limit?, view?, max_chars? |
+| `knowledge.context` | read | Read a source's conversation neighbourhood, or a conversation's ordered records, from the derived index. | source_id?, container?, before?, after?, limit?, offset?, view?, max_chars? |
 | `knowledge.semantic` | read | Dense semantic search over the local semantic index; not_run with a reason when the index or the weights are absent. | query, limit?, distinct?, role? |
 | `canon.documents` | read | List every canonical document under the configured data root. | (none) |
 | `canon.describe` | read | List every canonical document under the data root with the digest of its bytes. | (none) |

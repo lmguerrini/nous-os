@@ -1276,7 +1276,14 @@ def _observed_real_effect(
         items = (returned,)
         expected_count = 1
         condition = lambda value: value == {
-            "container": text, "total": 0, "records": [],
+            "container": text,
+            "total": 0,
+            "offset": 0,
+            "limit": 200,
+            "returned": 0,
+            "has_more": False,
+            "next_offset": None,
+            "records": [],
         }
     elif implementation is operation_bindings.semantic_search:
         items = (returned,)

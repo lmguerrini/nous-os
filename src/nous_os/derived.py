@@ -595,6 +595,7 @@ def context(
     before: int = 2,
     after: int = 2,
     limit: int = 200,
+    offset: int | None = None,
     view: str = "full",
     max_chars: int | None = None,
 ) -> dict[str, object]:
@@ -606,6 +607,13 @@ def context(
     """
     if (source_id is None) == (container is None):
         raise QueryError("context requires exactly one of source_id or container")
+    if source_id is not None and offset is not None:
+        raise QueryError("offset is only valid with container")
+    if container is not None:
+        if offset is None:
+            offset = 0
+        if type(offset) is not int or isinstance(offset, bool) or offset < 0:
+            raise QueryError("offset must be a non-negative integer")
     if view not in ("full", "text"):
         raise QueryError("view must be 'full' or 'text'")
     if view == "full" and max_chars is not None:
@@ -675,14 +683,27 @@ def context(
                 "before": [render(row) for row in rows[max(0, position - before) : position]],
                 "after": [render(row) for row in rows[position + 1 : position + 1 + after]],
             })
-        rows = connection.execute(_TIP_CONTAINER_RECORDS + " LIMIT ?", (container, limit)).fetchall()
         total = connection.execute(
             "SELECT COUNT(*) FROM (" + _TIP_CONTAINER_RECORDS + ")", (container,)
         ).fetchone()[0]
+        if offset >= total:
+            rows = []
+        else:
+            rows = connection.execute(
+                _TIP_CONTAINER_RECORDS + " LIMIT ? OFFSET ?", (container, limit, offset)
+            ).fetchall()
+        records = [render(row) for row in rows]
+        returned = len(records)
+        has_more = offset + returned < total
         return finish({
             "container": container,
             "total": total,
-            "records": [render(row) for row in rows],
+            "records": records,
+            "offset": offset,
+            "limit": limit,
+            "returned": returned,
+            "has_more": has_more,
+            "next_offset": offset + returned if has_more else None,
         })
     except sqlite3.DatabaseError as error:
         raise StoreUnusable(f"the store could not be read: {error}") from error

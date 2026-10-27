@@ -867,6 +867,7 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
             ParameterSpec("before", "integer", False, "records before a source target; defaults to 2"),
             ParameterSpec("after", "integer", False, "records after a source target; defaults to 2"),
             ParameterSpec("limit", "integer", False, "maximum container records to return; defaults to 200"),
+            ParameterSpec("offset", "integer", False, "first container record to return; defaults to 0; use next_offset from a previous page"),
             ParameterSpec("view", "string", False, "'full' source bytes or 'text' readable projection; defaults to 'full'"),
             ParameterSpec("max_chars", "integer", False, "text projection limit, 200 to 20000 characters; defaults to 4000"),
         ),
@@ -1477,7 +1478,7 @@ def _bind_search(workspace: Workspace, arguments: dict[str, object]) -> dict[str
 
 def _bind_context(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     kwargs: dict[str, object] = {"path": workspace.derived_path}
-    for name in ("source_id", "container", "before", "after", "limit", "view", "max_chars"):
+    for name in ("source_id", "container", "before", "after", "limit", "offset", "view", "max_chars"):
         if name in arguments:
             kwargs[name] = arguments[name]
     return kwargs
