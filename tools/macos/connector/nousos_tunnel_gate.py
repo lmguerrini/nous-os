@@ -29,6 +29,7 @@ READ_TOOLS = (
     "knowledge.semantic",
     "knowledge.context",
     "provenance.span",
+    "provenance.verify_derived",
     "canon.assertions",
     "candidate.search",
     "reconcile.relations",
@@ -46,7 +47,11 @@ CHATGPT_TOOL_DESCRIPTIONS = {
         "reformulate with distinctive keywords and search again rather than concluding nothing "
         "exists. Optionally filter "
         "with role user when asking what the person said, or role assistant for what an assistant "
-        "answered; omit role otherwise."
+        "answered; omit role otherwise. A user message was sent by the person but may contain pasted "
+        "or quoted text written by others; check context before attributing it as their own view. "
+        "Search results may be normalized excerpts that may be cut. "
+        "Do not quote them as exact. For exact bytes, call provenance_span with a returned citation, "
+        "or knowledge_context with view full and the hit's source_id."
     ),
     "knowledge.semantic": (
         "Returns original historical conversation and attachment text found by meaning, not "
@@ -56,17 +61,30 @@ CHATGPT_TOOL_DESCRIPTIONS = {
         "results are insufficient, reformulate with distinctive keywords and search again "
         "rather than concluding nothing exists. Optionally "
         "filter with role user when asking what the person said, or role assistant for what an "
-        "assistant answered; omit role otherwise."
+        "assistant answered; omit role otherwise. A user message was sent by the person but may "
+        "contain pasted or quoted text written by others; check context before attributing it as "
+        "their own view. Semantic results are verbatim but possibly partial "
+        "passages. Do not quote them as exact. For exact bytes, call provenance_span with a returned "
+        "citation, or knowledge_context with view full and the hit's source_id."
     ),
     "knowledge.context": (
         "Returns surrounding original conversation messages, not proposals or decisions. Use to"
         " read context around a source passage; pair with candidate_search for questions about "
         "decisions or how ideas evolved. Compact text view is the default; use view full for the "
-        "exact stored body. Citations always refer to source bytes."
+        "exact stored body. Check text_truncated; if true, use view full. Citations always refer "
+        "to source bytes. A conversation (container) is returned in pages of at most 30 records "
+        "with total, has_more and next_offset; request another page with offset only when needed "
+        "for the question, never read a whole conversation automatically. Records beyond page one "
+        "are not missing memory: they are already reachable through search and source_id context."
     ),
     "provenance.span": (
         "Returns the exact cited bytes from original source text, not a proposal or decision. "
         "Use to verify a candidate_search citation before describing what the sources say."
+    ),
+    "provenance.verify_derived": (
+        "Checks one derived_citations entry from candidate_search against the preserved "
+        "attachment extraction only. A match means the quoted span matches the preserved "
+        "extraction, not that it was verified on the original attachment; quote the result as such."
     ),
     "canon.assertions": (
         "Returns approved canonical decisions, not historical source text or unapproved "
@@ -86,7 +104,14 @@ CHATGPT_TOOL_DESCRIPTIONS = {
         "a person stated it in a conversation, not that it was approved. Before stating "
         "proposal content as what the sources say, check citations with provenance_span or read"
         " around them with knowledge_context. Every non-canonical result is a recorded "
-        "proposal, not a decision."
+        "proposal, not a decision. Use include_replaced true only for questions about how a proposal or "
+        "decision evolved; replaced hits carry replaced true and superseded_by (the next version); "
+        "present them as superseded, not current, with their available dates. A replacement means a "
+        "proposal version was superseded in review and does not by itself mean the person changed the "
+        "decision. If candidate_search reports replaced_excluded > 0, mention that one or "
+        "more matching replaced candidates were excluded. replaced_unreadable is a store-wide count "
+        "of old replaced versions that failed validation, not a result of this query; it does not "
+        "hide current proposals."
     ),
     "reconcile.relations": (
         "Returns recorded relations between two cited source passages for one source_id. "
@@ -118,7 +143,11 @@ CHATGPT_SERVER_INSTRUCTIONS = (
         "reformulate and widen; for connection or evolution questions, check relations "
         "of the most relevant retrieved sources. Keep answers and call counts proportionate. "
         "Never present proposals as verified "
-    "facts."
+    "facts. When materially conflicting results have dates, report the disagreement and order the "
+    "available dates, "
+    "distinguishing proposed_at (candidate proposal time), valid_from (candidate-stated validity "
+    "start; may be null) and created_at (source-record timestamp; may be null). If candidate_search "
+    "reports replaced_excluded > 0, mention that one or more matching replaced candidates were excluded."
 )
 
 
@@ -127,6 +156,90 @@ CAPS: dict[str, dict[str, int]] = {
     "knowledge.semantic": {"limit": 10},
     "knowledge.context": {"before": 5, "after": 5, "limit": 30, "max_chars": 8000},
     "candidate.search": {"limit": 10},
+}
+
+# Product defaults the gate does not fill itself.
+PRODUCT_DEFAULT_LIMITS = {"knowledge.search": 10}
+LIMIT_NOTES = {
+    "search_full": (
+        "This call returned its applied maximum of hits, so more matches may exist. There is no next "
+        "page: use more distinctive words or a role filter, or read around a hit with "
+        "knowledge_context."
+    ),
+    "raise_limit": "A higher limit, up to the maximum, returns more hits in one call.",
+    "cursor": (
+        "More matching proposals exist: call candidate_search again with the same arguments and "
+        "cursor set to next_cursor."
+    ),
+    "window": (
+        "before and after are capped here; to read further, call knowledge_context again on the "
+        "first or last returned record's source_id, or page the container with offset."
+    ),
+    "max_chars": (
+        "Text per record is capped here; use view full for the exact stored body."
+    ),
+    "page": (
+        "Container pages hold at most 30 records; request offset=next_offset only if the question "
+        "needs it."
+    ),
+}
+GATE_LIMITS_NOTE = (
+    " A separate gate_limits item, when present, reports limits this connector applied and how to "
+    "continue."
+)
+
+for _name in CAPS:
+    CHATGPT_TOOL_DESCRIPTIONS[_name] += GATE_LIMITS_NOTE
+
+DERIVED_ERROR_MESSAGES = {
+    "DerivedRecordNotFound": "The preserved extraction record was not found.",
+    "DerivedRecordCorrupt": "The preserved extraction record could not be authenticated.",
+    "DerivedVersionMismatch": "The citation does not match the preserved extractor version.",
+    "DerivedOwnerMismatch": "The citation does not match an owner of the preserved extraction.",
+    "DerivedAssetMismatch": "The citation does not match the preserved asset metadata.",
+    "DerivedLedgerUnreadable": "The preserved asset history could not be checked.",
+    "SpanMismatch": "The quoted span does not match the preserved extraction.",
+    "LocatorOutOfRange": "The citation locator is outside the preserved extraction.",
+    "LocatorSplitsGrapheme": "The citation locator splits a character in the preserved extraction.",
+}
+
+# Caller-input refusals the product reports as "<Class>: <message>" on a JSON-RPC
+# -32000 error. Only these exact (tool, error text) pairs, taken from the product's
+# raise sites, become a tool result with isError; every other error keeps its
+# existing JSON-RPC form, including "QueryError: the query could not be run: ...",
+# which can also report a storage fault.
+INPUT_ERRORS: dict[str, dict[str, tuple[str, str]]] = {
+    "knowledge.search": {
+        "QueryError: the query has no searchable words": (
+            "QueryError", "the query has no searchable words; use letters or digits"),
+    },
+    "knowledge.context": {
+        f"QueryError: {message}": ("QueryError", message)
+        for message in (
+            "before must be a non-negative integer",
+            "after must be a non-negative integer",
+            "limit must be a positive integer",
+            "context requires exactly one of source_id or container",
+            "offset is only valid with container",
+            "offset must be a non-negative integer",
+            "view must be 'full' or 'text'",
+            "max_chars is only valid with view='text'",
+            "max_chars must be an integer from 200 to 20000",
+        )
+    },
+    "candidate.search": {
+        "CandidateSearchError: InvalidQuery": (
+            "InvalidQuery",
+            "the query has no searchable words or is not valid; use plain words or balanced "
+            "double-quoted phrases"),
+        "CandidateSearchError: InvalidCursor": (
+            "InvalidCursor",
+            "the cursor is not valid for this request; repeat the search without cursor"),
+        "CandidateSearchError: QueryTooComplex": (
+            "QueryTooComplex",
+            "the query is too long (over 256 characters) or has more than 16 quoted phrases; "
+            "shorten it"),
+    },
 }
 
 READ_ANNOTATIONS = {
@@ -277,6 +390,9 @@ class MetadataLog:
             "error_code": fields.get("error_code"),
             "duration_ms": fields.get("duration_ms"),
         }
+        digest = fields.get("resp_digest")
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{16}", digest):
+            record["resp_digest"] = digest
         try:
             line = wire(record) + b"\n"
             with self.lock:
@@ -347,8 +463,10 @@ class Gate:
         *,
         response_bytes: int = 0,
         error_code: int | None = None,
+        response_digest: str | None = None,
     ) -> None:
         self.log.write(
+            resp_digest=response_digest,
             event="response",
             id=None if pending is None else pending["id"],
             method=None if pending is None else pending["method"],
@@ -380,7 +498,8 @@ class Gate:
         self._log_response(pending, decision, error_code=code)
 
     def _add_pending(
-        self, request_id: Any, method: str, tool: str | None, arguments: Any
+        self, request_id: Any, method: str, tool: str | None, arguments: Any,
+        reduced: dict[str, dict[str, int]] | None = None,
     ) -> bool:
         """Register one in-flight id; False when that id is already in flight."""
         keys, size = self._arguments_info(arguments)
@@ -395,6 +514,13 @@ class Gate:
                 "started": time.monotonic(),
                 "arg_keys": keys,
                 "arg_bytes": size,
+                "reduced": reduced or {},
+                "applied": {
+                    key: arguments[key]
+                    for key in CAPS.get(tool or "", {})
+                    if isinstance(arguments, dict) and isinstance(arguments.get(key), int)
+                    and not isinstance(arguments.get(key), bool)
+                },
             }
         return True
 
@@ -463,6 +589,16 @@ class Gate:
             if isinstance(schema, dict):
                 schema = dict(schema)
                 properties = schema.get("properties")
+                if product_name == "provenance.verify_derived":
+                    properties = dict(properties) if isinstance(properties, dict) else {}
+                    properties.pop("full", None)
+                    properties["citation"] = {
+                        "type": "object",
+                        "description": "One derived_citations entry from candidate_search.",
+                    }
+                    schema["properties"] = properties
+                    schema["required"] = ["citation"]
+                    schema["additionalProperties"] = False
                 if isinstance(properties, dict):
                     properties = dict(properties)
                     for argument, maximum in CAPS.get(product_name, {}).items():
@@ -487,6 +623,18 @@ class Gate:
                         field.update({"type": "string", "enum": ["user", "assistant"]})
                         properties["role"] = field
                     if product_name == "knowledge.context":
+                        field = dict(properties.get("limit", {}))
+                        field.update({
+                            "default": 30,
+                            "description": "Container pages hold at most 30 records (default 30).",
+                        })
+                        properties["limit"] = field
+                        field = dict(properties.get("offset", {}))
+                        field.update({
+                            "type": "integer", "minimum": 0, "default": 0,
+                            "description": "Container pages only; use next_offset from the previous page.",
+                        })
+                        properties["offset"] = field
                         field = dict(properties.get("view", {}))
                         field.update({"type": "string", "enum": ["full", "text"]})
                         properties["view"] = field
@@ -497,11 +645,13 @@ class Gate:
                         for argument, updates in {
                             "query": {"maxLength": 256},
                             "limit": {"maximum": 10, "default": 10},
-                            "include_replaced": {"enum": [False], "default": False},
+                            "include_replaced": {"type": "boolean", "enum": [False, True], "default": False,
+                                                 "description": "Optional, for questions about how a proposal or decision evolved; default false."},
                             "ranking": {
                                 "enum": ["text", "text_relevance", "source_semantic"],
-                                "description": "text (default: decisions first among keyword "
-                                "matches), text_relevance (plain keyword relevance), or "
+                                "description": "text (default: the best 100 keyword matches by relevance, then "
+                                "candidate id; within them canonical and person-stated decisions "
+                                "break equal-score ties), text_relevance (plain keyword relevance), or "
                                 "source_semantic (meaning of the cited passages; an option for "
                                 "paraphrases or wording that differs from the proposals)",
                             },
@@ -553,6 +703,146 @@ class Gate:
         return response
 
     @staticmethod
+    def _rewrite_derived_response(response: dict[str, Any], request_id: Any) -> dict[str, Any]:
+        error = response.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            safe_message = (
+                "InvalidDerivedCitation: the citation is not a valid derived citation"
+                if isinstance(message, str) and message.startswith("ArgumentTypeError")
+                else "VerificationFailed: the citation could not be checked"
+            )
+            code = error.get("code")
+            return {"jsonrpc": "2.0", "id": request_id, "error": {
+                "code": code if isinstance(code, int) and not isinstance(code, bool) else -32000,
+                "message": safe_message,
+            }}
+
+        result = response.get("result")
+        parsed: Any = None
+        if isinstance(result, dict) and isinstance(result.get("content"), list):
+            content = result["content"]
+            if content and isinstance(content[0], dict) and isinstance(content[0].get("text"), str):
+                try:
+                    parsed = strict_loads(content[0]["text"].encode("utf-8"))
+                except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                    pass
+        if isinstance(parsed, dict) and parsed.get("ok") is True:
+            safe = {
+                "ok": True,
+                "check": "preserved_extraction",
+                "matches_preserved_extraction": True,
+                "verified_on_original": False,
+            }
+        elif isinstance(parsed, dict) and parsed.get("ok") is False:
+            error_type = parsed.get("error")
+            if error_type not in DERIVED_ERROR_MESSAGES:
+                error_type = "VerificationFailed"
+                message = "The citation could not be checked against the preserved extraction."
+            else:
+                message = DERIVED_ERROR_MESSAGES[error_type]
+            safe = {
+                "ok": False,
+                "check": "preserved_extraction",
+                "matches_preserved_extraction": False,
+                "verified_on_original": False,
+                "error": error_type,
+                "message": message,
+            }
+        else:
+            safe = {
+                "ok": False,
+                "check": "preserved_extraction",
+                "matches_preserved_extraction": False,
+                "verified_on_original": False,
+                "error": "VerificationFailed",
+                "message": "The citation could not be checked against the preserved extraction.",
+            }
+        return {"jsonrpc": "2.0", "id": request_id,
+                "result": {"content": [{"type": "text", "text": wire(safe).decode("utf-8")}]}}
+
+    @staticmethod
+    def _input_error_result(
+        response: dict[str, Any], pending: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """A known caller-input refusal as an isError tool result; None for anything else."""
+        if not pending or pending.get("method") != "tools/call":
+            return None
+        error = response.get("error")
+        if not isinstance(error, dict) or "result" in response:
+            return None
+        code = error.get("code")
+        if type(code) is not int or code != -32000:
+            return None
+        message = error.get("message")
+        known = INPUT_ERRORS.get(pending.get("tool") or "", {})
+        if not isinstance(message, str) or message not in known:
+            return None
+        error_type, text = known[message]
+        body = {"error": error_type, "message": text}
+        return {"jsonrpc": "2.0", "id": pending["id"], "result": {
+            "content": [{"type": "text", "text": wire(body).decode("utf-8")}],
+            "isError": True,
+        }}
+
+    @staticmethod
+    def _annotate_limits(response: dict[str, Any], pending: dict[str, Any]) -> dict[str, Any]:
+        """Append one gate_limits item; the product's own content is left untouched."""
+        result = response.get("result")
+        if "error" in response or not isinstance(result, dict) or result.get("isError"):
+            return response
+        content = result.get("content")
+        if not isinstance(content, list) or not content or not isinstance(content[0], dict):
+            return response
+        text = content[0].get("text")
+        if not isinstance(text, str):
+            return response
+        try:
+            body = strict_loads(text.encode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            return response
+        tool = pending.get("tool")
+        reduced = pending.get("reduced") or {}
+        applied = dict(pending.get("applied") or {})
+        if tool in PRODUCT_DEFAULT_LIMITS and "limit" not in applied:
+            applied["limit"] = PRODUCT_DEFAULT_LIMITS[tool]
+        notes: list[str] = []
+        if tool in {"knowledge.search", "knowledge.semantic"}:
+            hits = body if isinstance(body, list) else (
+                body.get("hits") if isinstance(body, dict) else None
+            )
+            limit = applied.get("limit")
+            if isinstance(hits, list) and isinstance(limit, int) and len(hits) == limit:
+                notes.append(LIMIT_NOTES["search_full"])
+                if limit < CAPS[tool]["limit"]:
+                    notes.append(LIMIT_NOTES["raise_limit"])
+        elif tool == "candidate.search":
+            if isinstance(body, dict) and isinstance(body.get("next_cursor"), str):
+                notes.append(LIMIT_NOTES["cursor"])
+        elif tool == "knowledge.context":
+            if "before" in reduced or "after" in reduced:
+                notes.append(LIMIT_NOTES["window"])
+            if "max_chars" in reduced:
+                notes.append(LIMIT_NOTES["max_chars"])
+            if "limit" in reduced and isinstance(body, dict) and body.get("has_more") is True:
+                notes.append(LIMIT_NOTES["page"])
+        if not notes and not reduced:
+            return response
+        notice = {"gate_limits": {
+            "applied": applied,
+            "maximum": CAPS[tool],
+            "reduced": reduced,
+            "continuation": " ".join(notes) if notes else None,
+        }}
+        replacement = dict(result)
+        replacement["content"] = list(content) + [
+            {"type": "text", "text": wire(notice).decode("utf-8")}
+        ]
+        response = dict(response)
+        response["result"] = replacement
+        return response
+
+    @staticmethod
     def _rewrite_initialize(response: dict[str, Any]) -> dict[str, Any]:
         result = response.get("result")
         if not isinstance(result, dict):
@@ -571,21 +861,21 @@ class Gate:
                 try:
                     response = strict_loads(raw)
                 except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
-                    try:
-                        with self.out_lock:
-                            sys.stdout.buffer.write(raw + b"\n")
-                            sys.stdout.buffer.flush()
-                    except Exception:
-                        self.stopping.set()
+                    self._log_response(None, "drop_malformed_child", response_bytes=len(raw))
                     continue
 
-                if not isinstance(response, dict) or "id" not in response:
-                    if isinstance(response, dict):
-                        self._write_stdout(response)
+                if not isinstance(response, dict):
+                    self._log_response(None, "drop_malformed_child", response_bytes=len(raw))
+                    continue
+                if "id" not in response:
+                    self._log_response(None, "drop_child_notification", response_bytes=len(raw))
                     continue
 
                 request_id = response["id"]
                 pending = self._take_pending(request_id)
+                if pending is None:
+                    self._log_response(None, "drop_unmatched", response_bytes=len(raw))
+                    continue
                 if pending and pending["method"] == "tools/call" and len(raw) > MAX_RESPONSE_BYTES:
                     self._respond(
                         request_id,
@@ -608,6 +898,37 @@ class Gate:
                 elif pending and pending["method"] == "initialize":
                     response = self._rewrite_initialize(response)
 
+                if (pending and pending["method"] == "tools/call"
+                        and pending.get("tool") == "provenance.verify_derived"):
+                    response = self._rewrite_derived_response(response, pending["id"])
+
+                if (pending and pending["method"] == "tools/call"
+                        and pending.get("tool") in CAPS):
+                    annotated = self._annotate_limits(response, pending)
+                    if annotated is not response:
+                        size = len(wire(annotated))
+                        if size > MAX_RESPONSE_BYTES:
+                            self._respond(
+                                request_id,
+                                -32000,
+                                "ResponseTooLarge: "
+                                f"{size} bytes exceed the tunnel profile limit of 400000; "
+                                "narrow the request (smaller limit/before/after)",
+                                pending=pending,
+                                decision="response_too_large",
+                            )
+                            continue
+                    response = annotated
+
+                converted = self._input_error_result(response, pending)
+                if converted is not None:
+                    self._write_stdout(converted)
+                    self._log_response(
+                        pending, "input_error", response_bytes=len(raw),
+                        error_code=response["error"].get("code"),
+                    )
+                    continue
+
                 if isinstance(response.get("error"), dict):
                     code = response["error"].get("code")
                     self._write_stdout(response)
@@ -619,7 +940,14 @@ class Gate:
                     )
                     continue
                 self._write_stdout(response)
-                self._log_response(pending, "forward", response_bytes=len(raw))
+                digest = None
+                if pending and pending["method"] == "tools/list":
+                    digest = hashlib.sha256(
+                        wire(response.get("result")) if "result" in response else b""
+                    ).hexdigest()[:16]
+                self._log_response(
+                    pending, "forward", response_bytes=len(raw), response_digest=digest
+                )
         finally:
             self._fatal_child_exit()
 
@@ -631,8 +959,11 @@ class Gate:
         tool: str | None,
         arguments: Any,
         decision: str,
+        reduced: dict[str, dict[str, int]] | None = None,
     ) -> None:
-        if "id" in request and not self._add_pending(request["id"], method, tool, arguments):
+        if "id" in request and not self._add_pending(
+            request["id"], method, tool, arguments, reduced
+        ):
             self._invalid(request["id"], method, -32600, "duplicate request id already in flight")
             return
         keys, size = self._arguments_info(arguments)
@@ -765,6 +1096,32 @@ class Gate:
             request["params"] = params
             arguments = params.get("arguments")
 
+            if tool == "provenance.verify_derived":
+                if not isinstance(arguments, dict) or set(arguments) - {"citation", "full"}:
+                    self._invalid(request_id, method, -32602, "invalid derived citation arguments")
+                    return
+                if "full" in arguments and arguments["full"] is not False:
+                    self._invalid(
+                        request_id, method, -32602,
+                        "full verification on original attachments is not exposed",
+                    )
+                    return
+                citation = arguments.get("citation")
+                if not isinstance(citation, dict):
+                    self._invalid(request_id, method, -32602, "citation must be an object")
+                    return
+                span = citation.get("span")
+                start = citation.get("start_char")
+                end = citation.get("end_char")
+                if ((isinstance(span, str) and len(span.encode("utf-8")) > MAX_SPAN_BYTES)
+                        or (isinstance(start, int) and not isinstance(start, bool)
+                            and isinstance(end, int) and not isinstance(end, bool)
+                            and end - start > MAX_SPAN_BYTES)):
+                    self._invalid(request_id, method, -32602, "derived citation exceeds 32768 characters")
+                    return
+                arguments = {"citation": citation, "full": False}
+                params["arguments"] = arguments
+
             if tool == "candidate.search":
                 if arguments is None:
                     arguments = {}
@@ -775,8 +1132,8 @@ class Gate:
                 if not isinstance(query, str) or not query.strip() or len(query) > 256:
                     self._invalid(request_id, method, -32602, "invalid candidate search query")
                     return
-                if "include_replaced" in arguments and arguments["include_replaced"] is not False:
-                    self._invalid(request_id, method, -32602, "replaced candidates are not exposed")
+                if "include_replaced" in arguments and not isinstance(arguments["include_replaced"], bool):
+                    self._invalid(request_id, method, -32602, "invalid include_replaced")
                     return
                 if "ranking" in arguments and arguments["ranking"] not in (
                     "text", "text_relevance", "source_semantic"
@@ -861,6 +1218,7 @@ class Gate:
                     arguments = dict(arguments)
                     params["arguments"] = arguments
                     capped: list[str] = []
+                    reduced: dict[str, dict[str, int]] = {}
                     if (
                         tool in {"knowledge.search", "knowledge.semantic"}
                         and "role" in arguments
@@ -869,6 +1227,11 @@ class Gate:
                         self._invalid(request_id, method, -32602, "invalid role")
                         return
                     if tool == "knowledge.context":
+                        if "offset" in arguments:
+                            value = arguments["offset"]
+                            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                                self._invalid(request_id, method, -32602, "invalid offset")
+                                return
                         if "view" not in arguments:
                             arguments["view"] = "text"
                             capped.append("view")
@@ -891,6 +1254,7 @@ class Gate:
                         if isinstance(value, int) and not isinstance(value, bool) and value > maximum:
                             arguments[key] = maximum
                             capped.append(key)
+                            reduced[key] = {"requested": value, "applied": maximum}
                     if tool == "knowledge.semantic" and "limit" not in arguments:
                         arguments["limit"] = 10
                         capped.append("limit")
@@ -901,9 +1265,12 @@ class Gate:
                         if "limit" not in arguments:
                             arguments["limit"] = 10
                             capped.append("limit")
-                        arguments["include_replaced"] = False
+                        if "include_replaced" not in arguments:
+                            arguments["include_replaced"] = False
                     if capped:
                         decision = "capped"
+                    self._forward(request, raw, method, tool, arguments, decision, reduced)
+                    return
 
         self._forward(request, raw, method, tool, arguments, decision)
 

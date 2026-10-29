@@ -26,7 +26,7 @@ PRODUCT_NAMES = [
     "canon.sources", "reconcile.relations", "canon.documents", "canon.describe",
     "system.health", "source.get", "source.list", "knowledge.timeline",
     "knowledge.related", "knowledge.entities", "knowledge.summary",
-    "provenance.document", "provenance.source", "canon.decisions",
+    "provenance.document", "provenance.source", "provenance.verify_derived", "canon.decisions",
     "canon.history", "system.version",
 ]
 
@@ -47,6 +47,7 @@ for line in sys.stdin:
         handle.write(json.dumps({{
             "method": request.get("method"),
             "name": request.get("params", {{}}).get("name"),
+            "arguments": request.get("params", {{}}).get("arguments"),
             "meta": request.get("params", {{}}).get("_meta"),
         }}) + "\n")
     if "id" not in request:
@@ -54,8 +55,8 @@ for line in sys.stdin:
     request_id = request["id"]
     method = request.get("method")
     if method == "initialize":
-        response_id = request_id + 1 if request.get("params", {{}}).get("mismatch") else request_id
-        emit({{"jsonrpc":"2.0","id":response_id,"result":{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{"listChanged":False}}}},"instructions":"child instructions"}}}})
+        response_id = 900 if request.get("params", {{}}).get("mismatch") else request_id
+        emit({{"jsonrpc":"2.0","id":response_id,"result":{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{"listChanged":False}}}},"instructions":"child private-sentinel-x" if response_id == 900 else "child instructions"}}}})
     elif method == "tools/list":
         emit({{"jsonrpc":"2.0","id":request_id,"result":{{"tools":[
             {{"name":name,"description":"fake","inputSchema":{{"type":"object","properties":{{
@@ -63,11 +64,40 @@ for line in sys.stdin:
                 "query":{{"type":"string"}},"include_replaced":{{"type":"boolean"}},
                 "ranking":{{"type":"string"}},"role":{{"type":"string"}},"view":{{"type":"string"}},"max_chars":{{"type":"integer"}},"source_id":{{"type":"string"}},
                 "relation_class":{{"type":"string"}}
+                ,"citation":{{"type":"object"}},"full":{{"type":"boolean"}},"span":{{"type":"string"}},"start_char":{{"type":"integer"}},"end_char":{{"type":"integer"}}
             }}}}}} for name in names
         ]}}}})
     elif method == "tools/call":
         params = request.get("params", {{}})
         arguments = params.get("arguments", {{}})
+        if params.get("name") == "provenance.verify_derived":
+            mode = arguments.get("citation", {{}}).get("fixture", "ok")
+            if mode == "private_rpc_error":
+                emit({{"jsonrpc":"2.0","id":request_id,"error":{{"code":-32000,"message":"Secret private-sentinel-x"}},"_meta":"private-sentinel-x","result":{{"private":"private-sentinel-x"}}}})
+                continue
+            if mode == "rpc_argument_error":
+                emit({{"jsonrpc":"2.0","id":request_id,"error":{{"code":-32000,"message":"ArgumentTypeError: private-sentinel-x", "data":"private-sentinel-x"}}}})
+            elif mode == "rpc_other_error":
+                emit({{"jsonrpc":"2.0","id":request_id,"error":{{"code":-32000,"message":"Secret private-sentinel-x", "data":"private-sentinel-x"}}}})
+            else:
+                payload = {{"ok": mode == "ok", "extra":"discard", "verdict":"original"}}
+                if mode in ("listed_error", "unknown_error", "locator_range", "locator_grapheme"):
+                    error_type = {{"listed_error":"SpanMismatch", "unknown_error":"SecretError", "locator_range":"LocatorOutOfRange", "locator_grapheme":"LocatorSplitsGrapheme"}}[mode]
+                    payload.update({{"ok":False,"error":error_type,"message":"private private-sentinel-x"}})
+                text = json.dumps(payload)
+                if mode == "malformed":
+                    text = "not json"
+                envelope = {{"jsonrpc":"2.0","id":request_id,"result":{{"content":[{{"type":"text","text":text}}]}},"_meta":"private-sentinel-x"}}
+                if mode in ("private_success", "private_both"):
+                    envelope["result"]["private"] = "private-sentinel-x"
+                if mode == "private_both":
+                    envelope["error"] = {{"code":-32000,"message":"shadow"}}
+                emit(envelope)
+            continue
+        if arguments.get("noise"):
+            sys.stdout.write("not-json private-sentinel-x\n")
+            emit({{"jsonrpc":"2.0","method":"notifications/changed","params":{{"path":"private-sentinel-x"}}}})
+            sys.stdout.flush()
         if arguments.get("exit"):
             sys.exit(0)
         if arguments.get("oversize"):
@@ -77,6 +107,18 @@ for line in sys.stdin:
             emit({{"jsonrpc":"2.0","id":request_id,"result":{{"secret_env_seen":seen,"tiers":os.environ.get("NOUS_OS_STDIO_TIERS")}}}})
         elif arguments.get("listshaped"):
             emit({{"jsonrpc":"2.0","id":request_id,"result":{{"tools":[{{"name":name}} for name in names]}}}})
+        elif arguments.get("child_error"):
+            code, message = arguments["child_error"][:2]
+            envelope = {{"jsonrpc":"2.0","id":request_id,"error":{{"code":code,"message":message}}}}
+            if arguments["child_error"][2:]:
+                envelope["result"] = {{"content":[]}}
+            emit(envelope)
+        elif arguments.get("bulk"):
+            count, size = arguments["bulk"]
+            text = json.dumps([{{"t": "x" * size}} for _ in range(count)])
+            emit({{"jsonrpc":"2.0","id":request_id,"result":{{"content":[{{"type":"text","text":text}}]}}}})
+        elif arguments.get("candidate_hit"):
+            emit({{"jsonrpc":"2.0","id":request_id,"result":arguments["candidate_hit"]}})
         elif arguments.get("slow"):
             time.sleep(0.5)
             emit({{"jsonrpc":"2.0","id":request_id,"result":{{"received":arguments}}}})
@@ -178,6 +220,10 @@ class GateProcess:
             self.proc.wait(timeout=2)
 
 
+def _content(payload: object) -> dict:
+    return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+
 class GateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -214,8 +260,8 @@ class GateTests(unittest.TestCase):
             [tool["name"] for tool in tools],
             [
                 "knowledge_search", "knowledge_semantic", "knowledge_context",
-                "provenance_span", "canon_assertions", "candidate_search",
-                "reconcile_relations",
+                "provenance_span", "provenance_verify_derived", "canon_assertions",
+                "candidate_search", "reconcile_relations",
             ],
         )
         self.assertTrue(all(tool["annotations"]["readOnlyHint"] for tool in tools))
@@ -230,25 +276,44 @@ class GateTests(unittest.TestCase):
         self.assertEqual(search_props["role"]["enum"], ["user", "assistant"])
         self.assertEqual(semantic_props["role"]["enum"], ["user", "assistant"])
         self.assertEqual(context_props["view"]["enum"], ["full", "text"])
+        self.assertEqual(context_props["limit"]["default"], 30)
+        self.assertIn("at most 30 records (default 30)", context_props["limit"]["description"])
+        self.assertEqual(context_props["offset"]["type"], "integer")
+        self.assertEqual(context_props["offset"]["minimum"], 0)
+        self.assertEqual(context_props["offset"]["default"], 0)
+        self.assertIn("Container pages only", context_props["offset"]["description"])
         self.assertEqual(context_props["max_chars"]["minimum"], 200)
         self.assertEqual(context_props["max_chars"]["maximum"], 8000)
-        candidate = tools[5]
+        context_description = tools[2]["description"]
+        for phrase in ("pages of at most 30 records", "total, has_more and next_offset",
+                       "request another page with offset only when needed",
+                       "never read a whole conversation automatically",
+                       "not missing memory", "search and source_id context"):
+            self.assertIn(phrase, context_description)
+        candidate = tools[6]
         schema = candidate["inputSchema"]
         self.assertEqual(schema["properties"]["limit"]["maximum"], 10)
         self.assertEqual(schema["properties"]["limit"]["default"], 10)
         self.assertEqual(schema["properties"]["query"]["maxLength"], 256)
-        self.assertEqual(schema["properties"]["include_replaced"]["enum"], [False])
+        self.assertEqual(schema["properties"]["include_replaced"]["enum"], [False, True])
+        self.assertEqual(schema["properties"]["include_replaced"]["default"], False)
+        self.assertIn("Optional", schema["properties"]["include_replaced"]["description"])
+        self.assertIn("how a proposal or decision evolved", schema["properties"]["include_replaced"]["description"])
         self.assertEqual(
             schema["properties"]["ranking"]["enum"],
             ["text", "text_relevance", "source_semantic"],
         )
         self.assertIn("source_semantic", schema["properties"]["ranking"]["description"])
+        self.assertIn("best 100 keyword matches by relevance", schema["properties"]["ranking"]["description"])
+        self.assertIn("break equal-score ties", schema["properties"]["ranking"]["description"])
+        self.assertNotIn("decisions first", schema["properties"]["ranking"]["description"])
         self.assertIn("query", schema["required"])
         self.assertIn("recorded proposal, not a decision", candidate["description"])
         self.assertIn("epistemic_label and canonical_status", candidate["description"])
         expected = [
             "knowledge.search", "knowledge.semantic", "knowledge.context",
-            "provenance.span", "canon.assertions", "candidate.search", "reconcile.relations",
+            "provenance.span", "provenance.verify_derived", "canon.assertions",
+            "candidate.search", "reconcile.relations",
         ]
         from importlib.util import spec_from_file_location, module_from_spec
         spec = spec_from_file_location("nousos_tunnel_gate", GATE)
@@ -259,7 +324,7 @@ class GateTests(unittest.TestCase):
             module.CHATGPT_TOOL_DESCRIPTIONS[name] for name in expected
         ])
         self.assertTrue(all(tool["description"] != "fake" for tool in tools))
-        relation = tools[6]
+        relation = tools[7]
         self.assertTrue(relation["annotations"]["readOnlyHint"])
         schema = relation["inputSchema"]
         self.assertIn("source_id", schema["required"])
@@ -270,10 +335,22 @@ class GateTests(unittest.TestCase):
         ])
         self.assertIn("not approved decisions and not verified facts", relation["description"])
         self.assertIn("Exploratory interpretations are not included", relation["description"])
+        derived = tools[4]
+        self.assertIn("derived_citations", derived["description"])
+        self.assertIn("preserved attachment extraction only", derived["description"])
+        self.assertIn("not that it was verified on the original attachment", derived["description"])
+        self.assertEqual(derived["inputSchema"]["required"], ["citation"])
+        self.assertNotIn("full", derived["inputSchema"]["properties"])
         self.assertIn("original", tools[0]["description"])
         self.assertIn("not proposals or decisions", tools[0]["description"])
         self.assertIn("not verified facts or approved decisions", candidate["description"])
         self.assertIn("not instead of it", candidate["description"])
+        self.assertIn("replaced_excluded > 0", candidate["description"])
+        self.assertIn("one or more matching replaced candidates were excluded", candidate["description"])
+        for phrase in ("include_replaced true only", "replaced true", "superseded_by (the next version)",
+                       "superseded, not current", "available dates",
+                       "does not by itself mean the person changed the decision"):
+            self.assertIn(phrase, candidate["description"])
         self.assertIn("distinctive keywords or names", candidate["description"])
         self.assertIn("source_semantic is an option for paraphrase", candidate["description"])
         self.assertIn("one or two retrieved sources", relation["description"])
@@ -283,6 +360,14 @@ class GateTests(unittest.TestCase):
             self.assertIn("limit unset (10)", tool["description"])
             self.assertIn("at least 5", tool["description"])
             self.assertIn("reformulate with distinctive keywords", tool["description"])
+        self.assertIn("normalized excerpts that may be cut", tools[0]["description"])
+        self.assertIn("verbatim but possibly partial passages", tools[1]["description"])
+        for tool in tools[:2]:
+            self.assertIn("Do not quote them as exact", tool["description"])
+            self.assertIn("provenance_span with a returned citation", tool["description"])
+            self.assertIn("knowledge_context with view full and the hit's source_id", tool["description"])
+        self.assertIn("text_truncated", tools[2]["description"])
+        self.assertIn("if true, use view full", tools[2]["description"])
 
     def test_initialize_instructions_preserve_fields_and_match_id(self) -> None:
         self.gate.send({"jsonrpc": "2.0", "id": 101, "method": "initialize", "params": {}})
@@ -291,16 +376,27 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result["capabilities"], {"tools": {"listChanged": False}})
         self.assertIn("four kinds", result["instructions"])
         self.assertIn("recorded relations", result["instructions"])
-        self.assertLess(len(result["instructions"]), 1100)
+        self.assertLess(len(result["instructions"]), 1500)
         self.assertIn("reformulate and widen", result["instructions"])
         self.assertIn("Keep answers and call counts proportionate", result["instructions"])
         self.assertIn("Never present proposals as verified facts", result["instructions"])
+        self.assertIn("When materially conflicting results have dates", result["instructions"])
+        self.assertIn("proposed_at (candidate proposal time)", result["instructions"])
+        self.assertIn("valid_from (candidate-stated validity start; may be null)", result["instructions"])
+        self.assertIn("created_at (source-record timestamp; may be null)", result["instructions"])
+        self.assertIn("replaced_excluded > 0", result["instructions"])
+        self.assertIn("one or more matching replaced candidates were excluded", result["instructions"])
         self.assertIn("omit role otherwise", result["instructions"])
         self.assertNotIn("Use role user", result["instructions"])
+        self.assertLess(len(result["instructions"]), 1500)
 
         self.gate.send({"jsonrpc": "2.0", "id": 102, "method": "initialize", "params": {"mismatch": True}})
-        response = self.gate.response(103)
-        self.assertEqual(response["result"]["instructions"], "child instructions")
+        with self.assertRaises(AssertionError):
+            self.gate.response(900, timeout=0.2)
+        self.gate.send({"jsonrpc": "2.0", "id": 103, "method": "ping", "params": {}})
+        self.assertEqual(self.gate.response(103)["result"], {})
+        self.assertNotIn("private-sentinel-x", self.gate.log_text())
+        self.assertIn('"decision":"drop_unmatched"', self.gate.log_text())
 
     def test_candidate_search_alias_defaults_caps_and_dotted_name(self) -> None:
         self.gate.send(self.call(70, "candidate_search", {"query": "PRIVATE_SEARCH_QUERY"}))
@@ -313,26 +409,178 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.gate.response(71)["result"]["received"], {
             "query": "q", "limit": 10, "ranking": "text_relevance", "include_replaced": False,
         })
-        self.gate.send(self.call(72, "candidate.search", {"query": "q", "ranking": "text"}))
-        self.assertEqual(self.gate.response(72)["result"]["received"]["ranking"], "text")
+        self.gate.send(self.call(72, "candidate_search", {"query": "q", "include_replaced": True}))
+        self.assertEqual(self.gate.response(72)["result"]["received"], {
+            "query": "q", "limit": 10, "include_replaced": True,
+        })
+        self.gate.send(self.call(73, "candidate.search", {"query": "q", "ranking": "text"}))
+        self.assertEqual(self.gate.response(73)["result"]["received"]["ranking"], "text")
         self.assertEqual([item["name"] for item in self.gate.received()], [
-            "candidate.search", "candidate.search", "candidate.search",
+            "candidate.search", "candidate.search", "candidate.search", "candidate.search",
         ])
         self.assertNotIn("PRIVATE_SEARCH_QUERY", self.gate.log_text())
 
+    def test_derived_citation_gate_validation_and_rewrite(self) -> None:
+        citation = {"span": "quote", "start_char": 0, "end_char": 5}
+        invalid = [
+            {"citation": citation, "full": True},
+            {"citation": citation, "full": "false"},
+            {"citation": citation, "other": 1},
+            {"citation": {"span": "x" * 32769}},
+            {"citation": {"start_char": 0, "end_char": 32769}},
+        ]
+        for request_id, arguments in enumerate(invalid, start=130):
+            self.gate.send(self.call(request_id, "provenance_verify_derived", arguments))
+            response = self.gate.response(request_id)
+            self.assertEqual(response["error"]["code"], -32602)
+            if arguments.get("full") is True or arguments.get("full") == "false":
+                self.assertEqual(response["error"]["message"], "full verification on original attachments is not exposed")
+        self.assertEqual(self.gate.received(), [])
+        for request_id, span in ((139, "é" * (32768 // 2) + "a"), (138, "é" * (32768 // 2))):
+            self.gate.send(self.call(request_id, "provenance_verify_derived", {"citation": {"span": span}}))
+            reply = self.gate.response(request_id)
+            if request_id == 139:
+                self.assertEqual(reply["error"]["code"], -32602)
+            else:
+                self.assertIn("result", reply)
+        self.gate.send(self.call(140, "provenance_verify_derived", {"citation": citation}))
+        self.assertEqual(json.loads(self.gate.response(140)["result"]["content"][0]["text"]), {
+            "ok": True, "check": "preserved_extraction",
+            "matches_preserved_extraction": True, "verified_on_original": False,
+        })
+        forwarded = self.gate.received()[-1]
+        self.assertEqual(forwarded["name"], "provenance.verify_derived")
+        self.assertFalse(forwarded["arguments"]["full"])
+
+    def test_derived_citation_results_are_sanitized(self) -> None:
+        expected_failure = {
+            "ok": False, "check": "preserved_extraction",
+            "matches_preserved_extraction": False, "verified_on_original": False,
+            "error": "SpanMismatch", "message": "The quoted span does not match the preserved extraction.",
+        }
+        for request_id, fixture, expected in (
+            (150, "listed_error", expected_failure),
+            (156, "locator_range", {
+                "ok": False, "check": "preserved_extraction", "matches_preserved_extraction": False,
+                "verified_on_original": False, "error": "LocatorOutOfRange",
+                "message": "The citation locator is outside the preserved extraction.",
+            }),
+            (157, "locator_grapheme", {
+                "ok": False, "check": "preserved_extraction", "matches_preserved_extraction": False,
+                "verified_on_original": False, "error": "LocatorSplitsGrapheme",
+                "message": "The citation locator splits a character in the preserved extraction.",
+            }),
+            (151, "unknown_error", {
+                "ok": False, "check": "preserved_extraction",
+                "matches_preserved_extraction": False, "verified_on_original": False,
+                "error": "VerificationFailed", "message": "The citation could not be checked against the preserved extraction.",
+            }),
+            (152, "malformed", {
+                "ok": False, "check": "preserved_extraction",
+                "matches_preserved_extraction": False, "verified_on_original": False,
+                "error": "VerificationFailed", "message": "The citation could not be checked against the preserved extraction.",
+            }),
+        ):
+            self.gate.send(self.call(request_id, "provenance_verify_derived", {
+                "citation": {"span": "x", "fixture": fixture},
+            }))
+            response = self.gate.response(request_id)
+            text = response["result"]["content"][0]["text"]
+            self.assertEqual(json.loads(text), expected)
+            self.assertNotIn("private-sentinel-x", text)
+            self.assertNotIn("private", text)
+        for request_id, fixture, expected in (
+            (153, "rpc_argument_error", "InvalidDerivedCitation: the citation is not a valid derived citation"),
+            (154, "rpc_other_error", "VerificationFailed: the citation could not be checked"),
+        ):
+            self.gate.send(self.call(request_id, "provenance_verify_derived", {
+                "citation": {"fixture": fixture},
+            }))
+            error = self.gate.response(request_id)["error"]
+            self.assertEqual(error["message"], expected)
+            self.assertNotIn("private-sentinel-x", error["message"])
+            self.assertNotIn("data", error)
+            self.assertNotIn("private-sentinel-x", json.dumps(error))
+
+    def test_derived_responses_rebuild_clean_envelopes(self) -> None:
+        for request_id, fixture in ((158, "private_success"), (159, "private_rpc_error"), (161, "private_both")):
+            self.gate.send(self.call(request_id, "provenance_verify_derived", {
+                "citation": {"span": "x", "fixture": fixture},
+            }))
+            response = self.gate.response(request_id)
+            is_error = fixture in ("private_rpc_error", "private_both")
+            self.assertEqual(set(response), {"jsonrpc", "id", "error"} if is_error else {"jsonrpc", "id", "result"})
+            self.assertEqual(response["id"], request_id)
+            self.assertNotIn("private-sentinel-x", json.dumps(response))
+
+    def test_malformed_child_lines_and_notifications_are_dropped(self) -> None:
+        self.gate.send(self.call(160, "knowledge_search", {"query": "q", "noise": True}))
+        response = self.gate.response(160)
+        self.assertEqual(response["result"]["received"]["query"], "q")
+        self.assertNotIn("private-sentinel-x", json.dumps(response))
+        logs = self.gate.log_text()
+        self.assertIn('"decision":"drop_malformed_child"', logs)
+        self.assertIn('"decision":"drop_child_notification"', logs)
+
+    def test_unrelated_tool_result_is_unchanged(self) -> None:
+        self.gate.send(self.call(155, "knowledge_search", {"query": "q"}))
+        self.assertEqual(self.gate.response(155)["result"]["received"], {"query": "q"})
+
     def test_candidate_search_rejects_replaced_invalid_query_and_ranking(self) -> None:
         for request_id, arguments in enumerate((
-            {"query": "q", "include_replaced": True},
             {"query": "q", "include_replaced": None},
+            {"query": "q", "include_replaced": "yes"},
+            {"query": "q", "include_replaced": 1},
+            {"query": "q", "include_replaced": 1.0},
+            {"query": "q", "include_replaced": []},
+            {"query": "q", "include_replaced": {}},
             {"query": "q" * 257},
             {"query": " "},
             {"query": "q", "ranking": "unknown"},
             {"query": "q", "limit": None},
             {"query": "q", "limit": 0},
-        ), start=73):
+        ), start=74):
             self.gate.send(self.call(request_id, "candidate_search", arguments))
-            self.assertEqual(self.gate.response(request_id)["error"]["code"], -32602)
+            response = self.gate.response(request_id)
+            self.assertEqual(response["error"]["code"], -32602)
+            if "include_replaced" in arguments:
+                self.assertIn("invalid include_replaced", response["error"]["message"])
         self.assertEqual(self.gate.received(), [])
+
+    def test_candidate_search_forwards_replaced_hit_unchanged_when_requested(self) -> None:
+        response_payload = {
+            "hits": [{
+                "candidate_id": "cand_123",
+                "replaced": True,
+                "superseded_by": "cand_456",
+                "proposed_at": "2025-03-04T12:30:00Z",
+                "valid_from": "2025-03-01",
+            }],
+            "replaced_excluded": 0,
+        }
+        self.gate.send(self.call(130, "candidate_search", {
+            "query": "q", "include_replaced": True,
+            "candidate_hit": response_payload,
+        }))
+        self.assertEqual(self.gate.response(130)["result"], response_payload)
+        self.assertEqual(len(self.gate.received()), 1)
+        self.assertEqual(self.gate.received()[0]["name"], "candidate.search")
+
+    def test_candidate_search_forwards_cursor_unchanged_with_include_replaced(self) -> None:
+        cursor = {"opaque": "cursor-7", "position": 7}
+        for request_id, include_replaced in ((131, True), (132, False)):
+            arguments = {
+                "query": "q", "cursor": cursor,
+                "include_replaced": include_replaced,
+            }
+            self.gate.send(self.call(request_id, "candidate_search", arguments))
+            received = self.gate.response(request_id)["result"]["received"]
+            self.assertEqual(received["cursor"], cursor)
+            self.assertIs(received["include_replaced"], include_replaced)
+        self.assertEqual(
+            [item["name"] for item in self.gate.received()],
+            ["candidate.search", "candidate.search"],
+        )
 
     def test_relations_forward_and_refuse_unbounded_arguments(self) -> None:
         source_id = "src_" + "A" * 26
@@ -450,6 +698,15 @@ class GateTests(unittest.TestCase):
             for row in log_rows
         ))
 
+        self.gate.send(self.call(121, "knowledge_context", {"offset": 37, "limit": 40}))
+        paged = self.gate.response(121)["result"]["received"]
+        self.assertEqual(paged["offset"], 37)
+        self.assertEqual(paged["limit"], 30)
+
+        for request_id, offset in enumerate((-1, True, "2", 1.5, None, [], {}), start=122):
+            self.gate.send(self.call(request_id, "knowledge_context", {"offset": offset}))
+            self.assertEqual(self.gate.response(request_id)["error"]["code"], -32602)
+
         invalid = [
             ("knowledge_search", {"role": "system"}),
             ("knowledge_context", {"view": "raw"}),
@@ -472,7 +729,7 @@ class GateTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["name"] for item in self.gate.received()],
-            ["knowledge.context", "knowledge.context", "knowledge.context", "candidate.search"],
+            ["knowledge.context", "knowledge.context", "knowledge.context", "knowledge.context", "candidate.search"],
         )
 
     def test_notifications_only_and_notification_call_is_dropped(self) -> None:
@@ -525,7 +782,7 @@ class GateTests(unittest.TestCase):
             [tool["name"] for tool in tools],
             [
                 "knowledge_search", "knowledge_semantic", "knowledge_context",
-                "provenance_span", "canon_assertions", "candidate_search",
+                "provenance_span", "provenance_verify_derived", "canon_assertions", "candidate_search",
                 "reconcile_relations",
             ],
         )
@@ -651,6 +908,165 @@ class GateTests(unittest.TestCase):
         })
         self.assertNotIn("provenance.span", [item["name"] for item in self.gate.received()])
 
+
+    def test_gate_limits_reports_reductions_and_continuation(self) -> None:
+        hits = [{"source_id": str(index)} for index in range(20)]
+        self.gate.send(self.call(1, "knowledge_search", {
+            "query": "x", "limit": 50, "candidate_hit": _content(hits)}))
+        result = self.gate.response(1)["result"]
+        self.assertEqual(json.loads(result["content"][0]["text"]), hits)
+        notice = json.loads(result["content"][1]["text"])["gate_limits"]
+        self.assertEqual(notice["applied"], {"limit": 20})
+        self.assertEqual(notice["reduced"], {"limit": {"requested": 50, "applied": 20}})
+        self.assertEqual(notice["maximum"], {"limit": 20})
+        self.assertIn("more matches may exist", notice["continuation"])
+        self.assertIn("no next page", notice["continuation"])
+        self.assertNotIn("higher limit", notice["continuation"])
+        self.gate.send(self.call(9, "knowledge_search", {
+            "query": "x", "limit": 3, "candidate_hit": _content(hits[:3])}))
+        notice = json.loads(self.gate.response(9)["result"]["content"][1]["text"])["gate_limits"]
+        self.assertEqual(notice["reduced"], {})
+        self.assertIn("A higher limit, up to the maximum", notice["continuation"])
+
+        page = {"hits": [], "next_cursor": "c1"}
+        self.gate.send(self.call(2, "candidate_search", {"query": "x", "candidate_hit": _content(page)}))
+        result = self.gate.response(2)["result"]
+        notice = json.loads(result["content"][1]["text"])["gate_limits"]
+        self.assertEqual(notice["applied"], {"limit": 10})
+        self.assertEqual(notice["reduced"], {})
+        self.assertIn("cursor set to next_cursor", notice["continuation"])
+
+        context = {"records": [], "has_more": True, "next_offset": 30}
+        self.gate.send(self.call(3, "knowledge_context", {
+            "source_id": "s", "before": 9, "after": 2, "max_chars": 9000,
+            "candidate_hit": _content(context)}))
+        notice = json.loads(self.gate.response(3)["result"]["content"][1]["text"])["gate_limits"]
+        self.assertEqual(notice["reduced"], {
+            "before": {"requested": 9, "applied": 5},
+            "max_chars": {"requested": 9000, "applied": 8000},
+        })
+        self.assertIn("before and after are capped", notice["continuation"])
+        self.assertIn("use view full", notice["continuation"])
+
+        self.gate.send(self.call(4, "knowledge_context", {
+            "container": "c", "limit": 99, "candidate_hit": _content(context)}))
+        notice = json.loads(self.gate.response(4)["result"]["content"][1]["text"])["gate_limits"]
+        self.assertIn("offset=next_offset only if", notice["continuation"])
+
+    def test_gate_limits_absent_when_nothing_to_report(self) -> None:
+        self.gate.send(self.call(1, "knowledge_search", {
+            "query": "x", "candidate_hit": _content([{"source_id": "a"}])}))
+        self.assertEqual(len(self.gate.response(1)["result"]["content"]), 1)
+        self.gate.send(self.call(2, "candidate_search", {
+            "query": "x", "candidate_hit": _content({"hits": [], "next_cursor": None})}))
+        self.assertEqual(len(self.gate.response(2)["result"]["content"]), 1)
+        self.gate.send(self.call(3, "knowledge_semantic", {
+            "query": "x", "limit": 3, "candidate_hit": _content({"hits": [{}] * 2})}))
+        self.assertEqual(len(self.gate.response(3)["result"]["content"]), 1)
+        self.gate.send(self.call(4, "knowledge_search", {
+            "query": "x", "limit": 50, "candidate_hit": {"content": [{"type": "text", "text": "not json"}]}}))
+        self.assertEqual(len(self.gate.response(4)["result"]["content"]), 1)
+        self.gate.send(self.call(5, "knowledge_search", {
+            "query": "x", "limit": 50, "candidate_hit": {"isError": True, **_content({"e": 1})}}))
+        self.assertEqual(len(self.gate.response(5)["result"]["content"]), 1)
+        self.gate.send(self.call(6, "provenance_span", {"citation": {}, "candidate_hit": _content({"ok": 1})}))
+        self.assertEqual(len(self.gate.response(6)["result"]["content"]), 1)
+
+    def test_gate_limits_never_exceeds_the_response_bound_or_touches_errors(self) -> None:
+        self.gate.send(self.call(1, "knowledge_search", {
+            "query": "x", "limit": 20, "bulk": [20, 19_970]}))
+        error = self.gate.response(1, timeout=5)["error"]
+        self.assertEqual(error["code"], -32000)
+        self.assertTrue(error["message"].startswith("ResponseTooLarge: "))
+        self.gate.send(self.call(3, "knowledge_search", {
+            "query": "x", "limit": 20, "bulk": [20, 19_950]}))
+        result = self.gate.response(3, timeout=5)["result"]
+        self.assertEqual(len(result["content"]), 2)
+        self.gate.send(self.call(2, "knowledge_semantic", {
+            "query": "x", "limit": 2, "candidate_hit": _content({"hits": [{}] * 3})}))
+        self.assertEqual(len(self.gate.response(2)["result"]["content"]), 1)
+
+    def test_wording_on_pasted_text_unreadable_versions_and_limits(self) -> None:
+        self.gate.send({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        tools = {tool["name"]: tool["description"] for tool in self.gate.response(1)["result"]["tools"]}
+        for name in ("knowledge_search", "knowledge_semantic"):
+            self.assertIn("may contain pasted or quoted text written by others", tools[name])
+        self.assertIn("replaced_unreadable is a store-wide count", tools["candidate_search"])
+        self.assertIn("does not hide current proposals", tools["candidate_search"])
+        for name in ("knowledge_search", "knowledge_semantic", "knowledge_context", "candidate_search"):
+            self.assertIn("gate_limits item", tools[name])
+        for name in ("provenance_span", "provenance_verify_derived", "canon_assertions", "reconcile_relations"):
+            self.assertNotIn("gate_limits", tools[name])
+
+    def test_known_input_errors_become_is_error_results(self) -> None:
+        context_messages = [
+            "before must be a non-negative integer",
+            "after must be a non-negative integer",
+            "limit must be a positive integer",
+            "context requires exactly one of source_id or container",
+            "offset is only valid with container",
+            "offset must be a non-negative integer",
+            "view must be 'full' or 'text'",
+            "max_chars is only valid with view='text'",
+            "max_chars must be an integer from 200 to 20000",
+        ]
+        cases = [
+            ("knowledge_search", "QueryError: the query has no searchable words", "QueryError"),
+            *[("knowledge_context", "QueryError: " + message, "QueryError") for message in context_messages],
+            ("candidate_search", "CandidateSearchError: InvalidQuery", "InvalidQuery"),
+            ("candidate_search", "CandidateSearchError: InvalidCursor", "InvalidCursor"),
+            ("candidate_search", "CandidateSearchError: QueryTooComplex", "QueryTooComplex"),
+        ]
+        for index, (tool, message, error_type) in enumerate(cases, start=1):
+            self.gate.send(self.call(index, tool, {"query": "x", "child_error": [-32000, message]}))
+            response = self.gate.response(index)
+            self.assertNotIn("error", response)
+            self.assertIs(response["result"]["isError"], True)
+            self.assertEqual(len(response["result"]["content"]), 1)
+            body = json.loads(response["result"]["content"][0]["text"])
+            self.assertEqual(body["error"], error_type)
+            self.assertEqual(sorted(body), ["error", "message"])
+            self.assertNotIn("/", body["message"])
+        self.assertIn('"decision":"input_error"', self.gate.log_text())
+
+    def test_other_errors_keep_their_json_rpc_form(self) -> None:
+        cases = [
+            ("knowledge_search", -32000, "QueryError: the query could not be run: database is locked"),
+            ("knowledge_search", -32000, "StoreUnusable: the store could not be read: disk I/O error"),
+            ("candidate_search", -32000, "CandidateSearchError: CandidateStoreUnreadable"),
+            ("candidate_search", -32000, "QueryError: the query has no searchable words"),
+            ("knowledge_search", -32000, "CandidateSearchError: InvalidQuery"),
+            ("knowledge_search", -32602, "QueryError: the query has no searchable words"),
+            ("candidate_search", -32000, "CandidateSearchError: InvalidQuery: extra"),
+            ("candidate_search", -32000, " CandidateSearchError: InvalidQuery"),
+            ("knowledge_semantic", -32000, "QueryError: the query has no searchable words"),
+            ("provenance_span", -32000, "QueryError: the query has no searchable words"),
+            ("knowledge_search", -32000.0, "QueryError: the query has no searchable words"),
+            ("knowledge_search", True, "QueryError: the query has no searchable words"),
+            ("knowledge_search", -32000, 123),
+            ("knowledge_search", -32000, None),
+        ]
+        for index, (tool, code, message) in enumerate(cases, start=1):
+            self.gate.send(self.call(index, tool, {"query": "x", "citation": {}, "child_error": [code, message]}))
+            response = self.gate.response(index)
+            self.assertEqual(response["error"], {"code": code, "message": message})
+            self.assertNotIn("result", response)
+        self.gate.send(self.call(99, "knowledge_search", {
+            "query": "x", "child_error": [-32000, "QueryError: the query has no searchable words", "with_result"]}))
+        self.assertNotIn("isError", json.dumps(self.gate.response(99)))
+
+    def test_tools_list_digest_is_logged(self) -> None:
+        import hashlib
+        self.gate.send({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        result = self.gate.response(1)["result"]
+        expected = hashlib.sha256(
+            json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        lines = [json.loads(line) for line in self.gate.log_text().splitlines()]
+        listed = [line for line in lines if line["method"] == "tools/list" and line["event"] == "response"]
+        self.assertEqual([line.get("resp_digest") for line in listed], [expected])
+        calls = [line for line in lines if line["method"] != "tools/list"]
+        self.assertTrue(all("resp_digest" not in line for line in calls))
 
 if __name__ == "__main__":
     unittest.main()
