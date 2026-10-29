@@ -464,12 +464,22 @@ def test_querying_a_deleted_store_refuses_instead_of_creating_one() -> None:
     assert sources(path)
 
 
-@pytest.mark.parametrize("query", ['"', "*"])
-def test_a_syntax_error_without_searchable_tokens_is_reported(query: str) -> None:
+def test_a_private_use_only_query_is_searched(monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "_CANON", _CANON + ((SOURCE_A, 3, "\uE000"),))
     store, ledger, base = _canon()
     path = base / "derived.db"
     build(store, ledger, path)
-    with pytest.raises(DerivedStoreError):
+    assert {hit.source_id for hit in search(path, "\uE000")} == {SOURCE_A}
+
+
+@pytest.mark.parametrize("query", ['"', "*", "'", "-", "()", "%", "— …"])
+def test_a_query_without_searchable_tokens_is_reported_without_engine_text(query: str) -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    with pytest.raises(QueryError, match="^the query has no searchable words$"):
         search(path, query)
 
 

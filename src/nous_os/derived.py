@@ -395,6 +395,10 @@ def search(path: Path, query: str, limit: int = 10, role: str | None = None) -> 
             token = ""
     if token:
         tokens.append(token)
+    if not tokens:
+        # Punctuation alone cannot match a unicode61 token; say so instead of
+        # leaking the engine's parser message.
+        raise QueryError("the query has no searchable words")
     fallback_query = " OR ".join('"' + word.replace('"', '""') + '"' for word in tokens)
 
     connection = _open_for_reading(path)

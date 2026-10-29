@@ -66,13 +66,29 @@ def test_query_operators_phrases_unicode_and_escaped_spans(tmp_path: Path) -> No
     assert before == (hashlib.sha256(store.read_bytes()).digest(), hashlib.sha256(manifest.read_bytes()).digest())
 
 
-@pytest.mark.parametrize("query,code", [('', "InvalidQuery"), ('"unclosed', "InvalidQuery"),
+@pytest.mark.parametrize("query,code", [('', "InvalidQuery"), ('"', "InvalidQuery"),
     ('* : ^', "InvalidQuery"), ('"x" ' * 17, "QueryTooComplex"), ('x' * 257, "QueryTooComplex"),
     ('x' + ' ' * 256 + 'y', "QueryTooComplex")])
 def test_query_limits(tmp_path: Path, query: str, code: str) -> None:
     store, manifest = _paths(tmp_path)
     with pytest.raises(search.CandidateSearchError, match=f"^{code}$"):
         _search(store, manifest, query)
+
+
+def test_unclosed_quote_is_punctuation_and_balanced_phrases_stay_phrases(tmp_path: Path) -> None:
+    store, manifest = _paths(tmp_path)
+    for query in ('"Café', 'Café "l’amour', '"Café l’amour" "opens'):
+        assert _search(store, manifest, query)["total_matched"] == 1
+    assert search._query('"Café l’amour')[1] == search._query('Café l’amour')[1]
+    assert search._query('"Café l’amour" "opens')[1] == '"Café l amour" OR "opens"'
+    assert _search(store, manifest, '"l’amour Café"')["total_matched"] == 0
+    assert search._query('a"b')[1] == search._query("a b")[1]
+    with pytest.raises(search.CandidateSearchError, match="^InvalidQuery$"):
+        search._query('""')
+    long_words = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen"
+    assert search._query(long_words + ' "seventeen')[1] == search._query(long_words + " seventeen")[1]
+    phrases = " ".join(f'"p{index}"' for index in range(16))
+    assert search._query(phrases + ' "extra')[1].endswith('"extra"')
 
 
 def test_long_unquoted_question_is_searched_and_deduplicated(tmp_path: Path) -> None:

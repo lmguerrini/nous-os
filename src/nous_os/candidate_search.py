@@ -89,7 +89,10 @@ def _query(raw: str) -> tuple[str, str]:
         if query[position] == '"':
             end = query.find('"', position + 1)
             if end < 0:
-                _refuse("InvalidQuery")
+                # A stray opening quote is punctuation, not a phrase: search the
+                # rest as plain words, as source search does.
+                position += 1
+                continue
             part = query[position + 1:end]
             quoted_count += 1
             position = end + 1
