@@ -34,7 +34,7 @@ from nous_os.snapshots import Snapshot, SnapshotNotFound
 
 
 FORMAT: Final = "1"
-PROJECTION: Final = "v2"
+PROJECTION: Final = "v3"
 CHUNK_MAX_WORDS: Final = 40
 MAX_TOKENS: Final = 256
 BATCH_SIZE: Final = 32
@@ -308,15 +308,84 @@ def _top_indices(scores, count: int):
     return pool[np.lexsort((pool, -scores[pool]))].astype(np.int64, copy=False)
 
 
+def _string_leaves(value: object) -> tuple[str, ...]:
+    """Collect string leaves in list or dict order."""
+    if type(value) is str:
+        return (value,)
+    if type(value) is list:
+        return tuple(leaf for item in value for leaf in _string_leaves(item))
+    if type(value) is dict:
+        return tuple(leaf for item in value.values() for leaf in _string_leaves(item))
+    return ()
+
+
+def _claude_record_parts(top: dict) -> tuple[str, ...]:
+    """Select Claude prose only when the legacy projection found no parts."""
+    if top.get("provider") != "claude.ai":
+        return ()
+    payload = top.get("payload")
+    if type(payload) is not dict:
+        return ()
+    record = payload.get("record")
+    if type(record) is not dict:
+        return ()
+    kind = top.get("kind")
+    selected: tuple[str, ...] = ()
+    if kind == "message":
+        blocks = record.get("content")
+        if type(blocks) is list:
+            selected = tuple(
+                block["text"] for block in blocks
+                if type(block) is dict and block.get("type") == "text"
+                and type(block.get("text")) is str
+            )
+        if not selected and type(record.get("text")) is str:
+            selected = (record["text"],)
+    elif kind == "design_message":
+        content = record.get("content")
+        if type(content) is dict:
+            if type(content.get("content")) is str:
+                selected = (content["content"],)
+            blocks = content.get("contentBlocks")
+            if type(blocks) is list:
+                selected += tuple(
+                    block["text"] for block in blocks
+                    if type(block) is dict and block.get("type") == "text"
+                    and type(block.get("text")) is str
+                )
+    elif kind in ("memory_file", "project_document"):
+        content = record.get("content")
+        if type(content) is str:
+            selected = (content,)
+        elif type(payload.get("text")) is str:
+            selected = (payload["text"],)
+    elif kind == "memory_summary":
+        summary = record.get("conversations_memory")
+        if type(summary) is str:
+            selected = (summary,)
+    elif kind == "reflection":
+        content = record.get("content")
+        if type(content) is dict:
+            selected = tuple(
+                leaf
+                for key in (
+                    "hero_title", "hero_body", "about_your_time", "expanding_your_skills",
+                    "topics", "worth_thinking_about",
+                )
+                for leaf in _string_leaves(content.get(key))
+            )
+    return selected
+
+
 def record_parts(body: str) -> tuple[str, ...]:
-    """Select one derived record body's text parts; projections v1 and v2 share this step.
+    """Select one derived record body's text parts, including Claude prose in v3.
 
     Projection intentionally recognizes only the stable payload/message/content
     shapes named here. The string items of ``content.parts`` are returned one by
     one so a chunk never crosses a part join; the ``content.text``,
     ``message.text`` and top-level ``text`` fallbacks are one part. Invalid JSON
-    and any body that cannot establish text are empty rather than guessed from
-    provider-specific structure.
+    is empty. Bodies with no legacy parts may select Claude record prose;
+    reasoning, attachments, and metadata remain excluded.
     """
     if type(body) is not str:
         return ()
@@ -334,7 +403,8 @@ def record_parts(body: str) -> tuple[str, ...]:
     if type(content) is dict:
         parts = content.get("parts")
         if type(parts) is list:
-            return tuple(part for part in parts if type(part) is str)
+            selected = tuple(part for part in parts if type(part) is str)
+            return selected if selected else _claude_record_parts(top)
         content_text = content.get("text")
         if type(content_text) is str:
             return (content_text,)
@@ -342,7 +412,7 @@ def record_parts(body: str) -> tuple[str, ...]:
     if type(message_text) is str:
         return (message_text,)
     top_text = top.get("text")
-    return (top_text,) if type(top_text) is str else ()
+    return (top_text,) if type(top_text) is str else _claude_record_parts(top)
 
 
 def record_text(body: str) -> str:

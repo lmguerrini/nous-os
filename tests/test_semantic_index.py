@@ -302,12 +302,35 @@ def _published_turn_sidecar(index_path: Path, query: str) -> None:
 
 
 def test_record_text_pins_text_projection_v1() -> None:
-    """O1: only the fixed nested text shapes contribute a projected document, part by part."""
+    """O1: legacy nonempty parts stay byte-identical and ordered under v3."""
     bodies = {
         _message(["one", 2, "two"]): ("one", "two"),
         json.dumps({"payload": {"message": {"content": {"text": "body"}}}}): ("body",),
         json.dumps({"payload": {"message": {"text": "message"}}}): ("message",),
         json.dumps({"text": "recovered"}): ("recovered",),
+        json.dumps({"kind": "asset", "provider": "claude.ai", "payload": {
+            "text": "legacy asset payload text",
+        }}): ("legacy asset payload text",),
+        json.dumps({
+            "kind": "message", "provider": "claude.ai",
+            "payload": {
+                "message": {"content": {"parts": ["legacy one", 4, "legacy two"]}},
+                "record": {"text": "new fallback", "content": [{"type": "text", "text": "new block"}]},
+            },
+        }): ("legacy one", "legacy two"),
+        json.dumps({
+            "kind": "message", "provider": "claude.ai",
+            "payload": {"message": {"content": {"text": "legacy content"}},
+                        "record": {"text": "new fallback"}},
+        }): ("legacy content",),
+        json.dumps({
+            "kind": "message", "provider": "claude.ai",
+            "payload": {"message": {"text": "legacy message"}, "record": {"text": "new fallback"}},
+        }): ("legacy message",),
+        json.dumps({
+            "kind": "message", "provider": "claude.ai", "text": "legacy top",
+            "payload": {"record": {"text": "new fallback"}},
+        }): ("legacy top",),
         json.dumps({"payload": {"message": {"content": {"thoughts": ["no"]}}}}): (),
         "not JSON": (),
         "[]": (),
@@ -316,6 +339,151 @@ def test_record_text_pins_text_projection_v1() -> None:
         assert semantic_index.record_parts(body) == parts
         assert semantic_index.record_text(body) == "\n".join(parts)
     assert semantic_index.record_text(_message(["one", 2, "two"])) == "one\ntwo"
+
+
+def test_claude_record_parts_and_exclusions() -> None:
+    """Claude prose is selected in field order without reasoning, attachments, or metadata."""
+    cases = (
+        ({
+            "kind": "message", "provider": "claude.ai", "payload": {"record": {
+                "text": "duplicate record fallback", "sender": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "hidden reasoning", "summaries": ["hidden summary"]},
+                    {"type": "text", "text": "first answer"},
+                    {"type": "tool_use", "text": "hidden tool"},
+                    {"type": "text", "text": "second answer"},
+                ],
+                "attachments": [{"content": "hidden attachment"}],
+                "files": [{"content": "hidden file"}],
+            }}}, ("first answer", "second answer")),
+        ({
+            "kind": "message", "provider": "claude.ai", "payload": {"record": {
+                "text": "message fallback", "content": [{"type": "thinking", "thinking": "hidden thought"}],
+            }}}, ("message fallback",)),
+        ({
+            "kind": "message", "provider": "claude.ai", "payload": {"record": {
+                "content": [{"type": "thinking", "thinking": "hidden thought"}],
+                "attachments": [{"content": "hidden attachment"}],
+            }}}, ()),
+        ({
+            "kind": "design_message", "provider": "claude.ai", "payload": {"record": {
+                "content": {"content": "design brief", "contentBlocks": [
+                    {"type": "text", "text": "first design block"},
+                    {"type": "thinking", "text": "hidden design reasoning"},
+                    {"type": "tool_call", "text": "hidden design tool call"},
+                    {"type": "text", "text": 7},
+                    {"text": "hidden untyped block"},
+                    {"type": "text", "text": "second design block"},
+                ], "attachments": [{"content": "hidden design attachment"}]},
+            }}}, ("design brief", "first design block", "second design block")),
+        ({"kind": "memory_file", "provider": "claude.ai", "payload": {
+            "record": {"content": "memory prose"},
+        }}, ("memory prose",)),
+        ({"kind": "memory_file", "provider": "claude.ai", "payload": {
+            "text": "legacy payload text", "record": {"content": "other memory prose"},
+        }}, ("legacy payload text",)),
+        ({"kind": "memory_file", "provider": "claude.ai", "payload": {
+            "text": "memory fallback", "record": {},
+        }}, ("memory fallback",)),
+        ({"kind": "project_document", "provider": "claude.ai", "payload": {
+            "record": {"content": "project document prose"},
+        }}, ("project document prose",)),
+        ({"kind": "project_document", "provider": "claude.ai", "payload": {
+            "text": "project document fallback", "record": {},
+        }}, ("project document fallback",)),
+        ({"kind": "memory_summary", "provider": "claude.ai", "payload": {
+            "record": {"conversations_memory": "conversation memory prose"},
+        }}, ("conversation memory prose",)),
+        ({"kind": "reflection", "provider": "claude.ai", "payload": {"record": {"content": {
+            "hero_title": "title prose", "hero_body": "body prose",
+            "about_your_time": ["time one", "time two"],
+            "expanding_your_skills": "skills prose",
+            "topics": ["topic one", {"nested": "topic two"}, 3],
+            "worth_thinking_about": "closing prose", "unlisted": "hidden metadata",
+        }}}}, (
+            "title prose", "body prose", "time one", "time two", "skills prose",
+            "topic one", "topic two", "closing prose",
+        )),
+    )
+    for record, expected in cases:
+        body = json.dumps(record, ensure_ascii=False)
+        assert semantic_index.record_parts(body) == expected
+        assert all(json.dumps(part, ensure_ascii=False) in body for part in expected)
+
+    excluded = (
+        {"kind": "conversation", "provider": "claude.ai", "payload": {
+            "title": "hidden title", "record": {"title": "hidden record title", "summary": "hidden summary"},
+        }},
+        {"kind": "design_conversation", "provider": "claude.ai", "payload": {
+            "record": {"name": "hidden design name", "summary": "hidden design summary"},
+        }},
+        {"kind": "project", "provider": "claude.ai", "payload": {
+            "record": {"name": "hidden project name", "description": "hidden project summary"},
+        }},
+        {"kind": "capture_window", "provider": "claude.ai", "payload": {
+            "buttons": [{"label": "hidden button"}],
+        }},
+        {"kind": "asset", "provider": "claude.ai", "payload": {
+            "extracted_text": "hidden asset",
+        }},
+        {"kind": "message", "provider": "chatgpt.com", "payload": {"content": {
+            "thoughts": [{"content": "hidden ChatGPT thought", "summary": "hidden recap"}],
+            "reasoning_recap": "hidden reasoning recap",
+        }}},
+        {"kind": "message", "provider": "other", "payload": {"record": {
+            "content": [{"type": "text", "text": "other provider text"}],
+        }}},
+    )
+    for record in excluded:
+        assert semantic_index.record_parts(json.dumps(record)) == ()
+
+
+def test_escaped_claude_prose_still_yields_an_absent_citation(tmp_path: Path) -> None:
+    """Escaped source prose remains a part even when its chunk cannot be located."""
+    escaped = json.dumps({
+        "kind": "memory_file", "provider": "claude.ai",
+        "payload": {"record": {"content": "café"}},
+    })
+    assert semantic_index.record_parts(escaped) == ("café",)
+    store = SnapshotStore(tmp_path / "snapshots")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ingest(store, ledger, _sid("ESC"), UntrustedText(escaped), datetime(2026, 1, 1, tzinfo=timezone.utc))
+    derived_path = tmp_path / "derived.sqlite"
+    build_derived(store, ledger, derived_path)
+    items, indexed, empty = semantic_index._collect_chunks(derived_path)
+    assert (indexed, empty) == (1, 0)
+    assert [item.chunk.text for item in items] == ["café"]
+    assert [item.citation_state for item in items] == ["absent"]
+    assert items[0].start_byte is None and items[0].end_byte is None
+
+
+def test_claude_message_chunks_have_located_text_citations(tmp_path: Path) -> None:
+    """Claude text blocks chunk separately and locate; thinking never becomes a chunk."""
+    store = SnapshotStore(tmp_path / "snapshots")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    source_id = _sid("CAD")
+    body = json.dumps({
+        "kind": "message", "provider": "claude.ai", "payload": {"record": {
+            "text": "unused duplicate text", "content": [
+                {"type": "text", "text": "The blue kite rose above the garden."},
+                {"type": "thinking", "thinking": "Secret reasoning about the kite."},
+                {"type": "text", "text": "The red kite landed beside the pond."},
+            ],
+        }},
+    })
+    ingest(store, ledger, source_id, UntrustedText(body), datetime(2026, 1, 1, tzinfo=timezone.utc))
+    derived_path = tmp_path / "derived.sqlite"
+    build_derived(store, ledger, derived_path)
+    items, indexed, empty = semantic_index._collect_chunks(derived_path)
+    assert (indexed, empty) == (1, 0)
+    assert [item.chunk.text for item in items] == [
+        "The blue kite rose above the garden.", "The red kite landed beside the pond.",
+    ]
+    assert [item.chunk.ordinal for item in items] == [0, 1]
+    assert [item.citation_state for item in items] == ["located", "located"]
+    for item in items:
+        assert item.start_byte is not None and item.end_byte is not None
+        assert body.encode("utf-8")[item.start_byte:item.end_byte] == semantic_index._needle(item.chunk.text)
 
 
 def test_multi_part_record_chunks_never_cross_a_part_join(tmp_path: Path) -> None:
@@ -1071,15 +1239,15 @@ def test_transports_workspace_health_and_module_cli_pin_the_new_read(tmp_path: P
     assert result.stdout.strip() == "[]"
 
 
-def test_dense_e5_v2_build_pins_prefixed_ranking_citations_and_meta(tmp_path: Path) -> None:
-    """O2: v2 chunks are located verbatim spans ranked by the recorded prefixed cosine."""
+def test_dense_e5_v3_build_pins_prefixed_ranking_citations_and_meta(tmp_path: Path) -> None:
+    """O2: v3 chunks are located verbatim spans ranked by the recorded prefixed cosine."""
     backend = _require_backend(DENSE_E5)
     _store, derived_path = _semantic_canon(tmp_path)
     index_path = tmp_path / "semantic"
     report = semantic_index.build(derived_path, index_path, DENSE_E5)
     assert report.status == "complete" and report.citations_absent == 0
     verified = semantic_index.verify(index_path)
-    assert verified["projection"] == "v2"
+    assert verified["projection"] == "v3"
     assert verified["chunk_max_words"] == str(semantic_index.CHUNK_MAX_WORDS) == "40"
     assert verified["query_prefix"] == "query: " and verified["passage_prefix"] == "passage: "
     assert verified["backend"] == "DENSE-E5"
