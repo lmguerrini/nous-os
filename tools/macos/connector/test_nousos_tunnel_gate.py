@@ -369,6 +369,19 @@ class GateTests(unittest.TestCase):
         self.assertIn("text_truncated", tools[2]["description"])
         self.assertIn("if true, use view full", tools[2]["description"])
 
+    def test_read_around_guidance_is_published(self) -> None:
+        self.gate.send({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        tools = {tool["name"]: tool["description"] for tool in self.gate.response(1)["result"]["tools"]}
+        for text in (tools["knowledge_search"], tools["knowledge_semantic"]):
+            self.assertIn(
+                "A hit may be the question or the reply next to the message that answers.", text,
+            )
+            self.assertIn(
+                "read around the first one or two hits of each search with knowledge_context, "
+                "before 3 and after 3, before reformulating.", text,
+            )
+            self.assertIn("Do not read whole conversations.", text)
+
     def test_initialize_instructions_preserve_fields_and_match_id(self) -> None:
         self.gate.send({"jsonrpc": "2.0", "id": 101, "method": "initialize", "params": {}})
         result = self.gate.response(101)["result"]
