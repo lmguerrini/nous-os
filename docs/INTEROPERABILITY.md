@@ -66,7 +66,7 @@ way:
 | --- | --- | --- | --- |
 | `system.capabilities` | read | List every operation this contract offers, with its tier and parameters. | (none) |
 | `system.health` | read | Report whether each configured store location is readable, absent, or unknown. | (none) |
-| `knowledge.search` | read | Full-text search over the derived index. | query, limit?, role? |
+| `knowledge.search` | read | Full-text search over the derived index. On zero hits, the MCP tool retries once with a narrowed query and marks its hits and query. | query, limit?, role? |
 | `knowledge.context` | read | Read a source's conversation neighbourhood, or a conversation's ordered records, from the derived index. | source_id?, container?, before?, after?, limit?, offset?, view?, max_chars? |
 | `knowledge.semantic` | read | Dense semantic search over the local semantic index; not_run with a reason when the index or the weights are absent. | query, limit?, distinct?, role? |
 | `canon.documents` | read | List every canonical document under the configured data root. | (none) |
@@ -92,7 +92,7 @@ way:
 | `reconcile.propose` | propose | Record one evidence-linked relation proposal, apart from source memory. | relation |
 | `reconcile.verify` | read | Re-resolve every stored relation end and citation without changing the record. | (none) |
 
-`knowledge.search` returns `source_id`, `snapshot_digest`, readable `text`, and separate `kind`, `role`, `created_at`, and optional `title` metadata. Punctuated natural-language input is retried as quoted Unicode word tokens joined with OR only when FTS5 reports a syntax error. A query with no Unicode61 token (letters, digits, marks or private-use characters) is refused as having no searchable words.
+`knowledge.search` returns `source_id`, `snapshot_digest`, readable `text`, and separate `kind`, `role`, `created_at`, and optional `title` metadata. Punctuated natural-language input is retried as quoted Unicode word tokens joined with OR only when FTS5 reports a syntax error. If the MCP tool receives no hits, it makes one narrowed query call with the same limit and role. Its first content item remains a hit list; any retry hits carry `narrowed_query` with the exact query string, and a separate `search_notice` content item reports that string even when the retry is empty. A query with no Unicode61 token (letters, digits, marks or private-use characters) is refused as having no searchable words.
 
 This table matches `core.CATALOGUE` and is checked against it by
 `tests/test_interoperability_doc.py`.

@@ -848,7 +848,7 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
     _descriptor(
         "knowledge.search",
         "search",
-        "Full-text search over the derived index.",
+        "Full-text search over the derived index. On zero hits, the MCP tool retries once with a narrowed query and marks its hits and query.",
         (
             ParameterSpec("query", "string", True, "the full-text search query"),
             ParameterSpec(

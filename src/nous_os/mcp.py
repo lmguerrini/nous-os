@@ -42,6 +42,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 from collections.abc import Mapping
 from typing import Final, TextIO
@@ -67,6 +68,44 @@ _SERVER_ERROR: Final = -32000
 TIER_ENV_VAR: Final = "NOUS_OS_STDIO_TIERS"
 HOLDER_ENV_VAR: Final = "NOUS_OS_STDIO_HOLDER"
 _DEFAULT_HOLDER: Final = "stdio"
+
+_PHRASE = re.compile(r'"[^"\n]+"')
+_TOKEN = re.compile(r'[^\W_]+(?:_[^\W_]+)*', re.UNICODE)
+_NEGATIONS = frozenset('not no never without non mai senza né'.split())
+_STOP = frozenset(('a an and are as at be by for from has have how i in is it of on or that the this to was were what when where which who why will with would ' +
+                   'a ad al alla anche che chi come con cosa da dei del della delle di e è gli i il in la le lo ma nei nel nella non o per più quale quando se si sono su tra un una uno').split())
+
+
+def _narrow_query(query: str) -> str:
+    """The frozen ZH14 k=3 transform, used for one zero-hit retry."""
+    phrases = list(_PHRASE.finditer(query))
+    pieces = [(m.start(), m.group(), 'phrase') for m in phrases]
+    last = 0
+    ordinary = []
+    for phrase in phrases + [None]:
+        end = phrase.start() if phrase else len(query)
+        for match in _TOKEN.finditer(query, last, end):
+            token = match.group()
+            kind = 'protected' if ('_' in token or any('0' <= char <= '9' for char in token) or token.casefold() in _NEGATIONS) else 'ordinary'
+            piece = (match.start(), token, kind)
+            (ordinary if kind == 'ordinary' else pieces).append(piece)
+        last = phrase.end() if phrase else len(query)
+    if not phrases:
+        eligible = [piece for piece in ordinary if piece[1].casefold() not in _STOP]
+        pool = eligible or ordinary
+        chosen = []
+        seen = set()
+        for piece in sorted(pool, key=lambda piece: (-len(piece[1]), piece[0])):
+            key = piece[1].casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            chosen.append(piece)
+            if len(chosen) == 3:
+                break
+        pieces.extend(chosen)
+    pieces.sort(key=lambda piece: piece[0])
+    return ' '.join(piece[1] for piece in pieces) if pieces else query
 
 
 class _RequestError(Exception):
@@ -145,11 +184,21 @@ def _handle_tools_call(params: object, grant: Grant, workspace: core.Workspace) 
         raise _RequestError(_INVALID_PARAMS, "params.arguments must be an object")
     try:
         result = core.invoke(grant, name, workspace, arguments)
+        narrowed_query = None
+        if name == "knowledge.search" and result == []:
+            narrowed_query = _narrow_query(arguments["query"])
+            retry_arguments = {**arguments, "query": narrowed_query}
+            retry_hits = core.invoke(grant, name, workspace, retry_arguments)
+            result = [{**hit, "narrowed_query": narrowed_query} for hit in retry_hits]
     except Exception as error:
         raise _RequestError(_SERVER_ERROR, f"{type(error).__name__}: {error}") from error
-    return {
-        "content": [{"type": "text", "text": json.dumps(result, sort_keys=True, allow_nan=False)}]
-    }
+    content = [{"type": "text", "text": json.dumps(result, sort_keys=True, allow_nan=False)}]
+    if narrowed_query is not None:
+        content.append({"type": "text", "text": json.dumps(
+            {"search_notice": {"narrowed_query": narrowed_query}},
+            sort_keys=True, allow_nan=False,
+        )})
+    return {"content": content}
 
 
 _METHODS: Final = {
