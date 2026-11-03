@@ -42,6 +42,7 @@ import test_mcp
 
 _FIXED_PROPOSAL_ID = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 _FIXED_RELATION_ID = "rel_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+_ZERO_HIT_QUERY = "zzunfindableprimary zzunfindablesecondary zzunfindabletertiary zzunfindablefourth"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _OPTIONAL_PARAMETER_CASES = (
     ("knowledge.search", "limit"),
@@ -72,6 +73,7 @@ class _Call:
 
     value: object
     error: str | None
+    notice: object = None
 
 
 def _workspace_argv(workspace: core.Workspace) -> list[str]:
@@ -304,6 +306,8 @@ def _mcp_value(
     descriptor: core.OperationDescriptor,
     arguments: dict[str, object],
     workspace: core.Workspace,
+    *,
+    expect_retry: bool = False,
 ) -> _Call:
     """Run actual dispatch and remove JSON-RPC fields from its delivered value."""
     if descriptor.external_name == "candidate.search":
@@ -337,12 +341,26 @@ def _mcp_value(
     if type(result) is not dict:
         raise _ParityFailure(f"MCP gave no result for {descriptor.external_name!r}")
     content = result.get("content")
-    if type(content) is not list or len(content) != 1 or type(content[0]) is not dict:
+    if type(content) is not list or len(content) != (2 if expect_retry else 1) or type(content[0]) is not dict:
         raise _ParityFailure(f"MCP gave malformed content for {descriptor.external_name!r}")
     text = content[0].get("text")
     if type(text) is not str:
         raise _ParityFailure(f"MCP gave non-text content for {descriptor.external_name!r}")
-    return _Call(json.loads(text), None)
+    value = json.loads(text)
+    if not expect_retry:
+        return _Call(value, None)
+    if descriptor.external_name != "knowledge.search" or type(value) is not list:
+        raise _ParityFailure(f"MCP gave malformed content for {descriptor.external_name!r}")
+    notice_item = content[1]
+    if type(notice_item) is not dict or notice_item.get("type") != "text" or type(notice_item.get("text")) is not str:
+        raise _ParityFailure("MCP gave malformed search notice")
+    notice = json.loads(notice_item["text"])
+    narrowed_query = mcp._narrow_query(arguments["query"])
+    if notice != {"search_notice": {"narrowed_query": narrowed_query}}:
+        raise _ParityFailure("MCP gave malformed search notice")
+    if any(type(hit) is not dict or hit.get("narrowed_query") != narrowed_query for hit in value):
+        raise _ParityFailure("MCP gave unmarked retry hits")
+    return _Call(value, None, notice)
 
 
 def _ordered_json(value: object) -> str:
@@ -443,6 +461,28 @@ def test_g_parity_compares_all_live_catalogue_results(
     world, workspace = _workspace(tmp_path / "world")
     compared = _assert_parity(workspace, world, capsys)
     assert compared == len(core.CATALOGUE)
+
+
+def test_g_parity_zero_hit_search_compares_narrowed_cli_result(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A retry compares with the CLI query actually executed by its second search."""
+    world, workspace = _workspace(tmp_path / "zero-hit")
+    descriptor = next(item for item in core.CATALOGUE if item.external_name == "knowledge.search")
+    arguments = _arguments(descriptor, world)
+    arguments["query"] = _ZERO_HIT_QUERY
+    original = _cli_value(descriptor, arguments, workspace, capsys)
+    assert original.error is None and original.value == []
+    retried = _mcp_value(descriptor, arguments, workspace, expect_retry=True)
+    assert retried.error is None
+    narrowed_query = "zzunfindableprimary zzunfindablesecondary zzunfindabletertiary"
+    assert retried.notice == {"search_notice": {"narrowed_query": narrowed_query}}
+    narrowed = _cli_value(descriptor, {**arguments, "query": narrowed_query}, workspace, capsys)
+    assert narrowed.error is None
+    assert _ordered_json(retried.value) == _ordered_json([
+        {**hit, "narrowed_query": narrowed_query} for hit in narrowed.value
+    ])
 
 
 def test_g_parity_real_stdio_loop_covers_a_declared_session(tmp_path: Path) -> None:

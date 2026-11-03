@@ -55,6 +55,7 @@ import test_mcp
 
 
 _BENIGN = "beta"
+_ZERO_HIT_QUERY = "zzunfindableprimary zzunfindablesecondary zzunfindabletertiary zzunfindablefourth"
 
 #: An independently pinned public set. The matrix binds entries live below,
 #: while this value makes a dropped production route a failure instead of a
@@ -415,8 +416,10 @@ def _cli_call(
     workspace: core.Workspace,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    expect_retry: bool = False,
 ) -> _Call:
     """Call ``cli.main`` while injecting the exact live-subset grant at startup."""
+    assert not expect_retry
     argv = _workspace_argv(workspace, grant.holder)
     argv.append(descriptor.external_name)
     for parameter in descriptor.parameters:
@@ -456,6 +459,7 @@ def _mcp_call(
     workspace: core.Workspace,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    expect_retry: bool = False,
 ) -> _Call:
     """Call ``mcp.dispatch`` and keep only success, refusal, or a typed failure."""
     del capsys, monkeypatch
@@ -481,15 +485,30 @@ def _mcp_call(
     if type(result) is not dict:
         return _Call("failed", "MCP gave no result")
     content = result.get("content")
-    if type(content) is not list or len(content) != 1 or type(content[0]) is not dict:
+    if type(content) is not list or len(content) != (2 if expect_retry else 1) or type(content[0]) is not dict:
         return _Call("failed", "MCP gave malformed content")
     text = content[0].get("text")
     if type(text) is not str:
         return _Call("failed", "MCP gave non-text content")
     try:
-        json.loads(text)
+        value = json.loads(text)
     except json.JSONDecodeError as error:
         return _Call("failed", f"MCP content was not JSON: {error}")
+    if expect_retry:
+        if descriptor.external_name != "knowledge.search" or type(value) is not list:
+            return _Call("failed", "MCP gave malformed content")
+        notice_item = content[1]
+        if type(notice_item) is not dict or notice_item.get("type") != "text" or type(notice_item.get("text")) is not str:
+            return _Call("failed", "MCP gave malformed search notice")
+        try:
+            notice = json.loads(notice_item["text"])
+        except json.JSONDecodeError as error:
+            return _Call("failed", f"MCP search notice was not JSON: {error}")
+        narrowed_query = mcp._narrow_query(arguments["query"])
+        if notice != {"search_notice": {"narrowed_query": narrowed_query}}:
+            return _Call("failed", "MCP gave malformed search notice")
+        if any(type(hit) is not dict or hit.get("narrowed_query") != narrowed_query for hit in value):
+            return _Call("failed", "MCP gave unmarked retry hits")
     return _Call("success", None)
 
 
@@ -603,6 +622,7 @@ def _run_matrix(
     tier_sets: tuple[frozenset[Tier], ...],
     attempts: tuple[_Attempt, ...],
     execution_context: list[tuple[str, tuple[str, ...], str, str]] | None = None,
+    search_query: str | None = None,
 ) -> _MatrixResult:
     """Run each selected cell twice: benign reference then hostile sample."""
     if not transports or not operations or not tier_sets or not attempts:
@@ -638,6 +658,8 @@ def _run_matrix(
                         grant: Grant,
                         workspace: core.Workspace,
                     ) -> _Call:
+                        if search_query is not None and descriptor.external_name == "knowledge.search":
+                            arguments = {**arguments, "query": search_query}
                         if descriptor.external_name == "reconcile.propose":
                             workspace = replace(
                                 workspace,
@@ -670,6 +692,10 @@ def _run_matrix(
                                 workspace,
                                 capsys,
                                 monkeypatch,
+                                search_query is not None
+                                and descriptor.external_name == "knowledge.search"
+                                and transport.name == "mcp.dispatch"
+                                and descriptor.tier in tiers,
                             )
                         finally:
                             if execution_context is not None:
@@ -854,6 +880,7 @@ def _assert_governed_execution_counts(
     operations: tuple[core.OperationDescriptor, ...],
     tier_sets: tuple[frozenset[Tier], ...],
     attempts: tuple[_Attempt, ...],
+    retry_cells: frozenset[tuple[str, str, tuple[str, ...], str, str]] = frozenset(),
 ) -> None:
     """Prove every selected registered execution crossed Core's ``execute`` binding.
 
@@ -882,6 +909,18 @@ def _assert_governed_execution_counts(
                                     side,
                                 )
                             ] += 1
+    for cell in retry_cells:
+        if (
+            cell not in expected
+            or cell[0] != "mcp.dispatch"
+            or not any(
+                descriptor.external_name == "knowledge.search" and descriptor.operation == cell[1]
+                for descriptor in operations
+            )
+            or Tier.READ.value not in cell[2]
+        ):
+            raise _MatrixFailure(f"invalid zero-hit retry cell: {cell!r}")
+        expected[cell] += 1
     actual = Counter(observed)
     if actual != expected:
         raise _MatrixFailure(
@@ -985,6 +1024,43 @@ def test_g_inject_real_transports_cover_the_declared_live_matrix(
         entry.identifier for entry in corpus if entry.identifier not in selected_ids
     }
     assert all(item.reason for item in scope_not_run)
+
+
+def test_g_inject_zero_hit_search_retry_crosses_execute_twice(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One authorized zero-hit MCP cell gets exactly one additional Core execution."""
+    transport = next(item for item in _live_transports() if item.name == "mcp.dispatch")
+    descriptor = next(item for item in core.CATALOGUE if item.external_name == "knowledge.search")
+    tiers = (frozenset({Tier.READ}),)
+    attempt = _Attempt("zero_hit_search", _BENIGN)
+    context: list[tuple[str, tuple[str, ...], str, str]] = []
+    observed: list[tuple[str, str, tuple[str, ...], str, str]] = []
+    original_execute = core.execute
+
+    def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
+        if not context:
+            raise _MatrixFailure("execute ran outside a selected matrix cell")
+        transport_name, tier_names, attempt_name, side = context[-1]
+        observed.append((transport_name, operation, tier_names, attempt_name, side))
+        return original_execute(grant, operation, **kwargs)
+
+    monkeypatch.setattr(core, "execute", count_execute)
+    result = _run_matrix(
+        tmp_path / "zero-hit", capsys, monkeypatch,
+        transports=(transport,), operations=(descriptor,), tier_sets=tiers,
+        attempts=(attempt,), execution_context=context, search_query=_ZERO_HIT_QUERY,
+    )
+    _assert_cell_count(result.realised, 1)
+    assert result.not_run == ()
+    assert result.unauthorized_effects == ()
+    retry_cells = frozenset(
+        (transport.name, descriptor.operation, (Tier.READ.value,), attempt.identifier, side)
+        for side in ("reference", "sample")
+    )
+    _assert_governed_execution_counts(observed, (transport,), (descriptor,), tiers, (attempt,), retry_cells)
 
 
 def test_g_inject_n5_route_without_authorization_is_detected(
