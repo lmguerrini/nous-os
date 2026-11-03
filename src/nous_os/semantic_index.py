@@ -308,18 +308,22 @@ def _top_indices(scores, count: int):
     return pool[np.lexsort((pool, -scores[pool]))].astype(np.int64, copy=False)
 
 
-def _string_leaves(value: object) -> tuple[str, ...]:
-    """Collect string leaves in list or dict order."""
+_JsonPath = tuple[str | int, ...]
+_PartField = tuple[str, _JsonPath]
+
+
+def _string_leaves(value: object, path: _JsonPath) -> tuple[_PartField, ...]:
+    """Collect string leaves and their JSON paths in list or dict order."""
     if type(value) is str:
-        return (value,)
+        return ((value, path),)
     if type(value) is list:
-        return tuple(leaf for item in value for leaf in _string_leaves(item))
+        return tuple(leaf for index, item in enumerate(value) for leaf in _string_leaves(item, (*path, index)))
     if type(value) is dict:
-        return tuple(leaf for item in value.values() for leaf in _string_leaves(item))
+        return tuple(leaf for key, item in value.items() for leaf in _string_leaves(item, (*path, key)))
     return ()
 
 
-def _claude_record_parts(top: dict) -> tuple[str, ...]:
+def _claude_part_fields(top: dict) -> tuple[_PartField, ...]:
     """Select Claude prose only when the legacy projection found no parts."""
     if top.get("provider") != "claude.ai":
         return ()
@@ -330,39 +334,41 @@ def _claude_record_parts(top: dict) -> tuple[str, ...]:
     if type(record) is not dict:
         return ()
     kind = top.get("kind")
-    selected: tuple[str, ...] = ()
+    selected: tuple[_PartField, ...] = ()
+    record_path: _JsonPath = ("payload", "record")
     if kind == "message":
         blocks = record.get("content")
         if type(blocks) is list:
             selected = tuple(
-                block["text"] for block in blocks
+                (block["text"], (*record_path, "content", index, "text")) for index, block in enumerate(blocks)
                 if type(block) is dict and block.get("type") == "text"
                 and type(block.get("text")) is str
             )
         if not selected and type(record.get("text")) is str:
-            selected = (record["text"],)
+            selected = ((record["text"], (*record_path, "text")),)
     elif kind == "design_message":
         content = record.get("content")
         if type(content) is dict:
             if type(content.get("content")) is str:
-                selected = (content["content"],)
+                selected = ((content["content"], (*record_path, "content", "content")),)
             blocks = content.get("contentBlocks")
             if type(blocks) is list:
                 selected += tuple(
-                    block["text"] for block in blocks
+                    (block["text"], (*record_path, "content", "contentBlocks", index, "text"))
+                    for index, block in enumerate(blocks)
                     if type(block) is dict and block.get("type") == "text"
                     and type(block.get("text")) is str
                 )
     elif kind in ("memory_file", "project_document"):
         content = record.get("content")
         if type(content) is str:
-            selected = (content,)
+            selected = ((content, (*record_path, "content")),)
         elif type(payload.get("text")) is str:
-            selected = (payload["text"],)
+            selected = ((payload["text"], ("payload", "text")),)
     elif kind == "memory_summary":
         summary = record.get("conversations_memory")
         if type(summary) is str:
-            selected = (summary,)
+            selected = ((summary, (*record_path, "conversations_memory")),)
     elif kind == "reflection":
         content = record.get("content")
         if type(content) is dict:
@@ -372,21 +378,13 @@ def _claude_record_parts(top: dict) -> tuple[str, ...]:
                     "hero_title", "hero_body", "about_your_time", "expanding_your_skills",
                     "topics", "worth_thinking_about",
                 )
-                for leaf in _string_leaves(content.get(key))
+                for leaf in _string_leaves(content.get(key), (*record_path, "content", key))
             )
     return selected
 
 
-def record_parts(body: str) -> tuple[str, ...]:
-    """Select one derived record body's text parts, including Claude prose in v3.
-
-    Projection intentionally recognizes only the stable payload/message/content
-    shapes named here. The string items of ``content.parts`` are returned one by
-    one so a chunk never crosses a part join; the ``content.text``,
-    ``message.text`` and top-level ``text`` fallbacks are one part. Invalid JSON
-    is empty. Bodies with no legacy parts may select Claude record prose;
-    reasoning, attachments, and metadata remain excluded.
-    """
+def _part_fields(body: str) -> tuple[_PartField, ...]:
+    """Select projected text with the path of each original JSON string."""
     if type(body) is not str:
         return ()
     try:
@@ -397,22 +395,37 @@ def record_parts(body: str) -> tuple[str, ...]:
         return ()
     payload = top.get("payload")
     payload_object = payload if type(payload) is dict else top
+    payload_path: _JsonPath = ("payload",) if type(payload) is dict else ()
     message = payload_object.get("message")
     message_object = message if type(message) is dict else payload_object
+    message_path = (*payload_path, "message") if type(message) is dict else payload_path
     content = message_object.get("content")
     if type(content) is dict:
         parts = content.get("parts")
         if type(parts) is list:
-            selected = tuple(part for part in parts if type(part) is str)
-            return selected if selected else _claude_record_parts(top)
+            selected = tuple(
+                (part, (*message_path, "content", "parts", index))
+                for index, part in enumerate(parts) if type(part) is str
+            )
+            return selected if selected else _claude_part_fields(top)
         content_text = content.get("text")
         if type(content_text) is str:
-            return (content_text,)
+            return ((content_text, (*message_path, "content", "text")),)
     message_text = message_object.get("text")
     if type(message_text) is str:
-        return (message_text,)
+        return ((message_text, (*message_path, "text")),)
     top_text = top.get("text")
-    return (top_text,) if type(top_text) is str else _claude_record_parts(top)
+    return ((top_text, ("text",)),) if type(top_text) is str else _claude_part_fields(top)
+
+
+def record_parts(body: str) -> tuple[str, ...]:
+    """Select one derived record body's text parts, including Claude prose in v3.
+
+    Projection recognizes only the stable payload/message/content shapes.
+    Parts remain separate so chunks never cross a part join. Invalid JSON is
+    empty; reasoning, attachments, and metadata remain excluded.
+    """
+    return tuple(part for part, _path in _part_fields(body))
 
 
 def record_text(body: str) -> str:
@@ -487,8 +500,79 @@ def _needle(text: str) -> bytes:
     return json.dumps(text, ensure_ascii=False)[1:-1].encode("utf-8")
 
 
+def _json_string_ranges(body: str) -> dict[_JsonPath, tuple[int, int]]:
+    """Map JSON string values to their original half-open byte ranges.
+
+    The caller has already decoded the body as JSON. Repeated object keys use
+    the last value, just as ``json.loads`` does for the projection.
+    """
+    raw = body.encode("utf-8")
+    ranges: dict[_JsonPath, tuple[int, int]] = {}
+
+    def skip_space(index: int) -> int:
+        while index < len(raw) and raw[index] in b" \t\r\n":
+            index += 1
+        return index
+
+    def string_end(index: int) -> int:
+        index += 1
+        while index < len(raw):
+            if raw[index] == 92:  # Backslash escapes the next byte.
+                index += 2
+            elif raw[index] == 34:
+                return index + 1
+            else:
+                index += 1
+        raise ValueError("unterminated JSON string")
+
+    def parse(index: int, path: _JsonPath) -> int:
+        index = skip_space(index)
+        token = raw[index]
+        if token == 34:
+            end = string_end(index)
+            ranges[path] = (index + 1, end - 1)
+            return end
+        if token == 123:
+            index = skip_space(index + 1)
+            seen_keys: set[str] = set()
+            while raw[index] != 125:
+                key_end = string_end(index)
+                key = json.loads(raw[index:key_end].decode("utf-8"))
+                child_path = (*path, key)
+                if key in seen_keys:
+                    for prior in tuple(ranges):
+                        if prior[:len(child_path)] == child_path:
+                            del ranges[prior]
+                seen_keys.add(key)
+                index = skip_space(key_end)
+                index = skip_space(parse(index + 1, child_path))
+                if raw[index] == 44:
+                    index = skip_space(index + 1)
+                else:
+                    break
+            return index + 1
+        if token == 91:
+            index = skip_space(index + 1)
+            item = 0
+            while raw[index] != 93:
+                index = skip_space(parse(index, (*path, item)))
+                item += 1
+                if raw[index] == 44:
+                    index = skip_space(index + 1)
+                else:
+                    break
+            return index + 1
+        while index < len(raw) and raw[index] not in b",]} \t\r\n":
+            index += 1
+        return index
+
+    parse(0, ())
+    return ranges
+
+
 def _citation_location(
-    source_id: str, snapshot_digest: str, body: str, text: str
+    source_id: str, snapshot_digest: str, body: str, text: str,
+    field_range: tuple[int, int],
 ) -> tuple[int | None, int | None, str]:
     """Locate and quote-lint one chunk, refusing ambiguous or unsafe byte ranges."""
     body_bytes = body.encode("utf-8")
@@ -500,6 +584,8 @@ def _citation_location(
         return None, None, "ambiguous"
     start = body_bytes.find(needle)
     end = start + len(needle)
+    if not (field_range[0] <= start and end <= field_range[1]):
+        return None, None, "absent"
     try:
         citation = Citation(source_id, snapshot_digest, Locator(start, end), needle.decode("utf-8"))
         store = _OneSnapshotStore(Snapshot(source_id, snapshot_digest, body_bytes))
@@ -539,15 +625,19 @@ def _collect_chunks(derived_path: Path) -> tuple[tuple[_IndexedChunk, ...], int,
     records_indexed = 0
     records_empty = 0
     for source_id, snapshot_digest, body in _tip_records(derived_path):
-        parts = record_parts(body)
+        fields = _part_fields(body)
+        parts = tuple(part for part, _path in fields)
         if not "\n".join(parts):
             records_empty += 1
             continue
         records_indexed += 1
+        field_ranges = _json_string_ranges(body)
         spans = tuple(
-            chunk_text for part in parts for _start, _end, chunk_text in pack_sentences(part, CHUNK_MAX_WORDS)
+            (chunk_text, field_ranges[path])
+            for part, path in fields
+            for _start, _end, chunk_text in pack_sentences(part, CHUNK_MAX_WORDS)
         )
-        for ordinal, chunk_text in enumerate(spans):
+        for ordinal, (chunk_text, field_range) in enumerate(spans):
             chunk = Chunk(
                 id=f"{source_id}#{ordinal:04d}",
                 source_id=source_id,
@@ -556,7 +646,7 @@ def _collect_chunks(derived_path: Path) -> tuple[tuple[_IndexedChunk, ...], int,
                 text=chunk_text,
                 tokens=estimate_tokens(chunk_text),
             )
-            start, end, state = _citation_location(source_id, snapshot_digest, body, chunk_text)
+            start, end, state = _citation_location(source_id, snapshot_digest, body, chunk_text, field_range)
             indexed.append(_IndexedChunk(chunk, snapshot_digest, start, end, state))
     indexed.sort(key=lambda item: item.chunk.id)
     return tuple(indexed), records_indexed, records_empty
